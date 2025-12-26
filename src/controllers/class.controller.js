@@ -61,7 +61,7 @@ exports.getClass = async (req, res) => {
 // Create new class (Owner only)
 exports.createClass = async (req, res) => {
   try {
-    const { name, grade, section, academicYear, teacher } = req.body;
+    const { name, grade, section, academicYear } = req.body;
 
     if (!name || !grade || !section || !academicYear) {
       return res.status(400).json({
@@ -70,23 +70,11 @@ exports.createClass = async (req, res) => {
       });
     }
 
-    // If class teacher is specified, validate
-    if (teacher) {
-      const teacherUser = await User.findOne({ _id: teacher, role: "teacher" });
-      if (!teacherUser) {
-        return res.status(400).json({
-          success: false,
-          message: "Teacher not found",
-        });
-      }
-    }
-
     const classData = await Class.create({
       name,
       grade,
       section: section.toUpperCase(),
       academicYear,
-      teacher,
       createdBy: req.user.id,
     });
 
@@ -112,7 +100,7 @@ exports.createClass = async (req, res) => {
 // Update class (Owner only)
 exports.updateClass = async (req, res) => {
   try {
-    const { name, grade, section, academicYear, teacher, isActive } = req.body;
+    const { name, grade, section, academicYear, isActive } = req.body;
 
     const classData = await Class.findById(req.params.id);
 
@@ -123,21 +111,10 @@ exports.updateClass = async (req, res) => {
       });
     }
 
-    if (teacher) {
-      const teacherUser = await User.findOne({ _id: teacher, role: "teacher" });
-      if (!teacherUser) {
-        return res.status(400).json({
-          success: false,
-          message: "Teacher not found",
-        });
-      }
-    }
-
     if (name) classData.name = name;
     if (grade) classData.grade = grade;
     if (section) classData.section = section.toUpperCase();
     if (academicYear) classData.academicYear = academicYear;
-    if (teacher !== undefined) classData.teacher = teacher;
     if (isActive !== undefined) classData.isActive = isActive;
 
     await classData.save();
