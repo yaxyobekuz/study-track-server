@@ -9,7 +9,7 @@ const protect = async (req, res, next) => {
   try {
     let token;
 
-    // Tokenni headerdan olish
+    // Get token from header
     if (
       req.headers.authorization &&
       req.headers.authorization.startsWith("Bearer")
@@ -24,7 +24,7 @@ const protect = async (req, res, next) => {
       });
     }
 
-    // Tokenni tekshirish
+    // Verify token
     const decoded = verifyToken(token);
 
     if (!decoded) {
