@@ -45,7 +45,6 @@ exports.login = async (req, res) => {
           lastName: user.lastName,
           fullName: user.fullName,
           role: user.role,
-          assignedClasses: user.assignedClasses,
           class: user.class
         },
         token
@@ -64,7 +63,6 @@ exports.login = async (req, res) => {
 exports.getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id)
-      .populate('assignedClasses', 'name grade section')
       .populate('class', 'name grade section');
 
     res.json({

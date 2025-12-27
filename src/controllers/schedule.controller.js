@@ -171,8 +171,8 @@ exports.getTeacherSchedule = async (req, res) => {
   try {
     const teacherId = req.user.id;
 
-    // Find classes assigned to teacher
-    const teacher = await User.findById(teacherId).populate('assignedClasses');
+    // Verify teacher
+    const teacher = await User.findById(teacherId);
 
     if (!teacher || teacher.role !== 'teacher') {
       return res.status(403).json({
@@ -181,11 +181,9 @@ exports.getTeacherSchedule = async (req, res) => {
       });
     }
 
-    const classIds = teacher.assignedClasses.map(c => c._id);
-
-    // Find all schedules for these classes (full schedule, not filtered)
+    // Find all schedules where teacher has lessons
     const schedules = await Schedule.find({
-      class: { $in: classIds }
+      'subjects.teacher': teacherId
     })
       .populate('class', 'name grade section')
       .populate('subjects.subject', 'name')

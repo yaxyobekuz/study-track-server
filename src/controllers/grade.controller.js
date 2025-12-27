@@ -18,15 +18,6 @@ exports.getGrades = async (req, res) => {
     // If teacher, can only see their own grades
     if (req.user.role === 'teacher') {
       query.teacher = req.user.id;
-      
-      // Teacher can only see grades from their assigned classes
-      const teacher = await User.findById(req.user.id);
-      if (classId && !teacher.assignedClasses.includes(classId)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Bu sinfga ruxsatingiz yo\'q'
-        });
-      }
     }
 
     // Date range
@@ -110,17 +101,6 @@ exports.createGrade = async (req, res) => {
         success: false,
         message: 'Baho 2 dan 5 gacha bo\'lishi kerak'
       });
-    }
-
-    // Check if teacher is assigned to this class
-    if (req.user.role === 'teacher') {
-      const teacher = await User.findById(req.user.id);
-      if (!teacher.assignedClasses.includes(classId)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Bu sinfga ruxsatingiz yo\'q'
-        });
-      }
     }
 
     // Validate student, subject and class exist

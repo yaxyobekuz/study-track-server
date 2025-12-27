@@ -47,12 +47,6 @@ const userSchema = new mongoose.Schema(
       enum: ["owner", "teacher", "student"],
       required: [true, "Rol majburiy"],
     },
-    assignedClasses: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Class",
-      },
-    ],
     class: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Class",

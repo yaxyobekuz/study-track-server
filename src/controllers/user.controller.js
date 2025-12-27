@@ -11,7 +11,6 @@ exports.getAllUsers = async (req, res) => {
     if (classId) query.class = classId;
 
     const users = await User.find(query)
-      .populate("assignedClasses", "name grade section")
       .populate("class", "name grade section")
       .select("-password")
       .sort({ createdAt: -1 });
@@ -34,7 +33,6 @@ exports.getAllUsers = async (req, res) => {
 exports.getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
-      .populate("assignedClasses", "name grade section")
       .populate("class", "name grade section")
       .select("-password");
 
@@ -67,7 +65,6 @@ exports.createUser = async (req, res) => {
       firstName,
       lastName,
       role,
-      assignedClasses,
       class: userClass,
     } = req.body;
 
@@ -85,17 +82,6 @@ exports.createUser = async (req, res) => {
         success: false,
         message: "Only teacher or student role can be created",
       });
-    }
-
-    // Check assignedClasses for teacher
-    if (role === "teacher" && assignedClasses && assignedClasses.length > 0) {
-      const classes = await Class.find({ _id: { $in: assignedClasses } });
-      if (classes.length !== assignedClasses.length) {
-        return res.status(400).json({
-          success: false,
-          message: "Some classes not found",
-        });
-      }
     }
 
     // Check class for student
@@ -116,12 +102,10 @@ exports.createUser = async (req, res) => {
       firstName,
       lastName,
       role,
-      assignedClasses: role === "teacher" ? assignedClasses : undefined,
       class: role === "student" ? userClass : undefined,
     });
 
     const populatedUser = await User.findById(user._id)
-      .populate("assignedClasses", "name grade section")
       .populate("class", "name grade section")
       .select("-password");
 
@@ -145,7 +129,6 @@ exports.updateUser = async (req, res) => {
     const {
       firstName,
       lastName,
-      assignedClasses,
       class: userClass,
       isActive,
     } = req.body;
@@ -172,17 +155,6 @@ exports.updateUser = async (req, res) => {
     if (lastName) user.lastName = lastName;
     if (isActive !== undefined) user.isActive = isActive;
 
-    if (user.role === "teacher" && assignedClasses) {
-      const classes = await Class.find({ _id: { $in: assignedClasses } });
-      if (classes.length !== assignedClasses.length) {
-        return res.status(400).json({
-          success: false,
-          message: "Some classes not found",
-        });
-      }
-      user.assignedClasses = assignedClasses;
-    }
-
     if (user.role === "student" && userClass) {
       const classExists = await Class.findById(userClass);
       if (!classExists) {
@@ -197,7 +169,6 @@ exports.updateUser = async (req, res) => {
     await user.save();
 
     const updatedUser = await User.findById(user._id)
-      .populate("assignedClasses", "name grade section")
       .populate("class", "name grade section")
       .select("-password");
 
