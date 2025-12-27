@@ -36,12 +36,6 @@ const scheduleSchema = new mongoose.Schema(
           type: Number,
           required: true,
         },
-        startTime: {
-          type: String,
-        },
-        endTime: {
-          type: String,
-        },
       },
     ],
     createdBy: {
