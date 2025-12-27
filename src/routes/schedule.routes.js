@@ -12,12 +12,9 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 // Barcha routelar himoyalangan
 router.use(protect);
 
-// O'qituvchi uchun o'z jadvali
-router.get('/teacher/my-schedule', authorize('teacher'), getTeacherSchedule);
-
-// Sinf bo'yicha jadval
-router.get('/class/:classId', getScheduleByClass);
-router.get('/class/:classId/day/:day', getScheduleByDay);
+// Sinf bo'yicha jadval (Owner va Teacher ko'ra oladi)
+router.get('/class/:classId', authorize('owner', 'teacher'), getScheduleByClass);
+router.get('/class/:classId/day/:day', authorize('owner', 'teacher'), getScheduleByDay);
 
 // CRUD operatsiyalari faqat owner uchun
 router.post('/', authorize('owner'), createOrUpdateSchedule);
