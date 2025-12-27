@@ -183,18 +183,20 @@ exports.getTeacherSchedule = async (req, res) => {
 
     const classIds = teacher.assignedClasses.map(c => c._id);
 
-    // Find all schedules for these classes
+    // Find all schedules for these classes (full schedule, not filtered)
     const schedules = await Schedule.find({
-      class: { $in: classIds },
-      'subjects.teacher': teacherId
+      class: { $in: classIds }
     })
       .populate('class', 'name grade section')
       .populate('subjects.subject', 'name')
-      .populate('subjects.teacher', 'firstName lastName');
+      .populate('subjects.teacher', 'firstName lastName')
+      .sort({ class: 1, day: 1 });
 
+    // Add teacherId to response so frontend can identify teacher's subjects
     res.json({
       success: true,
-      data: schedules
+      data: schedules,
+      teacherId: teacherId.toString()
     });
   } catch (error) {
     res.status(500).json({
