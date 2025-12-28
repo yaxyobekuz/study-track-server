@@ -140,41 +140,68 @@ exports.createGrade = async (req, res) => {
       });
     }
 
-    // Check if teacher teaches this subject in this class
+    // Check if teacher teaches this subject in this class TODAY
     const Schedule = require("../models/schedule.model");
-    const todaySchedules = await Schedule.find({ class: classId });
+    
+    // Get today's day name in Uzbek
+    const daysUz = [
+      "yakshanba",
+      "dushanba",
+      "seshanba",
+      "chorshanba",
+      "payshanba",
+      "juma",
+      "shanba",
+    ];
+    const today = new Date();
+    const todayDayName = daysUz[today.getDay()];
 
-    let teacherCanGrade = false;
-    for (const schedule of todaySchedules) {
-      const hasSubject = schedule.subjects.some(
-        (s) =>
-          s.subject.toString() === subjectId &&
-          s.teacher.toString() === req.user.id
-      );
-      if (hasSubject) {
-        teacherCanGrade = true;
-        break;
-      }
-    }
-
-    if (!teacherCanGrade) {
+    // Skip Sunday (yakshanba) - no lessons
+    if (todayDayName === "yakshanba") {
       return res.status(403).json({
         success: false,
-        message: "Siz ushbu sinfda bu fanni o'qitmaysiz",
+        message: "Yakshanba kuni dars yo'q, baho qo'yib bo'lmaydi",
+      });
+    }
+
+    // Find today's schedule for this class
+    const todaySchedule = await Schedule.findOne({
+      class: classId,
+      day: todayDayName,
+    });
+
+    if (!todaySchedule) {
+      return res.status(403).json({
+        success: false,
+        message: `Bugun (${todayDayName}) ushbu sinfda dars jadvali topilmadi`,
+      });
+    }
+
+    // Check if teacher has this subject in today's schedule
+    const hasSubjectToday = todaySchedule.subjects.some(
+      (s) =>
+        s.subject.toString() === subjectId &&
+        s.teacher.toString() === req.user.id
+    );
+
+    if (!hasSubjectToday) {
+      return res.status(403).json({
+        success: false,
+        message: `Bugun (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
       });
     }
 
     // Date must be today
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
+    const todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(todayDate);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     // Check if grade already exists for this student, subject, and date (today)
     const existingGrade = await Grade.findOne({
       student: studentId,
       subject: subjectId,
-      date: { $gte: today, $lt: tomorrow },
+      date: { $gte: todayDate, $lt: tomorrow },
     });
 
     if (existingGrade) {
@@ -378,7 +405,7 @@ exports.getStudentGrades = async (req, res) => {
   }
 };
 
-// Get teacher's subjects in a class (for grade adding)
+// Get teacher's subjects in a class (for grade adding - TODAY's schedule only)
 exports.getTeacherSubjectsInClass = async (req, res) => {
   try {
     const { classId } = req.params;
@@ -391,28 +418,60 @@ exports.getTeacherSubjectsInClass = async (req, res) => {
     }
 
     const Schedule = require("../models/schedule.model");
-    const schedules = await Schedule.find({ class: classId }).populate(
-      "subjects.subject",
-      "name"
-    );
+    
+    // Get today's day name in Uzbek
+    const daysUz = [
+      "yakshanba",
+      "dushanba",
+      "seshanba",
+      "chorshanba",
+      "payshanba",
+      "juma",
+      "shanba",
+    ];
+    const today = new Date();
+    const todayDayName = daysUz[today.getDay()];
 
-    const teacherSubjects = [];
-    schedules.forEach((schedule) => {
-      schedule.subjects.forEach((item) => {
-        if (item.teacher.toString() === req.user.id) {
-          const exists = teacherSubjects.find(
-            (s) => s._id.toString() === item.subject._id.toString()
-          );
-          if (!exists) {
-            teacherSubjects.push(item.subject);
-          }
-        }
+    // If Sunday, return empty array
+    if (todayDayName === "yakshanba") {
+      return res.json({
+        success: true,
+        data: [],
+        message: "Yakshanba kuni dars yo'q",
       });
+    }
+
+    // Find today's schedule for this class
+    const todaySchedule = await Schedule.findOne({
+      class: classId,
+      day: todayDayName,
+    }).populate("subjects.subject", "name");
+
+    if (!todaySchedule) {
+      return res.json({
+        success: true,
+        data: [],
+        message: `Bugun (${todayDayName}) ushbu sinfda dars jadvali yo'q`,
+      });
+    }
+
+    // Filter only teacher's subjects from today's schedule
+    const teacherSubjects = [];
+    todaySchedule.subjects.forEach((item) => {
+      if (item.teacher.toString() === req.user.id) {
+        const exists = teacherSubjects.find(
+          (s) => s._id.toString() === item.subject._id.toString()
+        );
+        if (!exists) {
+          teacherSubjects.push(item.subject);
+        }
+      }
     });
 
     res.json({
       success: true,
       data: teacherSubjects,
+      day: todayDayName,
     });
   } catch (error) {
     res.status(500).json({
