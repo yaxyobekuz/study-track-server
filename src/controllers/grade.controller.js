@@ -1,22 +1,22 @@
-const Grade = require('../models/grade.model');
-const User = require('../models/user.model');
-const Subject = require('../models/subject.model');
-const Class = require('../models/class.model');
-const { GRADE_EDIT_DAYS_LIMIT } = require('../utils/constants');
+const Grade = require("../models/grade.model");
+const User = require("../models/user.model");
+const Subject = require("../models/subject.model");
+const Class = require("../models/class.model");
+const { GRADE_EDIT_DAYS_LIMIT } = require("../utils/constants");
 
 // Get grades (with filters)
 exports.getGrades = async (req, res) => {
   try {
     const { studentId, subjectId, classId, startDate, endDate } = req.query;
-    
+
     let query = {};
-    
+
     if (studentId) query.student = studentId;
     if (subjectId) query.subject = subjectId;
     if (classId) query.class = classId;
-    
+
     // If teacher, can only see their own grades
-    if (req.user.role === 'teacher') {
+    if (req.user.role === "teacher") {
       query.teacher = req.user.id;
     }
 
@@ -28,22 +28,22 @@ exports.getGrades = async (req, res) => {
     }
 
     const grades = await Grade.find(query)
-      .populate('student', 'firstName lastName')
-      .populate('subject', 'name')
-      .populate('teacher', 'firstName lastName')
-      .populate('class', 'name grade section')
+      .populate("student", "firstName lastName")
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .populate("class", "name grade section")
       .sort({ date: -1, createdAt: -1 });
 
     res.json({
       success: true,
       count: grades.length,
-      data: grades
+      data: grades,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -56,42 +56,50 @@ exports.getGradesByClassAndDate = async (req, res) => {
     // Split date into start and end times
     const startDate = new Date(date);
     startDate.setHours(0, 0, 0, 0);
-    
+
     const endDate = new Date(date);
     endDate.setHours(23, 59, 59, 999);
 
     const grades = await Grade.find({
       class: classId,
-      date: { $gte: startDate, $lte: endDate }
+      date: { $gte: startDate, $lte: endDate },
     })
-      .populate('student', 'firstName lastName')
-      .populate('subject', 'name')
-      .populate('teacher', 'firstName lastName')
-      .sort({ 'student.lastName': 1, 'student.firstName': 1 });
+      .populate("student", "firstName lastName")
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .sort({ "student.lastName": 1, "student.firstName": 1 });
 
     res.json({
       success: true,
-      data: grades
+      data: grades,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
 
-// Create grade (Teacher)
+// Create grade (Teacher only)
 exports.createGrade = async (req, res) => {
   try {
-    const { studentId, subjectId, classId, grade, date, comment } = req.body;
+    const { studentId, subjectId, classId, grade, comment } = req.body;
 
     // Validation
     if (!studentId || !subjectId || !classId || !grade) {
       return res.status(400).json({
         success: false,
-        message: 'Barcha majburiy maydonlarni to\'ldiring'
+        message: "Barcha majburiy maydonlarni to'ldiring",
+      });
+    }
+
+    // Only teacher can add grades
+    if (req.user.role !== "teacher") {
+      return res.status(403).json({
+        success: false,
+        message: "Faqat o'qituvchilar baho qo'ya oladi",
       });
     }
 
@@ -99,16 +107,20 @@ exports.createGrade = async (req, res) => {
     if (grade < 2 || grade > 5) {
       return res.status(400).json({
         success: false,
-        message: 'Baho 2 dan 5 gacha bo\'lishi kerak'
+        message: "Baho 2 dan 5 gacha bo'lishi kerak",
       });
     }
 
     // Validate student, subject and class exist
-    const student = await User.findOne({ _id: studentId, role: 'student', class: classId });
+    const student = await User.findOne({
+      _id: studentId,
+      role: "student",
+      class: classId,
+    });
     if (!student) {
       return res.status(404).json({
         success: false,
-        message: 'O\'quvchi ushbu sinfda topilmadi'
+        message: "O'quvchi ushbu sinfda topilmadi",
       });
     }
 
@@ -116,7 +128,7 @@ exports.createGrade = async (req, res) => {
     if (!subject) {
       return res.status(404).json({
         success: false,
-        message: 'Fan topilmadi'
+        message: "Fan topilmadi",
       });
     }
 
@@ -124,42 +136,87 @@ exports.createGrade = async (req, res) => {
     if (!classExists) {
       return res.status(404).json({
         success: false,
-        message: 'Sinf topilmadi'
+        message: "Sinf topilmadi",
       });
     }
 
-    // Create grade record
+    // Check if teacher teaches this subject in this class
+    const Schedule = require("../models/schedule.model");
+    const todaySchedules = await Schedule.find({ class: classId });
+
+    let teacherCanGrade = false;
+    for (const schedule of todaySchedules) {
+      const hasSubject = schedule.subjects.some(
+        (s) =>
+          s.subject.toString() === subjectId &&
+          s.teacher.toString() === req.user.id
+      );
+      if (hasSubject) {
+        teacherCanGrade = true;
+        break;
+      }
+    }
+
+    if (!teacherCanGrade) {
+      return res.status(403).json({
+        success: false,
+        message: "Siz ushbu sinfda bu fanni o'qitmaysiz",
+      });
+    }
+
+    // Date must be today
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Check if grade already exists for this student, subject, and date (today)
+    const existingGrade = await Grade.findOne({
+      student: studentId,
+      subject: subjectId,
+      date: { $gte: today, $lt: tomorrow },
+    });
+
+    if (existingGrade) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Bugun ushbu o'quvchiga bu fan uchun baho allaqachon qo'yilgan",
+      });
+    }
+
+    // Create grade record with today's date
     const newGrade = await Grade.create({
       student: studentId,
       subject: subjectId,
       class: classId,
       teacher: req.user.id,
       grade,
-      date: date || new Date(),
-      comment
+      date: new Date(),
+      comment,
     });
 
     const populatedGrade = await Grade.findById(newGrade._id)
-      .populate('student', 'firstName lastName')
-      .populate('subject', 'name')
-      .populate('teacher', 'firstName lastName')
-      .populate('class', 'name grade section');
+      .populate("student", "firstName lastName")
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .populate("class", "name grade section");
 
     res.status(201).json({
       success: true,
-      message: 'Baho muvaffaqiyatli qo\'yildi',
-      data: populatedGrade
+      message: "Baho muvaffaqiyatli qo'yildi",
+      data: populatedGrade,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
 
-// Update grade (Teacher - only within 2 days)
+// Update grade (Teacher only - only for today's grades)
 exports.updateGrade = async (req, res) => {
   try {
     const { grade: newGrade, comment } = req.body;
@@ -170,28 +227,37 @@ exports.updateGrade = async (req, res) => {
     if (!gradeDoc) {
       return res.status(404).json({
         success: false,
-        message: 'Baho topilmadi'
+        message: "Baho topilmadi",
+      });
+    }
+
+    // Only teacher can edit
+    if (req.user.role !== "teacher") {
+      return res.status(403).json({
+        success: false,
+        message: "Faqat o'qituvchi baho tahrirlashi mumkin",
       });
     }
 
     // Can only edit own grades
-    if (req.user.role === 'teacher' && gradeDoc.teacher.toString() !== req.user.id) {
+    if (gradeDoc.teacher.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
-        message: 'Bu bahoni tahrirlash uchun ruxsatingiz yo\'q'
+        message: "Bu bahoni tahrirlash uchun ruxsatingiz yo'q",
       });
     }
 
-    // Calculate days since grade was given
+    // Can only edit today's grades
     const gradeDate = new Date(gradeDoc.date);
-    const currentDate = new Date();
-    const daysDifference = Math.floor((currentDate - gradeDate) / (1000 * 60 * 60 * 24));
+    gradeDate.setHours(0, 0, 0, 0);
 
-    // If more than GRADE_EDIT_DAYS_LIMIT days, cannot edit
-    if (daysDifference > GRADE_EDIT_DAYS_LIMIT) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    if (gradeDate.getTime() !== today.getTime()) {
       return res.status(403).json({
         success: false,
-        message: `Baho qo'yilganiga ${daysDifference} kun bo'ldi. Faqat ${GRADE_EDIT_DAYS_LIMIT} kun ichida tahrirlash mumkin`
+        message: "Faqat bugungi baholarni tahrirlash mumkin",
       });
     }
 
@@ -200,7 +266,7 @@ exports.updateGrade = async (req, res) => {
       gradeDoc.editHistory.push({
         previousGrade: gradeDoc.grade,
         editedAt: new Date(),
-        editedBy: req.user.id
+        editedBy: req.user.id,
       });
       gradeDoc.grade = newGrade;
       gradeDoc.isEdited = true;
@@ -213,22 +279,22 @@ exports.updateGrade = async (req, res) => {
     await gradeDoc.save();
 
     const updatedGrade = await Grade.findById(gradeDoc._id)
-      .populate('student', 'firstName lastName')
-      .populate('subject', 'name')
-      .populate('teacher', 'firstName lastName')
-      .populate('class', 'name grade section')
-      .populate('editHistory.editedBy', 'firstName lastName');
+      .populate("student", "firstName lastName")
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .populate("class", "name grade section")
+      .populate("editHistory.editedBy", "firstName lastName");
 
     res.json({
       success: true,
-      message: 'Baho muvaffaqiyatli yangilandi',
-      data: updatedGrade
+      message: "Baho muvaffaqiyatli yangilandi",
+      data: updatedGrade,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -241,7 +307,7 @@ exports.deleteGrade = async (req, res) => {
     if (!grade) {
       return res.status(404).json({
         success: false,
-        message: 'Baho topilmadi'
+        message: "Baho topilmadi",
       });
     }
 
@@ -249,13 +315,13 @@ exports.deleteGrade = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Baho muvaffaqiyatli o\'chirildi'
+      message: "Baho muvaffaqiyatli o'chirildi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -263,24 +329,25 @@ exports.deleteGrade = async (req, res) => {
 // Get student grades
 exports.getStudentGrades = async (req, res) => {
   try {
-    const studentId = req.user.role === 'student' ? req.user.id : req.params.studentId;
+    const studentId =
+      req.user.role === "student" ? req.user.id : req.params.studentId;
 
     const grades = await Grade.find({ student: studentId })
-      .populate('subject', 'name')
-      .populate('teacher', 'firstName lastName')
-      .populate('class', 'name grade section')
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .populate("class", "name grade section")
       .sort({ date: -1 });
 
     // Statistics by subject
     const statsBySubject = {};
-    grades.forEach(g => {
+    grades.forEach((g) => {
       const subjectName = g.subject.name;
       if (!statsBySubject[subjectName]) {
         statsBySubject[subjectName] = {
           subject: g.subject,
           grades: [],
           average: 0,
-          count: 0
+          count: 0,
         };
       }
       statsBySubject[subjectName].grades.push(g.grade);
@@ -288,23 +355,127 @@ exports.getStudentGrades = async (req, res) => {
     });
 
     // O'rtachani hisoblash
-    Object.keys(statsBySubject).forEach(subjectName => {
+    Object.keys(statsBySubject).forEach((subjectName) => {
       const stats = statsBySubject[subjectName];
-      stats.average = (stats.grades.reduce((a, b) => a + b, 0) / stats.count).toFixed(2);
+      stats.average = (
+        stats.grades.reduce((a, b) => a + b, 0) / stats.count
+      ).toFixed(2);
     });
 
     res.json({
       success: true,
       data: {
         grades,
-        statistics: statsBySubject
-      }
+        statistics: statsBySubject,
+      },
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
+// Get teacher's subjects in a class (for grade adding)
+exports.getTeacherSubjectsInClass = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (req.user.role !== "teacher") {
+      return res.status(403).json({
+        success: false,
+        message: "Faqat o'qituvchilar uchun",
+      });
+    }
+
+    const Schedule = require("../models/schedule.model");
+    const schedules = await Schedule.find({ class: classId }).populate(
+      "subjects.subject",
+      "name"
+    );
+
+    const teacherSubjects = [];
+    schedules.forEach((schedule) => {
+      schedule.subjects.forEach((item) => {
+        if (item.teacher.toString() === req.user.id) {
+          const exists = teacherSubjects.find(
+            (s) => s._id.toString() === item.subject._id.toString()
+          );
+          if (!exists) {
+            teacherSubjects.push(item.subject);
+          }
+        }
+      });
+    });
+
+    res.json({
+      success: true,
+      data: teacherSubjects,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
+// Get students with their grades for a class, subject and date
+exports.getStudentsWithGrades = async (req, res) => {
+  try {
+    const { classId, subjectId, date } = req.query;
+
+    if (!classId || !subjectId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "Sinf, fan va sana majburiy",
+      });
+    }
+
+    // Get all students in the class
+    const students = await User.find({ role: "student", class: classId })
+      .select("firstName lastName")
+      .sort({ lastName: 1, firstName: 1 });
+
+    // Parse date range
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+
+    // Get grades for this class, subject and date
+    const grades = await Grade.find({
+      class: classId,
+      subject: subjectId,
+      date: { $gte: startDate, $lte: endDate },
+    }).populate("teacher", "firstName lastName");
+
+    // Map grades to students
+    const studentsWithGrades = students.map((student) => {
+      const grade = grades.find(
+        (g) => g.student.toString() === student._id.toString()
+      );
+      return {
+        _id: student._id,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        grade: grade || null,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: studentsWithGrades,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
