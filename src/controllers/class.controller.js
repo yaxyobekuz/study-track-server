@@ -61,9 +61,9 @@ exports.getClass = async (req, res) => {
 // Create new class (Owner only)
 exports.createClass = async (req, res) => {
   try {
-    const { name, grade, section, academicYear } = req.body;
+    const { name, grade, section } = req.body;
 
-    if (!name || !grade || !section || !academicYear) {
+    if (!name || !grade || !section) {
       return res.status(400).json({
         success: false,
         message: "All required fields must be filled",
@@ -74,7 +74,6 @@ exports.createClass = async (req, res) => {
       name,
       grade,
       section: section.toUpperCase(),
-      academicYear,
       createdBy: req.user.id,
     });
 
@@ -100,7 +99,7 @@ exports.createClass = async (req, res) => {
 // Update class (Owner only)
 exports.updateClass = async (req, res) => {
   try {
-    const { name, grade, section, academicYear, isActive } = req.body;
+    const { name, grade, section, isActive } = req.body;
 
     const classData = await Class.findById(req.params.id);
 
@@ -114,7 +113,6 @@ exports.updateClass = async (req, res) => {
     if (name) classData.name = name;
     if (grade) classData.grade = grade;
     if (section) classData.section = section.toUpperCase();
-    if (academicYear) classData.academicYear = academicYear;
     if (isActive !== undefined) classData.isActive = isActive;
 
     await classData.save();

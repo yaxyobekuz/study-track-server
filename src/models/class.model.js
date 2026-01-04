@@ -29,15 +29,6 @@ const classSchema = new mongoose.Schema(
         "Sinf bo'limi maksimal 1 ta belgidan iborat bo'lishi kerak",
       ],
     },
-    academicYear: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: [
-        9,
-        "Akademik yil maksimal 9 ta belgidan iborat bo'lishi kerak",
-      ],
-    },
     isActive: {
       type: Boolean,
       default: true,
