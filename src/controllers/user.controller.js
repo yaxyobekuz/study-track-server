@@ -4,21 +4,43 @@ const Class = require("../models/class.model");
 // Get all users (Owner only)
 exports.getAllUsers = async (req, res) => {
   try {
-    const { role, class: classId } = req.query;
+    const { role, class: classId, page = 1, limit = 24 } = req.query;
 
     let query = {};
     if (role) query.role = role;
     if (classId) query.class = classId;
 
-    const users = await User.find(query)
-      .populate("class", "name grade section")
-      .select("-password")
-      .sort({ createdAt: -1 });
+    // Convert to numbers
+    const pageNum = parseInt(page, 10);
+    const limitNum = parseInt(limit, 10);
+    const skip = (pageNum - 1) * limitNum;
+
+    const [total, users] = await Promise.all([
+      User.countDocuments(query),
+      User.find(query)
+        .populate("class", "name grade section")
+        .select("-password")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum),
+    ]);
+
+    // Calculate pagination info
+    const totalPages = Math.ceil(total / limitNum);
+    const hasNextPage = pageNum < totalPages;
+    const hasPrevPage = pageNum > 1;
 
     res.json({
       success: true,
-      count: users.length,
       data: users,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages,
+        hasNextPage,
+        hasPrevPage,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -126,12 +148,7 @@ exports.createUser = async (req, res) => {
 // Update user (Owner only)
 exports.updateUser = async (req, res) => {
   try {
-    const {
-      firstName,
-      lastName,
-      class: userClass,
-      isActive,
-    } = req.body;
+    const { firstName, lastName, class: userClass, isActive } = req.body;
 
     const user = await User.findById(req.params.id);
 
