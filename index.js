@@ -38,7 +38,11 @@ app.use(mongoSanitize());
 app.use(xss());
 
 // Rate limiting
-const limiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 100 });
+const limiter = rateLimit({
+  max: 100,
+  windowMs: 1 * 60 * 1000,
+  message: { message: "Juda ko'p so'rov yuborildi, iltimos biroz kuting." },
+});
 app.use("/api", limiter);
 
 // Body parser
