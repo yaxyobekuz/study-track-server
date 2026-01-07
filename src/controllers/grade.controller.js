@@ -5,7 +5,7 @@ const Class = require("../models/class.model");
 const { GRADE_EDIT_DAYS_LIMIT } = require("../utils/constants");
 
 // Get grades (with filters)
-exports.getGrades = async (req, res) => {
+const getGrades = async (req, res) => {
   try {
     const { studentId, subjectId, classId, startDate, endDate } = req.query;
 
@@ -49,7 +49,7 @@ exports.getGrades = async (req, res) => {
 };
 
 // Get grades by class and date
-exports.getGradesByClassAndDate = async (req, res) => {
+const getGradesByClassAndDate = async (req, res) => {
   try {
     const { classId, date } = req.params;
 
@@ -83,7 +83,7 @@ exports.getGradesByClassAndDate = async (req, res) => {
 };
 
 // Create grade (Teacher only)
-exports.createGrade = async (req, res) => {
+const createGrade = async (req, res) => {
   try {
     const { studentId, subjectId, classId, grade, comment } = req.body;
 
@@ -244,7 +244,7 @@ exports.createGrade = async (req, res) => {
 };
 
 // Update grade (Teacher only - only for today's grades)
-exports.updateGrade = async (req, res) => {
+const updateGrade = async (req, res) => {
   try {
     const { grade: newGrade, comment } = req.body;
     const gradeId = req.params.id;
@@ -327,7 +327,7 @@ exports.updateGrade = async (req, res) => {
 };
 
 // Delete grade (Owner only)
-exports.deleteGrade = async (req, res) => {
+const deleteGrade = async (req, res) => {
   try {
     const grade = await Grade.findById(req.params.id);
 
@@ -354,7 +354,7 @@ exports.deleteGrade = async (req, res) => {
 };
 
 // Get student grades
-exports.getStudentGrades = async (req, res) => {
+const getStudentGrades = async (req, res) => {
   try {
     const studentId =
       req.user.role === "student" ? req.user.id : req.params.studentId;
@@ -406,7 +406,7 @@ exports.getStudentGrades = async (req, res) => {
 };
 
 // Get teacher's subjects in a class (for grade adding - TODAY's schedule only)
-exports.getTeacherSubjectsInClass = async (req, res) => {
+const getTeacherSubjectsInClass = async (req, res) => {
   try {
     const { classId } = req.params;
 
@@ -483,7 +483,7 @@ exports.getTeacherSubjectsInClass = async (req, res) => {
 };
 
 // Get students with their grades for a class, subject and date
-exports.getStudentsWithGrades = async (req, res) => {
+const getStudentsWithGrades = async (req, res) => {
   try {
     const { classId, subjectId, date } = req.query;
 
@@ -537,4 +537,15 @@ exports.getStudentsWithGrades = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+module.exports = {
+  getGrades,
+  getGradesByClassAndDate,
+  createGrade,
+  updateGrade,
+  deleteGrade,
+  getStudentGrades,
+  getTeacherSubjectsInClass,
+  getStudentsWithGrades,
 };

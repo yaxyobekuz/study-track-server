@@ -2,7 +2,7 @@ const Class = require("../models/class.model");
 const User = require("../models/user.model");
 
 // Get all classes
-exports.getAllClasses = async (req, res) => {
+const getAllClasses = async (req, res) => {
   try {
     const classes = await Class.find()
       .populate("createdBy", "firstName lastName")
@@ -23,7 +23,7 @@ exports.getAllClasses = async (req, res) => {
 };
 
 // Get single class
-exports.getClass = async (req, res) => {
+const getClass = async (req, res) => {
   try {
     const classData = await Class.findById(req.params.id).populate(
       "createdBy",
@@ -59,7 +59,7 @@ exports.getClass = async (req, res) => {
 };
 
 // Create new class (Owner only)
-exports.createClass = async (req, res) => {
+const createClass = async (req, res) => {
   try {
     const { name, grade, section } = req.body;
 
@@ -97,7 +97,7 @@ exports.createClass = async (req, res) => {
 };
 
 // Update class (Owner only)
-exports.updateClass = async (req, res) => {
+const updateClass = async (req, res) => {
   try {
     const { name, grade, section, isActive } = req.body;
 
@@ -137,7 +137,7 @@ exports.updateClass = async (req, res) => {
 };
 
 // Delete class (Owner only)
-exports.deleteClass = async (req, res) => {
+const deleteClass = async (req, res) => {
   try {
     const classData = await Class.findById(req.params.id);
 
@@ -175,4 +175,12 @@ exports.deleteClass = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+module.exports = {
+  getAllClasses,
+  getClass,
+  createClass,
+  updateClass,
+  deleteClass,
 };

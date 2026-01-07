@@ -2,7 +2,7 @@ const User = require("../models/user.model");
 const Class = require("../models/class.model");
 
 // Get all users (Owner only)
-exports.getAllUsers = async (req, res) => {
+const getAllUsers = async (req, res) => {
   try {
     const { role, class: classId, page = 1, limit = 24 } = req.query;
 
@@ -52,7 +52,7 @@ exports.getAllUsers = async (req, res) => {
 };
 
 // Get single user
-exports.getUser = async (req, res) => {
+const getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id)
       .populate("class", "name grade section")
@@ -79,7 +79,7 @@ exports.getUser = async (req, res) => {
 };
 
 // Create new user (Owner only)
-exports.createUser = async (req, res) => {
+const createUser = async (req, res) => {
   try {
     const {
       username,
@@ -146,7 +146,7 @@ exports.createUser = async (req, res) => {
 };
 
 // Update user (Owner only)
-exports.updateUser = async (req, res) => {
+const updateUser = async (req, res) => {
   try {
     const { firstName, lastName, class: userClass, isActive } = req.body;
 
@@ -204,7 +204,7 @@ exports.updateUser = async (req, res) => {
 };
 
 // Reset user password (Owner only)
-exports.resetPassword = async (req, res) => {
+const resetPassword = async (req, res) => {
   try {
     const { newPassword } = req.body;
 
@@ -249,7 +249,7 @@ exports.resetPassword = async (req, res) => {
 };
 
 // Delete user (Owner only)
-exports.deleteUser = async (req, res) => {
+const deleteUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
 
@@ -281,4 +281,13 @@ exports.deleteUser = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+module.exports = {
+  getAllUsers,
+  getUser,
+  createUser,
+  updateUser,
+  resetPassword,
+  deleteUser,
 };

@@ -4,7 +4,7 @@ const Subject = require('../models/subject.model');
 const User = require('../models/user.model');
 
 // Get all schedules for class
-exports.getScheduleByClass = async (req, res) => {
+const getScheduleByClass = async (req, res) => {
   try {
     const { classId } = req.params;
 
@@ -36,7 +36,7 @@ exports.getScheduleByClass = async (req, res) => {
 };
 
 // Get schedule for class and day
-exports.getScheduleByDay = async (req, res) => {
+const getScheduleByDay = async (req, res) => {
   try {
     const { classId, day } = req.params;
 
@@ -65,7 +65,7 @@ exports.getScheduleByDay = async (req, res) => {
 };
 
 // Create or update schedule (Owner only)
-exports.createOrUpdateSchedule = async (req, res) => {
+const createOrUpdateSchedule = async (req, res) => {
   try {
     const { classId, day, subjects } = req.body;
 
@@ -140,7 +140,7 @@ exports.createOrUpdateSchedule = async (req, res) => {
 };
 
 // Delete schedule (Owner only)
-exports.deleteSchedule = async (req, res) => {
+const deleteSchedule = async (req, res) => {
   try {
     const schedule = await Schedule.findById(req.params.id);
 
@@ -167,7 +167,7 @@ exports.deleteSchedule = async (req, res) => {
 };
 
 // Get teacher schedule
-exports.getTeacherSchedule = async (req, res) => {
+const getTeacherSchedule = async (req, res) => {
   try {
     const teacherId = req.user.id;
 
@@ -203,4 +203,12 @@ exports.getTeacherSchedule = async (req, res) => {
       error: error.message
     });
   }
+};
+
+module.exports = {
+  getScheduleByClass,
+  getScheduleByDay,
+  createOrUpdateSchedule,
+  deleteSchedule,
+  getTeacherSchedule,
 };

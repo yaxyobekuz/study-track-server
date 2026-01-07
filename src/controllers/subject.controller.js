@@ -1,7 +1,7 @@
 const Subject = require('../models/subject.model');
 
 // Get all subjects
-exports.getAllSubjects = async (req, res) => {
+const getAllSubjects = async (req, res) => {
   try {
     const subjects = await Subject.find()
       .populate('createdBy', 'firstName lastName')
@@ -22,7 +22,7 @@ exports.getAllSubjects = async (req, res) => {
 };
 
 // Get single subject
-exports.getSubject = async (req, res) => {
+const getSubject = async (req, res) => {
   try {
     const subject = await Subject.findById(req.params.id)
       .populate('createdBy', 'firstName lastName');
@@ -48,7 +48,7 @@ exports.getSubject = async (req, res) => {
 };
 
 // Create new subject (Owner only)
-exports.createSubject = async (req, res) => {
+const createSubject = async (req, res) => {
   try {
     const { name, description } = req.body;
 
@@ -80,7 +80,7 @@ exports.createSubject = async (req, res) => {
 };
 
 // Update subject (Owner only)
-exports.updateSubject = async (req, res) => {
+const updateSubject = async (req, res) => {
   try {
     const { name, description, isActive } = req.body;
 
@@ -114,7 +114,7 @@ exports.updateSubject = async (req, res) => {
 };
 
 // Delete subject (Owner only)
-exports.deleteSubject = async (req, res) => {
+const deleteSubject = async (req, res) => {
   try {
     const subject = await Subject.findById(req.params.id);
 
@@ -138,4 +138,12 @@ exports.deleteSubject = async (req, res) => {
       error: error.message
     });
   }
+};
+
+module.exports = {
+  getAllSubjects,
+  getSubject,
+  createSubject,
+  updateSubject,
+  deleteSubject,
 };

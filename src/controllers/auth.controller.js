@@ -2,7 +2,7 @@ const User = require('../models/user.model');
 const { generateToken } = require('../utils/jwt');
 
 // Login
-exports.login = async (req, res) => {
+const login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -60,7 +60,7 @@ exports.login = async (req, res) => {
 };
 
 // Get current user data
-exports.getMe = async (req, res) => {
+const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id)
       .populate('class', 'name grade section');
@@ -79,7 +79,7 @@ exports.getMe = async (req, res) => {
 };
 
 // Change password
-exports.changePassword = async (req, res) => {
+const changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
@@ -116,3 +116,5 @@ exports.changePassword = async (req, res) => {
     });
   }
 };
+
+module.exports = { login, getMe, changePassword };
