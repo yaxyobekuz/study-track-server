@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const {
   getAllSubjects,
-  getSubject,
   createSubject,
   updateSubject,
   deleteSubject
@@ -14,7 +13,6 @@ router.use(protect);
 
 // GET routelari hamma uchun (teacher, student, owner)
 router.get('/', getAllSubjects);
-router.get('/:id', getSubject);
 
 // CUD operatsiyalari faqat owner uchun
 router.post('/', authorize('owner'), createSubject);

@@ -166,49 +166,9 @@ const deleteSchedule = async (req, res) => {
   }
 };
 
-// Get teacher schedule
-const getTeacherSchedule = async (req, res) => {
-  try {
-    const teacherId = req.user.id;
-
-    // Verify teacher
-    const teacher = await User.findById(teacherId);
-
-    if (!teacher || teacher.role !== 'teacher') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat o\'qituvchilar uchun'
-      });
-    }
-
-    // Find all schedules where teacher has lessons
-    const schedules = await Schedule.find({
-      'subjects.teacher': teacherId
-    })
-      .populate('class', 'name grade section')
-      .populate('subjects.subject', 'name')
-      .populate('subjects.teacher', 'firstName lastName')
-      .sort({ class: 1, day: 1 });
-
-    // Add teacherId to response so frontend can identify teacher's subjects
-    res.json({
-      success: true,
-      data: schedules,
-      teacherId: teacherId.toString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Server xatosi',
-      error: error.message
-    });
-  }
-};
-
 module.exports = {
   getScheduleByClass,
   getScheduleByDay,
   createOrUpdateSchedule,
   deleteSchedule,
-  getTeacherSchedule,
 };

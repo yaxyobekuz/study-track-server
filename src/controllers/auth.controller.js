@@ -78,43 +78,4 @@ const getMe = async (req, res) => {
   }
 };
 
-// Change password
-const changePassword = async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({
-        success: false,
-        message: 'Current and new password are required'
-      });
-    }
-
-    const user = await User.findById(req.user.id);
-
-    // Check current password
-    if (!(await user.matchPassword(currentPassword))) {
-      return res.status(401).json({
-        success: false,
-        message: 'Current password is incorrect'
-      });
-    }
-
-    // Save new password
-    user.password = newPassword;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Password successfully changed'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
-  }
-};
-
-module.exports = { login, getMe, changePassword };
+module.exports = { login, getMe };

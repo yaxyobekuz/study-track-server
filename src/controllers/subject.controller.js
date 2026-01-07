@@ -21,32 +21,6 @@ const getAllSubjects = async (req, res) => {
   }
 };
 
-// Get single subject
-const getSubject = async (req, res) => {
-  try {
-    const subject = await Subject.findById(req.params.id)
-      .populate('createdBy', 'firstName lastName');
-
-    if (!subject) {
-      return res.status(404).json({
-        success: false,
-        message: 'Subject not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: subject
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Server error',
-      error: error.message
-    });
-  }
-};
-
 // Create new subject (Owner only)
 const createSubject = async (req, res) => {
   try {
@@ -142,7 +116,6 @@ const deleteSubject = async (req, res) => {
 
 module.exports = {
   getAllSubjects,
-  getSubject,
   createSubject,
   updateSubject,
   deleteSubject,
