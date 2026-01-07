@@ -8,13 +8,13 @@ const {
 } = require('../controllers/subject.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
-// Barcha routelar himoyalangan
+// All routes are protected
 router.use(protect);
 
-// GET routelari hamma uchun (teacher, student, owner)
+// GET routes for everyone (teacher, student, owner)
 router.get('/', getAllSubjects);
 
-// CUD operatsiyalari faqat owner uchun
+// CUD operations for owner only
 router.post('/', authorize('owner'), createSubject);
 router.put('/:id', authorize('owner'), updateSubject);
 router.delete('/:id', authorize('owner'), deleteSubject);

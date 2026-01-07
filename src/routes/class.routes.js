@@ -9,14 +9,14 @@ const {
 } = require('../controllers/class.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
-// Barcha routelar himoyalangan
+// All routes are protected
 router.use(protect);
 
-// GET routelari hamma uchun
+// GET routes for everyone
 router.get('/', getAllClasses);
 router.get('/:id', getClass);
 
-// CUD operatsiyalari faqat owner uchun
+// CUD operations for owner only
 router.post('/', authorize('owner'), createClass);
 router.put('/:id', authorize('owner'), updateClass);
 router.delete('/:id', authorize('owner'), deleteClass);

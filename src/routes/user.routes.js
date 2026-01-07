@@ -9,7 +9,7 @@ const {
 } = require('../controllers/user.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
-// Barcha routelar himoyalangan va faqat owner uchun
+// All routes are protected and for owner only
 router.use(protect);
 router.use(authorize('owner'));
 

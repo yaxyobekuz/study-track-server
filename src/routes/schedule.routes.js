@@ -8,10 +8,10 @@ const {
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
-// Barcha routelar himoyalangan
+// All routes are protected
 router.use(protect);
 
-// Sinf bo'yicha jadval (Owner va Teacher ko'ra oladi)
+// Schedule by class (Owner and Teacher can view)
 router.get(
   "/class/:classId",
   authorize("owner", "teacher"),
@@ -23,7 +23,7 @@ router.get(
   getScheduleByDay
 );
 
-// CRUD operatsiyalari faqat owner uchun
+// CRUD operations for owner only
 router.post("/", authorize("owner"), createOrUpdateSchedule);
 router.delete("/:id", authorize("owner"), deleteSchedule);
 

@@ -381,7 +381,7 @@ const getStudentGrades = async (req, res) => {
       statsBySubject[subjectName].count++;
     });
 
-    // O'rtachani hisoblash
+    // Calculate average
     Object.keys(statsBySubject).forEach((subjectName) => {
       const stats = statsBySubject[subjectName];
       stats.average = (

@@ -12,13 +12,13 @@ const {
 } = require("../controllers/grade.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
-// Barcha routelar himoyalangan
+// All routes are protected
 router.use(protect);
 
-// O'quvchi o'z baholarini ko'rishi
+// Student views their own grades
 router.get("/student/my-grades", authorize("student"), getStudentGrades);
 
-// Teacher uchun maxsus endpointlar
+// Teacher specific endpoints
 router.get(
   "/teacher/subjects/:classId",
   authorize("teacher"),
@@ -30,7 +30,7 @@ router.get(
   getStudentsWithGrades
 );
 
-// Owner va o'qituvchilar uchun baholarni ko'rish
+// View grades for Owner and teachers
 router.get("/", authorize("owner", "teacher"), getGrades);
 router.get(
   "/class/:classId/date/:date",
@@ -38,14 +38,14 @@ router.get(
   getGradesByClassAndDate
 );
 
-// Faqat teacher baho qo'yishi va tahrirlashi
+// Only teacher can add and edit grades
 router.post("/", authorize("teacher"), createGrade);
 router.put("/:id", authorize("teacher"), updateGrade);
 
-// Faqat owner baho o'chirishi mumkin
+// Only owner can delete grades
 router.delete("/:id", authorize("owner"), deleteGrade);
 
-// Owner biror o'quvchining baholarini ko'rishi
+// Owner views a student's grades
 router.get("/student/:studentId", authorize("owner"), getStudentGrades);
 
 module.exports = router;
