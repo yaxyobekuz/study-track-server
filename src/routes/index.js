@@ -9,6 +9,7 @@ const subjectRoutes = require("./subject.routes");
 const classRoutes = require("./class.routes");
 const scheduleRoutes = require("./schedule.routes");
 const gradeRoutes = require("./grade.routes");
+const holidayRoutes = require("./holiday.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -17,6 +18,7 @@ router.use("/subjects", subjectRoutes);
 router.use("/classes", classRoutes);
 router.use("/schedules", scheduleRoutes);
 router.use("/grades", gradeRoutes);
+router.use("/holidays", holidayRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
