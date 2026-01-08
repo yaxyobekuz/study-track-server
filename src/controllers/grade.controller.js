@@ -2,6 +2,7 @@ const Grade = require("../models/grade.model");
 const User = require("../models/user.model");
 const Subject = require("../models/subject.model");
 const Class = require("../models/class.model");
+const Holiday = require("../models/holiday.model");
 const { GRADE_EDIT_DAYS_LIMIT } = require("../utils/constants");
 
 // Get grades (with filters)
@@ -95,6 +96,15 @@ const createGrade = async (req, res) => {
       });
     }
 
+    // Holiday check
+    const holidayCheck = await Holiday.isHoliday(new Date());
+    if (holidayCheck.isHoliday) {
+      return res.status(403).json({
+        success: false,
+        message: `Bugun dam olish kuni: ${holidayCheck.holiday.name}. Baho qo'yish mumkin emas.`,
+      });
+    }
+
     // Only teacher can add grades
     if (req.user.role !== "teacher") {
       return res.status(403).json({
@@ -142,7 +152,7 @@ const createGrade = async (req, res) => {
 
     // Check if teacher teaches this subject in this class TODAY
     const Schedule = require("../models/schedule.model");
-    
+
     // Get today's day name in Uzbek
     const daysUz = [
       "yakshanba",
@@ -418,7 +428,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
     }
 
     const Schedule = require("../models/schedule.model");
-    
+
     // Get today's day name in Uzbek
     const daysUz = [
       "yakshanba",
