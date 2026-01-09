@@ -169,6 +169,50 @@ const deleteSchedule = async (req, res) => {
   }
 };
 
+// Get all schedules for today (Owner only)
+const getAllTodaySchedules = async (req, res) => {
+  try {
+    // Get current day in Uzbek
+    const daysUz = [
+      "yakshanba",
+      "dushanba",
+      "seshanba",
+      "chorshanba",
+      "payshanba",
+      "juma",
+      "shanba",
+    ];
+    const today = new Date();
+    const dayName = daysUz[today.getDay()];
+
+    // If today is Sunday, return empty array
+    if (dayName === "yakshanba") {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Find all schedules for today
+    const schedules = await Schedule.find({ day: dayName })
+      .populate("class", "name")
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName")
+      .sort({ "class.name": 1 });
+
+    // Format the response
+    const formattedSchedules = schedules.map((schedule) => ({
+      class: schedule.class,
+      subjects: schedule.subjects.sort((a, b) => a.order - b.order),
+    }));
+
+    res.json({ success: true, data: formattedSchedules });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 // Get teacher's schedule for today
 const getMyTodaySchedule = async (req, res) => {
   try {
@@ -237,4 +281,5 @@ module.exports = {
   createOrUpdateSchedule,
   deleteSchedule,
   getMyTodaySchedule,
+  getAllTodaySchedules,
 };
