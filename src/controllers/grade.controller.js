@@ -368,8 +368,24 @@ const getStudentGrades = async (req, res) => {
   try {
     const studentId =
       req.user.role === "student" ? req.user.id : req.params.studentId;
+    
+    // Get date from query parameter (for student) or use all dates
+    const { date } = req.query;
+    
+    let query = { student: studentId };
+    
+    // If date is provided, filter by that specific date
+    if (date) {
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+      
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+      
+      query.date = { $gte: startDate, $lte: endDate };
+    }
 
-    const grades = await Grade.find({ student: studentId })
+    const grades = await Grade.find(query)
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
       .populate("class", "name grade section")
