@@ -1,15 +1,19 @@
 const express = require("express");
 const router = express.Router();
 const {
-  getScheduleByClass,
-  getScheduleByDay,
-  createOrUpdateSchedule,
   deleteSchedule,
+  getScheduleByDay,
+  getScheduleByClass,
+  getMyTodaySchedule,
+  createOrUpdateSchedule,
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
 // All routes are protected
 router.use(protect);
+
+// Teacher's today schedule
+router.get("/my-today", authorize("teacher"), getMyTodaySchedule);
 
 // Schedule by class (Owner and Teacher can view)
 router.get(

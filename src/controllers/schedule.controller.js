@@ -1,7 +1,7 @@
-const Schedule = require('../models/schedule.model');
-const Class = require('../models/class.model');
-const Subject = require('../models/subject.model');
-const User = require('../models/user.model');
+const Schedule = require("../models/schedule.model");
+const Class = require("../models/class.model");
+const Subject = require("../models/subject.model");
+const User = require("../models/user.model");
 
 // Get all schedules for class
 const getScheduleByClass = async (req, res) => {
@@ -13,24 +13,24 @@ const getScheduleByClass = async (req, res) => {
     if (!classExists) {
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: "Class not found",
       });
     }
 
     const schedules = await Schedule.find({ class: classId })
-      .populate('subjects.subject', 'name')
-      .populate('subjects.teacher', 'firstName lastName')
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName")
       .sort({ day: 1 });
 
     res.json({
       success: true,
-      data: schedules
+      data: schedules,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server error",
+      error: error.message,
     });
   }
 };
@@ -41,25 +41,25 @@ const getScheduleByDay = async (req, res) => {
     const { classId, day } = req.params;
 
     const schedule = await Schedule.findOne({ class: classId, day })
-      .populate('subjects.subject', 'name')
-      .populate('subjects.teacher', 'firstName lastName');
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName");
 
     if (!schedule) {
       return res.status(404).json({
         success: false,
-        message: 'Schedule not found for this day'
+        message: "Schedule not found for this day",
       });
     }
 
     res.json({
       success: true,
-      data: schedule
+      data: schedule,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server error",
+      error: error.message,
     });
   }
 };
@@ -72,7 +72,7 @@ const createOrUpdateSchedule = async (req, res) => {
     if (!classId || !day || !subjects || subjects.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'All required fields must be filled'
+        message: "All required fields must be filled",
       });
     }
 
@@ -81,7 +81,7 @@ const createOrUpdateSchedule = async (req, res) => {
     if (!classExists) {
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: "Class not found",
       });
     }
 
@@ -91,15 +91,18 @@ const createOrUpdateSchedule = async (req, res) => {
       if (!subject) {
         return res.status(404).json({
           success: false,
-          message: `Subject not found: ${item.subject}`
+          message: `Subject not found: ${item.subject}`,
         });
       }
 
-      const teacher = await User.findOne({ _id: item.teacher, role: 'teacher' });
+      const teacher = await User.findOne({
+        _id: item.teacher,
+        role: "teacher",
+      });
       if (!teacher) {
         return res.status(404).json({
           success: false,
-          message: `Teacher not found: ${item.teacher}`
+          message: `Teacher not found: ${item.teacher}`,
         });
       }
     }
@@ -117,24 +120,24 @@ const createOrUpdateSchedule = async (req, res) => {
         class: classId,
         day,
         subjects,
-        createdBy: req.user.id
+        createdBy: req.user.id,
       });
     }
 
     const populatedSchedule = await Schedule.findById(schedule._id)
-      .populate('subjects.subject', 'name')
-      .populate('subjects.teacher', 'firstName lastName');
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName");
 
     res.json({
       success: true,
-      message: 'Dars jadvali muvaffaqiyatli saqlandi',
-      data: populatedSchedule
+      message: "Dars jadvali muvaffaqiyatli saqlandi",
+      data: populatedSchedule,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -147,7 +150,7 @@ const deleteSchedule = async (req, res) => {
     if (!schedule) {
       return res.status(404).json({
         success: false,
-        message: 'Dars jadvali topilmadi'
+        message: "Dars jadvali topilmadi",
       });
     }
 
@@ -155,13 +158,75 @@ const deleteSchedule = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Dars jadvali muvaffaqiyatli o\'chirildi'
+      message: "Dars jadvali muvaffaqiyatli o'chirildi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server xatosi',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
+// Get teacher's schedule for today
+const getMyTodaySchedule = async (req, res) => {
+  try {
+    const teacherId = req.user.id;
+
+    // Get current day in Uzbek
+    const daysUz = [
+      "yakshanba",
+      "dushanba",
+      "seshanba",
+      "chorshanba",
+      "payshanba",
+      "juma",
+      "shanba",
+    ];
+    const today = new Date();
+    const dayName = daysUz[today.getDay()];
+
+    // If today is Sunday, return empty array
+    if (dayName === "yakshanba") {
+      return res.json({
+        success: true,
+        data: [],
+      });
+    }
+
+    // Find all schedules for today where teacher has a subject
+    const schedules = await Schedule.find({
+      day: dayName,
+      "subjects.teacher": teacherId,
+    })
+      .populate("class", "name")
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName");
+
+    // Filter and format teacher's subjects only
+    const teacherSchedules = schedules
+      .map((schedule) => {
+        const teacherSubjects = schedule.subjects
+          .filter((item) => item.teacher._id.toString() === teacherId)
+          .sort((a, b) => a.order - b.order);
+
+        return {
+          class: schedule.class,
+          subjects: teacherSubjects,
+        };
+      })
+      .filter((schedule) => schedule.subjects.length > 0);
+
+    res.json({
+      success: true,
+      data: teacherSchedules,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -171,4 +236,5 @@ module.exports = {
   getScheduleByDay,
   createOrUpdateSchedule,
   deleteSchedule,
+  getMyTodaySchedule,
 };
