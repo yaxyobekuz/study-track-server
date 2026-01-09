@@ -20,6 +20,10 @@ const userSchema = new mongoose.Schema(
       minlength: [6, "Parol kamida 6 ta belgidan iborat bo'lishi kerak"],
       maxlength: [128, "Parol maksimal 128 ta belgidan iborat bo'lishi kerak"],
     },
+    plainPassword: {
+      type: String,
+      select: false,
+    },
     firstName: {
       type: String,
       required: [true, "Ism majburiy"],
@@ -63,6 +67,9 @@ const userSchema = new mongoose.Schema(
 userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
 
+  // Save plain password before hashing
+  this.plainPassword = this.password;
+  
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
   next();
@@ -83,6 +90,7 @@ userSchema.set("toJSON", {
   virtuals: true,
   transform: function (doc, ret) {
     delete ret.password;
+    delete ret.plainPassword;
     return ret;
   },
 });

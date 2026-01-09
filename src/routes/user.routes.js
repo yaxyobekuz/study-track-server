@@ -1,26 +1,24 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 const {
   getAllUsers,
   createUser,
   updateUser,
   resetPassword,
-  deleteUser
-} = require('../controllers/user.controller');
-const { protect, authorize } = require('../middleware/auth.middleware');
+  getUserPassword,
+  deleteUser,
+} = require("../controllers/user.controller");
+const { protect, authorize } = require("../middleware/auth.middleware");
 
 // All routes are protected and for owner only
 router.use(protect);
-router.use(authorize('owner'));
+router.use(authorize("owner"));
 
-router.route('/')
-  .get(getAllUsers)
-  .post(createUser);
+router.route("/").get(getAllUsers).post(createUser);
 
-router.route('/:id')
-  .put(updateUser)
-  .delete(deleteUser);
+router.route("/:id").put(updateUser).delete(deleteUser);
 
-router.put('/:id/reset-password', resetPassword);
+router.put("/:id/reset-password", resetPassword);
+router.get("/:id/password", getUserPassword);
 
 module.exports = router;

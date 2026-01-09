@@ -221,6 +221,34 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// Get user password (Owner only)
+const getUserPassword = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select("+plainPassword");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        password:
+          user.plainPassword || "Hisob eski, parolni ko'rsatib bo'lmaydi",
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 // Delete user (Owner only)
 const deleteUser = async (req, res) => {
   try {
@@ -261,5 +289,6 @@ module.exports = {
   createUser,
   updateUser,
   resetPassword,
+  getUserPassword,
   deleteUser,
 };
