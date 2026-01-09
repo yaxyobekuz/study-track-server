@@ -1,5 +1,5 @@
-const User = require('../models/user.model');
-const { generateToken } = require('../utils/jwt');
+const User = require("../models/user.model");
+const { generateToken } = require("../utils/jwt");
 
 // Login
 const login = async (req, res) => {
@@ -10,7 +10,7 @@ const login = async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Username and password are required'
+        message: "Username and password are required",
       });
     }
 
@@ -18,16 +18,16 @@ const login = async (req, res) => {
     const user = await User.findOne({ username: username.toLowerCase() });
 
     if (!user || !(await user.matchPassword(password))) {
-      return res.status(401).json({
+      return res.status(400).json({
         success: false,
-        message: 'Incorrect username or password'
+        message: "Incorrect username or password",
       });
     }
 
     if (!user.isActive) {
-      return res.status(401).json({
+      return res.status(403).json({
         success: false,
-        message: 'Your account is not active'
+        message: "Your account is not active",
       });
     }
 
@@ -45,16 +45,16 @@ const login = async (req, res) => {
           lastName: user.lastName,
           fullName: user.fullName,
           role: user.role,
-          class: user.class
+          class: user.class,
         },
-        token
-      }
+        token,
+      },
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server error",
+      error: error.message,
     });
   }
 };
@@ -62,18 +62,20 @@ const login = async (req, res) => {
 // Get current user data
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id)
-      .populate('class', 'name grade section');
+    const user = await User.findById(req.user.id).populate(
+      "class",
+      "name grade section"
+    );
 
     res.json({
       success: true,
-      data: user
+      data: user,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server error",
+      error: error.message,
     });
   }
 };
