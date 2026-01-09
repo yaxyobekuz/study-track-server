@@ -23,10 +23,9 @@ const classSchema = new mongoose.Schema(
       type: String,
       required: [true, "Sinf bo'limi majburiy"],
       trim: true,
-      uppercase: true,
       maxlength: [
-        1,
-        "Sinf bo'limi maksimal 1 ta belgidan iborat bo'lishi kerak",
+        32,
+        "Sinf bo'limi maksimal 32 ta belgidan iborat bo'lishi kerak",
       ],
     },
     isActive: {
