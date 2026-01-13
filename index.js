@@ -31,6 +31,9 @@ connectDB();
 // Initialize default owner
 require("./src/utils/initOwner")();
 
+// Trust proxy
+app.set("trust proxy", 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors());
