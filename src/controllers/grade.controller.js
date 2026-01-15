@@ -32,7 +32,7 @@ const getGrades = async (req, res) => {
       .populate("student", "firstName lastName")
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
-      .populate("class", "name grade section")
+      .populate("class", "name")
       .sort({ date: -1, createdAt: -1 });
 
     res.json({
@@ -237,7 +237,7 @@ const createGrade = async (req, res) => {
       .populate("student", "firstName lastName")
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
-      .populate("class", "name grade section");
+      .populate("class", "name");
 
     res.status(201).json({
       success: true,
@@ -319,7 +319,7 @@ const updateGrade = async (req, res) => {
       .populate("student", "firstName lastName")
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
-      .populate("class", "name grade section")
+      .populate("class", "name")
       .populate("editHistory.editedBy", "firstName lastName");
 
     res.json({
@@ -388,7 +388,7 @@ const getStudentGrades = async (req, res) => {
     const grades = await Grade.find(query)
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
-      .populate("class", "name grade section")
+      .populate("class", "name")
       .sort({ date: -1 });
 
     // Statistics by subject

@@ -64,7 +64,7 @@ const getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id).populate(
       "class",
-      "name grade section"
+      "name"
     );
 
     res.json({

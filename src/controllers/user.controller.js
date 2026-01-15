@@ -28,7 +28,7 @@ const getAllUsers = async (req, res) => {
     const [total, users] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
-        .populate("class", "name grade section")
+        .populate("class", "name")
         .select("-password")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -111,7 +111,7 @@ const createUser = async (req, res) => {
     });
 
     const populatedUser = await User.findById(user._id)
-      .populate("class", "name grade section")
+      .populate("class", "name")
       .select("-password");
 
     res.status(201).json({
@@ -169,7 +169,7 @@ const updateUser = async (req, res) => {
     await user.save();
 
     const updatedUser = await User.findById(user._id)
-      .populate("class", "name grade section")
+      .populate("class", "name")
       .select("-password");
 
     res.json({

@@ -6,7 +6,7 @@ const getAllClasses = async (req, res) => {
   try {
     const classes = await Class.find()
       .populate("createdBy", "firstName lastName")
-      .sort({ grade: 1, section: 1 });
+      .sort({ name: 1 });
 
     res.json({
       success: true,
@@ -61,19 +61,17 @@ const getClass = async (req, res) => {
 // Create new class (Owner only)
 const createClass = async (req, res) => {
   try {
-    const { name, grade, section } = req.body;
+    const { name } = req.body;
 
-    if (!name || !grade || !section) {
+    if (!name) {
       return res.status(400).json({
         success: false,
-        message: "All required fields must be filled",
+        message: "Class name is required",
       });
     }
 
     const classData = await Class.create({
       name,
-      grade,
-      section: section.toUpperCase(),
       createdBy: req.user.id,
     });
 
@@ -99,7 +97,7 @@ const createClass = async (req, res) => {
 // Update class (Owner only)
 const updateClass = async (req, res) => {
   try {
-    const { name, grade, section, isActive } = req.body;
+    const { name, isActive } = req.body;
 
     const classData = await Class.findById(req.params.id);
 
@@ -111,8 +109,6 @@ const updateClass = async (req, res) => {
     }
 
     if (name) classData.name = name;
-    if (grade) classData.grade = grade;
-    if (section) classData.section = section.toUpperCase();
     if (isActive !== undefined) classData.isActive = isActive;
 
     await classData.save();
