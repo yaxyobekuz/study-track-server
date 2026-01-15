@@ -4,11 +4,21 @@ const Class = require("../models/class.model");
 // Get all users (Owner only)
 const getAllUsers = async (req, res) => {
   try {
-    const { role, class: classId, page = 1, limit = 24 } = req.query;
+    const { role, class: classId, page = 1, limit = 24, search } = req.query;
 
     let query = {};
     if (role) query.role = role;
     if (classId) query.class = classId;
+
+    // Search by fullName or username
+    if (search && search.trim()) {
+      const searchRegex = new RegExp(search.trim(), "i");
+      query.$or = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { username: searchRegex },
+      ];
+    }
 
     // Convert to numbers
     const pageNum = parseInt(page, 10);
