@@ -15,7 +15,7 @@ const login = async (req, res) => {
     }
 
     // Find user
-    const user = await User.findOne({ username: username.toLowerCase() });
+    const user = await User.findOne({ username: username.toLowerCase() }).populate("classes", "name");
 
     if (!user || !(await user.matchPassword(password))) {
       return res.status(400).json({
@@ -45,7 +45,7 @@ const login = async (req, res) => {
           lastName: user.lastName,
           fullName: user.fullName,
           role: user.role,
-          class: user.class,
+          classes: user.classes,
         },
         token,
       },
@@ -62,10 +62,7 @@ const login = async (req, res) => {
 // Get current user data
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).populate(
-      "class",
-      "name"
-    );
+    const user = await User.findById(req.user.id).populate("classes", "name");
 
     res.json({
       success: true,

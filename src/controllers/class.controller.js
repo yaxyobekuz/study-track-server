@@ -38,7 +38,10 @@ const getClass = async (req, res) => {
     }
 
     // Get class students
-    const students = await User.find({ class: req.params.id, role: "student" })
+    const students = await User.find({
+      classes: req.params.id,
+      role: "student",
+    })
       .select("-password")
       .sort({ lastName: 1, firstName: 1 });
 
@@ -146,7 +149,7 @@ const deleteClass = async (req, res) => {
 
     // Check if class has students
     const studentsCount = await User.countDocuments({
-      class: req.params.id,
+      classes: req.params.id,
       role: "student",
     });
 

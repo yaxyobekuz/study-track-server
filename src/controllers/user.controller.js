@@ -34,7 +34,7 @@ const getAllUsers = async (req, res) => {
 
     let query = {};
     if (role) query.role = role;
-    if (classId) query.class = classId;
+    if (classId) query.classes = classId;
 
     // Search by fullName or username
     if (search && search.trim()) {
@@ -54,7 +54,7 @@ const getAllUsers = async (req, res) => {
     const [total, users] = await Promise.all([
       User.countDocuments(query),
       User.find(query)
-        .populate("class", "name")
+        .populate("classes", "name")
         .select("-password")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -96,7 +96,7 @@ const createUser = async (req, res) => {
       firstName,
       lastName,
       role,
-      class: userClass,
+      classes: userClasses,
     } = req.body;
 
     // Validation
@@ -115,14 +115,16 @@ const createUser = async (req, res) => {
       });
     }
 
-    // Check class for student
-    if (role === "student" && userClass) {
-      const classExists = await Class.findById(userClass);
-      if (!classExists) {
-        return res.status(400).json({
-          success: false,
-          message: "Class not found",
-        });
+    // Check classes for student
+    if (role === "student" && userClasses && userClasses.length > 0) {
+      for (const classId of userClasses) {
+        const classExists = await Class.findById(classId);
+        if (!classExists) {
+          return res.status(400).json({
+            success: false,
+            message: `Class not found: ${classId}`,
+          });
+        }
       }
     }
 
@@ -133,11 +135,11 @@ const createUser = async (req, res) => {
       firstName,
       lastName,
       role,
-      class: role === "student" ? userClass : undefined,
+      classes: role === "student" ? userClasses : [],
     });
 
     const populatedUser = await User.findById(user._id)
-      .populate("class", "name")
+      .populate("classes", "name")
       .select("-password");
 
     res.status(201).json({
@@ -157,7 +159,7 @@ const createUser = async (req, res) => {
 // Update user (Owner only)
 const updateUser = async (req, res) => {
   try {
-    const { firstName, lastName, class: userClass, isActive } = req.body;
+    const { firstName, lastName, classes: userClasses, isActive } = req.body;
 
     const user = await User.findById(req.params.id);
 
@@ -181,21 +183,24 @@ const updateUser = async (req, res) => {
     if (lastName) user.lastName = lastName;
     if (isActive !== undefined) user.isActive = isActive;
 
-    if (user.role === "student" && userClass) {
-      const classExists = await Class.findById(userClass);
-      if (!classExists) {
-        return res.status(400).json({
-          success: false,
-          message: "Class not found",
-        });
+    if (user.role === "student" && userClasses) {
+      // Validate all classes
+      for (const classId of userClasses) {
+        const classExists = await Class.findById(classId);
+        if (!classExists) {
+          return res.status(400).json({
+            success: false,
+            message: `Class not found: ${classId}`,
+          });
+        }
       }
-      user.class = userClass;
+      user.classes = userClasses;
     }
 
     await user.save();
 
     const updatedUser = await User.findById(user._id)
-      .populate("class", "name")
+      .populate("classes", "name")
       .select("-password");
 
     res.json({

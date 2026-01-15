@@ -51,10 +51,7 @@ const userSchema = new mongoose.Schema(
       enum: ["owner", "teacher", "student"],
       required: [true, "Rol majburiy"],
     },
-    class: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Class",
-    },
+    classes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Class" }],
     isActive: {
       type: Boolean,
       default: true,
@@ -69,7 +66,7 @@ userSchema.pre("save", async function (next) {
 
   // Save plain password before hashing
   this.plainPassword = this.password;
-  
+
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
   next();

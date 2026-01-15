@@ -125,7 +125,7 @@ const createGrade = async (req, res) => {
     const student = await User.findOne({
       _id: studentId,
       role: "student",
-      class: classId,
+      classes: classId,
     });
     if (!student) {
       return res.status(404).json({
@@ -521,7 +521,7 @@ const getStudentsWithGrades = async (req, res) => {
     }
 
     // Get all students in the class
-    const students = await User.find({ role: "student", class: classId })
+    const students = await User.find({ role: "student", classes: classId })
       .select("firstName lastName")
       .sort({ lastName: 1, firstName: 1 });
 
