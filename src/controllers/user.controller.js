@@ -1,6 +1,32 @@
 const User = require("../models/user.model");
 const Class = require("../models/class.model");
 
+// Get user statistics (Owner only)
+const getStats = async (req, res) => {
+  try {
+    const [total, teachers, students] = await Promise.all([
+      User.countDocuments({ role: { $ne: "owner" } }),
+      User.countDocuments({ role: "teacher" }),
+      User.countDocuments({ role: "student" }),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        total,
+        teachers,
+        students,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+};
+
 // Get all users (Owner only)
 const getAllUsers = async (req, res) => {
   try {
@@ -301,4 +327,5 @@ module.exports = {
   resetPassword,
   getUserPassword,
   deleteUser,
+  getStats,
 };

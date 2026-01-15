@@ -7,6 +7,7 @@ const {
   resetPassword,
   getUserPassword,
   deleteUser,
+  getStats,
 } = require("../controllers/user.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -14,6 +15,7 @@ const { protect, authorize } = require("../middleware/auth.middleware");
 router.use(protect);
 router.use(authorize("owner"));
 
+router.get("/stats", getStats);
 router.route("/").get(getAllUsers).post(createUser);
 
 router.route("/:id").put(updateUser).delete(deleteUser);
