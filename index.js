@@ -48,6 +48,16 @@ const limiter = rateLimit({
 });
 app.use("/api", limiter);
 
+// Stricter rate limit for login (brute force protection)
+const loginLimiter = rateLimit({
+  max: 10,
+  windowMs: 15 * 60 * 1000,
+  message: {
+    message: "Juda ko'p urinish. 15 daqiqadan so'ng qayta urinib ko'ring.",
+  },
+});
+app.use("/api/auth/login", loginLimiter);
+
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
