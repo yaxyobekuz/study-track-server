@@ -3,7 +3,6 @@ const User = require("../models/user.model");
 const Subject = require("../models/subject.model");
 const Class = require("../models/class.model");
 const Holiday = require("../models/holiday.model");
-const { GRADE_EDIT_DAYS_LIMIT } = require("../utils/constants");
 
 // Get grades (with filters)
 const getGrades = async (req, res) => {
@@ -18,7 +17,7 @@ const getGrades = async (req, res) => {
 
     // If teacher, can only see their own grades
     if (req.user.role === "teacher") {
-      query.teacher = req.user.id;
+      query.teacher = req.user._id;
     }
 
     // Date range
@@ -191,7 +190,7 @@ const createGrade = async (req, res) => {
     const hasSubjectToday = todaySchedule.subjects.some(
       (s) =>
         s.subject.toString() === subjectId &&
-        s.teacher.toString() === req.user.id
+        s.teacher.toString() === req.user._id.toString()
     );
 
     if (!hasSubjectToday) {
@@ -227,7 +226,7 @@ const createGrade = async (req, res) => {
       student: studentId,
       subject: subjectId,
       class: classId,
-      teacher: req.user.id,
+      teacher: req.user._id,
       grade,
       date: new Date(),
       comment,
@@ -277,7 +276,7 @@ const updateGrade = async (req, res) => {
     }
 
     // Can only edit own grades
-    if (gradeDoc.teacher.toString() !== req.user.id) {
+    if (gradeDoc.teacher.toString() !== req.user._id.toString()) {
       return res.status(403).json({
         success: false,
         message: "Bu bahoni tahrirlash uchun ruxsatingiz yo'q",
@@ -303,7 +302,7 @@ const updateGrade = async (req, res) => {
       gradeDoc.editHistory.push({
         previousGrade: gradeDoc.grade,
         editedAt: new Date(),
-        editedBy: req.user.id,
+        editedBy: req.user._id,
       });
       gradeDoc.grade = newGrade;
       gradeDoc.isEdited = true;
@@ -367,21 +366,21 @@ const deleteGrade = async (req, res) => {
 const getStudentGrades = async (req, res) => {
   try {
     const studentId =
-      req.user.role === "student" ? req.user.id : req.params.studentId;
-    
+      req.user.role === "student" ? req.user._id : req.params.studentId;
+
     // Get date from query parameter (for student) or use all dates
     const { date } = req.query;
-    
+
     let query = { student: studentId };
-    
+
     // If date is provided, filter by that specific date
     if (date) {
       const startDate = new Date(date);
       startDate.setHours(0, 0, 0, 0);
-      
+
       const endDate = new Date(date);
       endDate.setHours(23, 59, 59, 999);
-      
+
       query.date = { $gte: startDate, $lte: endDate };
     }
 
@@ -484,7 +483,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
     // Filter only teacher's subjects from today's schedule
     const teacherSubjects = [];
     todaySchedule.subjects.forEach((item) => {
-      if (item.teacher.toString() === req.user.id) {
+      if (item.teacher.toString() === req.user._id.toString()) {
         const exists = teacherSubjects.find(
           (s) => s._id.toString() === item.subject._id.toString()
         );

@@ -15,7 +15,4 @@ const DAYS = {
   SATURDAY: "shanba",
 };
 
-// Days allowed for grade editing
-const GRADE_EDIT_DAYS_LIMIT = 2;
-
-module.exports = { ROLES, DAYS, GRADE_EDIT_DAYS_LIMIT };
+module.exports = { ROLES, DAYS };
