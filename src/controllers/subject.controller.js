@@ -1,22 +1,24 @@
-const Subject = require('../models/subject.model');
+const Grade = require("../models/grade.model");
+const Subject = require("../models/subject.model");
+const Schedule = require("../models/schedule.model");
 
 // Get all subjects
 const getAllSubjects = async (req, res) => {
   try {
     const subjects = await Subject.find()
-      .populate('createdBy', 'firstName lastName')
+      .populate("createdBy", "firstName lastName")
       .sort({ name: 1 });
 
     res.json({
       success: true,
       count: subjects.length,
-      data: subjects
+      data: subjects,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -29,26 +31,26 @@ const createSubject = async (req, res) => {
     if (!name) {
       return res.status(400).json({
         success: false,
-        message: 'Subject name is required'
+        message: "Fan nomi majburiy",
       });
     }
 
     const subject = await Subject.create({
       name,
       description,
-      createdBy: req.user.id
+      createdBy: req.user._id,
     });
 
     res.status(201).json({
       success: true,
-      message: 'Subject successfully created',
-      data: subject
+      message: "Fan muvaffaqiyatli yaratildi",
+      data: subject,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -63,7 +65,7 @@ const updateSubject = async (req, res) => {
     if (!subject) {
       return res.status(404).json({
         success: false,
-        message: 'Subject not found'
+        message: "Fan topilmadi",
       });
     }
 
@@ -75,14 +77,14 @@ const updateSubject = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Subject successfully updated',
-      data: subject
+      message: "Fan muvaffaqiyatli yangilandi",
+      data: subject,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
@@ -95,7 +97,21 @@ const deleteSubject = async (req, res) => {
     if (!subject) {
       return res.status(404).json({
         success: false,
-        message: 'Subject not found'
+        message: "Fan topilmadi",
+      });
+    }
+
+    // Check if subject is used in grades or schedules
+    const [gradesCount, schedulesCount] = await Promise.all([
+      Grade.countDocuments({ subject: subject._id }),
+      Schedule.countDocuments({ "subjects.subject": subject._id }),
+    ]);
+
+    if (gradesCount > 0 || schedulesCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Bu fan baholarda yoki jadvallarda ishlatilmoqda. Avval ularni o'chiring.",
       });
     }
 
@@ -103,13 +119,13 @@ const deleteSubject = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Subject successfully deleted'
+      message: "Fan muvaffaqiyatli o'chirildi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: 'Server error',
-      error: error.message
+      message: "Server xatosi",
+      error: error.message,
     });
   }
 };
