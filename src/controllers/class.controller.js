@@ -16,7 +16,7 @@ const getAllClasses = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -33,7 +33,7 @@ const getClass = async (req, res) => {
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Class not found",
+        message: "Sinf topilmadi",
       });
     }
 
@@ -55,7 +55,7 @@ const getClass = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -69,13 +69,13 @@ const createClass = async (req, res) => {
     if (!name) {
       return res.status(400).json({
         success: false,
-        message: "Class name is required",
+        message: "Sinf nomi majburiy",
       });
     }
 
     const classData = await Class.create({
       name,
-      createdBy: req.user.id,
+      createdBy: req.user._id,
     });
 
     const populatedClass = await Class.findById(classData._id).populate(
@@ -85,13 +85,13 @@ const createClass = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Class successfully created",
+      message: "Sinf muvaffaqiyatli yaratildi",
       data: populatedClass,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -107,7 +107,7 @@ const updateClass = async (req, res) => {
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Class not found",
+        message: "Sinf topilmadi",
       });
     }
 
@@ -123,13 +123,13 @@ const updateClass = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Class successfully updated",
+      message: "Sinf muvaffaqiyatli yangilandi",
       data: updatedClass,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -143,7 +143,7 @@ const deleteClass = async (req, res) => {
     if (!classData) {
       return res.status(404).json({
         success: false,
-        message: "Class not found",
+        message: "Sinf topilmadi",
       });
     }
 
@@ -157,7 +157,7 @@ const deleteClass = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "This class has students. Please transfer students to another class first",
+          "Bu sinfda o'quvchilar bor. Avval o'quvchilarni boshqa sinfga o'tkazing",
       });
     }
 
@@ -165,12 +165,12 @@ const deleteClass = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Class successfully deleted",
+      message: "Sinf muvaffaqiyatli o'chirildi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }

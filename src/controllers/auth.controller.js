@@ -10,24 +10,26 @@ const login = async (req, res) => {
     if (!username || !password) {
       return res.status(400).json({
         success: false,
-        message: "Username and password are required",
+        message: "Username va parol majburiy",
       });
     }
 
     // Find user
-    const user = await User.findOne({ username: username.toLowerCase() }).populate("classes", "name");
+    const user = await User.findOne({
+      username: username.toLowerCase(),
+    }).populate("classes", "name");
 
     if (!user || !(await user.matchPassword(password))) {
       return res.status(400).json({
         success: false,
-        message: "Incorrect username or password",
+        message: "Username yoki parol noto'g'ri",
       });
     }
 
     if (!user.isActive) {
       return res.status(403).json({
         success: false,
-        message: "Your account is not active",
+        message: "Sizning hisobingiz faol emas",
       });
     }
 
@@ -53,7 +55,7 @@ const login = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -62,7 +64,7 @@ const login = async (req, res) => {
 // Get current user data
 const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).populate("classes", "name");
+    const user = await User.findById(req.user._id).populate("classes", "name");
 
     res.json({
       success: true,
@@ -71,7 +73,7 @@ const getMe = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }

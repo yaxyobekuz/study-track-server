@@ -13,7 +13,7 @@ const getScheduleByClass = async (req, res) => {
     if (!classExists) {
       return res.status(404).json({
         success: false,
-        message: "Class not found",
+        message: "Sinf topilmadi",
       });
     }
 
@@ -29,7 +29,7 @@ const getScheduleByClass = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -47,7 +47,7 @@ const getScheduleByDay = async (req, res) => {
     if (!schedule) {
       return res.status(404).json({
         success: false,
-        message: "Schedule not found for this day",
+        message: "Bu kun uchun dars jadvali topilmadi",
       });
     }
 
@@ -58,7 +58,7 @@ const getScheduleByDay = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -81,7 +81,7 @@ const createOrUpdateSchedule = async (req, res) => {
     if (!classExists) {
       return res.status(404).json({
         success: false,
-        message: "Class not found",
+        message: "Sinf topilmadi",
       });
     }
 
@@ -91,7 +91,7 @@ const createOrUpdateSchedule = async (req, res) => {
       if (!subject) {
         return res.status(404).json({
           success: false,
-          message: `Subject not found: ${item.subject}`,
+          message: `Fan topilmadi: ${item.subject}`,
         });
       }
 
@@ -102,7 +102,7 @@ const createOrUpdateSchedule = async (req, res) => {
       if (!teacher) {
         return res.status(404).json({
           success: false,
-          message: `Teacher not found: ${item.teacher}`,
+          message: `O'qituvchi topilmadi: ${item.teacher}`,
         });
       }
     }
@@ -120,7 +120,7 @@ const createOrUpdateSchedule = async (req, res) => {
         class: classId,
         day,
         subjects,
-        createdBy: req.user.id,
+        createdBy: req.user._id,
       });
     }
 
@@ -216,7 +216,7 @@ const getAllTodaySchedules = async (req, res) => {
 // Get teacher's schedule for today
 const getMyTodaySchedule = async (req, res) => {
   try {
-    const teacherId = req.user.id;
+    const teacherId = req.user._id;
 
     // Get current day in Uzbek
     const daysUz = [

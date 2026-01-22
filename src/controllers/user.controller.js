@@ -21,7 +21,7 @@ const getStats = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -81,7 +81,7 @@ const getAllUsers = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -103,7 +103,7 @@ const createUser = async (req, res) => {
     if (!username || !password || !firstName || !lastName || !role) {
       return res.status(400).json({
         success: false,
-        message: "All required fields must be filled",
+        message: "Barcha majburiy maydonlarni to'ldiring",
       });
     }
 
@@ -111,7 +111,7 @@ const createUser = async (req, res) => {
     if (!["teacher", "student"].includes(role)) {
       return res.status(400).json({
         success: false,
-        message: "Only teacher or student role can be created",
+        message: "Faqat o'qituvchi yoki o'quvchi rolini yaratish mumkin",
       });
     }
 
@@ -122,7 +122,7 @@ const createUser = async (req, res) => {
         if (!classExists) {
           return res.status(400).json({
             success: false,
-            message: `Class not found: ${classId}`,
+            message: `Sinf topilmadi: ${classId}`,
           });
         }
       }
@@ -144,13 +144,13 @@ const createUser = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "User successfully created",
+      message: "Foydalanuvchi muvaffaqiyatli yaratildi",
       data: populatedUser,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -166,7 +166,7 @@ const updateUser = async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "Foydalanuvchi topilmadi",
       });
     }
 
@@ -174,7 +174,7 @@ const updateUser = async (req, res) => {
     if (user.role === "owner") {
       return res.status(403).json({
         success: false,
-        message: "Owner user cannot be modified",
+        message: "Egasi foydalanuvchisini o'zgartirish mumkin emas",
       });
     }
 
@@ -190,7 +190,7 @@ const updateUser = async (req, res) => {
         if (!classExists) {
           return res.status(400).json({
             success: false,
-            message: `Class not found: ${classId}`,
+            message: `Sinf topilmadi: ${classId}`,
           });
         }
       }
@@ -205,13 +205,13 @@ const updateUser = async (req, res) => {
 
     res.json({
       success: true,
-      message: "User successfully updated",
+      message: "Foydalanuvchi muvaffaqiyatli yangilandi",
       data: updatedUser,
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -225,7 +225,7 @@ const resetPassword = async (req, res) => {
     if (!newPassword) {
       return res.status(400).json({
         success: false,
-        message: "New password is required",
+        message: "Yangi parol majburiy",
       });
     }
 
@@ -234,7 +234,7 @@ const resetPassword = async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "Foydalanuvchi topilmadi",
       });
     }
 
@@ -242,7 +242,7 @@ const resetPassword = async (req, res) => {
     if (user.role === "owner") {
       return res.status(403).json({
         success: false,
-        message: "Owner user password cannot be reset",
+        message: "Egasi foydalanuvchisi parolini tiklash mumkin emas",
       });
     }
 
@@ -251,12 +251,12 @@ const resetPassword = async (req, res) => {
 
     res.json({
       success: true,
-      message: "Password successfully reset",
+      message: "Parol muvaffaqiyatli tiklandi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -270,7 +270,7 @@ const getUserPassword = async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "Foydalanuvchi topilmadi",
       });
     }
 
@@ -284,7 +284,7 @@ const getUserPassword = async (req, res) => {
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
@@ -298,7 +298,7 @@ const deleteUser = async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: "User not found",
+        message: "Foydalanuvchi topilmadi",
       });
     }
 
@@ -306,7 +306,7 @@ const deleteUser = async (req, res) => {
     if (user.role === "owner") {
       return res.status(403).json({
         success: false,
-        message: "Owner user cannot be deleted",
+        message: "Egasi foydalanuvchisini o'chirish mumkin emas",
       });
     }
 
@@ -314,12 +314,12 @@ const deleteUser = async (req, res) => {
 
     res.json({
       success: true,
-      message: "User successfully deleted",
+      message: "Foydalanuvchi muvaffaqiyatli o'chirildi",
     });
   } catch (error) {
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Server xatosi",
       error: error.message,
     });
   }
