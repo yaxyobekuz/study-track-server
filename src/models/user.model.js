@@ -12,7 +12,12 @@ const userSchema = new mongoose.Schema(
       unique: true,
       trim: true,
       lowercase: true,
+      minlength: [3, "Username kamida 3 ta belgidan iborat bo'lishi kerak"],
       maxlength: [32, "Username maksimal 32 ta belgidan iborat bo'lishi kerak"],
+      match: [
+        /^[a-z0-9._]+$/,
+        "Username faqat lotin harflari, raqamlar, nuqta va pastki chiziqdan iborat bo'lishi kerak",
+      ],
     },
     password: {
       type: String,
@@ -79,7 +84,7 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
 
 // Virtual field - full name
 userSchema.virtual("fullName").get(function () {
-  return `${this.firstName} ${this.lastName}`;
+  return this.lastName ? `${this.firstName} ${this.lastName}` : this.firstName;
 });
 
 // Remove password when converting to JSON
