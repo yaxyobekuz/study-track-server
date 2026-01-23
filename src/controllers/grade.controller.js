@@ -1,8 +1,23 @@
-const Grade = require("../models/grade.model");
+// Mongoose
+const mongoose = require("mongoose");
+
+// Models
 const User = require("../models/user.model");
-const Subject = require("../models/subject.model");
+const Grade = require("../models/grade.model");
 const Class = require("../models/class.model");
+const Subject = require("../models/subject.model");
 const Holiday = require("../models/holiday.model");
+const Schedule = require("../models/schedule.model");
+
+const daysUz = [
+  "yakshanba",
+  "dushanba",
+  "seshanba",
+  "chorshanba",
+  "payshanba",
+  "juma",
+  "shanba",
+];
 
 // Get grades (with filters)
 const getGrades = async (req, res) => {
@@ -60,18 +75,106 @@ const getGradesByClassAndDate = async (req, res) => {
     const endDate = new Date(date);
     endDate.setHours(23, 59, 59, 999);
 
-    const grades = await Grade.find({
-      class: classId,
-      date: { $gte: startDate, $lte: endDate },
-    })
-      .populate("student", "firstName lastName")
-      .populate("subject", "name")
-      .populate("teacher", "firstName lastName")
-      .sort({ "student.lastName": 1, "student.firstName": 1 });
+    // Convert classId to ObjectId if it's a string
+    let classObjectId;
+    try {
+      classObjectId = mongoose.Types.ObjectId.isValid(classId)
+        ? new mongoose.Types.ObjectId(classId)
+        : classId;
+    } catch (error) {
+      classObjectId = classId;
+    }
+
+    const dateObj = new Date(date);
+    const todayDayName = daysUz[dateObj.getDay()];
+
+    const todaySchedule = await Schedule.findOne({
+      class: classObjectId,
+      day: todayDayName,
+    });
+
+    // Create a map of subject ID to order
+    const subjectOrderMap = {};
+    if (todaySchedule && todaySchedule.subjects) {
+      todaySchedule.subjects.forEach((s) => {
+        const subjectId = s.subject.toString();
+        if (!subjectOrderMap[subjectId]) {
+          subjectOrderMap[subjectId] = s.order;
+        }
+      });
+    }
+
+    // Use aggregation pipeline for proper sorting by populated fields
+    const grades = await Grade.aggregate([
+      {
+        $match: {
+          class: classObjectId,
+          date: { $gte: startDate, $lte: endDate },
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "student",
+          foreignField: "_id",
+          as: "student",
+        },
+      },
+      { $unwind: "$student" },
+      {
+        $lookup: {
+          from: "subjects",
+          localField: "subject",
+          foreignField: "_id",
+          as: "subject",
+        },
+      },
+      { $unwind: "$subject" },
+      {
+        $lookup: {
+          from: "users",
+          localField: "teacher",
+          foreignField: "_id",
+          as: "teacher",
+        },
+      },
+      { $unwind: "$teacher" },
+      {
+        $sort: {
+          "student.lastName": 1,
+          "student.firstName": 1,
+          "subject.name": 1,
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          grade: 1,
+          comment: 1,
+          date: 1,
+          isEdited: 1,
+          createdAt: 1,
+          "student._id": 1,
+          "student.firstName": 1,
+          "student.lastName": 1,
+          "subject._id": 1,
+          "subject.name": 1,
+          "teacher._id": 1,
+          "teacher.firstName": 1,
+          "teacher.lastName": 1,
+        },
+      },
+    ]);
+
+    // Add order information to each grade for client-side rendering
+    const gradesWithOrder = grades.map((grade) => ({
+      ...grade,
+      lessonOrder: subjectOrderMap[grade.subject._id.toString()] || 0,
+    }));
 
     res.json({
       success: true,
-      data: grades,
+      data: gradesWithOrder,
     });
   } catch (error) {
     res.status(500).json({
@@ -190,7 +293,7 @@ const createGrade = async (req, res) => {
     const hasSubjectToday = todaySchedule.subjects.some(
       (s) =>
         s.subject.toString() === subjectId &&
-        s.teacher.toString() === req.user._id.toString()
+        s.teacher.toString() === req.user._id.toString(),
     );
 
     if (!hasSubjectToday) {
@@ -485,7 +588,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
     todaySchedule.subjects.forEach((item) => {
       if (item.teacher.toString() === req.user._id.toString()) {
         const exists = teacherSubjects.find(
-          (s) => s._id.toString() === item.subject._id.toString()
+          (s) => s._id.toString() === item.subject._id.toString(),
         );
         if (!exists) {
           teacherSubjects.push(item.subject);
@@ -541,7 +644,7 @@ const getStudentsWithGrades = async (req, res) => {
     // Map grades to students
     const studentsWithGrades = students.map((student) => {
       const grade = grades.find(
-        (g) => g.student.toString() === student._id.toString()
+        (g) => g.student.toString() === student._id.toString(),
       );
       return {
         _id: student._id,
@@ -566,11 +669,11 @@ const getStudentsWithGrades = async (req, res) => {
 
 module.exports = {
   getGrades,
-  getGradesByClassAndDate,
   createGrade,
   updateGrade,
   deleteGrade,
   getStudentGrades,
-  getTeacherSubjectsInClass,
   getStudentsWithGrades,
+  getGradesByClassAndDate,
+  getTeacherSubjectsInClass,
 };
