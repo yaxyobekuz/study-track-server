@@ -97,4 +97,8 @@ userSchema.set("toJSON", {
   },
 });
 
+// Indexes for better query performance
+userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ classes: 1 });
+
 module.exports = mongoose.model("User", userSchema);
