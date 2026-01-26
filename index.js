@@ -1,6 +1,13 @@
 // Load environment variables
 require("dotenv").config();
 
+// Validate environment variables
+const validateEnv = require("./src/config/env.config");
+validateEnv();
+
+// Logger
+const logger = require("./src/utils/logger");
+
 // Express
 const express = require("express");
 
@@ -19,6 +26,7 @@ const connectDB = require("./src/config/database");
 
 // Middlewares
 const { errorHandler, notFound } = require("./src/middleware/error.middleware");
+const requestLogger = require("./src/middleware/requestLogger.middleware");
 
 // ================================
 
@@ -62,6 +70,9 @@ app.use("/api/auth/login", loginLimiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Request logger (har bir so'rovni log qiladi)
+app.use(requestLogger);
+
 // Routes
 app.use("/api", routes);
 
@@ -73,8 +84,8 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV}`);
+  logger.info(`Server port ${PORT} da ishga tushdi`);
+  logger.info(`Muhit: ${process.env.NODE_ENV}`);
 });
 
 module.exports = app;
