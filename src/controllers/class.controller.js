@@ -6,7 +6,8 @@ const getAllClasses = async (req, res) => {
   try {
     const classes = await Class.find()
       .populate("createdBy", "firstName lastName")
-      .sort({ name: 1 });
+      .sort({ name: 1 })
+      .lean();
 
     res.json({
       success: true,

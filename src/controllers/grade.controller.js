@@ -9,15 +9,22 @@ const Subject = require("../models/subject.model");
 const Holiday = require("../models/holiday.model");
 const Schedule = require("../models/schedule.model");
 
-const daysUz = [
-  "yakshanba",
-  "dushanba",
-  "seshanba",
-  "chorshanba",
-  "payshanba",
-  "juma",
-  "shanba",
-];
+// Utils va helpers
+const { DAYS_UZ, GRADE_MIN, GRADE_MAX } = require("../utils/constants");
+const {
+  getDayNameUz,
+  getDateRangeForDay,
+  isToday,
+  getTomorrowStart,
+  getCurrentDayUz,
+  isSunday,
+} = require("../helpers/date.helpers");
+const {
+  ValidationError,
+  NotFoundError,
+  ForbiddenError,
+} = require("../utils/errors");
+const asyncHandler = require("../middleware/async.middleware");
 
 // Get grades (with filters)
 const getGrades = async (req, res) => {
@@ -85,8 +92,7 @@ const getGradesByClassAndDate = async (req, res) => {
       classObjectId = classId;
     }
 
-    const dateObj = new Date(date);
-    const todayDayName = daysUz[dateObj.getDay()];
+    const todayDayName = getDayNameUz(date);
 
     const todaySchedule = await Schedule.findOne({
       class: classObjectId,
@@ -253,23 +259,10 @@ const createGrade = async (req, res) => {
     }
 
     // Check if teacher teaches this subject in this class TODAY
-    const Schedule = require("../models/schedule.model");
-
-    // Get today's day name in Uzbek
-    const daysUz = [
-      "yakshanba",
-      "dushanba",
-      "seshanba",
-      "chorshanba",
-      "payshanba",
-      "juma",
-      "shanba",
-    ];
-    const today = new Date();
-    const todayDayName = daysUz[today.getDay()];
+    const todayDayName = getCurrentDayUz();
 
     // Skip Sunday (yakshanba) - no lessons
-    if (todayDayName === "yakshanba") {
+    if (isSunday()) {
       return res.status(403).json({
         success: false,
         message: "Yakshanba kuni dars yo'q, baho qo'yib bo'lmaydi",

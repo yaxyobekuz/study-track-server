@@ -3,6 +3,11 @@ const Class = require("../models/class.model");
 const Subject = require("../models/subject.model");
 const User = require("../models/user.model");
 
+// Utils va helpers
+const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
+const { NotFoundError, ValidationError } = require("../utils/errors");
+const asyncHandler = require("../middleware/async.middleware");
+
 // Get all schedules for class
 const getScheduleByClass = async (req, res) => {
   try {
@@ -20,7 +25,8 @@ const getScheduleByClass = async (req, res) => {
     const schedules = await Schedule.find({ class: classId })
       .populate("subjects.subject", "name")
       .populate("subjects.teacher", "firstName lastName")
-      .sort({ day: 1 });
+      .sort({ day: 1 })
+      .lean();
 
     res.json({
       success: true,
@@ -172,21 +178,10 @@ const deleteSchedule = async (req, res) => {
 // Get all schedules for today (Owner only)
 const getAllTodaySchedules = async (req, res) => {
   try {
-    // Get current day in Uzbek
-    const daysUz = [
-      "yakshanba",
-      "dushanba",
-      "seshanba",
-      "chorshanba",
-      "payshanba",
-      "juma",
-      "shanba",
-    ];
-    const today = new Date();
-    const dayName = daysUz[today.getDay()];
+    const dayName = getCurrentDayUz();
 
     // If today is Sunday, return empty array
-    if (dayName === "yakshanba") {
+    if (isSunday()) {
       return res.json({ success: true, data: [] });
     }
 
@@ -217,22 +212,10 @@ const getAllTodaySchedules = async (req, res) => {
 const getMyTodaySchedule = async (req, res) => {
   try {
     const teacherId = req.user._id;
-
-    // Get current day in Uzbek
-    const daysUz = [
-      "yakshanba",
-      "dushanba",
-      "seshanba",
-      "chorshanba",
-      "payshanba",
-      "juma",
-      "shanba",
-    ];
-    const today = new Date();
-    const dayName = daysUz[today.getDay()];
+    const dayName = getCurrentDayUz();
 
     // If today is Sunday, return empty array
-    if (dayName === "yakshanba") {
+    if (isSunday()) {
       return res.json({
         success: true,
         data: [],

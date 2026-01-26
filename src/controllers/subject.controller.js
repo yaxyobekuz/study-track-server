@@ -7,7 +7,8 @@ const getAllSubjects = async (req, res) => {
   try {
     const subjects = await Subject.find()
       .populate("createdBy", "firstName lastName")
-      .sort({ name: 1 });
+      .sort({ name: 1 })
+      .lean();
 
     res.json({
       success: true,
