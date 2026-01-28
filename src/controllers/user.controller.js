@@ -1,11 +1,12 @@
 const User = require("../models/user.model");
 const Class = require("../models/class.model");
+const TgUser = require("../models/tguser.model");
 
 // Get user statistics (Owner only)
 const getStats = async (req, res) => {
   try {
-    const [total, teachers, students] = await Promise.all([
-      User.countDocuments({ role: { $ne: "owner" } }),
+    const [telegramUsers, teachers, students] = await Promise.all([
+      TgUser.countDocuments(),
       User.countDocuments({ role: "teacher" }),
       User.countDocuments({ role: "student" }),
     ]);
@@ -13,7 +14,7 @@ const getStats = async (req, res) => {
     res.json({
       success: true,
       data: {
-        total,
+        telegramUsers,
         teachers,
         students,
       },
