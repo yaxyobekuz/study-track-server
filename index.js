@@ -39,6 +39,10 @@ connectDB();
 // Initialize default owner
 require("./src/utils/initOwner")();
 
+// Start cron jobs
+const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
+startWeeklyStatsCron();
+
 // Trust proxy
 app.set("trust proxy", 1);
 
