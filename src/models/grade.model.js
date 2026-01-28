@@ -1,6 +1,11 @@
 // Mongoose
 const mongoose = require("mongoose");
 
+// Services
+const {
+  updateWeeklyStatsForGrade,
+} = require("../services/weeklystats.service");
+
 const gradeSchema = new mongoose.Schema(
   {
     student: {
@@ -53,11 +58,20 @@ const gradeSchema = new mongoose.Schema(
       },
     ],
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 gradeSchema.index({ student: 1, subject: 1, date: 1 });
 gradeSchema.index({ class: 1, date: 1 });
 gradeSchema.index({ teacher: 1, date: 1 });
+
+// POST-SAVE HOOK: Update WeeklyStats when grade is created/updated
+gradeSchema.post("save", async function (doc) {
+  try {
+    await updateWeeklyStatsForGrade(doc);
+  } catch (error) {
+    console.error("Error updating WeeklyStats after grade save:", error);
+  }
+});
 
 module.exports = mongoose.model("Grade", gradeSchema);
