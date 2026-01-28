@@ -101,4 +101,24 @@ userSchema.set("toJSON", {
 userSchema.index({ role: 1, isActive: 1 });
 userSchema.index({ classes: 1 });
 
+// POST-SAVE HOOK: Create WeeklyStats for new student
+userSchema.post("save", async function (doc) {
+  // Only for new students
+  if (this.isNew && this.role === "student") {
+    try {
+      const { createWeeklyStatsForStudent } = require("../services/weeklystats.service");
+      const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
+      const { weekNumber, year } = getCurrentWeekRange();
+
+      // Create stats for current week
+      await createWeeklyStatsForStudent(this._id, weekNumber, year);
+
+      console.log(`Created WeeklyStats for new student: ${this._id}`);
+    } catch (error) {
+      console.error("Error creating WeeklyStats for new student:", error);
+      // Don't throw - user is already created
+    }
+  }
+});
+
 module.exports = mongoose.model("User", userSchema);
