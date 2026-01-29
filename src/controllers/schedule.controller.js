@@ -2,11 +2,10 @@ const Schedule = require("../models/schedule.model");
 const Class = require("../models/class.model");
 const Subject = require("../models/subject.model");
 const User = require("../models/user.model");
+const Topic = require("../models/topic.model");
 
 // Utils va helpers
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
-const { NotFoundError, ValidationError } = require("../utils/errors");
-const asyncHandler = require("../middleware/async.middleware");
 
 // Get all schedules for class
 const getScheduleByClass = async (req, res) => {
@@ -258,6 +257,75 @@ const getMyTodaySchedule = async (req, res) => {
   }
 };
 
+// Update current topic number for a subject in schedule (Owner only)
+const updateCurrentTopic = async (req, res) => {
+  try {
+    const { id, subjectId } = req.params;
+    const { topicNumber } = req.body;
+
+    if (!topicNumber || topicNumber < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Mavzu raqami kamida 1 bo'lishi kerak",
+      });
+    }
+
+    // Find schedule
+    const schedule = await Schedule.findById(id);
+    if (!schedule) {
+      return res.status(404).json({
+        success: false,
+        message: "Dars jadvali topilmadi",
+      });
+    }
+
+    // Find subject in schedule
+    const subjectIndex = schedule.subjects.findIndex(
+      (s) => s.subject.toString() === subjectId,
+    );
+
+    if (subjectIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: "Ushbu sinf jadvalida fan topilmadi",
+      });
+    }
+
+    // Verify topic exists
+    const topic = await Topic.findOne({
+      subject: subjectId,
+      order: topicNumber,
+    });
+
+    if (!topic) {
+      return res.status(404).json({
+        success: false,
+        message: `${topicNumber}-mavzu ushbu fan uchun topilmadi`,
+      });
+    }
+
+    // Update current topic number
+    schedule.subjects[subjectIndex].currentTopicNumber = topicNumber;
+    await schedule.save();
+
+    const populatedSchedule = await Schedule.findById(schedule._id)
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName");
+
+    res.json({
+      success: true,
+      message: "Hozirgi mavzu raqami yangilandi",
+      data: populatedSchedule,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getScheduleByClass,
   getScheduleByDay,
@@ -265,4 +333,5 @@ module.exports = {
   deleteSchedule,
   getMyTodaySchedule,
   getAllTodaySchedules,
+  updateCurrentTopic,
 };

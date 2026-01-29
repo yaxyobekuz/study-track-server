@@ -7,6 +7,7 @@ const {
   getMyTodaySchedule,
   getAllTodaySchedules,
   createOrUpdateSchedule,
+  updateCurrentTopic,
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -33,6 +34,7 @@ router.get(
 
 // CRUD operations for owner only
 router.post("/", authorize("owner"), createOrUpdateSchedule);
+router.patch("/:id/subject/:subjectId/topic", authorize("owner"), updateCurrentTopic);
 router.delete("/:id", authorize("owner"), deleteSchedule);
 
 module.exports = router;
