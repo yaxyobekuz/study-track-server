@@ -8,6 +8,7 @@ const Class = require("../models/class.model");
 const Subject = require("../models/subject.model");
 const Holiday = require("../models/holiday.model");
 const Schedule = require("../models/schedule.model");
+const Topic = require("../models/topic.model");
 
 // Utils va helpers
 const { DAYS_UZ, GRADE_MIN, GRADE_MAX } = require("../utils/constants");
@@ -634,6 +635,35 @@ const getStudentsWithGrades = async (req, res) => {
       date: { $gte: startDate, $lte: endDate },
     }).populate("teacher", "firstName lastName");
 
+    // Get current topic for this class and subject
+    let currentTopic = null;
+    const dayName = getDayNameUz(date);
+    const schedule = await Schedule.findOne({
+      class: classId,
+      day: dayName,
+    });
+
+    if (schedule) {
+      const subjectInSchedule = schedule.subjects.find(
+        (s) => s.subject.toString() === subjectId
+      );
+
+      if (subjectInSchedule && subjectInSchedule.currentTopicNumber) {
+        const topic = await Topic.findOne({
+          subject: subjectId,
+          order: subjectInSchedule.currentTopicNumber,
+        }).select("order name description");
+
+        if (topic) {
+          currentTopic = {
+            number: topic.order,
+            name: topic.name,
+            description: topic.description || "",
+          };
+        }
+      }
+    }
+
     // Map grades to students
     const studentsWithGrades = students.map((student) => {
       const grade = grades.find(
@@ -650,6 +680,7 @@ const getStudentsWithGrades = async (req, res) => {
     res.json({
       success: true,
       data: studentsWithGrades,
+      currentTopic,
     });
   } catch (error) {
     res.status(500).json({
