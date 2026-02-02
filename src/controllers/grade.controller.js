@@ -12,6 +12,7 @@ const Topic = require("../models/topic.model");
 
 // Services
 const { updateWeeklyStatsForGrade } = require("../services/weeklystats.service");
+const ExcelService = require("../services/excel.service");
 
 // Utils va helpers
 const { DAYS_UZ, GRADE_MIN, GRADE_MAX } = require("../utils/constants");
@@ -918,6 +919,180 @@ const getStudentsWithGrades = async (req, res) => {
   }
 };
 
+// Export grades to Excel
+const exportGrades = async (req, res) => {
+  try {
+    const { classId, date, subjectId } = req.query;
+
+    if (!classId || !date) {
+      return res.status(400).json({
+        success: false,
+        message: "Sinf va sana majburiy",
+      });
+    }
+
+    // Get class info
+    const classData = await Class.findById(classId);
+    if (!classData) {
+      return res.status(404).json({
+        success: false,
+        message: "Sinf topilmadi",
+      });
+    }
+
+    // Split date into start and end times
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+
+    const classObjectId = mongoose.Types.ObjectId.isValid(classId)
+      ? new mongoose.Types.ObjectId(classId)
+      : classId;
+
+    const todayDayName = getDayNameUz(date);
+
+    // Get schedule for the day
+    const todaySchedule = await Schedule.findOne({
+      class: classObjectId,
+      day: todayDayName,
+    }).populate("subjects.subject", "name");
+
+    // Get all students in the class
+    const allStudents = await User.find({
+      role: "student",
+      classes: classObjectId,
+    })
+      .select("_id firstName lastName")
+      .sort({ firstName: 1, lastName: 1 });
+
+    // Get grades with all necessary fields
+    const grades = await Grade.find({
+      class: classObjectId,
+      date: { $gte: startDate, $lte: endDate },
+    })
+      .populate("student", "firstName lastName")
+      .populate("subject", "name")
+      .populate("teacher", "firstName lastName")
+      .lean();
+
+    // Create map of student grades
+    const studentGradesMap = {};
+    allStudents.forEach((student) => {
+      studentGradesMap[student._id.toString()] = {
+        student,
+        grades: grades.filter(
+          (g) => g.student._id.toString() === student._id.toString(),
+        ),
+      };
+    });
+
+    const studentsWithGrades = Object.values(studentGradesMap);
+
+    let columns, data, sheetName;
+
+    // If specific subject selected
+    if (subjectId && subjectId !== "all") {
+      const subject = await Subject.findById(subjectId);
+      sheetName = `${classData.name} - ${subject?.name || "Fan"}`;
+
+      columns = [
+        { header: "O'quvchi", key: "student", width: 30 },
+        { header: "Baho", key: "grade", width: 12 },
+        { header: "O'qituvchi", key: "teacher", width: 25 },
+      ];
+
+      data = studentsWithGrades.map((item) => {
+        const gradeData = item.grades.find(
+          (g) => g.subject._id.toString() === subjectId,
+        );
+
+        return {
+          student: `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
+          grade: gradeData ? gradeData.grade : "-",
+          teacher: gradeData
+            ? `${gradeData.teacher.firstName} ${gradeData.teacher.lastName || ""}`.trim()
+            : "-",
+        };
+      });
+    } else {
+      // All subjects
+      sheetName = `${classData.name} - Barcha fanlar`;
+
+      const todaySubjects = todaySchedule?.subjects || [];
+      const sortedSubjects = todaySubjects
+        .filter((s) => s.subject)
+        .sort((a, b) => a.order - b.order);
+
+      columns = [{ header: "O'quvchi", key: "student", width: 30 }];
+
+      // Add columns for each subject
+      sortedSubjects.forEach((s, idx) => {
+        columns.push({
+          header: `${idx + 1}. ${s.subject.name}`,
+          key: `subject_${s.order}`,
+          width: 15,
+        });
+      });
+
+      columns.push({ header: "O'rtacha", key: "average", width: 12 });
+
+      data = studentsWithGrades.map((item) => {
+        const row = {
+          student: `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
+        };
+
+        let totalGrades = 0;
+        let gradeCount = 0;
+
+        sortedSubjects.forEach((s) => {
+          // Match by subject ID and lessonOrder
+          const gradeData = item.grades.find(
+            (g) =>
+              g.subject._id.toString() === s.subject._id.toString() &&
+              g.lessonOrder === s.order,
+          );
+
+          const gradeValue = gradeData ? gradeData.grade : "-";
+          row[`subject_${s.order}`] = gradeValue;
+
+          if (gradeData && typeof gradeData.grade === "number") {
+            totalGrades += gradeData.grade;
+            gradeCount++;
+          }
+        });
+
+        row.average =
+          gradeCount > 0 ? (totalGrades / gradeCount).toFixed(2) : "-";
+
+        return row;
+      });
+    }
+
+    // Create Excel
+    const workbook = ExcelService.createExcel({
+      sheetName,
+      columns,
+      data,
+    });
+
+    // Generate filename
+    const filename = ExcelService.generateFileName(
+      `${classData.name}_baholar_${date}`,
+    );
+
+    // Send file
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getGrades,
   createGrade,
@@ -927,4 +1102,5 @@ module.exports = {
   getStudentsWithGrades,
   getGradesByClassAndDate,
   getTeacherSubjectsInClass,
+  exportGrades,
 };

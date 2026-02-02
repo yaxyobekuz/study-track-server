@@ -9,11 +9,15 @@ const {
   getStudentGrades,
   getTeacherSubjectsInClass,
   getStudentsWithGrades,
+  exportGrades,
 } = require("../controllers/grade.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
 // All routes are protected
 router.use(protect);
+
+// Export grades to Excel
+router.get("/export", authorize("owner", "teacher"), exportGrades);
 
 // Student views their own grades
 router.get("/student/my-grades", authorize("student"), getStudentGrades);
