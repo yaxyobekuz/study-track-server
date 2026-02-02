@@ -342,6 +342,37 @@ const createGrade = async (req, res) => {
       });
     }
 
+    // Check grading time window (only if enabled in config)
+    const { GRADE_TIME_LIMIT_MINUTES, ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
+
+    if (ENABLE_SCHEDULE_TIME_VALIDATION) {
+      const { checkGradingTimeWindow } = require("../helpers/date.helpers");
+
+      const lessonSchedule = todaySchedule.subjects.find(
+        (s) => s.order === finalLessonOrder
+      );
+
+      if (!lessonSchedule || !lessonSchedule.startTime || !lessonSchedule.endTime) {
+        return res.status(400).json({
+          success: false,
+          message: "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+        });
+      }
+
+      const timeCheck = checkGradingTimeWindow(
+        lessonSchedule.startTime,
+        lessonSchedule.endTime,
+        GRADE_TIME_LIMIT_MINUTES
+      );
+
+      if (!timeCheck.canGrade) {
+        return res.status(403).json({
+          success: false,
+          message: timeCheck.reason,
+        });
+      }
+    }
+
     // Date must be today
     const todayDate = new Date();
     todayDate.setHours(0, 0, 0, 0);
@@ -447,6 +478,56 @@ const updateGrade = async (req, res) => {
         success: false,
         message: "Faqat bugungi baholarni tahrirlash mumkin",
       });
+    }
+
+    // Check grading time window for updates (only if enabled in config)
+    const { ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
+
+    if (ENABLE_SCHEDULE_TIME_VALIDATION) {
+      const { getCurrentDayUz } = require("../helpers/date.helpers");
+      const Schedule = require("../models/schedule.model");
+
+      const dayName = getCurrentDayUz();
+      const todaySchedule = await Schedule.findOne({
+        class: gradeDoc.class,
+        day: dayName,
+      });
+
+      if (!todaySchedule) {
+        return res.status(403).json({
+          success: false,
+          message: "Bugun uchun dars jadvali topilmadi",
+        });
+      }
+
+      const lessonSchedule = todaySchedule.subjects.find(
+        (s) =>
+          s.subject.toString() === gradeDoc.subject.toString() &&
+          s.order === gradeDoc.lessonOrder
+      );
+
+      if (!lessonSchedule || !lessonSchedule.startTime || !lessonSchedule.endTime) {
+        return res.status(400).json({
+          success: false,
+          message: "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+        });
+      }
+
+      const { checkGradingTimeWindow } = require("../helpers/date.helpers");
+      const { GRADE_TIME_LIMIT_MINUTES } = require("../utils/constants");
+
+      const timeCheck = checkGradingTimeWindow(
+        lessonSchedule.startTime,
+        lessonSchedule.endTime,
+        GRADE_TIME_LIMIT_MINUTES
+      );
+
+      if (!timeCheck.canGrade) {
+        return res.status(403).json({
+          success: false,
+          message: timeCheck.reason,
+        });
+      }
     }
 
     // Add to history

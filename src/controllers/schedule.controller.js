@@ -92,6 +92,34 @@ const createOrUpdateSchedule = async (req, res) => {
 
     // Validate subjects and teachers
     for (const item of subjects) {
+      // Validate time fields (only if times are provided)
+      if (item.startTime || item.endTime) {
+        // If one time is set, both must be set
+        if (!item.startTime || !item.endTime) {
+          return res.status(400).json({
+            success: false,
+            message: `${item.order}-dars: boshlanish va tugash vaqti ikkalasi ham kiritilishi kerak`,
+          });
+        }
+
+        // Validate time format (HH:mm)
+        const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+        if (!timeRegex.test(item.startTime) || !timeRegex.test(item.endTime)) {
+          return res.status(400).json({
+            success: false,
+            message: `${item.order}-dars: vaqt formati noto'g'ri (HH:mm formatida bo'lishi kerak)`,
+          });
+        }
+
+        // Validate startTime < endTime
+        if (item.startTime >= item.endTime) {
+          return res.status(400).json({
+            success: false,
+            message: `${item.order}-dars: boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak`,
+          });
+        }
+      }
+
       const subject = await Subject.findById(item.subject);
       if (!subject) {
         return res.status(404).json({
@@ -109,6 +137,20 @@ const createOrUpdateSchedule = async (req, res) => {
           success: false,
           message: `O'qituvchi topilmadi: ${item.teacher}`,
         });
+      }
+    }
+
+    // Check for time overlaps (only for lessons with times)
+    const subjectsWithTimes = subjects.filter(s => s.startTime && s.endTime);
+    if (subjectsWithTimes.length > 0) {
+      const sortedSubjects = [...subjectsWithTimes].sort((a, b) => a.startTime.localeCompare(b.startTime));
+      for (let i = 0; i < sortedSubjects.length - 1; i++) {
+        if (sortedSubjects[i].endTime > sortedSubjects[i + 1].startTime) {
+          return res.status(400).json({
+            success: false,
+            message: `Darslar vaqtlari to'qnashib ketdi: ${sortedSubjects[i].order}-dars (${sortedSubjects[i].startTime}-${sortedSubjects[i].endTime}) va ${sortedSubjects[i + 1].order}-dars (${sortedSubjects[i + 1].startTime}-${sortedSubjects[i + 1].endTime})`,
+          });
+        }
       }
     }
 
