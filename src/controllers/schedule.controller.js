@@ -72,7 +72,7 @@ const getScheduleByDay = async (req, res) => {
 // Create or update schedule (Owner only)
 const createOrUpdateSchedule = async (req, res) => {
   try {
-    const { classId, day, subjects } = req.body;
+    const { classId, day, subjects, startingOrder } = req.body;
 
     if (!classId || !day || !subjects || subjects.length === 0) {
       return res.status(400).json({
@@ -160,6 +160,7 @@ const createOrUpdateSchedule = async (req, res) => {
     if (schedule) {
       // Update existing
       schedule.subjects = subjects;
+      schedule.startingOrder = startingOrder || 1;
       await schedule.save();
     } else {
       // Create new
@@ -167,6 +168,7 @@ const createOrUpdateSchedule = async (req, res) => {
         class: classId,
         day,
         subjects,
+        startingOrder: startingOrder || 1,
         createdBy: req.user._id,
       });
     }

@@ -20,6 +20,12 @@ const scheduleSchema = new mongoose.Schema(
         "shanba",
       ],
     },
+    startingOrder: {
+      type: Number,
+      default: 1,
+      min: [1, "Boshlanish tartibi kamida 1 bo'lishi kerak"],
+      max: [100, "Boshlanish tartibi 100 dan katta bo'lishi mumkin emas"],
+    },
     subjects: [
       {
         subject: {
