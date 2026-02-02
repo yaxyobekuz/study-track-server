@@ -476,7 +476,7 @@ const updateGrade = async (req, res) => {
   }
 };
 
-// Delete grade (Owner only)
+// Delete grade (Teacher can delete own today's grades, Owner can delete any)
 const deleteGrade = async (req, res) => {
   try {
     const grade = await Grade.findById(req.params.id);
@@ -486,6 +486,31 @@ const deleteGrade = async (req, res) => {
         success: false,
         message: "Baho topilmadi",
       });
+    }
+
+    // If teacher role, apply restrictions
+    if (req.user.role === "teacher") {
+      // Can only delete own grades
+      if (grade.teacher.toString() !== req.user._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: "Bu bahoni o'chirish uchun ruxsatingiz yo'q",
+        });
+      }
+
+      // Can only delete today's grades
+      const gradeDate = new Date(grade.date);
+      gradeDate.setHours(0, 0, 0, 0);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      if (gradeDate.getTime() !== today.getTime()) {
+        return res.status(403).json({
+          success: false,
+          message: "Faqat bugungi baholarni o'chirish mumkin",
+        });
+      }
     }
 
     await grade.deleteOne();

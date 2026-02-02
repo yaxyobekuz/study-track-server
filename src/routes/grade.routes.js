@@ -42,8 +42,8 @@ router.get(
 router.post("/", authorize("teacher"), createGrade);
 router.put("/:id", authorize("teacher"), updateGrade);
 
-// Only owner can delete grades
-router.delete("/:id", authorize("owner"), deleteGrade);
+// Teacher can delete own today's grades, Owner can delete any
+router.delete("/:id", authorize("teacher", "owner"), deleteGrade);
 
 // Owner views a student's grades
 router.get("/student/:studentId", authorize("owner"), getStudentGrades);
