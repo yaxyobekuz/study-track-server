@@ -770,6 +770,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
     // Include ALL lessons (with duplicates) and add order/lessonNumber
     const teacherSubjects = [];
     const subjectCountMap = {}; // Track how many times each subject appears
+    const startingOrder = todaySchedule.startingOrder || 1;
 
     todaySchedule.subjects.forEach((item) => {
       if (item.teacher.toString() === req.user._id.toString()) {
@@ -786,6 +787,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
           _id: item.subject._id,
           name: item.subject.name,
           order: item.order,
+          startingOrder: startingOrder,
           lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
           currentTopicNumber: item.currentTopicNumber || 1,
         });
@@ -799,6 +801,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
       success: true,
       data: teacherSubjects,
       day: todayDayName,
+      startingOrder: startingOrder,
     });
   } catch (error) {
     res.status(500).json({

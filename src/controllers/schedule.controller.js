@@ -239,6 +239,7 @@ const getAllTodaySchedules = async (req, res) => {
     const formattedSchedules = schedules.map((schedule) => ({
       class: schedule.class,
       subjects: schedule.subjects.sort((a, b) => a.order - b.order),
+      startingOrder: schedule.startingOrder || 1,
     }));
 
     res.json({ success: true, data: formattedSchedules });
@@ -286,6 +287,7 @@ const getMyTodaySchedule = async (req, res) => {
         return {
           class: schedule.class,
           subjects: teacherSubjects,
+          startingOrder: schedule.startingOrder || 1,
         };
       })
       .filter((schedule) => schedule.subjects.length > 0);
