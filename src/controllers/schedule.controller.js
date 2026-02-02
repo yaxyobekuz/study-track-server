@@ -224,7 +224,7 @@ const getMyTodaySchedule = async (req, res) => {
     // Find all schedules for today where teacher has a subject
     const schedules = await Schedule.find({
       day: dayName,
-      "subjects.teacher": teacherId,
+      "subjects.teacher": teacherId.toString(),
     })
       .populate("class", "name")
       .populate("subjects.subject", "name")
@@ -234,7 +234,9 @@ const getMyTodaySchedule = async (req, res) => {
     const teacherSchedules = schedules
       .map((schedule) => {
         const teacherSubjects = schedule.subjects
-          .filter((item) => item.teacher._id.toString() === teacherId)
+          .filter(
+            (item) => item.teacher._id.toString() === teacherId.toString(),
+          )
           .sort((a, b) => a.order - b.order);
 
         return {
