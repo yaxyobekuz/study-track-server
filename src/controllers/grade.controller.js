@@ -11,7 +11,9 @@ const Schedule = require("../models/schedule.model");
 const Topic = require("../models/topic.model");
 
 // Services
-const { updateWeeklyStatsForGrade } = require("../services/weeklystats.service");
+const {
+  updateWeeklyStatsForGrade,
+} = require("../services/weeklystats.service");
 const ExcelService = require("../services/excel.service");
 
 // Utils va helpers
@@ -230,7 +232,8 @@ const getGradesByClassAndDate = async (req, res) => {
 // Create grade (Teacher only)
 const createGrade = async (req, res) => {
   try {
-    const { studentId, subjectId, classId, grade, comment, lessonOrder } = req.body;
+    const { studentId, subjectId, classId, grade, comment, lessonOrder } =
+      req.body;
 
     // Validation
     if (!studentId || !subjectId || !classId || !grade) {
@@ -334,36 +337,46 @@ const createGrade = async (req, res) => {
 
     // Validate lessonOrder if provided
     const finalLessonOrder = lessonOrder || teacherLessons[0].order;
-    const lessonExists = teacherLessons.find((l) => l.order === finalLessonOrder);
+    const lessonExists = teacherLessons.find(
+      (l) => l.order === finalLessonOrder,
+    );
 
     if (!lessonExists) {
       return res.status(400).json({
         success: false,
-        message: `Dars tartibi noto'g'ri. Sizning darslaringiz: ${teacherLessons.map(l => l.order).join(', ')}`,
+        message: `Dars tartibi noto'g'ri. Sizning darslaringiz: ${teacherLessons.map((l) => l.order).join(", ")}`,
       });
     }
 
     // Check grading time window (only if enabled in config)
-    const { GRADE_TIME_LIMIT_MINUTES, ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
+    const {
+      GRADE_TIME_LIMIT_MINUTES,
+      ENABLE_SCHEDULE_TIME_VALIDATION,
+    } = require("../utils/constants");
 
     if (ENABLE_SCHEDULE_TIME_VALIDATION) {
       const { checkGradingTimeWindow } = require("../helpers/date.helpers");
 
       const lessonSchedule = todaySchedule.subjects.find(
-        (s) => s.order === finalLessonOrder
+        (s) => s.order === finalLessonOrder,
       );
 
-      if (!lessonSchedule || !lessonSchedule.startTime || !lessonSchedule.endTime) {
+      if (
+        !lessonSchedule ||
+        !lessonSchedule.startTime ||
+        !lessonSchedule.endTime
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+          message:
+            "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
         });
       }
 
       const timeCheck = checkGradingTimeWindow(
         lessonSchedule.startTime,
         lessonSchedule.endTime,
-        GRADE_TIME_LIMIT_MINUTES
+        GRADE_TIME_LIMIT_MINUTES,
       );
 
       if (!timeCheck.canGrade) {
@@ -504,13 +517,18 @@ const updateGrade = async (req, res) => {
       const lessonSchedule = todaySchedule.subjects.find(
         (s) =>
           s.subject.toString() === gradeDoc.subject.toString() &&
-          s.order === gradeDoc.lessonOrder
+          s.order === gradeDoc.lessonOrder,
       );
 
-      if (!lessonSchedule || !lessonSchedule.startTime || !lessonSchedule.endTime) {
+      if (
+        !lessonSchedule ||
+        !lessonSchedule.startTime ||
+        !lessonSchedule.endTime
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+          message:
+            "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
         });
       }
 
@@ -520,7 +538,7 @@ const updateGrade = async (req, res) => {
       const timeCheck = checkGradingTimeWindow(
         lessonSchedule.startTime,
         lessonSchedule.endTime,
-        GRADE_TIME_LIMIT_MINUTES
+        GRADE_TIME_LIMIT_MINUTES,
       );
 
       if (!timeCheck.canGrade) {
@@ -851,7 +869,10 @@ const getStudentsWithGrades = async (req, res) => {
       gradeQuery.lessonOrder = finalLessonOrder;
     }
 
-    const grades = await Grade.find(gradeQuery).populate("teacher", "firstName lastName");
+    const grades = await Grade.find(gradeQuery).populate(
+      "teacher",
+      "firstName lastName",
+    );
 
     // Get current topic for this class and subject
     let currentTopic = null;
@@ -868,11 +889,12 @@ const getStudentsWithGrades = async (req, res) => {
 
       if (finalLessonOrder) {
         subjectInSchedule = schedule.subjects.find(
-          (s) => s.subject.toString() === subjectId && s.order === finalLessonOrder
+          (s) =>
+            s.subject.toString() === subjectId && s.order === finalLessonOrder,
         );
       } else {
         subjectInSchedule = schedule.subjects.find(
-          (s) => s.subject.toString() === subjectId
+          (s) => s.subject.toString() === subjectId,
         );
       }
 
@@ -983,7 +1005,10 @@ const exportGrades = async (req, res) => {
       studentGradesMap[student._id.toString()] = {
         student,
         grades: grades.filter(
-          (g) => g.student._id.toString() === student._id.toString(),
+          (g) =>
+            g.student &&
+            g.student._id &&
+            g.student._id.toString() === student._id.toString(),
         ),
       };
     });
@@ -1005,11 +1030,15 @@ const exportGrades = async (req, res) => {
 
       data = studentsWithGrades.map((item) => {
         const gradeData = item.grades.find(
-          (g) => g.subject._id.toString() === subjectId,
+          (g) =>
+            g.subject &&
+            g.subject._id &&
+            g.subject._id.toString() === subjectId,
         );
 
         return {
-          student: `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
+          student:
+            `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
           grade: gradeData ? gradeData.grade : "-",
           teacher: gradeData
             ? `${gradeData.teacher.firstName} ${gradeData.teacher.lastName || ""}`.trim()
@@ -1040,7 +1069,8 @@ const exportGrades = async (req, res) => {
 
       data = studentsWithGrades.map((item) => {
         const row = {
-          student: `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
+          student:
+            `${item.student.firstName} ${item.student.lastName || ""}`.trim(),
         };
 
         let totalGrades = 0;
@@ -1050,15 +1080,28 @@ const exportGrades = async (req, res) => {
           // Match by subject ID and lessonOrder
           const gradeData = item.grades.find(
             (g) =>
+              g.subject &&
+              g.subject._id &&
               g.subject._id.toString() === s.subject._id.toString() &&
               g.lessonOrder === s.order,
           );
 
-          const gradeValue = gradeData ? gradeData.grade : "-";
+          // Agar lessonOrder bo'yicha topilmasa, faqat subject bo'yicha izlash
+          const fallbackGrade = !gradeData
+            ? item.grades.find(
+                (g) =>
+                  g.subject &&
+                  g.subject._id &&
+                  g.subject._id.toString() === s.subject._id.toString(),
+              )
+            : null;
+
+          const foundGrade = gradeData || fallbackGrade;
+          const gradeValue = foundGrade ? foundGrade.grade : "-";
           row[`subject_${s.order}`] = gradeValue;
 
-          if (gradeData && typeof gradeData.grade === "number") {
-            totalGrades += gradeData.grade;
+          if (foundGrade && typeof foundGrade.grade === "number") {
+            totalGrades += foundGrade.grade;
             gradeCount++;
           }
         });
