@@ -4,6 +4,10 @@ const WeeklyStats = require("../models/weeklystats.model");
 
 // Services
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
+const {
+  calculateStudentRankInClass,
+  calculateStudentRankInSchool,
+} = require("../services/weeklystats.service");
 
 /**
  * Bitta o'quvchining haftalik statistikasini olish (FROM WEEKLYSTATS)
@@ -23,14 +27,12 @@ exports.getStudentWeeklyStatistics = async (req, res) => {
       });
     }
 
-    // Find pre-calculated WeeklyStats
+    // Find WeeklyStats
     let weeklyStats = await WeeklyStats.findOne({
       student: studentId,
       year,
       weekNumber,
-    }).populate(
-      "student classes simpleStats.subjects.subject rankings.classRanks.class",
-    );
+    }).populate("student classes simpleStats.subjects.subject");
 
     // If doesn't exist, create it now (fallback)
     if (!weeklyStats) {
@@ -44,15 +46,40 @@ exports.getStudentWeeklyStatistics = async (req, res) => {
           weekNumber,
           year,
         );
-        await weeklyStats.populate(
-          "student classes simpleStats.subjects.subject rankings.classRanks.class",
-        );
+        await weeklyStats.populate("student classes simpleStats.subjects.subject");
       } catch (error) {
         // If student doesn't exist or has no class
         return res.status(404).json({
           success: false,
           message: "O'quvchi topilmadi yoki sinfga biriktirilmagan",
         });
+      }
+    }
+
+    // Calculate rankings on-demand (lazy calculation)
+    const schoolRanking = await calculateStudentRankInSchool(
+      studentId,
+      weekNumber,
+      year,
+    );
+
+    // Calculate class rankings for all student's classes
+    const classRankings = [];
+    if (weeklyStats.classes && weeklyStats.classes.length > 0) {
+      for (const cls of weeklyStats.classes) {
+        const classRanking = await calculateStudentRankInClass(
+          studentId,
+          cls._id,
+          weekNumber,
+          year,
+        );
+        if (classRanking) {
+          classRankings.push({
+            class: cls,
+            rank: classRanking.rank,
+            totalStudents: classRanking.totalStudents,
+          });
+        }
       }
     }
 
@@ -66,14 +93,21 @@ exports.getStudentWeeklyStatistics = async (req, res) => {
           lastName: weeklyStats.student.lastName,
           fullName: weeklyStats.student.fullName,
         },
-        class: weeklyStats.classes && weeklyStats.classes[0] ? weeklyStats.classes[0] : null,
+        class:
+          weeklyStats.classes && weeklyStats.classes[0]
+            ? weeklyStats.classes[0]
+            : null,
         classes: weeklyStats.classes || [],
         weekStart: weeklyStats.weekStart,
         weekEnd: weeklyStats.weekEnd,
         weekNumber: weeklyStats.weekNumber,
         year: weeklyStats.year,
         simpleStats: weeklyStats.simpleStats,
-        rankings: weeklyStats.rankings,
+        rankings: {
+          schoolRank: schoolRanking?.rank || null,
+          schoolTotalStudents: schoolRanking?.totalStudents || 0,
+          classRanks: classRankings,
+        },
       },
     });
   } catch (error) {
@@ -111,11 +145,16 @@ exports.getClassRankings = async (req, res) => {
     }
 
     // Find all WeeklyStats for this class and week
-    const allStats = await WeeklyStats.find({
+    let allStats = await WeeklyStats.find({
       classes: classId,
       year,
       weekNumber,
-    }).populate("student rankings.classRanks.class");
+    })
+      .populate("student")
+      .select("student simpleStats.totalSum simpleStats.totalGrades");
+
+    // Convert to plain objects to include virtuals like fullName
+    allStats = allStats.map(stat => stat.toJSON());
 
     if (allStats.length === 0) {
       return res.json({
@@ -140,30 +179,21 @@ exports.getClassRankings = async (req, res) => {
       });
     }
 
-    // Transform to ranking format
-    const rankings = allStats.map((stat) => {
-      // Find this student's rank in this specific class
-      const classRankData = stat.rankings.classRanks
-        ? stat.rankings.classRanks.find(
-            (cr) => cr.class._id.toString() === classId,
-          )
-        : null;
+    // Sort by totalSum (descending) - this determines rank
+    allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
-      return {
-        rank: classRankData ? classRankData.rank : null,
-        student: {
-          _id: stat.student._id,
-          firstName: stat.student.firstName,
-          lastName: stat.student.lastName,
-          fullName: stat.student.fullName,
-        },
-        totalSum: stat.simpleStats.totalSum,
-        totalGrades: stat.simpleStats.totalGrades,
-      };
-    });
-
-    // Sort by rank
-    rankings.sort((a, b) => a.rank - b.rank);
+    // Transform to ranking format with calculated ranks
+    const rankings = allStats.map((stat, index) => ({
+      rank: index + 1, // Rank based on sorted position
+      student: {
+        _id: stat.student._id,
+        firstName: stat.student.firstName,
+        lastName: stat.student.lastName,
+        fullName: stat.student.fullName,
+      },
+      totalSum: stat.simpleStats.totalSum,
+      totalGrades: stat.simpleStats.totalGrades,
+    }));
 
     // Calculate pagination
     const totalItems = rankings.length;
@@ -215,17 +245,20 @@ exports.getSchoolRankings = async (req, res) => {
     const skip = (pageNum - 1) * limitNum;
 
     // Find all WeeklyStats for this week
-    const allStats = await WeeklyStats.find({
+    let allStats = await WeeklyStats.find({
       year,
       weekNumber,
     })
-      .populate("classes rankings.classRanks.class")
       .populate({
         path: "student",
         populate: {
           path: "classes",
         },
-      });
+      })
+      .select("student simpleStats.totalSum simpleStats.totalGrades");
+
+    // Convert to plain objects to include virtuals like fullName
+    allStats = allStats.map(stat => stat.toJSON());
 
     if (allStats.length === 0) {
       return res.json({
@@ -249,9 +282,12 @@ exports.getSchoolRankings = async (req, res) => {
       });
     }
 
-    // Transform to ranking format
-    const rankings = allStats.map((stat) => ({
-      rank: stat.rankings.schoolRank,
+    // Sort by totalSum (descending) - this determines rank
+    allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
+
+    // Transform to ranking format with calculated ranks
+    const rankings = allStats.map((stat, index) => ({
+      rank: index + 1, // Rank based on sorted position
       student: {
         _id: stat.student._id,
         firstName: stat.student.firstName,
@@ -262,9 +298,6 @@ exports.getSchoolRankings = async (req, res) => {
       totalSum: stat.simpleStats.totalSum,
       totalGrades: stat.simpleStats.totalGrades,
     }));
-
-    // Sort by rank
-    rankings.sort((a, b) => a.rank - b.rank);
 
     // Calculate pagination
     const totalItems = rankings.length;

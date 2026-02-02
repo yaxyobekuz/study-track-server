@@ -10,6 +10,9 @@ const Holiday = require("../models/holiday.model");
 const Schedule = require("../models/schedule.model");
 const Topic = require("../models/topic.model");
 
+// Services
+const { updateWeeklyStatsForGrade } = require("../services/weeklystats.service");
+
 // Utils va helpers
 const { DAYS_UZ, GRADE_MIN, GRADE_MAX } = require("../utils/constants");
 const {
@@ -379,6 +382,14 @@ const createGrade = async (req, res) => {
       .populate("teacher", "firstName lastName")
       .populate("class", "name");
 
+    // Update WeeklyStats after creating grade
+    try {
+      await updateWeeklyStatsForGrade(newGrade);
+    } catch (statsError) {
+      console.error("Error updating WeeklyStats:", statsError);
+      // Don't fail the request if stats update fails
+    }
+
     res.status(201).json({
       success: true,
       message: "Baho muvaffaqiyatli qo'yildi",
@@ -462,6 +473,14 @@ const updateGrade = async (req, res) => {
       .populate("class", "name")
       .populate("editHistory.editedBy", "firstName lastName");
 
+    // Update WeeklyStats after updating grade
+    try {
+      await updateWeeklyStatsForGrade(gradeDoc);
+    } catch (statsError) {
+      console.error("Error updating WeeklyStats:", statsError);
+      // Don't fail the request if stats update fails
+    }
+
     res.json({
       success: true,
       message: "Baho muvaffaqiyatli yangilandi",
@@ -513,7 +532,27 @@ const deleteGrade = async (req, res) => {
       }
     }
 
-    await grade.deleteOne();
+    // Save grade data before deleting (for WeeklyStats update)
+    const gradeData = {
+      student: grade.student,
+      subject: grade.subject,
+      class: grade.class,
+      teacher: grade.teacher,
+      grade: grade.grade,
+      date: grade.date,
+      lessonOrder: grade.lessonOrder,
+    };
+
+    // Delete the grade
+    await Grade.findByIdAndDelete(req.params.id);
+
+    // Update WeeklyStats after deleting grade
+    try {
+      await updateWeeklyStatsForGrade(gradeData);
+    } catch (statsError) {
+      console.error("Error updating WeeklyStats:", statsError);
+      // Don't fail the request if stats update fails
+    }
 
     res.json({
       success: true,

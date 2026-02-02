@@ -3,7 +3,6 @@ const User = require("../models/user.model");
 const Grade = require("../models/grade.model");
 const {
   getCurrentWeekRange,
-  getWeekNumber,
   calculateTotalSum,
 } = require("../helpers/statistics.helpers");
 const logger = require("../utils/logger");
@@ -38,6 +37,9 @@ async function updateWeeklyStatsForGrade(gradeDoc) {
     // Recalculate stats
     await recalculateWeeklyStats(weeklyStats);
   }
+
+  // Note: Rankings are now calculated on-demand (lazy calculation)
+  // No need to recalculate all rankings here - much faster!
 }
 
 /**
@@ -188,6 +190,98 @@ async function generateWeeklyStatsForAllStudents(weekNumber, year) {
 }
 
 /**
+ * Calculate individual student's rank in a class (lazy calculation)
+ * Uses COUNT query for optimal performance
+ */
+async function calculateStudentRankInClass(
+  studentId,
+  classId,
+  weekNumber,
+  year,
+) {
+  // 1. Get student's totalSum
+  const studentStats = await WeeklyStats.findOne({
+    student: studentId,
+    classes: classId,
+    weekNumber,
+    year,
+  }).lean();
+
+  if (!studentStats) {
+    return null;
+  }
+
+  const studentTotalSum = studentStats.simpleStats.totalSum;
+
+  // 2. Count students with higher totalSum
+  const higherCount = await WeeklyStats.countDocuments({
+    classes: classId,
+    weekNumber,
+    year,
+    "simpleStats.totalSum": { $gt: studentTotalSum },
+  });
+
+  // 3. Rank = higher count + 1
+  const rank = higherCount + 1;
+
+  // 4. Total students in class
+  const totalStudents = await WeeklyStats.countDocuments({
+    classes: classId,
+    weekNumber,
+    year,
+  });
+
+  return {
+    rank,
+    totalStudents,
+    totalSum: studentTotalSum,
+    totalGrades: studentStats.simpleStats.totalGrades,
+  };
+}
+
+/**
+ * Calculate individual student's rank in school (lazy calculation)
+ */
+async function calculateStudentRankInSchool(studentId, weekNumber, year) {
+  // 1. Get student's totalSum
+  const studentStats = await WeeklyStats.findOne({
+    student: studentId,
+    weekNumber,
+    year,
+  }).lean();
+
+  if (!studentStats) {
+    return null;
+  }
+
+  const studentTotalSum = studentStats.simpleStats.totalSum;
+
+  // 2. Count students with higher totalSum
+  const higherCount = await WeeklyStats.countDocuments({
+    weekNumber,
+    year,
+    "simpleStats.totalSum": { $gt: studentTotalSum },
+  });
+
+  // 3. Rank = higher count + 1
+  const rank = higherCount + 1;
+
+  // 4. Total students in school
+  const totalStudents = await WeeklyStats.countDocuments({
+    weekNumber,
+    year,
+  });
+
+  return {
+    rank,
+    totalStudents,
+    totalSum: studentTotalSum,
+    totalGrades: studentStats.simpleStats.totalGrades,
+  };
+}
+
+/**
+ * DEPRECATED: Old pre-calculation method - kept for cron job only
  * Recalculate rankings for a specific week (based on totalSum)
  */
 async function recalculateRankings(weekNumber, year) {
@@ -302,5 +396,7 @@ module.exports = {
   createWeeklyStatsForStudent,
   recalculateWeeklyStats,
   generateWeeklyStatsForAllStudents,
-  recalculateRankings,
+  recalculateRankings, // Kept for cron job
+  calculateStudentRankInClass, // NEW: Lazy calculation
+  calculateStudentRankInSchool, // NEW: Lazy calculation
 };
