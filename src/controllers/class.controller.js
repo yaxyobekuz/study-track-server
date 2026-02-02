@@ -1,3 +1,4 @@
+const ExcelService = require("../services/excel.service");
 const Class = require("../models/class.model");
 const User = require("../models/user.model");
 
@@ -28,7 +29,7 @@ const getClass = async (req, res) => {
   try {
     const classData = await Class.findById(req.params.id).populate(
       "createdBy",
-      "firstName lastName"
+      "firstName lastName",
     );
 
     if (!classData) {
@@ -81,7 +82,7 @@ const createClass = async (req, res) => {
 
     const populatedClass = await Class.findById(classData._id).populate(
       "createdBy",
-      "firstName lastName"
+      "firstName lastName",
     );
 
     res.status(201).json({
@@ -119,7 +120,7 @@ const updateClass = async (req, res) => {
 
     const updatedClass = await Class.findById(classData._id).populate(
       "createdBy",
-      "firstName lastName"
+      "firstName lastName",
     );
 
     res.json({
@@ -177,10 +178,73 @@ const deleteClass = async (req, res) => {
   }
 };
 
+// Export class students to Excel
+const exportClassStudents = async (req, res) => {
+  try {
+    const classData = await Class.findById(req.params.id);
+
+    if (!classData) {
+      return res.status(404).json({
+        success: false,
+        message: "Sinf topilmadi",
+      });
+    }
+
+    // Get class students
+    const students = await User.find({
+      classes: req.params.id,
+      role: "student",
+    })
+      .populate("classes", "name")
+      .select("+plainPassword")
+      .sort({ firstName: 1, lastName: 1 });
+
+    // Prepare data
+    const data = students.map((student) => ({
+      fullName: `${student.firstName} ${student.lastName || ""}`.trim(),
+      username: student.username,
+      password: student.plainPassword || "N/A",
+      role: "O'quvchi",
+      classes:
+        student.classes && student.classes.length > 0
+          ? student.classes.map((c) => c.name).join(", ")
+          : "-",
+    }));
+
+    // Create Excel with service
+    const workbook = ExcelService.createExcel({
+      sheetName: classData.name,
+      columns: [
+        { header: "F.I.O", key: "fullName", width: 30 },
+        { header: "Username", key: "username", width: 20 },
+        { header: "Parol", key: "password", width: 18 },
+        { header: "Rol", key: "role", width: 15 },
+        { header: "Sinflar", key: "classes", width: 25 },
+      ],
+      data,
+    });
+
+    // Generate filename
+    const filename = ExcelService.generateFileName(
+      `${classData.name}_oquvchilar`,
+    );
+
+    // Send file
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllClasses,
   getClass,
   createClass,
   updateClass,
   deleteClass,
+  exportClassStudents,
 };
