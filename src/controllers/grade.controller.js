@@ -253,11 +253,11 @@ const createGrade = async (req, res) => {
       });
     }
 
-    // Check grade (must be between 2-5)
-    if (grade < 2 || grade > 5) {
+    // Check grade (must be between 1-5)
+    if (grade < 1 || grade > 5) {
       return res.status(400).json({
         success: false,
-        message: "Baho 2 dan 5 gacha bo'lishi kerak",
+        message: "Baho 1 dan 5 gacha bo'lishi kerak",
       });
     }
 

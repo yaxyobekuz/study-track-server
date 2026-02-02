@@ -31,7 +31,7 @@ const gradeSchema = new mongoose.Schema(
     grade: {
       type: Number,
       required: [true, "Baho majburiy"],
-      min: 2,
+      min: 1,
       max: 5,
     },
     comment: {
@@ -76,6 +76,15 @@ gradeSchema.post("save", async function (doc) {
     await updateWeeklyStatsForGrade(doc);
   } catch (error) {
     console.error("Error updating WeeklyStats after grade save:", error);
+  }
+});
+
+// POST-DELETE HOOK: Update WeeklyStats when grade is deleted
+gradeSchema.post("deleteOne", { document: true, query: false }, async function (doc) {
+  try {
+    await updateWeeklyStatsForGrade(doc);
+  } catch (error) {
+    console.error("Error updating WeeklyStats after grade delete:", error);
   }
 });
 
