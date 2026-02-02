@@ -1,3 +1,4 @@
+const ExcelService = require("../services/excel.service");
 const User = require("../models/user.model");
 const Class = require("../models/class.model");
 const TgUser = require("../models/tguser.model");
@@ -326,6 +327,69 @@ const deleteUser = async (req, res) => {
   }
 };
 
+// Export users to Excel (Owner only)
+const exportUsersToExcel = async (req, res) => {
+  try {
+    const { role } = req.query;
+
+    // Build query
+    let query = {};
+    if (role === "teacher") {
+      query.role = "teacher";
+    } else if (role === "student") {
+      query.role = "student";
+    } else {
+      query.role = { $in: ["teacher", "student"] };
+    }
+
+    // Fetch users with plainPassword
+    const users = await User.find(query)
+      .populate("classes", "name")
+      .select("+plainPassword")
+      .sort({ role: 1, firstName: 1 });
+
+    // Prepare data
+    const data = users.map((user) => ({
+      fullName: `${user.firstName} ${user.lastName || ""}`.trim(),
+      username: user.username,
+      password: user.plainPassword || "N/A",
+      role: user.role === "teacher" ? "O'qituvchi" : "O'quvchi",
+      classes:
+        user.classes && user.classes.length > 0
+          ? user.classes.map((c) => c.name).join(", ")
+          : "-",
+    }));
+
+    // Create Excel with service
+    const workbook = ExcelService.createExcel({
+      sheetName: "Foydalanuvchilar",
+      columns: [
+        { header: "F.I.O", key: "fullName", width: 30 },
+        { header: "Username", key: "username", width: 20 },
+        { header: "Parol", key: "password", width: 18 },
+        { header: "Rol", key: "role", width: 15 },
+        { header: "Sinflar", key: "classes", width: 40 },
+      ],
+      data,
+    });
+
+    // Generate filename
+    let baseName = "users";
+    if (role === "teacher") baseName = "teachers";
+    else if (role === "student") baseName = "students";
+    const filename = ExcelService.generateFileName(baseName);
+
+    // Send file
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllUsers,
   createUser,
@@ -334,4 +398,5 @@ module.exports = {
   getUserPassword,
   deleteUser,
   getStats,
+  exportUsersToExcel,
 };
