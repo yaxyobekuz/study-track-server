@@ -92,6 +92,70 @@ const getTomorrowStart = (date = new Date()) => {
   return tomorrow;
 };
 
+/**
+ * Vaqtni HH:mm formatidan daqiqalarga aylantiradi (yarim tunda 0)
+ * @param {string} timeStr - Vaqt (masalan: "09:30")
+ * @returns {number} Daqiqalar (masalan: 570)
+ */
+const timeToMinutes = (timeStr) => {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  return hours * 60 + minutes;
+};
+
+/**
+ * Hozirgi vaqtni daqiqalarda qaytaradi (yarim tunda 0)
+ * @returns {number} Hozirgi vaqt daqiqalarda
+ */
+const getCurrentTimeInMinutes = () => {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
+};
+
+/**
+ * Daqiqalarni HH:mm formatiga aylantiradi
+ * @param {number} minutes - Daqiqalar (masalan: 570)
+ * @returns {string} Vaqt (masalan: "09:30")
+ */
+const minutesToTime = (minutes) => {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+};
+
+/**
+ * Dars vaqti oralig'ini tekshiradi (baho qo'yish uchun)
+ * @param {string} startTime - Boshlanish vaqti (HH:mm)
+ * @param {string} endTime - Tugash vaqti (HH:mm)
+ * @param {number} gracePeriodMinutes - Darsdan keyin qo'shimcha vaqt (default: 30)
+ * @returns {{canGrade: boolean, reason: string}} Natija
+ */
+const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => {
+  const currentMinutes = getCurrentTimeInMinutes();
+  const startMinutes = timeToMinutes(startTime);
+  const endMinutes = timeToMinutes(endTime);
+  const graceEndMinutes = endMinutes + gracePeriodMinutes;
+
+  // Dars boshlanishidan oldin
+  if (currentMinutes < startMinutes) {
+    const minutesUntilStart = startMinutes - currentMinutes;
+    return {
+      canGrade: false,
+      reason: `Dars hali boshlanmagan. ${minutesToTime(startMinutes)} da boshlanadi (${minutesUntilStart} daqiqadan keyin)`,
+    };
+  }
+
+  // Darsdan keyin grace period tugagan
+  if (currentMinutes > graceEndMinutes) {
+    return {
+      canGrade: false,
+      reason: `Baho qo'yish muddati tugagan. Dars ${minutesToTime(endMinutes)} da tugagan (${gracePeriodMinutes} daqiqalik muddat tugadi)`,
+    };
+  }
+
+  // Dars davomida yoki grace period ichida
+  return { canGrade: true, reason: null };
+};
+
 module.exports = {
   getCurrentDayUz,
   getDayNameUz,
@@ -100,4 +164,8 @@ module.exports = {
   isToday,
   isSameDay,
   getTomorrowStart,
+  timeToMinutes,
+  getCurrentTimeInMinutes,
+  minutesToTime,
+  checkGradingTimeWindow,
 };
