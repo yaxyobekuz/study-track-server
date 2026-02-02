@@ -43,6 +43,11 @@ const gradeSchema = new mongoose.Schema(
       type: Date,
       required: [true, "Sana majburiy"],
     },
+    lessonOrder: {
+      type: Number,
+      min: 1,
+      default: 1,
+    },
     isEdited: {
       type: Boolean,
       default: false,
@@ -61,7 +66,7 @@ const gradeSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-gradeSchema.index({ student: 1, subject: 1, date: 1 });
+gradeSchema.index({ student: 1, subject: 1, date: 1, lessonOrder: 1 });
 gradeSchema.index({ class: 1, date: 1 });
 gradeSchema.index({ teacher: 1, date: 1 });
 

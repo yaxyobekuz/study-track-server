@@ -111,7 +111,15 @@ const getGradesByClassAndDate = async (req, res) => {
       });
     }
 
-    // Use aggregation pipeline for proper sorting by populated fields
+    // Get all students in the class
+    const allStudents = await User.find({
+      role: "student",
+      classes: classObjectId,
+    })
+      .select("_id firstName lastName")
+      .sort({ lastName: 1, firstName: 1 });
+
+    // Use aggregation pipeline to get grades
     const grades = await Grade.aggregate([
       {
         $match: {
@@ -147,18 +155,12 @@ const getGradesByClassAndDate = async (req, res) => {
       },
       { $unwind: "$teacher" },
       {
-        $sort: {
-          "student.lastName": 1,
-          "student.firstName": 1,
-          "subject.name": 1,
-        },
-      },
-      {
         $project: {
           _id: 1,
           grade: 1,
           comment: 1,
           date: 1,
+          lessonOrder: 1,
           isEdited: 1,
           createdAt: 1,
           "student._id": 1,
@@ -173,15 +175,44 @@ const getGradesByClassAndDate = async (req, res) => {
       },
     ]);
 
-    // Add order information to each grade for client-side rendering
-    const gradesWithOrder = grades.map((grade) => ({
-      ...grade,
-      lessonOrder: subjectOrderMap[grade.subject._id.toString()] || 0,
-    }));
+    // Group grades by student
+    const gradesByStudent = {};
+    grades.forEach((grade) => {
+      const studentId = grade.student._id.toString();
+      if (!gradesByStudent[studentId]) {
+        gradesByStudent[studentId] = {
+          student: grade.student,
+          grades: [],
+        };
+      }
+      gradesByStudent[studentId].grades.push(grade);
+    });
+
+    // Add students without grades
+    allStudents.forEach((student) => {
+      const studentId = student._id.toString();
+      if (!gradesByStudent[studentId]) {
+        gradesByStudent[studentId] = {
+          student: {
+            _id: student._id,
+            firstName: student.firstName,
+            lastName: student.lastName,
+          },
+          grades: [],
+        };
+      }
+    });
+
+    // Convert to array and sort by student name
+    const studentsWithGrades = Object.values(gradesByStudent).sort((a, b) => {
+      const nameA = `${a.student.lastName} ${a.student.firstName}`;
+      const nameB = `${b.student.lastName} ${b.student.firstName}`;
+      return nameA.localeCompare(nameB);
+    });
 
     res.json({
       success: true,
-      data: gradesWithOrder,
+      data: studentsWithGrades,
     });
   } catch (error) {
     res.status(500).json({
@@ -195,7 +226,7 @@ const getGradesByClassAndDate = async (req, res) => {
 // Create grade (Teacher only)
 const createGrade = async (req, res) => {
   try {
-    const { studentId, subjectId, classId, grade, comment } = req.body;
+    const { studentId, subjectId, classId, grade, comment, lessonOrder } = req.body;
 
     // Validation
     if (!studentId || !subjectId || !classId || !grade) {
@@ -283,17 +314,28 @@ const createGrade = async (req, res) => {
       });
     }
 
-    // Check if teacher has this subject in today's schedule
-    const hasSubjectToday = todaySchedule.subjects.some(
+    // Check if teacher has this subject in today's schedule and validate lessonOrder
+    const teacherLessons = todaySchedule.subjects.filter(
       (s) =>
         s.subject.toString() === subjectId &&
         s.teacher.toString() === req.user._id.toString(),
     );
 
-    if (!hasSubjectToday) {
+    if (teacherLessons.length === 0) {
       return res.status(403).json({
         success: false,
         message: `Bugun (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
+      });
+    }
+
+    // Validate lessonOrder if provided
+    const finalLessonOrder = lessonOrder || teacherLessons[0].order;
+    const lessonExists = teacherLessons.find((l) => l.order === finalLessonOrder);
+
+    if (!lessonExists) {
+      return res.status(400).json({
+        success: false,
+        message: `Dars tartibi noto'g'ri. Sizning darslaringiz: ${teacherLessons.map(l => l.order).join(', ')}`,
       });
     }
 
@@ -303,10 +345,11 @@ const createGrade = async (req, res) => {
     const tomorrow = new Date(todayDate);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Check if grade already exists for this student, subject, and date (today)
+    // Check if grade already exists for this student, subject, lessonOrder, and date (today)
     const existingGrade = await Grade.findOne({
       student: studentId,
       subject: subjectId,
+      lessonOrder: finalLessonOrder,
       date: { $gte: todayDate, $lt: tomorrow },
     });
 
@@ -314,7 +357,7 @@ const createGrade = async (req, res) => {
       return res.status(400).json({
         success: false,
         message:
-          "Bugun ushbu o'quvchiga bu fan uchun baho allaqachon qo'yilgan",
+          "Bugun ushbu o'quvchiga bu dars uchun baho allaqachon qo'yilgan",
       });
     }
 
@@ -326,6 +369,7 @@ const createGrade = async (req, res) => {
       teacher: req.user._id,
       grade,
       date: new Date(),
+      lessonOrder: finalLessonOrder,
       comment,
     });
 
@@ -578,17 +622,33 @@ const getTeacherSubjectsInClass = async (req, res) => {
     }
 
     // Filter only teacher's subjects from today's schedule
+    // Include ALL lessons (with duplicates) and add order/lessonNumber
     const teacherSubjects = [];
+    const subjectCountMap = {}; // Track how many times each subject appears
+
     todaySchedule.subjects.forEach((item) => {
       if (item.teacher.toString() === req.user._id.toString()) {
-        const exists = teacherSubjects.find(
-          (s) => s._id.toString() === item.subject._id.toString(),
-        );
-        if (!exists) {
-          teacherSubjects.push(item.subject);
+        const subjectId = item.subject._id.toString();
+
+        // Increment count for this subject
+        if (!subjectCountMap[subjectId]) {
+          subjectCountMap[subjectId] = 0;
         }
+        subjectCountMap[subjectId]++;
+
+        // Add subject with lesson number
+        teacherSubjects.push({
+          _id: item.subject._id,
+          name: item.subject.name,
+          order: item.order,
+          lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
+          currentTopicNumber: item.currentTopicNumber || 1,
+        });
       }
     });
+
+    // Sort by order to maintain schedule sequence
+    teacherSubjects.sort((a, b) => a.order - b.order);
 
     res.json({
       success: true,
@@ -607,7 +667,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
 // Get students with their grades for a class, subject and date
 const getStudentsWithGrades = async (req, res) => {
   try {
-    const { classId, subjectId, date } = req.query;
+    const { classId, subjectId, date, lessonOrder } = req.query;
 
     if (!classId || !subjectId || !date) {
       return res.status(400).json({
@@ -615,6 +675,8 @@ const getStudentsWithGrades = async (req, res) => {
         message: "Sinf, fan va sana majburiy",
       });
     }
+
+    const finalLessonOrder = lessonOrder ? parseInt(lessonOrder) : null;
 
     // Get all students in the class
     const students = await User.find({ role: "student", classes: classId })
@@ -629,11 +691,18 @@ const getStudentsWithGrades = async (req, res) => {
     endDate.setHours(23, 59, 59, 999);
 
     // Get grades for this class, subject and date
-    const grades = await Grade.find({
+    const gradeQuery = {
       class: classId,
       subject: subjectId,
       date: { $gte: startDate, $lte: endDate },
-    }).populate("teacher", "firstName lastName");
+    };
+
+    // If lessonOrder is specified, filter by it
+    if (finalLessonOrder) {
+      gradeQuery.lessonOrder = finalLessonOrder;
+    }
+
+    const grades = await Grade.find(gradeQuery).populate("teacher", "firstName lastName");
 
     // Get current topic for this class and subject
     let currentTopic = null;
@@ -644,9 +713,19 @@ const getStudentsWithGrades = async (req, res) => {
     });
 
     if (schedule) {
-      const subjectInSchedule = schedule.subjects.find(
-        (s) => s.subject.toString() === subjectId
-      );
+      // If lessonOrder is specified, find the exact lesson
+      // Otherwise, find the first occurrence of this subject
+      let subjectInSchedule;
+
+      if (finalLessonOrder) {
+        subjectInSchedule = schedule.subjects.find(
+          (s) => s.subject.toString() === subjectId && s.order === finalLessonOrder
+        );
+      } else {
+        subjectInSchedule = schedule.subjects.find(
+          (s) => s.subject.toString() === subjectId
+        );
+      }
 
       if (subjectInSchedule && subjectInSchedule.currentTopicNumber) {
         const topic = await Topic.findOne({
