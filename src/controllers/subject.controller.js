@@ -1,6 +1,7 @@
 const Grade = require("../models/grade.model");
 const Subject = require("../models/subject.model");
 const Schedule = require("../models/schedule.model");
+const ExcelService = require("../services/excel.service");
 
 // Get all subjects
 const getAllSubjects = async (req, res) => {
@@ -131,9 +132,59 @@ const deleteSubject = async (req, res) => {
   }
 };
 
+// Export subjects to Excel
+const exportSubjects = async (req, res) => {
+  try {
+    const subjects = await Subject.find()
+      .populate("createdBy", "firstName lastName")
+      .sort({ name: 1 })
+      .lean();
+
+    // Excel uchun ma'lumotlarni tayyorlash
+    const data = subjects.map((subject) => ({
+      name: subject.name,
+      description: subject.description || "-",
+      status: subject.isActive ? "Faol" : "Faol emas",
+      createdBy: subject.createdBy
+        ? `${subject.createdBy.firstName} ${subject.createdBy.lastName}`
+        : "-",
+      createdAt: new Date(subject.createdAt).toLocaleDateString("uz-UZ"),
+    }));
+
+    // Excel yaratish
+    const workbook = ExcelService.createExcel({
+      sheetName: "Fanlar",
+      columns: [
+        { header: "Fan nomi", key: "name", width: 25 },
+        { header: "Tavsif", key: "description", width: 40 },
+        { header: "Holati", key: "status", width: 12 },
+        { header: "Yaratuvchi", key: "createdBy", width: 20 },
+        { header: "Yaratilgan sana", key: "createdAt", width: 15 },
+      ],
+      data,
+      headerStyle: {
+        bgColor: ExcelService.COLORS.HEADER_PURPLE,
+      },
+    });
+
+    // Fayl nomini yaratish
+    const filename = ExcelService.generateFileName("fanlar");
+
+    // Faylni yuborish
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllSubjects,
   createSubject,
   updateSubject,
   deleteSubject,
+  exportSubjects,
 };

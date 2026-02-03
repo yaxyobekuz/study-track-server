@@ -4,7 +4,8 @@ const {
   getAllSubjects,
   createSubject,
   updateSubject,
-  deleteSubject
+  deleteSubject,
+  exportSubjects
 } = require('../controllers/subject.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
@@ -13,6 +14,7 @@ router.use(protect);
 
 // GET routes for everyone (teacher, student, owner)
 router.get('/', getAllSubjects);
+router.get('/export', authorize('owner'), exportSubjects);
 
 // CUD operations for owner only
 router.post('/', authorize('owner'), createSubject);
