@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const {
   getGrades,
+  getMissingGradesToday,
   getGradesByClassAndDate,
   createGrade,
   updateGrade,
@@ -18,6 +19,9 @@ router.use(protect);
 
 // Export grades to Excel
 router.get("/export", authorize("owner", "teacher"), exportGrades);
+
+// Qo'yilmagan baholar (faqat owner)
+router.get("/missing-today", authorize("owner"), getMissingGradesToday);
 
 // Student views their own grades
 router.get("/student/my-grades", authorize("student"), getStudentGrades);

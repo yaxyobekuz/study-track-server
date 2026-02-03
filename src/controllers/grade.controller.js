@@ -16,22 +16,202 @@ const {
 } = require("../services/weeklystats.service");
 const ExcelService = require("../services/excel.service");
 
-// Utils va helpers
-const { DAYS_UZ, GRADE_MIN, GRADE_MAX } = require("../utils/constants");
 const {
   getDayNameUz,
   getDateRangeForDay,
-  isToday,
-  getTomorrowStart,
   getCurrentDayUz,
   isSunday,
 } = require("../helpers/date.helpers");
-const {
-  ValidationError,
-  NotFoundError,
-  ForbiddenError,
-} = require("../utils/errors");
-const asyncHandler = require("../middleware/async.middleware");
+
+// Vaqtni minutlarga aylantirish (HH:MM -> minutes)
+const timeToMinutes = (time) => {
+  if (!time) return null;
+  const [hours, minutes] = time.split(":").map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  return hours * 60 + minutes;
+};
+
+// Get missing grades for today (Owner only)
+const getMissingGradesToday = async (req, res) => {
+  try {
+    // 1. Yakshanba tekshirish
+    if (isSunday()) {
+      return res.json({
+        success: true,
+        data: {
+          isHoliday: false,
+          isSunday: true,
+          message: "Yakshanba kuni dars yo'q",
+          byTeacher: [],
+          summary: {
+            totalTeachers: 0,
+            totalLessons: 0,
+            totalMissingStudents: 0,
+          },
+        },
+      });
+    }
+
+    // 2. Bayram kuni tekshirish
+    const holidayCheck = await Holiday.isHoliday(new Date());
+    if (holidayCheck.isHoliday) {
+      return res.json({
+        success: true,
+        data: {
+          isHoliday: true,
+          holiday: holidayCheck.holiday,
+          message: `Bugun dam olish kuni: ${holidayCheck.holiday.name}`,
+          byTeacher: [],
+          summary: {
+            totalTeachers: 0,
+            totalLessons: 0,
+            totalMissingStudents: 0,
+          },
+        },
+      });
+    }
+
+    // 3. Bugungi kun nomi va hozirgi vaqt
+    const todayDayName = getCurrentDayUz();
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    // 4. Bugungi sana oralig'i
+    const { startDate, endDate } = getDateRangeForDay(new Date());
+
+    // 5. Bugungi barcha jadvallarni olish
+    const todaySchedules = await Schedule.find({ day: todayDayName })
+      .populate("class", "name isActive")
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName");
+
+    // 6. O'qituvchilar bo'yicha guruhlash uchun map
+    const teacherDataMap = {};
+
+    for (const schedule of todaySchedules) {
+      // Faol bo'lmagan sinflarni o'tkazib yuborish
+      if (!schedule.class || !schedule.class.isActive) continue;
+
+      // Sinfdagi barcha faol o'quvchilarni olish
+      const studentsInClass = await User.find({
+        role: "student",
+        classes: schedule.class._id,
+        isActive: true,
+      }).select("_id firstName lastName");
+
+      if (studentsInClass.length === 0) continue;
+
+      // Bugungi baholarni olish
+      const todayGrades = await Grade.find({
+        class: schedule.class._id,
+        date: { $gte: startDate, $lte: endDate },
+      });
+
+      // Har bir darsni tekshirish
+      for (const lesson of schedule.subjects) {
+        if (!lesson.teacher) continue;
+
+        // Vaqt tekshiruvi: endTime mavjud va o'tib ketgan yoki endTime yo'q
+        const endMinutes = timeToMinutes(lesson.endTime);
+        const isLessonEnded =
+          endMinutes === null || currentMinutes > endMinutes;
+
+        // Agar dars hali tugamagan bo'lsa, o'tkazib yuboramiz
+        if (!isLessonEnded) continue;
+
+        // Bu dars uchun baho olgan o'quvchilar
+        const gradedStudentIds = new Set(
+          todayGrades
+            .filter(
+              (g) =>
+                g.subject.toString() === lesson.subject._id.toString() &&
+                g.lessonOrder === lesson.order,
+            )
+            .map((g) => g.student.toString()),
+        );
+
+        // Baho olmagan o'quvchilar
+        const missingStudents = studentsInClass.filter(
+          (s) => !gradedStudentIds.has(s._id.toString()),
+        );
+
+        // Agar baho olmagan o'quvchilar bo'lsa
+        if (missingStudents.length > 0) {
+          const teacherId = lesson.teacher._id.toString();
+
+          // O'qituvchi uchun data yaratish
+          if (!teacherDataMap[teacherId]) {
+            teacherDataMap[teacherId] = {
+              teacher: {
+                _id: lesson.teacher._id,
+                firstName: lesson.teacher.firstName,
+                lastName: lesson.teacher.lastName,
+              },
+              lessons: [],
+            };
+          }
+
+          // Dars ma'lumotlarini qo'shish
+          teacherDataMap[teacherId].lessons.push({
+            class: {
+              _id: schedule.class._id,
+              name: schedule.class.name,
+            },
+            subject: {
+              _id: lesson.subject._id,
+              name: lesson.subject.name,
+            },
+            lessonOrder: lesson.order,
+            startTime: lesson.startTime,
+            endTime: lesson.endTime,
+            totalStudents: studentsInClass.length,
+            missingStudents: missingStudents.map((s) => ({
+              _id: s._id,
+              firstName: s.firstName,
+              lastName: s.lastName,
+            })),
+          });
+        }
+      }
+    }
+
+    // 7. Array formatiga o'tkazish
+    const byTeacher = Object.values(teacherDataMap);
+
+    // 8. Summary hisoblash
+    let totalLessons = 0;
+    let totalMissingStudents = 0;
+    byTeacher.forEach((t) => {
+      totalLessons += t.lessons.length;
+      t.lessons.forEach((l) => {
+        totalMissingStudents += l.missingStudents.length;
+      });
+    });
+
+    // 9. Response
+    return res.json({
+      success: true,
+      data: {
+        isHoliday: false,
+        isSunday: false,
+        dayName: todayDayName,
+        date: new Date().toISOString().split("T")[0],
+        byTeacher,
+        summary: {
+          totalTeachers: byTeacher.length,
+          totalLessons,
+          totalMissingStudents,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
 
 // Get grades (with filters)
 const getGrades = async (req, res) => {
@@ -1151,6 +1331,7 @@ const exportGrades = async (req, res) => {
 
 module.exports = {
   getGrades,
+  getMissingGradesToday,
   createGrade,
   updateGrade,
   deleteGrade,
