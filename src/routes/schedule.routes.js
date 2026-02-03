@@ -27,7 +27,11 @@ router.get(
   authorize("owner", "teacher"),
   getScheduleByClass,
 );
-router.get("/class/:classId/export", authorize("owner"), exportScheduleByClass);
+router.get(
+  "/class/:classId/export",
+  authorize("owner", "teacher"),
+  exportScheduleByClass,
+);
 router.get(
   "/class/:classId/day/:day",
   authorize("owner", "teacher"),
