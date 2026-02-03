@@ -7,6 +7,7 @@ const {
   updateClass,
   deleteClass,
   exportClassStudents,
+  exportClasses,
 } = require("../controllers/class.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -15,6 +16,7 @@ router.use(protect);
 
 // GET routes for everyone
 router.get("/", getAllClasses);
+router.get("/export", authorize("owner"), exportClasses);
 router.get("/:id", getClass);
 router.get("/:id/export", authorize("owner"), exportClassStudents);
 

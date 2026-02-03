@@ -240,6 +240,48 @@ const exportClassStudents = async (req, res) => {
   }
 };
 
+// Export classes to Excel
+const exportClasses = async (req, res) => {
+  try {
+    const classes = await Class.find()
+      .populate("createdBy", "firstName lastName")
+      .sort({ name: 1 })
+      .lean();
+
+    const data = classes.map((classItem) => ({
+      name: classItem.name,
+      status: classItem.isActive ? "Faol" : "Faol emas",
+      createdBy: classItem.createdBy
+        ? `${classItem.createdBy.firstName} ${classItem.createdBy.lastName}`
+        : "-",
+      createdAt: new Date(classItem.createdAt).toLocaleDateString("uz-UZ"),
+    }));
+
+    const workbook = ExcelService.createExcel({
+      sheetName: "Sinflar",
+      columns: [
+        { header: "Sinf nomi", key: "name", width: 25 },
+        { header: "Holati", key: "status", width: 12 },
+        { header: "Yaratuvchi", key: "createdBy", width: 20 },
+        { header: "Yaratilgan sana", key: "createdAt", width: 15 },
+      ],
+      data,
+      headerStyle: {
+        bgColor: ExcelService.COLORS.HEADER_GREEN,
+      },
+    });
+
+    const filename = ExcelService.generateFileName("sinflar");
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllClasses,
   getClass,
@@ -247,4 +289,5 @@ module.exports = {
   updateClass,
   deleteClass,
   exportClassStudents,
+  exportClasses,
 };
