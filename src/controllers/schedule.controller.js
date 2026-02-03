@@ -1,3 +1,4 @@
+const ExcelService = require("../services/excel.service");
 const Schedule = require("../models/schedule.model");
 const Class = require("../models/class.model");
 const Subject = require("../models/subject.model");
@@ -218,6 +219,110 @@ const deleteSchedule = async (req, res) => {
   }
 };
 
+// Export schedules for class to Excel
+const exportScheduleByClass = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    const classDoc = await Class.findById(classId);
+    if (!classDoc) {
+      return res.status(404).json({
+        success: false,
+        message: "Sinf topilmadi",
+      });
+    }
+
+    const schedules = await Schedule.find({ class: classId })
+      .populate("subjects.subject", "name")
+      .populate("subjects.teacher", "firstName lastName")
+      .sort({ day: 1 })
+      .lean();
+
+    const dayOrder = [
+      "dushanba",
+      "seshanba",
+      "chorshanba",
+      "payshanba",
+      "juma",
+      "shanba",
+      "yakshanba",
+    ];
+
+    const dayRank = new Map(dayOrder.map((day, index) => [day, index]));
+
+    const sortedSchedules = [...schedules].sort((a, b) => {
+      const rankA = dayRank.has(a.day) ? dayRank.get(a.day) : 999;
+      const rankB = dayRank.has(b.day) ? dayRank.get(b.day) : 999;
+      return rankA - rankB;
+    });
+
+    const data = [];
+
+    sortedSchedules.forEach((schedule) => {
+      const subjects = [...(schedule.subjects || [])].sort(
+        (a, b) => (a.order || 0) - (b.order || 0),
+      );
+
+      if (subjects.length === 0) {
+        data.push({
+          day: schedule.day,
+          order: "-",
+          subject: "-",
+          teacher: "-",
+          time: "-",
+        });
+        return;
+      }
+
+      subjects.forEach((subj, index) => {
+        const displayOrder =
+          (schedule.startingOrder || 1) + (subj.order || index + 1) - 1;
+        const teacherName = subj.teacher
+          ? `${subj.teacher.firstName} ${subj.teacher.lastName || ""}`.trim()
+          : "-";
+        const time =
+          subj.startTime && subj.endTime
+            ? `${subj.startTime} - ${subj.endTime}`
+            : "-";
+
+        data.push({
+          day: schedule.day,
+          order: displayOrder,
+          subject: subj.subject?.name || "-",
+          teacher: teacherName,
+          time,
+        });
+      });
+    });
+
+    const workbook = ExcelService.createExcel({
+      sheetName: classDoc.name,
+      columns: [
+        { header: "Kun", key: "day", width: 15 },
+        { header: "Dars", key: "order", width: 8 },
+        { header: "Fan", key: "subject", width: 30 },
+        { header: "O'qituvchi", key: "teacher", width: 25 },
+        { header: "Vaqt", key: "time", width: 15 },
+      ],
+      data,
+      headerStyle: {
+        bgColor: ExcelService.COLORS.HEADER_ORANGE,
+      },
+    });
+
+    const filename = ExcelService.generateFileName(
+      `dars_jadvali_${classDoc.name}`,
+    );
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 // Get all schedules for today (Owner only)
 const getAllTodaySchedules = async (req, res) => {
   try {
@@ -382,4 +487,5 @@ module.exports = {
   getMyTodaySchedule,
   getAllTodaySchedules,
   updateCurrentTopic,
+  exportScheduleByClass,
 };

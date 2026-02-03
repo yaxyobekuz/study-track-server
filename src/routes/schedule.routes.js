@@ -8,6 +8,7 @@ const {
   getAllTodaySchedules,
   createOrUpdateSchedule,
   updateCurrentTopic,
+  exportScheduleByClass,
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -24,17 +25,22 @@ router.get("/all-today", authorize("owner"), getAllTodaySchedules);
 router.get(
   "/class/:classId",
   authorize("owner", "teacher"),
-  getScheduleByClass
+  getScheduleByClass,
 );
+router.get("/class/:classId/export", authorize("owner"), exportScheduleByClass);
 router.get(
   "/class/:classId/day/:day",
   authorize("owner", "teacher"),
-  getScheduleByDay
+  getScheduleByDay,
 );
 
 // CRUD operations for owner only
 router.post("/", authorize("owner"), createOrUpdateSchedule);
-router.patch("/:id/subject/:subjectId/topic", authorize("owner"), updateCurrentTopic);
+router.patch(
+  "/:id/subject/:subjectId/topic",
+  authorize("owner"),
+  updateCurrentTopic,
+);
 router.delete("/:id", authorize("owner"), deleteSchedule);
 
 module.exports = router;
