@@ -3,6 +3,7 @@ const Class = require("../models/class.model");
 const WeeklyStats = require("../models/weeklystats.model");
 
 // Services
+const ExcelService = require("../services/excel.service");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const {
   calculateStudentRankInClass,
@@ -46,7 +47,9 @@ exports.getStudentWeeklyStatistics = async (req, res) => {
           weekNumber,
           year,
         );
-        await weeklyStats.populate("student classes simpleStats.subjects.subject");
+        await weeklyStats.populate(
+          "student classes simpleStats.subjects.subject",
+        );
       } catch (error) {
         // If student doesn't exist or has no class
         return res.status(404).json({
@@ -154,7 +157,7 @@ exports.getClassRankings = async (req, res) => {
       .select("student simpleStats.totalSum simpleStats.totalGrades");
 
     // Convert to plain objects to include virtuals like fullName
-    allStats = allStats.map(stat => stat.toJSON());
+    allStats = allStats.map((stat) => stat.toJSON());
 
     if (allStats.length === 0) {
       return res.json({
@@ -258,7 +261,7 @@ exports.getSchoolRankings = async (req, res) => {
       .select("student simpleStats.totalSum simpleStats.totalGrades");
 
     // Convert to plain objects to include virtuals like fullName
-    allStats = allStats.map(stat => stat.toJSON());
+    allStats = allStats.map((stat) => stat.toJSON());
 
     if (allStats.length === 0) {
       return res.json({
@@ -328,6 +331,117 @@ exports.getSchoolRankings = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Reytinglarni olishda xatolik yuz berdi",
+    });
+  }
+};
+
+/**
+ * Haftalik statistikani Excel formatida export qilish
+ * GET /api/statistics/weekly/export
+ * @access Private (Owner only)
+ */
+exports.exportWeeklyStatistics = async (req, res) => {
+  try {
+    const { type = "school", classId } = req.query;
+    const { weekStart, weekEnd, weekNumber, year } = getCurrentWeekRange();
+
+    let rankings = [];
+    let sheetName = "Maktab reytingi";
+    let classDoc = null;
+
+    if (type === "class" && classId) {
+      classDoc = await Class.findById(classId);
+      if (!classDoc) {
+        return res.status(404).json({
+          success: false,
+          message: "Sinf topilmadi",
+        });
+      }
+
+      let allStats = await WeeklyStats.find({
+        classes: classId,
+        year,
+        weekNumber,
+      })
+        .populate("student")
+        .select("student simpleStats.totalSum simpleStats.totalGrades");
+
+      allStats = allStats.map((stat) => stat.toJSON());
+      allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
+
+      rankings = allStats.map((stat, index) => ({
+        rank: index + 1,
+        fullName: stat.student.fullName,
+        totalSum: stat.simpleStats.totalSum,
+        totalGrades: stat.simpleStats.totalGrades,
+      }));
+
+      sheetName = `${classDoc.name} reytingi`;
+    } else {
+      let allStats = await WeeklyStats.find({
+        year,
+        weekNumber,
+      })
+        .populate({
+          path: "student",
+          populate: {
+            path: "classes",
+          },
+        })
+        .select("student simpleStats.totalSum simpleStats.totalGrades");
+
+      allStats = allStats.map((stat) => stat.toJSON());
+      allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
+
+      rankings = allStats.map((stat, index) => ({
+        rank: index + 1,
+        fullName: stat.student.fullName,
+        classes:
+          stat.student.classes && stat.student.classes.length > 0
+            ? stat.student.classes.map((c) => c.name).join(", ")
+            : "-",
+        totalSum: stat.simpleStats.totalSum,
+        totalGrades: stat.simpleStats.totalGrades,
+      }));
+    }
+
+    const columns =
+      type === "class"
+        ? [
+            { header: "O'rin", key: "rank", width: 8 },
+            { header: "O'quvchi", key: "fullName", width: 30 },
+            { header: "Umumiy ball", key: "totalSum", width: 15 },
+            { header: "Baholar soni", key: "totalGrades", width: 15 },
+          ]
+        : [
+            { header: "O'rin", key: "rank", width: 8 },
+            { header: "O'quvchi", key: "fullName", width: 30 },
+            { header: "Sinflar", key: "classes", width: 20 },
+            { header: "Umumiy ball", key: "totalSum", width: 15 },
+            { header: "Baholar soni", key: "totalGrades", width: 15 },
+          ];
+
+    const workbook = ExcelService.createExcel({
+      sheetName,
+      columns,
+      data: rankings,
+      headerStyle: {
+        bgColor: ExcelService.COLORS.HEADER_BLUE,
+      },
+    });
+
+    const baseFileName =
+      type === "class" && classDoc
+        ? `haftalik_reyting_${classDoc.name}`
+        : "haftalik_reyting_maktab";
+    const filename = ExcelService.generateFileName(baseFileName);
+
+    await ExcelService.sendWorkbook(res, workbook, filename);
+  } catch (error) {
+    console.error("Export weekly statistics error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Statistikani export qilishda xatolik yuz berdi",
     });
   }
 };

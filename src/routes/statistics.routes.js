@@ -4,6 +4,7 @@ const {
   getStudentWeeklyStatistics,
   getClassRankings,
   getSchoolRankings,
+  exportWeeklyStatistics,
 } = require("../controllers/statistics.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -29,6 +30,13 @@ router.get(
   "/weekly/school/rankings",
   authorize("owner"),
   getSchoolRankings
+);
+
+// Haftalik statistikani export qilish (faqat owner)
+router.get(
+  "/weekly/export",
+  authorize("owner"),
+  exportWeeklyStatistics
 );
 
 module.exports = router;
