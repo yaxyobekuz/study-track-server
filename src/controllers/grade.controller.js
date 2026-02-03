@@ -1076,32 +1076,45 @@ const exportGrades = async (req, res) => {
         let totalGrades = 0;
         let gradeCount = 0;
 
+        // Fan takrorlanish indekslarini hisoblash
+        const subjectOccurrences = {};
+
+        // Shu o'quvchining baholarini lessonOrder bo'yicha tartiblash
+        const sortedGrades = [...item.grades].sort(
+          (a, b) => (a.lessonOrder || 0) - (b.lessonOrder || 0),
+        );
+
+        // Har bir fan uchun baholarni guruhlash
+        const gradesBySubject = {};
+        sortedGrades.forEach((g) => {
+          if (g.subject && g.subject._id) {
+            const subjectId = g.subject._id.toString();
+            if (!gradesBySubject[subjectId]) {
+              gradesBySubject[subjectId] = [];
+            }
+            gradesBySubject[subjectId].push(g);
+          }
+        });
+
         sortedSubjects.forEach((s) => {
-          // Match by subject ID and lessonOrder
-          const gradeData = item.grades.find(
-            (g) =>
-              g.subject &&
-              g.subject._id &&
-              g.subject._id.toString() === s.subject._id.toString() &&
-              g.lessonOrder === s.order,
-          );
+          const subjectId = s.subject._id.toString();
 
-          // Agar lessonOrder bo'yicha topilmasa, faqat subject bo'yicha izlash
-          const fallbackGrade = !gradeData
-            ? item.grades.find(
-                (g) =>
-                  g.subject &&
-                  g.subject._id &&
-                  g.subject._id.toString() === s.subject._id.toString(),
-              )
-            : null;
+          // Bu fanning nechanchi marta takrorlanishini hisoblash
+          if (!subjectOccurrences[subjectId]) {
+            subjectOccurrences[subjectId] = 0;
+          }
+          const occurrenceIndex = subjectOccurrences[subjectId];
+          subjectOccurrences[subjectId]++;
 
-          const foundGrade = gradeData || fallbackGrade;
-          const gradeValue = foundGrade ? foundGrade.grade : "-";
+          // Shu takrorlanish indeksidagi bahoni olish
+          const subjectGrades = gradesBySubject[subjectId] || [];
+          const gradeData = subjectGrades[occurrenceIndex] || null;
+
+          const gradeValue = gradeData ? gradeData.grade : "-";
           row[`subject_${s.order}`] = gradeValue;
 
-          if (foundGrade && typeof foundGrade.grade === "number") {
-            totalGrades += foundGrade.grade;
+          if (gradeData && typeof gradeData.grade === "number") {
+            totalGrades += gradeData.grade;
             gradeCount++;
           }
         });
