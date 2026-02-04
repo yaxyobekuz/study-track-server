@@ -41,7 +41,9 @@ require("./src/utils/initOwner")();
 
 // Start cron jobs
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
+const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 startWeeklyStatsCron();
+startTopicIncrementCron();
 
 // Trust proxy
 app.set("trust proxy", 1);
