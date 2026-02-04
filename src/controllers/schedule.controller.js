@@ -4,6 +4,7 @@ const Class = require("../models/class.model");
 const Subject = require("../models/subject.model");
 const User = require("../models/user.model");
 const Topic = require("../models/topic.model");
+const ClassSubjectProgress = require("../models/classSubjectProgress.model");
 
 // Utils va helpers
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
@@ -410,10 +411,82 @@ const getMyTodaySchedule = async (req, res) => {
   }
 };
 
-// Update current topic number for a subject in schedule (Owner only)
+// Get all classes with their current topic number for a subject (Owner only)
+const getClassesBySubject = async (req, res) => {
+  try {
+    const { subjectId } = req.params;
+
+    // Check if subject exists
+    const subject = await Subject.findById(subjectId);
+    if (!subject) {
+      return res.status(404).json({
+        success: false,
+        message: "Fan topilmadi",
+      });
+    }
+
+    // Find all schedules that contain this subject
+    const schedules = await Schedule.find({
+      "subjects.subject": subjectId,
+    })
+      .populate("class", "name")
+      .lean();
+
+    // Get unique class IDs
+    const classIds = [...new Set(schedules.map((s) => s.class._id.toString()))];
+
+    // Get progress for all classes
+    const progressList = await ClassSubjectProgress.find({
+      subject: subjectId,
+      class: { $in: classIds },
+    }).lean();
+
+    // Create progress map
+    const progressMap = new Map();
+    for (const p of progressList) {
+      progressMap.set(p.class.toString(), p.currentTopicNumber);
+    }
+
+    // Group by class
+    const classMap = new Map();
+    for (const schedule of schedules) {
+      const classId = schedule.class._id.toString();
+
+      if (!classMap.has(classId)) {
+        classMap.set(classId, {
+          class: schedule.class,
+          subjectId: subjectId,
+          currentTopicNumber: progressMap.get(classId) || 1,
+        });
+      }
+    }
+
+    // Convert map to array and sort by class name
+    const result = Array.from(classMap.values()).sort((a, b) =>
+      a.class.name.localeCompare(b.class.name)
+    );
+
+    res.json({
+      success: true,
+      data: result,
+      subject: {
+        _id: subject._id,
+        name: subject.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
+// Update current topic number for a class+subject (Owner only)
 const updateCurrentTopic = async (req, res) => {
   try {
-    const { id, subjectId } = req.params;
+    const { classId, subjectId } = req.params;
     const { topicNumber } = req.body;
 
     if (!topicNumber || topicNumber < 1) {
@@ -423,24 +496,21 @@ const updateCurrentTopic = async (req, res) => {
       });
     }
 
-    // Find schedule
-    const schedule = await Schedule.findById(id);
-    if (!schedule) {
+    // Verify class exists
+    const classDoc = await Class.findById(classId);
+    if (!classDoc) {
       return res.status(404).json({
         success: false,
-        message: "Dars jadvali topilmadi",
+        message: "Sinf topilmadi",
       });
     }
 
-    // Find subject in schedule
-    const subjectIndex = schedule.subjects.findIndex(
-      (s) => s.subject.toString() === subjectId,
-    );
-
-    if (subjectIndex === -1) {
+    // Verify subject exists
+    const subject = await Subject.findById(subjectId);
+    if (!subject) {
       return res.status(404).json({
         success: false,
-        message: "Ushbu sinf jadvalida fan topilmadi",
+        message: "Fan topilmadi",
       });
     }
 
@@ -457,18 +527,21 @@ const updateCurrentTopic = async (req, res) => {
       });
     }
 
-    // Update current topic number
-    schedule.subjects[subjectIndex].currentTopicNumber = topicNumber;
-    await schedule.save();
-
-    const populatedSchedule = await Schedule.findById(schedule._id)
-      .populate("subjects.subject", "name")
-      .populate("subjects.teacher", "firstName lastName");
+    // Update or create ClassSubjectProgress
+    const progress = await ClassSubjectProgress.findOneAndUpdate(
+      { class: classId, subject: subjectId },
+      { currentTopicNumber: topicNumber },
+      { upsert: true, new: true }
+    );
 
     res.json({
       success: true,
       message: "Hozirgi mavzu raqami yangilandi",
-      data: populatedSchedule,
+      data: {
+        class: { _id: classDoc._id, name: classDoc.name },
+        subject: { _id: subject._id, name: subject.name },
+        currentTopicNumber: progress.currentTopicNumber,
+      },
     });
   } catch (error) {
     res.status(500).json({
@@ -488,4 +561,5 @@ module.exports = {
   getAllTodaySchedules,
   updateCurrentTopic,
   exportScheduleByClass,
+  getClassesBySubject,
 };

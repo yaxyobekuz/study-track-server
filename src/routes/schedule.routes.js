@@ -9,6 +9,7 @@ const {
   createOrUpdateSchedule,
   updateCurrentTopic,
   exportScheduleByClass,
+  getClassesBySubject,
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -38,10 +39,13 @@ router.get(
   getScheduleByDay,
 );
 
+// Get all classes by subject (Owner only)
+router.get("/subject/:subjectId", authorize("owner"), getClassesBySubject);
+
 // CRUD operations for owner only
 router.post("/", authorize("owner"), createOrUpdateSchedule);
 router.patch(
-  "/:id/subject/:subjectId/topic",
+  "/class/:classId/subject/:subjectId/topic",
   authorize("owner"),
   updateCurrentTopic,
 );

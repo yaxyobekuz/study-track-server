@@ -9,6 +9,7 @@ const Subject = require("../models/subject.model");
 const Holiday = require("../models/holiday.model");
 const Schedule = require("../models/schedule.model");
 const Topic = require("../models/topic.model");
+const ClassSubjectProgress = require("../models/classSubjectProgress.model");
 
 // Services
 const {
@@ -971,6 +972,26 @@ const getTeacherSubjectsInClass = async (req, res) => {
     const subjectCountMap = {}; // Track how many times each subject appears
     const startingOrder = todaySchedule.startingOrder || 1;
 
+    // Get unique subject IDs for progress lookup
+    const teacherSubjectIds = new Set();
+    todaySchedule.subjects.forEach((item) => {
+      if (item.teacher.toString() === req.user._id.toString()) {
+        teacherSubjectIds.add(item.subject._id.toString());
+      }
+    });
+
+    // Get progress for all teacher's subjects in this class
+    const progressList = await ClassSubjectProgress.find({
+      class: classId,
+      subject: { $in: Array.from(teacherSubjectIds) },
+    }).lean();
+
+    // Create progress map
+    const progressMap = new Map();
+    for (const p of progressList) {
+      progressMap.set(p.subject.toString(), p.currentTopicNumber);
+    }
+
     todaySchedule.subjects.forEach((item) => {
       if (item.teacher.toString() === req.user._id.toString()) {
         const subjectId = item.subject._id.toString();
@@ -988,7 +1009,7 @@ const getTeacherSubjectsInClass = async (req, res) => {
           order: item.order,
           startingOrder: startingOrder,
           lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
-          currentTopicNumber: item.currentTopicNumber || 1,
+          currentTopicNumber: progressMap.get(subjectId) || 1,
         });
       }
     });
@@ -1054,44 +1075,26 @@ const getStudentsWithGrades = async (req, res) => {
       "firstName lastName",
     );
 
-    // Get current topic for this class and subject
+    // Get current topic for this class and subject from ClassSubjectProgress
     let currentTopic = null;
-    const dayName = getDayNameUz(date);
-    const schedule = await Schedule.findOne({
+    const progress = await ClassSubjectProgress.findOne({
       class: classId,
-      day: dayName,
+      subject: subjectId,
     });
 
-    if (schedule) {
-      // If lessonOrder is specified, find the exact lesson
-      // Otherwise, find the first occurrence of this subject
-      let subjectInSchedule;
+    const currentTopicNumber = progress?.currentTopicNumber || 1;
 
-      if (finalLessonOrder) {
-        subjectInSchedule = schedule.subjects.find(
-          (s) =>
-            s.subject.toString() === subjectId && s.order === finalLessonOrder,
-        );
-      } else {
-        subjectInSchedule = schedule.subjects.find(
-          (s) => s.subject.toString() === subjectId,
-        );
-      }
+    const topic = await Topic.findOne({
+      subject: subjectId,
+      order: currentTopicNumber,
+    }).select("order name description");
 
-      if (subjectInSchedule && subjectInSchedule.currentTopicNumber) {
-        const topic = await Topic.findOne({
-          subject: subjectId,
-          order: subjectInSchedule.currentTopicNumber,
-        }).select("order name description");
-
-        if (topic) {
-          currentTopic = {
-            number: topic.order,
-            name: topic.name,
-            description: topic.description || "",
-          };
-        }
-      }
+    if (topic) {
+      currentTopic = {
+        number: topic.order,
+        name: topic.name,
+        description: topic.description || "",
+      };
     }
 
     // Map grades to students
