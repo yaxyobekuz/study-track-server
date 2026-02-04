@@ -42,11 +42,6 @@ const scheduleSchema = new mongoose.Schema(
           type: Number,
           required: true,
         },
-        currentTopicNumber: {
-          type: Number,
-          default: 1,
-          min: [1, "Mavzu raqami kamida 1 bo'lishi kerak"],
-        },
         startTime: {
           type: String,
           required: false,
