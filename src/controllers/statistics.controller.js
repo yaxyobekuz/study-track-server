@@ -186,17 +186,19 @@ exports.getClassRankings = async (req, res) => {
     allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
     // Transform to ranking format with calculated ranks
-    const rankings = allStats.map((stat, index) => ({
-      rank: index + 1, // Rank based on sorted position
-      student: {
-        _id: stat.student._id,
-        firstName: stat.student.firstName,
-        lastName: stat.student.lastName,
-        fullName: stat.student.fullName,
-      },
-      totalSum: stat.simpleStats.totalSum,
-      totalGrades: stat.simpleStats.totalGrades,
-    }));
+    const rankings = allStats
+      .filter((stat) => stat.student)
+      .map((stat, index) => ({
+        rank: index + 1, // Rank based on sorted position
+        student: {
+          _id: stat.student._id,
+          firstName: stat.student.firstName,
+          lastName: stat.student.lastName,
+          fullName: stat.student.fullName,
+        },
+        totalSum: stat.simpleStats.totalSum,
+        totalGrades: stat.simpleStats.totalGrades,
+      }));
 
     // Calculate pagination
     const totalItems = rankings.length;
@@ -371,12 +373,14 @@ exports.exportWeeklyStatistics = async (req, res) => {
       allStats = allStats.map((stat) => stat.toJSON());
       allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
-      rankings = allStats.map((stat, index) => ({
-        rank: index + 1,
-        fullName: stat.student.fullName,
-        totalSum: stat.simpleStats.totalSum,
-        totalGrades: stat.simpleStats.totalGrades,
-      }));
+      rankings = allStats
+        .filter((stat) => stat.student)
+        .map((stat, index) => ({
+          rank: index + 1,
+          fullName: stat.student.fullName,
+          totalSum: stat.simpleStats.totalSum,
+          totalGrades: stat.simpleStats.totalGrades,
+        }));
 
       sheetName = `${classDoc.name} reytingi`;
     } else {
@@ -395,16 +399,18 @@ exports.exportWeeklyStatistics = async (req, res) => {
       allStats = allStats.map((stat) => stat.toJSON());
       allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
-      rankings = allStats.map((stat, index) => ({
-        rank: index + 1,
-        fullName: stat.student.fullName,
-        classes:
-          stat.student.classes && stat.student.classes.length > 0
-            ? stat.student.classes.map((c) => c.name).join(", ")
-            : "-",
-        totalSum: stat.simpleStats.totalSum,
-        totalGrades: stat.simpleStats.totalGrades,
-      }));
+      rankings = allStats
+        .filter((stat) => stat.student)
+        .map((stat, index) => ({
+          rank: index + 1,
+          fullName: stat.student.fullName,
+          classes:
+            stat.student.classes && stat.student.classes.length > 0
+              ? stat.student.classes.map((c) => c.name).join(", ")
+              : "-",
+          totalSum: stat.simpleStats.totalSum,
+          totalGrades: stat.simpleStats.totalGrades,
+        }));
     }
 
     const columns =
