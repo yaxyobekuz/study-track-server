@@ -72,22 +72,23 @@ const uploadTopics = async (req, res) => {
 
       // Parse topics
       const topics = [];
-      for (const row of data) {
+      for (let index = 0; index < data.length; index++) {
+        const row = data[index];
         const keys = Object.keys(row);
         const name = row[keys[1]];
-        const order = row[keys[0]];
         const description = row[keys[2]] || "";
+        const order = index + 1;
 
-        if (!order || !name) {
+        if (!name) {
           errors.push(
-            `Sahifa "${sheetName}": Qator ${data.indexOf(row) + 2} - T/R yoki Mavzu nomi topilmadi`,
+            `Sahifa "${sheetName}": Qator ${index + 2} - Mavzu nomi topilmadi`,
           );
           continue;
         }
 
         topics.push({
           subject: singleSubjectId,
-          order: Number(order),
+          order,
           name: String(name).trim(),
           description: String(description).trim(),
           createdBy: req.user._id,
@@ -133,22 +134,23 @@ const uploadTopics = async (req, res) => {
 
         // Parse topics
         const topics = [];
-        for (const row of data) {
+        for (let index = 0; index < data.length; index++) {
+          const row = data[index];
           const keys = Object.keys(row);
           const name = row[keys[1]];
-          const order = row[keys[0]];
           const description = row[keys[2]] || "";
+          const order = index + 1;
 
-          if (!order || !name) {
+          if (!name) {
             errors.push(
-              `Sahifa "${sheetName}": Qator ${data.indexOf(row) + 2} - T/R yoki Mavzu nomi topilmadi`,
+              `Sahifa "${sheetName}": Qator ${index + 2} - Mavzu nomi topilmadi`,
             );
             continue;
           }
 
           topics.push({
             subject: subject._id,
-            order: Number(order),
+            order,
             name: String(name).trim(),
             description: String(description).trim(),
             createdBy: req.user._id,
