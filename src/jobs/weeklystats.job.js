@@ -3,6 +3,7 @@ const {
   generateWeeklyStatsForAllStudents,
   recalculateRankings,
 } = require("../services/weeklystats.service");
+const { distributeWeeklyBonusCoins } = require("../services/coin.service");
 const { getWeekNumber } = require("../helpers/statistics.helpers");
 const logger = require("../utils/logger");
 
@@ -31,6 +32,9 @@ function startWeeklyStatsCron() {
 
         // Recalculate rankings
         await recalculateRankings(weekNumber, year);
+
+        // Haftalik bonus coinlarni tarqatish (reytinglar tayyor bo'lgandan keyin)
+        await distributeWeeklyBonusCoins(weekNumber, year);
 
         logger.info(
           `=== Weekly Stats Cron Job Completed: ${result.successCount} success, ${result.errorCount} errors ===`,
