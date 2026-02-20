@@ -517,7 +517,8 @@ const createGrade = async (req, res) => {
     }
 
     // Validate lessonOrder if provided
-    const finalLessonOrder = lessonOrder || teacherLessons[0].order;
+    const parsedLessonOrder = lessonOrder ? Number(lessonOrder) : null;
+    const finalLessonOrder = parsedLessonOrder || teacherLessons[0].order;
     const lessonExists = teacherLessons.find(
       (l) => l.order === finalLessonOrder,
     );
@@ -574,43 +575,57 @@ const createGrade = async (req, res) => {
     const tomorrow = new Date(todayDate);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // Check if grade already exists for this student, subject, lessonOrder, and date (today)
-    const existingGrade = await Grade.findOne({
+    // Find existing grades for this student/subject/class in teacher's all today lesson orders
+    const teacherLessonOrders = teacherLessons.map((l) => l.order);
+    const existingGrades = await Grade.find({
       student: studentId,
       subject: subjectId,
-      lessonOrder: finalLessonOrder,
+      class: classId,
+      lessonOrder: { $in: teacherLessonOrders },
       date: { $gte: todayDate, $lt: tomorrow },
-    });
+    }).select("_id lessonOrder");
 
-    if (existingGrade) {
+    const existingLessonOrders = new Set(
+      existingGrades.map((g) => g.lessonOrder),
+    );
+    const missingLessonOrders = teacherLessonOrders.filter(
+      (order) => !existingLessonOrders.has(order),
+    );
+
+    if (missingLessonOrders.length === 0) {
       return res.status(400).json({
         success: false,
         message:
-          "Bugun ushbu o'quvchiga bu dars uchun baho allaqachon qo'yilgan",
+          "Bugun ushbu o'quvchiga bu fan bo'yicha barcha darslar uchun baho allaqachon qo'yilgan",
       });
     }
 
-    // Create grade record with today's date
-    const newGrade = await Grade.create({
+    // Create grade records for all missing lesson orders of today
+    const now = new Date();
+    const gradesToCreate = missingLessonOrders.map((order) => ({
       student: studentId,
       subject: subjectId,
       class: classId,
       teacher: req.user._id,
       grade,
-      date: new Date(),
-      lessonOrder: finalLessonOrder,
+      date: now,
+      lessonOrder: order,
       comment,
-    });
+    }));
 
-    const populatedGrade = await Grade.findById(newGrade._id)
+    const createdGrades = await Grade.insertMany(gradesToCreate);
+
+    const populatedGrade = await Grade.findById(createdGrades[0]._id)
       .populate("student", "firstName lastName")
       .populate("subject", "name")
       .populate("teacher", "firstName lastName")
       .populate("class", "name");
 
-    // Update WeeklyStats after creating grade
+    // Update WeeklyStats after creating grades
     try {
-      await updateWeeklyStatsForGrade(newGrade);
+      for (const createdGrade of createdGrades) {
+        await updateWeeklyStatsForGrade(createdGrade);
+      }
     } catch (statsError) {
       console.error("Error updating WeeklyStats:", statsError);
       // Don't fail the request if stats update fails
@@ -618,7 +633,10 @@ const createGrade = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: "Baho muvaffaqiyatli qo'yildi",
+      message:
+        createdGrades.length > 1
+          ? `Baho muvaffaqiyatli qo'yildi va ${createdGrades.length} ta dars soatiga avtomatik qo'llandi`
+          : "Baho muvaffaqiyatli qo'yildi",
       data: populatedGrade,
     });
   } catch (error) {
