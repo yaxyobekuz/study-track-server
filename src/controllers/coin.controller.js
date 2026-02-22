@@ -21,7 +21,7 @@ exports.getSettings = async (req, res) => {
  */
 exports.updateSettings = async (req, res) => {
   try {
-    const { dailyCoinPercentage, schoolRankBonus, classRankBonus } = req.body;
+    const { dailyCoinPercentage, schoolRankBonus, classRankBonus, minDailyGradeForCoin } = req.body;
 
     if (
       dailyCoinPercentage !== undefined &&
@@ -41,9 +41,14 @@ exports.updateSettings = async (req, res) => {
         .status(400)
         .json({ success: false, message: "Bonus manfiy bo'lishi mumkin emas" });
     }
+    if (minDailyGradeForCoin !== undefined && minDailyGradeForCoin < 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Minimal ball manfiy bo'lishi mumkin emas" });
+    }
 
     const settings = await coinService.updateSettings(
-      { dailyCoinPercentage, schoolRankBonus, classRankBonus },
+      { dailyCoinPercentage, schoolRankBonus, classRankBonus, minDailyGradeForCoin },
       req.user._id,
     );
     return res.json({

@@ -19,6 +19,11 @@ const coinSettingsSchema = new mongoose.Schema(
       default: 20,
       min: [0, "Bonus manfiy bo'lishi mumkin emas"],
     },
+    minDailyGradeForCoin: {
+      type: Number,
+      default: 10,
+      min: [0, "Minimal ball manfiy bo'lishi mumkin emas"],
+    },
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

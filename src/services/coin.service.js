@@ -21,6 +21,8 @@ async function updateSettings(updates, updatedBy) {
     settings.schoolRankBonus = updates.schoolRankBonus;
   if (updates.classRankBonus !== undefined)
     settings.classRankBonus = updates.classRankBonus;
+  if (updates.minDailyGradeForCoin !== undefined)
+    settings.minDailyGradeForCoin = updates.minDailyGradeForCoin;
   settings.updatedBy = updatedBy;
   return settings.save();
 }
@@ -31,7 +33,7 @@ async function updateSettings(updates, updatedBy) {
 
 async function distributeDailyCoins(targetDate) {
   const settings = await CoinSettings.getSettings();
-  const { dailyCoinPercentage } = settings;
+  const { dailyCoinPercentage, minDailyGradeForCoin } = settings;
 
   const date = targetDate || new Date();
 
@@ -70,6 +72,12 @@ async function distributeDailyCoins(targetDate) {
       }
 
       const dailyGradeSum = grades.reduce((sum, g) => sum + g.grade, 0);
+
+      if (dailyGradeSum < minDailyGradeForCoin) {
+        skippedCount++;
+        continue;
+      }
+
       const coinAmount = Math.floor((dailyGradeSum * dailyCoinPercentage) / 100);
 
       if (coinAmount <= 0) {
