@@ -12,6 +12,8 @@ const optionalEnvVars = {
   NODE_ENV: "development",
   JWT_EXPIRES_IN: "30d",
   LOG_LEVEL: "info",
+  DO_REGION: "fra1",
+  MAX_UPLOAD_FILE_SIZE_MB: 20,
 };
 
 /**
@@ -31,7 +33,7 @@ const validateEnv = () => {
   if (missingVars.length > 0) {
     throw new Error(
       `Quyidagi environment variables kiritilmagan: ${missingVars.join(", ")}\n` +
-        `Iltimos, .env faylida ushbu qiymatlarni to'ldiring.`
+        `Iltimos, .env faylida ushbu qiymatlarni to'ldiring.`,
     );
   }
 
@@ -39,7 +41,9 @@ const validateEnv = () => {
   Object.entries(optionalEnvVars).forEach(([key, defaultValue]) => {
     if (!process.env[key]) {
       process.env[key] = String(defaultValue);
-      console.log(`⚠️  ${key} environment variable kiritilmagan. Default qiymat ishlatilmoqda: ${defaultValue}`);
+      console.log(
+        `⚠️  ${key} environment variable kiritilmagan. Default qiymat ishlatilmoqda: ${defaultValue}`,
+      );
     }
   });
 
