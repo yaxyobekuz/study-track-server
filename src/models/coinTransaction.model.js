@@ -15,7 +15,13 @@ const coinTransactionSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["daily", "weekly_school_bonus", "weekly_class_bonus"],
+      enum: [
+        "daily",
+        "weekly_school_bonus",
+        "weekly_class_bonus",
+        "market_purchase",
+        "market_refund",
+      ],
       required: [true, "Tur majburiy"],
       index: true,
     },
@@ -39,6 +45,17 @@ const coinTransactionSchema = new mongoose.Schema(
         ref: "Class",
       },
       className: String,
+      orderId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "MarketOrder",
+      },
+      productId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "MarketProduct",
+      },
+      quantity: Number,
+      unitPrice: Number,
+      totalPrice: Number,
     },
     date: {
       type: Date,
