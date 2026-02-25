@@ -14,6 +14,7 @@ const messageRoutes = require("./message.routes");
 const statisticsRoutes = require("./statistics.routes");
 const topicRoutes = require("./topic.routes");
 const coinRoutes = require("./coin.routes");
+const marketRoutes = require("./market.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -27,6 +28,7 @@ router.use("/messages", messageRoutes);
 router.use("/statistics", statisticsRoutes);
 router.use("/topics", topicRoutes);
 router.use("/coins", coinRoutes);
+router.use("/market", marketRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
