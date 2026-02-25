@@ -56,6 +56,43 @@ const createSingleFileUpload = ({
 };
 
 /**
+ * Creates a multi-file upload middleware with security limits.
+ * @param {object} options Upload options.
+ * @param {string} [options.fieldName=files] Multipart field name.
+ * @param {string[]} [options.categories=["image"]] Allowed categories.
+ * @param {number} [options.maxFiles=3] Maximum files count.
+ * @returns {Function} Multer array middleware.
+ */
+const createMultiFileUpload = ({
+  fieldName = "files",
+  categories = ["image"],
+  maxFiles = 3,
+} = {}) => {
+  const maxFileSizeMb = Number(process.env.MAX_UPLOAD_FILE_SIZE_MB || 20);
+  const maxFileSizeBytes = Math.max(1, maxFileSizeMb) * 1024 * 1024;
+  const allowedMimeTypes = getAllowedMimeTypes(categories);
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: maxFileSizeBytes,
+      files: Math.max(1, maxFiles),
+      fields: 40,
+      parts: 50,
+    },
+    fileFilter: (req, file, cb) => {
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        return cb(new Error("Unsupported file type."), false);
+      }
+
+      cb(null, true);
+    },
+  });
+
+  return upload.array(fieldName, Math.max(1, maxFiles));
+};
+
+/**
  * Handles multer errors in a consistent JSON format.
  */
 const handleFileUploadError = (err, req, res, next) => {
@@ -87,5 +124,6 @@ module.exports = {
   FILE_MIME_TYPES,
   getAllowedMimeTypes,
   createSingleFileUpload,
+  createMultiFileUpload,
   handleFileUploadError,
 };
