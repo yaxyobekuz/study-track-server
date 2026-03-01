@@ -21,6 +21,7 @@ const {
   getDayNameUz,
   getDateRangeForDay,
   getCurrentDayUz,
+  getNowInUzbekistan,
   isSunday,
 } = require("../helpers/date.helpers");
 
@@ -35,8 +36,10 @@ const timeToMinutes = (time) => {
 // Get missing grades for today (Owner only)
 const getMissingGradesToday = async (req, res) => {
   try {
+    const nowInUzbekistan = getNowInUzbekistan();
+
     // 1. Yakshanba tekshirish
-    if (isSunday()) {
+    if (isSunday(nowInUzbekistan)) {
       return res.json({
         success: true,
         data: {
@@ -54,7 +57,7 @@ const getMissingGradesToday = async (req, res) => {
     }
 
     // 2. Bayram kuni tekshirish
-    const holidayCheck = await Holiday.isHoliday(new Date());
+    const holidayCheck = await Holiday.isHoliday(nowInUzbekistan);
     if (holidayCheck.isHoliday) {
       return res.json({
         success: true,
@@ -73,12 +76,12 @@ const getMissingGradesToday = async (req, res) => {
     }
 
     // 3. Bugungi kun nomi va hozirgi vaqt
-    const todayDayName = getCurrentDayUz();
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const todayDayName = getDayNameUz(nowInUzbekistan);
+    const currentMinutes =
+      nowInUzbekistan.getHours() * 60 + nowInUzbekistan.getMinutes();
 
     // 4. Bugungi sana oralig'i
-    const { startDate, endDate } = getDateRangeForDay(new Date());
+    const { startDate, endDate } = getDateRangeForDay(nowInUzbekistan);
 
     // 5. Bugungi barcha jadvallarni olish
     const todaySchedules = await Schedule.find({ day: todayDayName })
@@ -196,7 +199,7 @@ const getMissingGradesToday = async (req, res) => {
         isHoliday: false,
         isSunday: false,
         dayName: todayDayName,
-        date: new Date().toISOString().split("T")[0],
+        date: nowInUzbekistan.toISOString().split("T")[0],
         byTeacher,
         summary: {
           totalTeachers: byTeacher.length,

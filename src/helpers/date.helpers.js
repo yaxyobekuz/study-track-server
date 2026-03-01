@@ -1,11 +1,23 @@
 const { DAYS_UZ } = require("../utils/constants");
 
+const UZBEKISTAN_TIMEZONE = "Asia/Tashkent";
+
+/**
+ * Returns current date-time in Uzbekistan timezone.
+ * @returns {Date} Current date-time aligned to Asia/Tashkent timezone
+ */
+const getNowInUzbekistan = () => {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: UZBEKISTAN_TIMEZONE }),
+  );
+};
+
 /**
  * Bugungi kun nomini qaytaradi (o'zbek tilida)
  * @returns {string} Kun nomi (masalan: "dushanba")
  */
 const getCurrentDayUz = () => {
-  const today = new Date();
+  const today = getNowInUzbekistan();
   return DAYS_UZ[today.getDay()];
 };
 
@@ -53,7 +65,7 @@ const isSunday = (date = new Date()) => {
  */
 const isToday = (date) => {
   const dateObj = date instanceof Date ? date : new Date(date);
-  const today = new Date();
+  const today = getNowInUzbekistan();
 
   return (
     dateObj.getDate() === today.getDate() &&
@@ -107,7 +119,7 @@ const timeToMinutes = (timeStr) => {
  * @returns {number} Hozirgi vaqt daqiqalarda
  */
 const getCurrentTimeInMinutes = () => {
-  const now = new Date();
+  const now = getNowInUzbekistan();
   return now.getHours() * 60 + now.getMinutes();
 };
 
@@ -157,6 +169,7 @@ const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => 
 };
 
 module.exports = {
+  getNowInUzbekistan,
   getCurrentDayUz,
   getDayNameUz,
   getDateRangeForDay,
