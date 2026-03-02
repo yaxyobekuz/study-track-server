@@ -78,7 +78,9 @@ async function distributeDailyCoins(targetDate) {
         continue;
       }
 
-      const coinAmount = Math.floor((dailyGradeSum * dailyCoinPercentage) / 100);
+      const coinAmount = Math.floor(
+        (dailyGradeSum * dailyCoinPercentage) / 100,
+      );
 
       if (coinAmount <= 0) {
         skippedCount++;
@@ -105,6 +107,8 @@ async function distributeDailyCoins(targetDate) {
         },
         date: startOfDay,
       });
+
+      await _updateDailyCoinStat(coinAmount, startOfDay);
 
       successCount++;
     } catch (err) {
@@ -252,6 +256,8 @@ async function _awardBonus({
     },
     date: new Date(),
   });
+
+  await _updateDailyCoinStat(amount, new Date());
 }
 
 // ─────────────────────────────────────────────
@@ -259,23 +265,68 @@ async function _awardBonus({
 // ─────────────────────────────────────────────
 
 async function getCoinStats() {
-  const [totalDistributed, totalStudents, topEarners] = await Promise.all([
-    CoinTransaction.aggregate([
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+  const DailyCoinStat = require("../models/dailyCoinStat.model");
+
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
+  thirtyDaysAgo.setHours(0, 0, 0, 0);
+
+  const [totalDistributed, totalStudents, topEarners, dailyStats] =
+    await Promise.all([
+      CoinTransaction.aggregate([
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      User.countDocuments({ role: "student", isActive: true }),
+      User.find({ role: "student", isActive: true })
+        .sort({ coinBalance: -1 })
+        .limit(10)
+        .select("firstName lastName coinBalance classes")
+        .populate("classes", "name"),
+      DailyCoinStat.find({ date: { $gte: thirtyDaysAgo } })
+        .sort({ date: 1 })
+        .lean(),
+    ]);
+
+  const mapStats = new Map(
+    dailyStats.map((stat) => [
+      stat.date.toISOString().split("T")[0],
+      stat.totalDistributed,
     ]),
-    User.countDocuments({ role: "student", isActive: true }),
-    User.find({ role: "student", isActive: true })
-      .sort({ coinBalance: -1 })
-      .limit(10)
-      .select("firstName lastName coinBalance classes")
-      .populate("classes", "name"),
-  ]);
+  );
+  const dailyDistributionFormatted = [];
+
+  for (let i = 0; i <= 29; i++) {
+    const iterDate = new Date();
+    iterDate.setDate(new Date().getDate() - (29 - i));
+    iterDate.setHours(0, 0, 0, 0);
+    const dateStr = iterDate.toISOString().split("T")[0];
+
+    dailyDistributionFormatted.push({
+      date: dateStr,
+      totalDistributed: mapStats.get(dateStr) || 0,
+    });
+  }
 
   return {
     totalCoinsDistributed: totalDistributed[0]?.total || 0,
     totalStudents,
     topEarners,
+    dailyDistribution: dailyDistributionFormatted,
   };
+}
+
+async function _updateDailyCoinStat(amount, date = new Date()) {
+  if (amount <= 0) return;
+  const DailyCoinStat = require("../models/dailyCoinStat.model");
+
+  const targetDate = new Date(date);
+  targetDate.setHours(0, 0, 0, 0);
+
+  await DailyCoinStat.findOneAndUpdate(
+    { date: targetDate },
+    { $inc: { totalDistributed: amount } },
+    { upsert: true, new: true },
+  );
 }
 
 async function getStudentTransactions(studentId, page = 1, limit = 20) {
