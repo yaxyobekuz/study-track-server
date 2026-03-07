@@ -9,10 +9,14 @@ const {
   deleteUser,
   getStats,
   exportUsersToExcel,
+  getStudents,
 } = require("../controllers/user.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
-// All routes are protected and for owner only
+// /students route is accessible to both owner and teacher
+router.get("/students", protect, authorize("owner", "teacher"), getStudents);
+
+// All routes below are protected and for owner only
 router.use(protect);
 router.use(authorize("owner"));
 

@@ -390,6 +390,38 @@ const exportUsersToExcel = async (req, res) => {
   }
 };
 
+// Get students list (Owner + Teacher)
+const getStudents = async (req, res) => {
+  try {
+    const { search, limit = 500 } = req.query;
+
+    const query = { role: "student" };
+
+    if (search && search.trim()) {
+      const searchRegex = new RegExp(search.trim(), "i");
+      query.$or = [
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { username: searchRegex },
+      ];
+    }
+
+    const students = await User.find(query)
+      .select("firstName lastName username classes penaltyPoints")
+      .populate("classes", "name")
+      .sort({ firstName: 1 })
+      .limit(parseInt(limit, 10));
+
+    res.json({ success: true, data: students });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getAllUsers,
   createUser,
@@ -399,4 +431,6 @@ module.exports = {
   deleteUser,
   getStats,
   exportUsersToExcel,
+  getStudents,
 };
+
