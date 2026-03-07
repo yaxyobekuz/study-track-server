@@ -421,6 +421,12 @@ const createOrder = async (studentId, payload) => {
     throw new Error("Buyurtma soni kamida 1 bo'lishi kerak");
   }
 
+  // Jarima bali 3 dan yuqori bo'lsa do'kondan foydalanish cheklangan
+  const student = await User.findById(studentId).select("penaltyPoints");
+  if (student && student.penaltyPoints > 3) {
+    throw new Error("Jarima balingiz 3 dan yuqori. Do'kondan foydalanish cheklangan.");
+  }
+
   const product = await MarketProduct.findOne({
     _id: payload.productId,
     isActive: true,
