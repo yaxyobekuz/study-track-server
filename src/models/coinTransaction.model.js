@@ -21,6 +21,7 @@ const coinTransactionSchema = new mongoose.Schema(
         "weekly_class_bonus",
         "market_purchase",
         "market_refund",
+        "holiday_bonus",
       ],
       required: [true, "Tur majburiy"],
       index: true,
@@ -56,6 +57,7 @@ const coinTransactionSchema = new mongoose.Schema(
       quantity: Number,
       unitPrice: Number,
       totalPrice: Number,
+      occasion: String,
     },
     date: {
       type: Date,
