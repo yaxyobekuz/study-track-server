@@ -46,19 +46,48 @@ class TelegramService {
   }
 
   /**
+   * Fetch remote URL and return its content as a Buffer.
+   * @param {string} url - Remote file URL (http or https)
+   * @returns {Promise<Buffer>}
+   */
+  fetchBuffer(url) {
+    return new Promise((resolve, reject) => {
+      const lib = url.startsWith("https") ? require("https") : require("http");
+      lib.get(url, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          resolve(this.fetchBuffer(res.headers.location));
+          return;
+        }
+        if (res.statusCode !== 200) {
+          reject(new Error(`Failed to fetch file: HTTP ${res.statusCode}`));
+          return;
+        }
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => resolve(Buffer.concat(chunks)));
+        res.on("error", reject);
+      }).on("error", reject);
+    });
+  }
+
+  /**
    * Send photo with caption to telegram user
    * @param {string} telegramId - Telegram user ID
-   * @param {string} filePath - Path to photo file
+   * @param {string} fileUrl - URL or local path to photo file
    * @param {string} caption - Photo caption
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendPhoto(telegramId, filePath, caption) {
+  async sendPhoto(telegramId, fileUrl, caption) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
 
     try {
-      const result = await bot.sendPhoto(telegramId, filePath, {
+      const source = fileUrl.startsWith("http")
+        ? await this.fetchBuffer(fileUrl)
+        : fs.createReadStream(fileUrl);
+
+      const result = await bot.sendPhoto(telegramId, source, {
         caption: caption || "",
         parse_mode: "HTML",
       });
@@ -76,17 +105,21 @@ class TelegramService {
   /**
    * Send document with caption to telegram user
    * @param {string} telegramId - Telegram user ID
-   * @param {string} filePath - Path to document file
+   * @param {string} fileUrl - URL or local path to document file
    * @param {string} caption - Document caption
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendDocument(telegramId, filePath, caption) {
+  async sendDocument(telegramId, fileUrl, caption) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
 
     try {
-      const result = await bot.sendDocument(telegramId, filePath, {
+      const source = fileUrl.startsWith("http")
+        ? await this.fetchBuffer(fileUrl)
+        : fs.createReadStream(fileUrl);
+
+      const result = await bot.sendDocument(telegramId, source, {
         caption: caption || "",
         parse_mode: "HTML",
       });
@@ -118,11 +151,6 @@ class TelegramService {
       let result;
 
       if (filePath && fileType) {
-        // Check if file exists
-        if (!fs.existsSync(filePath)) {
-          throw new Error("File not found");
-        }
-
         if (fileType === "photo") {
           result = await this.sendPhoto(telegramId, filePath, text);
         } else if (fileType === "document") {
