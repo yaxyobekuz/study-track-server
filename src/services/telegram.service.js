@@ -107,9 +107,10 @@ class TelegramService {
    * @param {string} telegramId - Telegram user ID
    * @param {string} fileUrl - URL or local path to document file
    * @param {string} caption - Document caption
+   * @param {string} fileName - Original file name (shown in Telegram)
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendDocument(telegramId, fileUrl, caption) {
+  async sendDocument(telegramId, fileUrl, caption, fileName, contentType) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
@@ -122,6 +123,9 @@ class TelegramService {
       const result = await bot.sendDocument(telegramId, source, {
         caption: caption || "",
         parse_mode: "HTML",
+      }, {
+        filename: fileName || "file",
+        contentType: contentType || "application/octet-stream",
       });
       return { success: true, data: result };
     } catch (error) {
@@ -142,7 +146,7 @@ class TelegramService {
    * @param {string} fileType - File type: 'photo' or 'document' (optional)
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendMessageWithFile(telegramId, text, filePath = null, fileType = null) {
+  async sendMessageWithFile(telegramId, text, filePath = null, fileType = null, fileName = null, fileContentType = null) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
@@ -154,7 +158,7 @@ class TelegramService {
         if (fileType === "photo") {
           result = await this.sendPhoto(telegramId, filePath, text);
         } else if (fileType === "document") {
-          result = await this.sendDocument(telegramId, filePath, text);
+          result = await this.sendDocument(telegramId, filePath, text, fileName, fileContentType);
         } else {
           throw new Error("Invalid file type. Use 'photo' or 'document'");
         }
