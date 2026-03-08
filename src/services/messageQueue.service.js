@@ -170,14 +170,6 @@ class MessageQueueService {
       }
 
       await queueItem.save();
-
-      // Delete file if it exists and processing is completed or failed
-      if (
-        queueItem.filePath &&
-        (queueItem.status === "completed" || queueItem.status === "failed")
-      ) {
-        telegramService.deleteFile(queueItem.filePath);
-      }
     } catch (error) {
       logger.error(`Queue item qayta ishlashda xato: ${error.message}`);
       queueItem.status = "failed";

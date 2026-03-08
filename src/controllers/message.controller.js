@@ -5,6 +5,11 @@ const Class = require("../models/class.model");
 
 // Services
 const messageQueueService = require("../services/messageQueue.service");
+const fileStorage = require("../services/fileStorage.service");
+
+// Node
+const fs = require("fs");
+const path = require("path");
 
 /**
  * Send message to recipients
@@ -156,11 +161,19 @@ const sendMessage = async (req, res) => {
       deliveryStatus,
     });
 
-    // Determine file type
+    // Upload file to DO Spaces and determine file type
+    let fileUrl = null;
     let fileType = null;
     if (file) {
       const imageTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif"];
       fileType = imageTypes.includes(file.mimetype) ? "photo" : "document";
+
+      const buffer = fs.readFileSync(file.path);
+      const key = `messages/${Date.now()}-${path.basename(file.path)}`;
+      const uploaded = await fileStorage.uploadBuffer({ key, buffer, contentType: file.mimetype });
+      fileUrl = uploaded.url;
+
+      fs.unlinkSync(file.path);
     }
 
     // Add messages to queue
@@ -173,8 +186,8 @@ const sendMessage = async (req, res) => {
       };
 
       // Only add file fields if file exists
-      if (file) {
-        queueItem.filePath = file.path;
+      if (fileUrl) {
+        queueItem.filePath = fileUrl;
         queueItem.fileType = fileType;
       }
 
