@@ -24,6 +24,12 @@ const messageQueueSchema = new mongoose.Schema(
     filePath: {
       type: String,
     },
+    fileName: {
+      type: String,
+    },
+    fileContentType: {
+      type: String,
+    },
     fileType: {
       type: String,
       enum: ["photo", "document", null],
