@@ -98,6 +98,7 @@ const createUser = async (req, res) => {
       firstName,
       lastName,
       role,
+      gender,
       classes: userClasses,
     } = req.body;
 
@@ -137,6 +138,7 @@ const createUser = async (req, res) => {
       firstName,
       lastName,
       role,
+      gender: gender || null,
       classes: role === "student" ? userClasses : [],
     });
 
@@ -161,7 +163,7 @@ const createUser = async (req, res) => {
 // Update user (Owner only)
 const updateUser = async (req, res) => {
   try {
-    const { firstName, lastName, classes: userClasses, isActive } = req.body;
+    const { firstName, lastName, gender, classes: userClasses, isActive } = req.body;
 
     const user = await User.findById(req.params.id);
 
@@ -184,6 +186,7 @@ const updateUser = async (req, res) => {
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (isActive !== undefined) user.isActive = isActive;
+    if (gender !== undefined) user.gender = gender || null;
 
     if (user.role === "student" && userClasses) {
       // Validate all classes

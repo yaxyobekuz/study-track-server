@@ -61,6 +61,11 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    gender: {
+      type: String,
+      enum: ["male", "female", null],
+      default: null,
+    },
     coinBalance: {
       type: Number,
       default: 0,
