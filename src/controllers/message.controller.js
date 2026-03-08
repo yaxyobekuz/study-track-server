@@ -189,6 +189,8 @@ const sendMessage = async (req, res) => {
       if (fileUrl) {
         queueItem.filePath = fileUrl;
         queueItem.fileType = fileType;
+        queueItem.fileName = file.originalname;
+        queueItem.fileContentType = file.mimetype;
       }
 
       return queueItem;

@@ -111,6 +111,8 @@ class MessageQueueService {
         queueItem.messageText,
         queueItem.filePath,
         queueItem.fileType,
+        queueItem.fileName,
+        queueItem.fileContentType,
       );
 
       if (result.success) {
