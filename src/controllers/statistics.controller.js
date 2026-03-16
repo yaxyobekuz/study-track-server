@@ -18,7 +18,7 @@ const {
 exports.getStudentWeeklyStatistics = async (req, res) => {
   try {
     const { studentId } = req.params;
-    const { weekStart, weekEnd, weekNumber, year } = getCurrentWeekRange();
+    const { weekNumber, year } = getCurrentWeekRange();
 
     // Student faqat o'z statistikasini ko'rishi mumkin
     if (req.user.role === "student" && req.user._id.toString() !== studentId) {
