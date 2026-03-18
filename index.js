@@ -36,8 +36,9 @@ const app = express();
 // Connect to database
 connectDB();
 
-// Initialize default owner
+// Initialize default owner and roles
 require("./src/utils/initOwner")();
+require("./src/utils/initRoles")();
 
 // Start cron jobs
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
