@@ -53,7 +53,6 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["owner", "teacher", "student"],
       required: [true, "Rol majburiy"],
     },
     classes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Class" }],
@@ -79,6 +78,18 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Validate role against Role collection
+userSchema.pre("validate", async function (next) {
+  if (this.isModified("role")) {
+    const Role = require("./role.model");
+    const exists = await Role.findOne({ value: this.role });
+    if (!exists) {
+      return next(new Error("Noto'g'ri rol qiymati"));
+    }
+  }
+  next();
+});
 
 // Hash password before saving
 userSchema.pre("save", async function (next) {

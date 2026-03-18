@@ -1,8 +1,6 @@
 // Roles
 const ROLES = {
   OWNER: "owner",
-  TEACHER: "teacher",
-  STUDENT: "student",
 };
 
 // Days of the week
