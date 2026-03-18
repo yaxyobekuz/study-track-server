@@ -35,6 +35,12 @@ const initRoles = async () => {
         isSystem: true,
         createdBy: owner._id,
       },
+      {
+        name: "Dasturchi",
+        value: "developer",
+        isSystem: true,
+        createdBy: owner._id,
+      },
     ];
 
     await Role.insertMany(defaultRoles);
