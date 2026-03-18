@@ -16,6 +16,7 @@ const topicRoutes = require("./topic.routes");
 const coinRoutes = require("./coin.routes");
 const marketRoutes = require("./market.routes");
 const penaltyRoutes = require("./penalty.routes");
+const roleRoutes = require("./role.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -31,6 +32,7 @@ router.use("/topics", topicRoutes);
 router.use("/coins", coinRoutes);
 router.use("/market", marketRoutes);
 router.use("/penalties", penaltyRoutes);
+router.use("/roles", roleRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
