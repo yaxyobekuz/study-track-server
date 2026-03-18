@@ -1,5 +1,6 @@
 const ExcelService = require("../services/excel.service");
 const User = require("../models/user.model");
+const Role = require("../models/role.model");
 const Class = require("../models/class.model");
 const TgUser = require("../models/tguser.model");
 
@@ -111,10 +112,18 @@ const createUser = async (req, res) => {
     }
 
     // Role validation
-    if (!["teacher", "student"].includes(role)) {
+    if (role === "owner") {
       return res.status(400).json({
         success: false,
-        message: "Faqat o'qituvchi yoki o'quvchi rolini yaratish mumkin",
+        message: "Owner rolini yaratish mumkin emas",
+      });
+    }
+
+    const roleExists = await Role.findOne({ value: role });
+    if (!roleExists) {
+      return res.status(400).json({
+        success: false,
+        message: "Noto'g'ri rol",
       });
     }
 
@@ -337,12 +346,10 @@ const exportUsersToExcel = async (req, res) => {
 
     // Build query
     let query = {};
-    if (role === "teacher") {
-      query.role = "teacher";
-    } else if (role === "student") {
-      query.role = "student";
+    if (role) {
+      query.role = role;
     } else {
-      query.role = { $in: ["teacher", "student"] };
+      query.role = { $ne: "owner" };
     }
 
     // Fetch users with plainPassword
@@ -351,12 +358,19 @@ const exportUsersToExcel = async (req, res) => {
       .select("+plainPassword")
       .sort({ role: 1, firstName: 1 });
 
+    // Build role label map from Role collection
+    const allRoles = await Role.find().lean();
+    const roleMap = {};
+    allRoles.forEach((r) => {
+      roleMap[r.value] = r.name;
+    });
+
     // Prepare data
     const data = users.map((user) => ({
       fullName: `${user.firstName} ${user.lastName || ""}`.trim(),
       username: user.username,
       password: user.plainPassword || "N/A",
-      role: user.role === "teacher" ? "O'qituvchi" : "O'quvchi",
+      role: roleMap[user.role] || user.role,
       classes:
         user.classes && user.classes.length > 0
           ? user.classes.map((c) => c.name).join(", ")
