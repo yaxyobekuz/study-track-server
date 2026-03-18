@@ -3,17 +3,11 @@ const Role = require("../models/role.model");
 const User = require("../models/user.model");
 
 /**
- * Initializes default system roles if none exist.
- * Creates owner, teacher, and student roles as system roles.
+ * Ensures default system roles exist.
+ * Creates only missing default roles and leaves existing roles unchanged.
  */
 const initRoles = async () => {
   try {
-    const rolesCount = await Role.countDocuments();
-
-    if (rolesCount > 0) return;
-
-    console.log("Roles not found. Creating default roles...");
-
     const owner = await User.findOne({ role: "owner" });
 
     if (!owner) {
@@ -22,29 +16,40 @@ const initRoles = async () => {
     }
 
     const defaultRoles = [
-      { name: "Ega", value: "owner", isSystem: true, createdBy: owner._id },
+      { name: "Ega", value: "owner" },
       {
         name: "O'qituvchi",
         value: "teacher",
-        isSystem: true,
-        createdBy: owner._id,
       },
       {
         name: "O'quvchi",
         value: "student",
-        isSystem: true,
-        createdBy: owner._id,
       },
       {
         name: "Dasturchi",
         value: "developer",
-        isSystem: true,
-        createdBy: owner._id,
       },
     ];
 
-    await Role.insertMany(defaultRoles);
-    console.log("✓ Default roles created successfully");
+    const upsertOperations = defaultRoles.map((role) => ({
+      updateOne: {
+        filter: { value: role.value },
+        update: {
+          $setOnInsert: {
+            ...role,
+            isSystem: true,
+            createdBy: owner._id,
+          },
+        },
+        upsert: true,
+      },
+    }));
+
+    const result = await Role.bulkWrite(upsertOperations);
+
+    if (result.upsertedCount > 0) {
+      console.log(`✓ ${result.upsertedCount} ta default rol yaratildi`);
+    }
   } catch (error) {
     console.error("Error creating default roles:", error.message);
   }
