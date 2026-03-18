@@ -186,6 +186,11 @@ const createPenalty = async ({
     throw new Error("Ownerga jarima yozib bo'lmaydi");
   }
 
+  // O'qituvchi faqat kategoriya bo'yicha jarima yoza oladi
+  if (givenByRole === "teacher" && isCustom) {
+    throw new Error("O'qituvchi faqat kategoriya bo'yicha jarima yoza oladi");
+  }
+
   // Kategoriya bo'lsa, undan ma'lumot olish
   let categoryData = null;
   if (categoryId && !isCustom) {
