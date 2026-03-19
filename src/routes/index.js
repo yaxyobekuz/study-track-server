@@ -18,6 +18,7 @@ const marketRoutes = require("./market.routes");
 const penaltyRoutes = require("./penalty.routes");
 const roleRoutes = require("./role.routes");
 const socialNetworkRoutes = require("./socialNetwork.routes");
+const monitorRoutes = require("./monitor.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -35,6 +36,7 @@ router.use("/market", marketRoutes);
 router.use("/penalties", penaltyRoutes);
 router.use("/roles", roleRoutes);
 router.use("/social-networks", socialNetworkRoutes);
+router.use("/monitor", monitorRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
