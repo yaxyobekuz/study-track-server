@@ -177,6 +177,29 @@ class TelegramService {
   }
 
   /**
+   * Foydalanuvchi kanal/guruhga a'zo ekanligini tekshirish
+   * @param {string} channelChatId - Kanal yoki guruh chat ID
+   * @param {string|number} telegramUserId - Telegram foydalanuvchi ID
+   * @returns {Promise<{isMember: boolean, status: string}>}
+   */
+  async checkMembership(channelChatId, telegramUserId) {
+    if (!bot) {
+      return { isMember: false, status: "bot_not_initialized" };
+    }
+
+    try {
+      const member = await bot.getChatMember(channelChatId, telegramUserId);
+      const isMember = ["creator", "administrator", "member"].includes(
+        member.status
+      );
+      return { isMember, status: member.status };
+    } catch (error) {
+      logger.error(`Telegram a'zolikni tekshirishda xato: ${error.message}`);
+      return { isMember: false, status: "error" };
+    }
+  }
+
+  /**
    * Delete file after sending
    * @param {string} filePath - Path to file
    */
