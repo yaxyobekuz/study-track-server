@@ -3,7 +3,7 @@ const PenaltyCategory = require("../models/penaltyCategory.model");
 const PenaltySettings = require("../models/penaltySettings.model");
 const User = require("../models/user.model");
 const TgUser = require("../models/tguser.model");
-const telegramService = require("./telegram.service");
+const penaltyNotificationQueueService = require("./penaltyNotificationQueue.service");
 const {
   uploadPenaltyAttachments,
   deletePenaltyAttachments,
@@ -88,20 +88,12 @@ const deleteCategory = async (id) => {
 // ─── JARIMA YOZISH ─────────────────────────────────────────────────
 
 /**
- * O'quvchiga bot orqali jarima xabarnomasini yuboradi
+ * O'quvchiga bot orqali jarima xabarnomasini yuboradi (background job orqali)
  * @param {Document} user - Jarimaga uchragan foydalanuvchi
- * @param {string} title - Jarima sarlavhasi
- * @param {number} points - Jarima bali
- * @param {string} description - Jarima izohi
+ * @param {Document} penalty - Jarima hujjati (title, points, description, attachments)
  * @param {number} totalPoints - Foydalanuvchining jami jarima bali
  */
-const sendPenaltyNotification = async (
-  user,
-  title,
-  points,
-  description,
-  totalPoints,
-) => {
+const sendPenaltyNotification = async (user, penalty, totalPoints) => {
   try {
     if (
       user.role !== "student" ||
@@ -125,10 +117,10 @@ const sendPenaltyNotification = async (
 
     let text = `⚠️ <b>Jarima xabarnomasi</b>\n\n`;
     text += `👤 O'quvchi: <b>${studentName}</b>\n`;
-    text += `📋 Sabab: <b>${title}</b>\n`;
-    text += `🔴 Ball: <b>${points}</b>\n`;
-    if (description) {
-      text += `📝 Izoh: ${description}\n`;
+    text += `📋 Sabab: <b>${penalty.title}</b>\n`;
+    text += `🔴 Ball: <b>${penalty.points}</b>\n`;
+    if (penalty.description) {
+      text += `📝 Izoh: ${penalty.description}\n`;
     }
     text += `\n📊 Jami jarima bali: <b>${totalPoints}</b>`;
 
@@ -138,9 +130,21 @@ const sendPenaltyNotification = async (
       text += `\n\n⚠️ Do'kondan foydalanish cheklangan (jarima bali 3 dan yuqori).`;
     }
 
-    for (const tgUser of tgUsers) {
-      await telegramService.sendMessage(tgUser.chatId, text);
-    }
+    const attachments = (penalty.attachments || []).map((att) => ({
+      url: att.url,
+      type: att.type,
+      originalName: att.originalName,
+    }));
+
+    const queueItems = tgUsers.map((tgUser) => ({
+      penaltyId: penalty._id,
+      telegramId: tgUser.chatId,
+      userId: user._id,
+      messageText: text,
+      attachments,
+    }));
+
+    await penaltyNotificationQueueService.addBulkToQueue(queueItems);
   } catch (error) {
     logger.error(`Jarima xabarnomasi yuborishda xato: ${error.message}`);
   }
@@ -236,14 +240,8 @@ const createPenalty = async ({
       { new: true },
     );
 
-    // Bot xabarnoma yuborish (faqat o'quvchilar uchun)
-    await sendPenaltyNotification(
-      updatedUser,
-      penalty.title,
-      penalty.points,
-      penalty.description,
-      updatedUser.penaltyPoints,
-    );
+    // Bot xabarnoma yuborish (background job orqali)
+    sendPenaltyNotification(updatedUser, penalty, updatedUser.penaltyPoints);
   }
 
   return penalty;
@@ -298,15 +296,9 @@ const reviewPenalty = async (
       { new: true },
     );
 
-    // Bot xabarnoma faqat oddiy jarima uchun
+    // Bot xabarnoma faqat oddiy jarima uchun (background job orqali)
     if (penalty.type === "penalty") {
-      await sendPenaltyNotification(
-        updatedUser,
-        penalty.title,
-        penalty.points,
-        penalty.description,
-        updatedUser.penaltyPoints,
-      );
+      sendPenaltyNotification(updatedUser, penalty, updatedUser.penaltyPoints);
     }
   }
 
