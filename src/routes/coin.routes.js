@@ -8,7 +8,6 @@ const {
   getStudentTransactions,
   getMyBalance,
   distributeCoins,
-  getDistributionPreview,
 } = require("../controllers/coin.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 
@@ -19,7 +18,6 @@ router.get("/settings", authorize("owner"), getSettings);
 router.put("/settings", authorize("owner"), updateSettings);
 router.get("/stats", authorize("owner"), getCoinStats);
 router.get("/transactions/:studentId", authorize("owner"), getStudentTransactions);
-router.get("/distribute/preview", authorize("owner"), getDistributionPreview);
 router.post("/distribute", authorize("owner"), distributeCoins);
 
 // Student routes

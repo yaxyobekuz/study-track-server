@@ -128,39 +128,6 @@ exports.getStudentTransactions = async (req, res) => {
 };
 
 /**
- * GET /api/coins/distribute/preview
- * @access Private (owner only)
- */
-exports.getDistributionPreview = async (req, res) => {
-  try {
-    const { filterType, filterValue } = req.query;
-
-    if (!filterType || !filterValue) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Filter turi va qiymati majburiy" });
-    }
-
-    const validTypes = ["role", "class", "gender", "individual"];
-    if (!validTypes.includes(filterType)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Noto'g'ri filter turi" });
-    }
-
-    const result = await coinService.getFilteredUsersPreview(
-      filterType,
-      filterValue,
-    );
-    return res.json({ success: true, data: result });
-  } catch (error) {
-    return res
-      .status(500)
-      .json({ success: false, message: "Server xatosi", error: error.message });
-  }
-};
-
-/**
  * POST /api/coins/distribute
  * @access Private (owner only)
  */
