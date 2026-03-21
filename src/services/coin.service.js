@@ -354,6 +354,148 @@ async function getStudentTransactions(studentId, page = 1, limit = 20) {
   };
 }
 
+// ─────────────────────────────────────────────
+// QO'LDA TANGA TARQATISH / OLISH
+// ─────────────────────────────────────────────
+
+/**
+ * filterType va filterValue asosida MongoDB query quradi.
+ * @param {string} filterType - "role" | "class" | "gender" | "individual"
+ * @param {string} filterValue - filter qiymati
+ * @returns {object} MongoDB query
+ */
+function _buildFilterQuery(filterType, filterValue) {
+  const query = { isActive: true };
+
+  switch (filterType) {
+    case "role":
+      query.role = filterValue;
+      break;
+    case "class":
+      query.classes = filterValue;
+      break;
+    case "gender":
+      query.gender = filterValue;
+      break;
+    case "individual":
+      query._id = filterValue;
+      break;
+    default:
+      throw new Error("Noto'g'ri filter turi");
+  }
+
+  return query;
+}
+
+/**
+ * Filtrlangan foydalanuvchilar ro'yxatini oldindan ko'rish (preview).
+ * @param {string} filterType - "role" | "class" | "gender" | "individual"
+ * @param {string} filterValue - filter qiymati
+ * @returns {Promise<{users: Array, totalCount: number}>}
+ */
+async function getFilteredUsersPreview(filterType, filterValue) {
+  const query = _buildFilterQuery(filterType, filterValue);
+
+  const [users, totalCount] = await Promise.all([
+    User.find(query)
+      .select("firstName lastName username coinBalance role gender classes")
+      .populate("classes", "name")
+      .sort({ firstName: 1 })
+      .limit(100)
+      .lean(),
+    User.countDocuments(query),
+  ]);
+
+  return { users, totalCount };
+}
+
+/**
+ * Owner tomonidan qo'lda tanga berish yoki olish.
+ * @param {object} params
+ * @param {"give"|"take"} params.action - berish yoki olish
+ * @param {number} params.amount - miqdor (musbat son)
+ * @param {string} params.reason - sabab
+ * @param {string} params.filterType - "role" | "class" | "gender" | "individual"
+ * @param {string} params.filterValue - filter qiymati
+ * @param {string} params.givenBy - owner user ID
+ * @returns {Promise<{successCount: number, skippedCount: number, errorCount: number, totalFound: number}>}
+ */
+async function distributeManualCoins({
+  action,
+  amount,
+  reason,
+  filterType,
+  filterValue,
+  givenBy,
+}) {
+  const query = _buildFilterQuery(filterType, filterValue);
+  const users = await User.find(query).select("_id coinBalance");
+
+  const totalFound = users.length;
+  let successCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  const type = action === "give" ? "manual_give" : "manual_take";
+
+  for (const user of users) {
+    try {
+      let updatedUser;
+
+      if (action === "give") {
+        updatedUser = await User.findByIdAndUpdate(
+          user._id,
+          { $inc: { coinBalance: amount } },
+          { new: true },
+        );
+      } else {
+        updatedUser = await User.findOneAndUpdate(
+          { _id: user._id, coinBalance: { $gte: amount } },
+          { $inc: { coinBalance: -amount } },
+          { new: true },
+        );
+
+        if (!updatedUser) {
+          skippedCount++;
+          continue;
+        }
+      }
+
+      await CoinTransaction.create({
+        student: user._id,
+        amount,
+        type,
+        description: reason,
+        balanceAfter: updatedUser.coinBalance,
+        meta: {
+          givenBy,
+          reason,
+          filterType,
+          filterValue,
+        },
+        date: new Date(),
+      });
+
+      if (action === "give") {
+        await _updateDailyCoinStat(amount, new Date());
+      }
+
+      successCount++;
+    } catch (err) {
+      logger.error(
+        `[CoinService] Manual ${action} error for user ${user._id}: ${err.message}`,
+      );
+      errorCount++;
+    }
+  }
+
+  logger.info(
+    `[CoinService] Manual ${action}: ${successCount} success, ${skippedCount} skipped, ${errorCount} errors (total: ${totalFound})`,
+  );
+
+  return { successCount, skippedCount, errorCount, totalFound };
+}
+
 module.exports = {
   getSettings,
   updateSettings,
@@ -361,4 +503,6 @@ module.exports = {
   distributeWeeklyBonusCoins,
   getCoinStats,
   getStudentTransactions,
+  getFilteredUsersPreview,
+  distributeManualCoins,
 };
