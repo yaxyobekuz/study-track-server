@@ -22,6 +22,8 @@ const coinTransactionSchema = new mongoose.Schema(
         "market_purchase",
         "market_refund",
         "holiday_bonus",
+        "manual_give",
+        "manual_take",
       ],
       required: [true, "Tur majburiy"],
       index: true,
@@ -58,6 +60,13 @@ const coinTransactionSchema = new mongoose.Schema(
       unitPrice: Number,
       totalPrice: Number,
       occasion: String,
+      givenBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      reason: String,
+      filterType: String,
+      filterValue: String,
     },
     date: {
       type: Date,
