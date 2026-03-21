@@ -172,7 +172,13 @@ const createUser = async (req, res) => {
 // Update user (Owner only)
 const updateUser = async (req, res) => {
   try {
-    const { firstName, lastName, gender, classes: userClasses, isActive } = req.body;
+    const {
+      firstName,
+      lastName,
+      gender,
+      classes: userClasses,
+      isActive,
+    } = req.body;
 
     const user = await User.findById(req.params.id);
 
@@ -407,6 +413,24 @@ const exportUsersToExcel = async (req, res) => {
   }
 };
 
+// Get all users short list (Owner only) - for coin distribution individual filter
+const getAllUsersShort = async (req, res) => {
+  try {
+    const users = await User.find({ isActive: true, role: { $ne: "owner" } })
+      .select("firstName lastName role")
+      .sort({ role: 1, firstName: 1 })
+      .lean();
+
+    res.json({ success: true, data: users });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Server xatosi",
+      error: error.message,
+    });
+  }
+};
+
 // Get students list (Owner + Teacher)
 const getStudents = async (req, res) => {
   try {
@@ -441,6 +465,7 @@ const getStudents = async (req, res) => {
 
 module.exports = {
   getAllUsers,
+  getAllUsersShort,
   createUser,
   updateUser,
   resetPassword,
@@ -450,4 +475,3 @@ module.exports = {
   exportUsersToExcel,
   getStudents,
 };
-

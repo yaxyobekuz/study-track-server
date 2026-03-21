@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const {
   getAllUsers,
+  getAllUsersShort,
   createUser,
   updateUser,
   resetPassword,
@@ -22,6 +23,7 @@ router.use(authorize("owner"));
 
 router.get("/stats", getStats);
 router.get("/export", exportUsersToExcel);
+router.get("/all-short", getAllUsersShort);
 router.route("/").get(getAllUsers).post(createUser);
 
 router.route("/:id").put(updateUser).delete(deleteUser);
