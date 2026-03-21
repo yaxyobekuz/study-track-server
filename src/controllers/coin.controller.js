@@ -128,6 +128,101 @@ exports.getStudentTransactions = async (req, res) => {
 };
 
 /**
+ * GET /api/coins/distribute/preview
+ * @access Private (owner only)
+ */
+exports.getDistributionPreview = async (req, res) => {
+  try {
+    const { filterType, filterValue } = req.query;
+
+    if (!filterType || !filterValue) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Filter turi va qiymati majburiy" });
+    }
+
+    const validTypes = ["role", "class", "gender", "individual"];
+    if (!validTypes.includes(filterType)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Noto'g'ri filter turi" });
+    }
+
+    const result = await coinService.getFilteredUsersPreview(
+      filterType,
+      filterValue,
+    );
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Server xatosi", error: error.message });
+  }
+};
+
+/**
+ * POST /api/coins/distribute
+ * @access Private (owner only)
+ */
+exports.distributeCoins = async (req, res) => {
+  try {
+    const { action, amount, reason, filterType, filterValue } = req.body;
+
+    if (!action || !["give", "take"].includes(action)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Amal 'give' yoki 'take' bo'lishi kerak" });
+    }
+
+    const parsedAmount = parseInt(amount, 10);
+    if (!parsedAmount || parsedAmount <= 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Miqdor musbat son bo'lishi kerak" });
+    }
+
+    if (!reason || !reason.trim()) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Sabab majburiy" });
+    }
+
+    const validTypes = ["role", "class", "gender", "individual"];
+    if (!filterType || !validTypes.includes(filterType)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Noto'g'ri filter turi" });
+    }
+
+    if (!filterValue) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Filter qiymati majburiy" });
+    }
+
+    const result = await coinService.distributeManualCoins({
+      action,
+      amount: parsedAmount,
+      reason: reason.trim(),
+      filterType,
+      filterValue,
+      givenBy: req.user._id,
+    });
+
+    const message =
+      action === "give"
+        ? `${result.successCount} ta foydalanuvchiga tanga berildi`
+        : `${result.successCount} ta foydalanuvchidan tanga olindi`;
+
+    return res.json({ success: true, message, data: result });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ success: false, message: "Server xatosi", error: error.message });
+  }
+};
+
+/**
  * GET /api/coins/balance
  * @access Private (student - own balance)
  */
