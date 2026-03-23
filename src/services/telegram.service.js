@@ -6,9 +6,10 @@ const fs = require("fs");
 
 // Logger
 const logger = require("../utils/logger");
+const { config } = require("../config/env.config");
 
 // Initialize bot
-const token = process.env.TELEGRAM_BOT_TOKEN;
+const token = config.telegramBotToken;
 let bot = null;
 
 if (token) {
