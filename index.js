@@ -2,7 +2,7 @@
 require("dotenv").config();
 
 // Validate environment variables
-const validateEnv = require("./src/config/env.config");
+const { validateEnv, config } = require("./src/config/env.config");
 validateEnv();
 
 // Logger
@@ -28,32 +28,32 @@ const connectDB = require("./src/config/database");
 const { errorHandler, notFound } = require("./src/middleware/error.middleware");
 const requestLogger = require("./src/middleware/requestLogger.middleware");
 
+// Initialization utilities
+const initOwner = require("./src/utils/initOwner");
+const initRoles = require("./src/utils/initRoles");
+
+// Cron jobs
+const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
+const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
+const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
+
 // ================================
 
 // Initialize app
 const app = express();
-
-// Connect to database
-connectDB();
-
-// Initialize default owner and roles
-require("./src/utils/initOwner")();
-require("./src/utils/initRoles")();
-
-// Start cron jobs
-const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
-const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
-const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
-startWeeklyStatsCron();
-startTopicIncrementCron();
-startDailyCoinCron();
 
 // Trust proxy
 app.set("trust proxy", 1);
 
 // Security middleware
 app.use(helmet());
-app.use(cors());
+app.use(
+  cors(
+    config.corsOrigins.length > 0
+      ? { origin: config.corsOrigins, credentials: true }
+      : undefined,
+  ),
+);
 app.use(mongoSanitize());
 app.use(xss());
 
@@ -89,12 +89,29 @@ app.use("/api", routes);
 app.use(notFound);
 app.use(errorHandler);
 
-// Start server
-const PORT = process.env.PORT || 5000;
+/**
+ * Server va barcha async tizimlarni ketma-ket ishga tushiradi
+ * DB ulanish → Owner init → Roles init → Cron jobs → HTTP server
+ */
+const bootstrap = async () => {
+  await connectDB();
+  await initOwner();
+  await initRoles();
 
-app.listen(PORT, () => {
-  logger.info(`Server port ${PORT} da ishga tushdi`);
-  logger.info(`Muhit: ${process.env.NODE_ENV}`);
+  // Cron job'larni faqat DB ulanganidan keyin ishga tushirish
+  startWeeklyStatsCron();
+  startTopicIncrementCron();
+  startDailyCoinCron();
+
+  app.listen(config.port, () => {
+    logger.info(`Server port ${config.port} da ishga tushdi`);
+    logger.info(`Muhit: ${config.nodeEnv}`);
+  });
+};
+
+bootstrap().catch((err) => {
+  logger.error("Server ishga tushishda xato:", err);
+  process.exit(1);
 });
 
 module.exports = app;
