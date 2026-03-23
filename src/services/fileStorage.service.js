@@ -3,18 +3,18 @@ const {
   PutObjectCommand,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
+const { config } = require("../config/env.config");
 
-const endpointValue = process.env.DO_ENDPOINT || "";
-const normalizedEndpoint = endpointValue.startsWith("http")
-  ? endpointValue
-  : `https://${endpointValue}`;
+const normalizedEndpoint = config.doEndpoint.startsWith("http")
+  ? config.doEndpoint
+  : `https://${config.doEndpoint}`;
 
 const spacesClient = new S3Client({
-  region: process.env.DO_REGION || "fra1",
+  region: config.doRegion,
   endpoint: normalizedEndpoint,
   credentials: {
-    accessKeyId: process.env.DO_ACCESS_KEY,
-    secretAccessKey: process.env.DO_SECRET_KEY,
+    accessKeyId: config.doAccessKey,
+    secretAccessKey: config.doSecretKey,
   },
 });
 
@@ -24,12 +24,11 @@ const spacesClient = new S3Client({
  * @returns {string} Public URL.
  */
 const getPublicUrl = (key) => {
-  const customBaseUrl = process.env.DO_BUCKET_PUBLIC_BASE_URL;
-  if (customBaseUrl) {
-    return `${customBaseUrl.replace(/\/$/, "")}/${key}`;
+  if (config.doBucketPublicBaseUrl) {
+    return `${config.doBucketPublicBaseUrl.replace(/\/$/, "")}/${key}`;
   }
 
-  return `https://${process.env.DO_BUCKET_NAME}.${process.env.DO_ENDPOINT}/${key}`;
+  return `https://${config.doBucketName}.${config.doEndpoint}/${key}`;
 };
 
 /**
@@ -43,7 +42,7 @@ const getPublicUrl = (key) => {
 const uploadBuffer = async ({ key, buffer, contentType }) => {
   await spacesClient.send(
     new PutObjectCommand({
-      Bucket: process.env.DO_BUCKET_NAME,
+      Bucket: config.doBucketName,
       Key: key,
       Body: buffer,
       ContentType: contentType,
@@ -69,7 +68,7 @@ const deleteObject = async (key) => {
 
   await spacesClient.send(
     new DeleteObjectCommand({
-      Bucket: process.env.DO_BUCKET_NAME,
+      Bucket: config.doBucketName,
       Key: key,
     }),
   );
