@@ -1,76 +1,55 @@
-// Models
 const User = require("../models/user.model");
-
-// Utils
 const { verifyToken } = require("../utils/jwt");
+const asyncHandler = require("./async.middleware");
+const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
 
-// Auth middleware
-const protect = async (req, res, next) => {
-  try {
-    let token;
+/**
+ * JWT token orqali foydalanuvchini autentifikatsiya qiladi
+ * Token headerdan olinadi va req.user ga foydalanuvchi biriktiriladi
+ */
+const protect = asyncHandler(async (req, res, next) => {
+  let token;
 
-    // Get token from header
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith("Bearer")
-    ) {
-      token = req.headers.authorization.split(" ")[1];
-    }
-
-    if (!token) {
-      return res.status(401).json({
-        success: false,
-        message: "Tizimga kirish uchun autentifikatsiya talab qilinadi",
-      });
-    }
-
-    // Verify token
-    const decoded = verifyToken(token);
-
-    if (!decoded) {
-      return res.status(401).json({
-        success: false,
-        message: "Noto'g'ri yoki muddati o'tgan token",
-      });
-    }
-
-    // Find user by ID from token
-    const user = await User.findById(decoded.id).select("-password");
-
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        message: "Foydalanuvchi topilmadi",
-      });
-    }
-
-    if (!user.isActive) {
-      return res.status(401).json({
-        success: false,
-        message: "Sizning hisobingiz faol emas",
-      });
-    }
-
-    // Add user to request object
-    req.user = user;
-    next();
-  } catch (error) {
-    res.status(401).json({
-      success: false,
-      error: error.message,
-      message: "Autentifikatsiya xatosi",
-    });
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith("Bearer")
+  ) {
+    token = req.headers.authorization.split(" ")[1];
   }
-};
 
-// Role-based access control
+  if (!token) {
+    throw new UnauthorizedError("Tizimga kirish uchun autentifikatsiya talab qilinadi");
+  }
+
+  const decoded = verifyToken(token);
+
+  if (!decoded) {
+    throw new UnauthorizedError("Noto'g'ri yoki muddati o'tgan token");
+  }
+
+  const user = await User.findById(decoded.id).select("-password");
+
+  if (!user) {
+    throw new UnauthorizedError("Foydalanuvchi topilmadi");
+  }
+
+  if (!user.isActive) {
+    throw new UnauthorizedError("Sizning hisobingiz faol emas");
+  }
+
+  req.user = user;
+  next();
+});
+
+/**
+ * Rolga asoslangan ruxsat tekshirish middleware
+ * @param {...string} roles - Ruxsat berilgan rollar ro'yxati
+ * @returns {Function} Express middleware
+ */
 const authorize = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: `${req.user.role} roli uchun ruxsat berilmagan`,
-      });
+      throw new ForbiddenError(`${req.user.role} roli uchun ruxsat berilmagan`);
     }
     next();
   };
