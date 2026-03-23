@@ -7,6 +7,8 @@ const {
   exportWeeklyStatistics,
 } = require("../controllers/statistics.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 // Barcha route lar protected
 router.use(protect);
@@ -14,28 +16,30 @@ router.use(protect);
 // Bitta o'quvchining haftalik statistikasi (owner yoki student o'zini)
 router.get(
   "/weekly/current/:studentId",
-  authorize("owner", "student"),
+  validateObjectId("studentId"),
+  authorize(ROLES.OWNER, ROLES.STUDENT),
   getStudentWeeklyStatistics
 );
 
 // Sinf bo'yicha reytinglar (faqat owner)
 router.get(
   "/weekly/class/:classId/rankings",
-  authorize("owner"),
+  validateObjectId("classId"),
+  authorize(ROLES.OWNER),
   getClassRankings
 );
 
 // Maktab bo'yicha reytinglar (faqat owner)
 router.get(
   "/weekly/school/rankings",
-  authorize("owner"),
+  authorize(ROLES.OWNER),
   getSchoolRankings
 );
 
 // Haftalik statistikani export qilish (faqat owner)
 router.get(
   "/weekly/export",
-  authorize("owner"),
+  authorize(ROLES.OWNER),
   exportWeeklyStatistics
 );
 
