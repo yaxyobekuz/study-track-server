@@ -11,20 +11,22 @@ const {
 
 // Middlewares
 const { protect, authorize } = require("../middleware/auth.middleware");
-const { uploadSingle, handleUploadError } = require("../middleware/upload.middleware");
+const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 // All routes are protected
 router.use(protect);
 
 // Only owner and teacher can access these routes
-router.use(authorize("owner", "teacher"));
+router.use(authorize(ROLES.OWNER, ROLES.TEACHER));
 
 // Routes
 router
   .route("/")
   .get(getMessages)
-  .post(uploadSingle, handleUploadError, sendMessage);
+  .post(createSingleFileUpload({ categories: ["image", "document"] }), handleFileUploadError, sendMessage);
 
-router.route("/:id").get(getMessageById);
+router.route("/:id").all(validateObjectId("id")).get(getMessageById);
 
 module.exports = router;
