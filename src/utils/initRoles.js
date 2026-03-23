@@ -1,17 +1,17 @@
-// Models
 const Role = require("../models/role.model");
 const User = require("../models/user.model");
+const logger = require("./logger");
 
 /**
- * Ensures default system roles exist.
- * Creates only missing default roles and leaves existing roles unchanged.
+ * Default tizim rollarini yaratadi (agar mavjud bo'lmasa)
+ * Mavjud rollarni o'zgartirmaydi
  */
 const initRoles = async () => {
   try {
     const owner = await User.findOne({ role: "owner" });
 
     if (!owner) {
-      console.error("Owner not found. Cannot create default roles.");
+      logger.error("Owner topilmadi. Default rollarni yaratib bo'lmaydi.");
       return;
     }
 
@@ -48,10 +48,10 @@ const initRoles = async () => {
     const result = await Role.bulkWrite(upsertOperations);
 
     if (result.upsertedCount > 0) {
-      console.log(`✓ ${result.upsertedCount} ta default rol yaratildi`);
+      logger.info(`${result.upsertedCount} ta default rol yaratildi`);
     }
   } catch (error) {
-    console.error("Error creating default roles:", error.message);
+    logger.error("Default rollarni yaratishda xato:", error.message);
   }
 };
 
