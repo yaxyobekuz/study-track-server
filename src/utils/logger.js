@@ -1,6 +1,7 @@
 const winston = require("winston");
 const DailyRotateFile = require("winston-daily-rotate-file");
 const path = require("path");
+const { config } = require("../config/env.config");
 
 // Log formatini belgilash
 const logFormat = winston.format.combine(
@@ -33,7 +34,7 @@ transports.push(
 );
 
 // File transport (faqat production va development)
-if (process.env.NODE_ENV !== "test") {
+if (!config.isTest) {
   // Barcha loglar uchun
   transports.push(
     new DailyRotateFile({
@@ -60,7 +61,7 @@ if (process.env.NODE_ENV !== "test") {
 
 // Logger yaratish
 const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === "production" ? "info" : "debug"),
+  level: config.logLevel || (config.isProduction ? "info" : "debug"),
   format: logFormat,
   transports,
   // Xatolarni handle qilish
@@ -77,7 +78,7 @@ const logger = winston.createLogger({
 });
 
 // Development rejimida yanada batafsil loglar
-if (process.env.NODE_ENV !== "production") {
+if (!config.isProduction) {
   logger.debug("Logger tizimi ishga tushdi (development rejimida)");
 }
 
