@@ -1,185 +1,71 @@
-const Grade = require("../models/grade.model");
-const Subject = require("../models/subject.model");
-const Schedule = require("../models/schedule.model");
 const ExcelService = require("../services/excel.service");
+const subjectService = require("../services/subject.service");
+const asyncHandler = require("../middleware/async.middleware");
 
 // Get all subjects
-const getAllSubjects = async (req, res) => {
-  try {
-    const subjects = await Subject.find()
-      .populate("createdBy", "firstName lastName")
-      .sort({ name: 1 })
-      .lean();
+const getAllSubjects = asyncHandler(async (req, res) => {
+  const subjects = await subjectService.getAllSubjects();
 
-    res.json({
-      success: true,
-      count: subjects.length,
-      data: subjects,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    data: subjects,
+  });
+});
 
 // Create new subject (Owner only)
-const createSubject = async (req, res) => {
-  try {
-    const { name, description } = req.body;
+const createSubject = asyncHandler(async (req, res) => {
+  const subject = await subjectService.createSubject(req.body, req.user._id);
 
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: "Fan nomi majburiy",
-      });
-    }
-
-    const subject = await Subject.create({
-      name,
-      description,
-      createdBy: req.user._id,
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Fan muvaffaqiyatli yaratildi",
-      data: subject,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.status(201).json({
+    success: true,
+    message: "Fan muvaffaqiyatli yaratildi",
+    data: subject,
+  });
+});
 
 // Update subject (Owner only)
-const updateSubject = async (req, res) => {
-  try {
-    const { name, description, isActive } = req.body;
+const updateSubject = asyncHandler(async (req, res) => {
+  const subject = await subjectService.updateSubject(req.params.id, req.body);
 
-    const subject = await Subject.findById(req.params.id);
-
-    if (!subject) {
-      return res.status(404).json({
-        success: false,
-        message: "Fan topilmadi",
-      });
-    }
-
-    if (name) subject.name = name;
-    if (description !== undefined) subject.description = description;
-    if (isActive !== undefined) subject.isActive = isActive;
-
-    await subject.save();
-
-    res.json({
-      success: true,
-      message: "Fan muvaffaqiyatli yangilandi",
-      data: subject,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    message: "Fan muvaffaqiyatli yangilandi",
+    data: subject,
+  });
+});
 
 // Delete subject (Owner only)
-const deleteSubject = async (req, res) => {
-  try {
-    const subject = await Subject.findById(req.params.id);
+const deleteSubject = asyncHandler(async (req, res) => {
+  await subjectService.deleteSubject(req.params.id);
 
-    if (!subject) {
-      return res.status(404).json({
-        success: false,
-        message: "Fan topilmadi",
-      });
-    }
-
-    // Check if subject is used in grades or schedules
-    const [gradesCount, schedulesCount] = await Promise.all([
-      Grade.countDocuments({ subject: subject._id }),
-      Schedule.countDocuments({ "subjects.subject": subject._id }),
-    ]);
-
-    if (gradesCount > 0 || schedulesCount > 0) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Bu fan baholarda yoki jadvallarda ishlatilmoqda. Avval ularni o'chiring.",
-      });
-    }
-
-    await subject.deleteOne();
-
-    res.json({
-      success: true,
-      message: "Fan muvaffaqiyatli o'chirildi",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    message: "Fan muvaffaqiyatli o'chirildi",
+  });
+});
 
 // Export subjects to Excel
-const exportSubjects = async (req, res) => {
-  try {
-    const subjects = await Subject.find()
-      .populate("createdBy", "firstName lastName")
-      .sort({ name: 1 })
-      .lean();
+const exportSubjects = asyncHandler(async (req, res) => {
+  const data = await subjectService.getSubjectsForExport();
 
-    // Excel uchun ma'lumotlarni tayyorlash
-    const data = subjects.map((subject) => ({
-      name: subject.name,
-      description: subject.description || "-",
-      status: subject.isActive ? "Faol" : "Faol emas",
-      createdBy: subject.createdBy
-        ? `${subject.createdBy.firstName} ${subject.createdBy.lastName}`
-        : "-",
-      createdAt: new Date(subject.createdAt).toLocaleDateString("uz-UZ"),
-    }));
+  const workbook = ExcelService.createExcel({
+    sheetName: "Fanlar",
+    columns: [
+      { header: "Fan nomi", key: "name", width: 25 },
+      { header: "Tavsif", key: "description", width: 40 },
+      { header: "Holati", key: "status", width: 12 },
+      { header: "Yaratuvchi", key: "createdBy", width: 20 },
+      { header: "Yaratilgan sana", key: "createdAt", width: 15 },
+    ],
+    data,
+    headerStyle: {
+      bgColor: ExcelService.COLORS.HEADER_PURPLE,
+    },
+  });
 
-    // Excel yaratish
-    const workbook = ExcelService.createExcel({
-      sheetName: "Fanlar",
-      columns: [
-        { header: "Fan nomi", key: "name", width: 25 },
-        { header: "Tavsif", key: "description", width: 40 },
-        { header: "Holati", key: "status", width: 12 },
-        { header: "Yaratuvchi", key: "createdBy", width: 20 },
-        { header: "Yaratilgan sana", key: "createdAt", width: 15 },
-      ],
-      data,
-      headerStyle: {
-        bgColor: ExcelService.COLORS.HEADER_PURPLE,
-      },
-    });
-
-    // Fayl nomini yaratish
-    const filename = ExcelService.generateFileName("fanlar");
-
-    // Faylni yuborish
-    await ExcelService.sendWorkbook(res, workbook, filename);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  const filename = ExcelService.generateFileName("fanlar");
+  await ExcelService.sendWorkbook(res, workbook, filename);
+});
 
 module.exports = {
   getAllSubjects,
