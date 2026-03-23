@@ -10,18 +10,20 @@ const {
   distributeCoins,
 } = require("../controllers/coin.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 router.use(protect);
 
 // Owner routes
-router.get("/settings", authorize("owner"), getSettings);
-router.put("/settings", authorize("owner"), updateSettings);
-router.get("/stats", authorize("owner"), getCoinStats);
-router.get("/transactions/:studentId", authorize("owner"), getStudentTransactions);
-router.post("/distribute", authorize("owner"), distributeCoins);
+router.get("/settings", authorize(ROLES.OWNER), getSettings);
+router.put("/settings", authorize(ROLES.OWNER), updateSettings);
+router.get("/stats", authorize(ROLES.OWNER), getCoinStats);
+router.get("/transactions/:studentId", validateObjectId("studentId"), authorize(ROLES.OWNER), getStudentTransactions);
+router.post("/distribute", authorize(ROLES.OWNER), distributeCoins);
 
 // Student routes
-router.get("/balance", authorize("student"), getMyBalance);
-router.get("/transactions", authorize("student"), getMyTransactions);
+router.get("/balance", authorize(ROLES.STUDENT), getMyBalance);
+router.get("/transactions", authorize(ROLES.STUDENT), getMyTransactions);
 
 module.exports = router;
