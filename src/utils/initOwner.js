@@ -1,26 +1,30 @@
-// Models
 const User = require("../models/user.model");
+const { config } = require("../config/env.config");
+const logger = require("./logger");
 
+/**
+ * Default owner foydalanuvchisini yaratadi (agar mavjud bo'lmasa)
+ */
 const initOwner = async () => {
   try {
     const ownerExists = await User.findOne({ role: "owner" });
 
     if (!ownerExists) {
-      console.log("Owner not found. Creating new owner...");
+      logger.info("Owner topilmadi. Yangi owner yaratilmoqda...");
       const ownerData = {
-        username: process.env.DEFAULT_OWNER_USERNAME || "admin",
-        password: process.env.DEFAULT_OWNER_PASSWORD || "admin123",
-        firstName: process.env.DEFAULT_OWNER_FIRSTNAME || "Administrator",
-        lastName: process.env.DEFAULT_OWNER_LASTNAME,
+        username: config.defaultOwnerUsername,
+        password: config.defaultOwnerPassword,
+        firstName: config.defaultOwnerFirstname,
+        lastName: config.defaultOwnerLastname,
         role: "owner",
         isActive: true,
       };
 
       await User.create(ownerData);
-      console.log("✓ Default owner created successfully");
+      logger.info("Default owner muvaffaqiyatli yaratildi");
     }
   } catch (error) {
-    console.error("Error creating owner:", error.message);
+    logger.error("Owner yaratishda xato:", error.message);
   }
 };
 
