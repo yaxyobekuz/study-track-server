@@ -6,6 +6,8 @@ const {
   createMultiFileUpload,
   handleFileUploadError,
 } = require("../middleware/fileUpload.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 const {
   createOrder,
@@ -30,35 +32,37 @@ const uploadProductImages = createMultiFileUpload({
 
 router.use(protect);
 
-router.get("/admin/products", authorize("owner"), getAdminProducts);
-router.get("/admin/products/:productId", authorize("owner"), getProductById);
+router.get("/admin/products", authorize(ROLES.OWNER), getAdminProducts);
+router.get("/admin/products/:productId", validateObjectId("productId"), authorize(ROLES.OWNER), getProductById);
 router.post(
   "/admin/products",
-  authorize("owner"),
+  authorize(ROLES.OWNER),
   uploadProductImages,
   handleFileUploadError,
   createProduct,
 );
 router.put(
   "/admin/products/:productId",
-  authorize("owner"),
+  validateObjectId("productId"),
+  authorize(ROLES.OWNER),
   uploadProductImages,
   handleFileUploadError,
   updateProduct,
 );
-router.delete("/admin/products/:productId", authorize("owner"), deleteProduct);
+router.delete("/admin/products/:productId", validateObjectId("productId"), authorize(ROLES.OWNER), deleteProduct);
 
-router.get("/admin/orders", authorize("owner"), getAdminOrders);
+router.get("/admin/orders", authorize(ROLES.OWNER), getAdminOrders);
 router.patch(
   "/admin/orders/:orderId/status",
-  authorize("owner"),
+  validateObjectId("orderId"),
+  authorize(ROLES.OWNER),
   updateOrderStatusByOwner,
 );
 
-router.get("/products", authorize("student"), getStudentProducts);
-router.get("/products/:productId", authorize("student"), getStudentProductById);
-router.post("/orders", authorize("student"), createOrder);
-router.get("/orders/my", authorize("student"), getMyOrders);
-router.patch("/orders/:orderId/cancel", authorize("student"), cancelMyOrder);
+router.get("/products", authorize(ROLES.STUDENT), getStudentProducts);
+router.get("/products/:productId", validateObjectId("productId"), authorize(ROLES.STUDENT), getStudentProductById);
+router.post("/orders", authorize(ROLES.STUDENT), createOrder);
+router.get("/orders/my", authorize(ROLES.STUDENT), getMyOrders);
+router.patch("/orders/:orderId/cancel", validateObjectId("orderId"), authorize(ROLES.STUDENT), cancelMyOrder);
 
 module.exports = router;
