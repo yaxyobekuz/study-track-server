@@ -11,20 +11,22 @@ const {
 
 // Middleware
 const { protect, authorize } = require("../middleware/auth.middleware");
-const { uploadSingle, handleUploadError } = require("../middleware/upload.middleware");
+const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 // Routes
 router.post(
   "/upload",
   protect,
-  authorize("owner"),
-  uploadSingle,
-  handleUploadError,
+  authorize(ROLES.OWNER),
+  createSingleFileUpload({ categories: ["document"] }),
+  handleFileUploadError,
   uploadTopics
 );
 
-router.get("/subject/:id", protect, getTopicsBySubject);
+router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 
-router.delete("/subject/:id", protect, authorize("owner"), deleteTopicsBySubject);
+router.delete("/subject/:id", protect, authorize(ROLES.OWNER), validateObjectId("id"), deleteTopicsBySubject);
 
 module.exports = router;
