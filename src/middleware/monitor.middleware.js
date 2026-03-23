@@ -1,4 +1,6 @@
 const Monitor = require("../models/monitor.model");
+const asyncHandler = require("./async.middleware");
+const { UnauthorizedError } = require("../utils/errors");
 
 /**
  * Monitor kodini tekshiruvchi middleware.
@@ -8,35 +10,21 @@ const Monitor = require("../models/monitor.model");
  * @param {import("express").Response} res
  * @param {import("express").NextFunction} next
  */
-const verifyMonitor = async (req, res, next) => {
-  try {
-    const code = req.headers["x-monitor-code"];
+const verifyMonitor = asyncHandler(async (req, res, next) => {
+  const code = req.headers["x-monitor-code"];
 
-    if (!code) {
-      return res.status(401).json({
-        success: false,
-        message: "Monitor kodi taqdim etilmagan",
-      });
-    }
-
-    const monitor = await Monitor.findOne({ code, isActive: true });
-
-    if (!monitor) {
-      return res.status(401).json({
-        success: false,
-        message: "Monitor kodi noto'g'ri yoki faol emas",
-      });
-    }
-
-    req.monitor = monitor;
-    next();
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
+  if (!code) {
+    throw new UnauthorizedError("Monitor kodi taqdim etilmagan");
   }
-};
+
+  const monitor = await Monitor.findOne({ code, isActive: true });
+
+  if (!monitor) {
+    throw new UnauthorizedError("Monitor kodi noto'g'ri yoki faol emas");
+  }
+
+  req.monitor = monitor;
+  next();
+});
 
 module.exports = { verifyMonitor };
