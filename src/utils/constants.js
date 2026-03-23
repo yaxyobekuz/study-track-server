@@ -1,6 +1,11 @@
+const { config } = require("../config/env.config");
+
 // Roles
 const ROLES = {
   OWNER: "owner",
+  TEACHER: "teacher",
+  STUDENT: "student",
+  DEVELOPER: "developer",
 };
 
 // Days of the week
@@ -35,8 +40,8 @@ const PAGINATION_DEFAULTS = {
 };
 
 // Grade time constraints
-const GRADE_TIME_LIMIT_MINUTES = parseInt(process.env.GRADE_TIME_LIMIT_MINUTES) || 30;
-const ENABLE_SCHEDULE_TIME_VALIDATION = process.env.ENABLE_SCHEDULE_TIME_VALIDATION === 'true';
+const GRADE_TIME_LIMIT_MINUTES = config.gradeTimeLimitMinutes;
+const ENABLE_SCHEDULE_TIME_VALIDATION = config.enableScheduleTimeValidation;
 
 module.exports = {
   ROLES,
