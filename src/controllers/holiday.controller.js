@@ -1,223 +1,83 @@
-// Models
-const Holiday = require("../models/holiday.model");
+const asyncHandler = require("../middleware/async.middleware");
+const holidayService = require("../services/holiday.service");
 
 /**
- * Barcha dam olish kunlarini
+ * Barcha dam olish kunlarini olish
  * GET /api/holidays
  */
-const getHolidays = async (req, res) => {
-  try {
-    const holidays = await Holiday.find()
-      .populate("createdBy", "firstName lastName")
-      .sort({ createdAt: -1 });
-    res.json({
-      success: true,
-      count: holidays.length,
-      data: holidays,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+const getHolidays = asyncHandler(async (req, res) => {
+  const holidays = await holidayService.getHolidays();
+
+  res.json({
+    success: true,
+    data: holidays,
+  });
+});
 
 /**
  * Dam olish kuni yaratish
  * POST /api/holidays
  */
-const createHoliday = async (req, res) => {
-  try {
-    const {
-      name,
-      description,
-      type,
-      date,
-      startDate,
-      endDate,
-      recurringDate,
-      recurringStartDate,
-      recurringEndDate,
-      isActive,
-    } = req.body;
+const createHoliday = asyncHandler(async (req, res) => {
+  const holiday = await holidayService.createHoliday(req.body, req.user._id);
 
-    // Validatsiya
-    if (!name || !type) {
-      return res.status(400).json({
-        success: false,
-        message: "Nom va turi majburiy",
-      });
-    }
-
-    // Turga qarab validatsiya
-    if (type === "single" && !date) {
-      return res.status(400).json({
-        success: false,
-        message: "Bir kunlik dam olish uchun sana majburiy",
-      });
-    }
-
-    if (type === "range" && (!startDate || !endDate)) {
-      return res.status(400).json({
-        success: false,
-        message: "Vaqt oralig'i uchun boshlanish va tugash sanasi majburiy",
-      });
-    }
-
-    if (type === "recurring") {
-      const hasRecurringDate =
-        recurringDate &&
-        recurringDate.month !== undefined &&
-        recurringDate.day !== undefined;
-      const hasRecurringRange =
-        recurringStartDate &&
-        recurringEndDate &&
-        recurringStartDate.month !== undefined &&
-        recurringEndDate.month !== undefined;
-
-      if (!hasRecurringDate && !hasRecurringRange) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Takrorlanuvchi dam olish uchun sana yoki oraliq kiritish majburiy",
-        });
-      }
-    }
-
-    const holiday = await Holiday.create({
-      name,
-      description,
-      type,
-      date,
-      startDate,
-      endDate,
-      recurringDate,
-      recurringStartDate,
-      recurringEndDate,
-      isActive: isActive !== undefined ? isActive : true,
-      createdBy: req.user._id,
-    });
-
-    res.status(201).json({
-      success: true,
-      data: holiday,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.status(201).json({
+    success: true,
+    data: holiday,
+  });
+});
 
 /**
  * Dam olish kunini yangilash
  * PUT /api/holidays/:id
  */
-const updateHoliday = async (req, res) => {
-  try {
-    const { id } = req.params;
+const updateHoliday = asyncHandler(async (req, res) => {
+  const holiday = await holidayService.updateHoliday(req.params.id, req.body);
 
-    const holiday = await Holiday.findByIdAndUpdate(id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!holiday) {
-      return res.status(404).json({
-        success: false,
-        message: "Dam olish kuni topilmadi",
-      });
-    }
-
-    res.json({
-      success: true,
-      data: holiday,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    data: holiday,
+  });
+});
 
 /**
  * Dam olish kunini o'chirish
  * DELETE /api/holidays/:id
  */
-const deleteHoliday = async (req, res) => {
-  try {
-    const { id } = req.params;
+const deleteHoliday = asyncHandler(async (req, res) => {
+  await holidayService.deleteHoliday(req.params.id);
 
-    const holiday = await Holiday.findByIdAndDelete(id);
-
-    if (!holiday) {
-      return res.status(404).json({
-        success: false,
-        message: "Dam olish kuni topilmadi",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Dam olish kuni o'chirildi",
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    message: "Dam olish kuni o'chirildi",
+  });
+});
 
 /**
  * Bugun dam olish kuni ekanligini tekshirish
  * GET /api/holidays/check/today
  */
-const checkToday = async (req, res) => {
-  try {
-    const result = await Holiday.isHoliday(new Date());
+const checkToday = asyncHandler(async (req, res) => {
+  const result = await holidayService.checkToday();
 
-    res.json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    data: result,
+  });
+});
 
 /**
  * Ma'lum sanani tekshirish
  * GET /api/holidays/check/:date
  */
-const checkDate = async (req, res) => {
-  try {
-    const { date } = req.params;
-    const result = await Holiday.isHoliday(new Date(date));
+const checkDate = asyncHandler(async (req, res) => {
+  const result = await holidayService.checkDate(req.params.date);
 
-    res.json({
-      success: true,
-      data: result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "Server xatosi",
-      error: error.message,
-    });
-  }
-};
+  res.json({
+    success: true,
+    data: result,
+  });
+});
 
 module.exports = {
   getHolidays,
