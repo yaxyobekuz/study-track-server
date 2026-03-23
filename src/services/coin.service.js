@@ -42,80 +42,122 @@ async function distributeDailyCoins(targetDate) {
   const endOfDay = new Date(date);
   endOfDay.setHours(23, 59, 59, 999);
 
-  const students = await User.find({ role: "student", isActive: true });
+  // 1. Get all active students
+  const students = await User.find({ role: "student", isActive: true })
+    .select("_id coinBalance")
+    .lean();
 
+  if (students.length === 0) {
+    return { successCount: 0, skippedCount: 0, errorCount: 0 };
+  }
+
+  const studentIds = students.map((s) => s._id);
+
+  // 2. Batch: find students who already received daily coins today
+  const alreadyDistributed = await CoinTransaction.distinct("student", {
+    student: { $in: studentIds },
+    type: "daily",
+    date: { $gte: startOfDay, $lte: endOfDay },
+  });
+
+  const alreadySet = new Set(alreadyDistributed.map((id) => id.toString()));
+
+  // 3. Batch: aggregate daily grade sums for all students
+  const gradeAgg = await Grade.aggregate([
+    {
+      $match: {
+        student: { $in: studentIds },
+        date: { $gte: startOfDay, $lte: endOfDay },
+      },
+    },
+    {
+      $group: {
+        _id: "$student",
+        totalGrade: { $sum: "$grade" },
+      },
+    },
+  ]);
+
+  const gradeMap = new Map();
+  for (const item of gradeAgg) {
+    gradeMap.set(item._id.toString(), item.totalGrade);
+  }
+
+  // 4. Calculate eligible students and coin amounts
+  const balanceMap = new Map(
+    students.map((s) => [s._id.toString(), s.coinBalance || 0]),
+  );
+
+  const bulkOps = [];
+  const transactions = [];
   let successCount = 0;
-  let errorCount = 0;
   let skippedCount = 0;
+  let totalCoins = 0;
 
   for (const student of students) {
+    const sid = student._id.toString();
+
+    if (alreadySet.has(sid)) {
+      skippedCount++;
+      continue;
+    }
+
+    const dailyGradeSum = gradeMap.get(sid);
+
+    if (!dailyGradeSum || dailyGradeSum < minDailyGradeForCoin) {
+      skippedCount++;
+      continue;
+    }
+
+    const coinAmount = Math.floor(
+      (dailyGradeSum * dailyCoinPercentage) / 100,
+    );
+
+    if (coinAmount <= 0) {
+      skippedCount++;
+      continue;
+    }
+
+    const newBalance = (balanceMap.get(sid) || 0) + coinAmount;
+
+    bulkOps.push({
+      updateOne: {
+        filter: { _id: student._id },
+        update: { $inc: { coinBalance: coinAmount } },
+      },
+    });
+
+    transactions.push({
+      student: student._id,
+      amount: coinAmount,
+      type: "daily",
+      description: `Kunlik baho uchun: ${dailyGradeSum} ball × ${dailyCoinPercentage}% = ${coinAmount} coin`,
+      balanceAfter: newBalance,
+      meta: {
+        dailyGradeSum,
+        coinPercentage: dailyCoinPercentage,
+      },
+      date: startOfDay,
+    });
+
+    totalCoins += coinAmount;
+    successCount++;
+  }
+
+  // 5. Batch write: update balances and insert transactions
+  let errorCount = 0;
+
+  if (bulkOps.length > 0) {
     try {
-      const alreadyDistributed = await CoinTransaction.findOne({
-        student: student._id,
-        type: "daily",
-        date: { $gte: startOfDay, $lte: endOfDay },
-      });
-
-      if (alreadyDistributed) {
-        skippedCount++;
-        continue;
-      }
-
-      const grades = await Grade.find({
-        student: student._id,
-        date: { $gte: startOfDay, $lte: endOfDay },
-      });
-
-      if (grades.length === 0) {
-        skippedCount++;
-        continue;
-      }
-
-      const dailyGradeSum = grades.reduce((sum, g) => sum + g.grade, 0);
-
-      if (dailyGradeSum < minDailyGradeForCoin) {
-        skippedCount++;
-        continue;
-      }
-
-      const coinAmount = Math.floor(
-        (dailyGradeSum * dailyCoinPercentage) / 100,
-      );
-
-      if (coinAmount <= 0) {
-        skippedCount++;
-        continue;
-      }
-
-      const updatedUser = await User.findByIdAndUpdate(
-        student._id,
-        { $inc: { coinBalance: coinAmount } },
-        { new: true },
-      );
-
-      const description = `Kunlik baho uchun: ${dailyGradeSum} ball × ${dailyCoinPercentage}% = ${coinAmount} coin`;
-
-      await CoinTransaction.create({
-        student: student._id,
-        amount: coinAmount,
-        type: "daily",
-        description,
-        balanceAfter: updatedUser.coinBalance,
-        meta: {
-          dailyGradeSum,
-          coinPercentage: dailyCoinPercentage,
-        },
-        date: startOfDay,
-      });
-
-      await _updateDailyCoinStat(coinAmount, startOfDay);
-
-      successCount++;
+      await User.bulkWrite(bulkOps);
+      await CoinTransaction.insertMany(transactions);
+      await _updateDailyCoinStat(totalCoins, startOfDay);
     } catch (err) {
       logger.error(
-        `[CoinService] Daily coin error for student ${student._id}: ${err.message}`,
+        `[CoinService] Daily batch write error: ${err.message}`,
       );
-      errorCount++;
+      errorCount = successCount;
+      successCount = 0;
     }
   }
 
@@ -346,7 +388,7 @@ async function getStudentTransactions(studentId, page = 1, limit = 20) {
     pagination: {
       page,
       limit,
-      totalItems: total,
+      total,
       totalPages: Math.ceil(total / limit),
       hasNextPage: page * limit < total,
       hasPrevPage: page > 1,
@@ -429,63 +471,75 @@ async function distributeManualCoins({
   givenBy,
 }) {
   const query = _buildFilterQuery(filterType, filterValue);
-  const users = await User.find(query).select("_id coinBalance");
+  const users = await User.find(query).select("_id coinBalance").lean();
 
   const totalFound = users.length;
-  let successCount = 0;
-  let skippedCount = 0;
-  let errorCount = 0;
-
   const type = action === "give" ? "manual_give" : "manual_take";
+  const now = new Date();
+
+  if (totalFound === 0) {
+    return { successCount: 0, skippedCount: 0, errorCount: 0, totalFound: 0 };
+  }
+
+  let bulkOps = [];
+  let transactions = [];
+  let skippedCount = 0;
 
   for (const user of users) {
+    const currentBalance = user.coinBalance || 0;
+
+    if (action === "take" && currentBalance < amount) {
+      skippedCount++;
+      continue;
+    }
+
+    const delta = action === "give" ? amount : -amount;
+    const newBalance = currentBalance + delta;
+
+    bulkOps.push({
+      updateOne: {
+        filter:
+          action === "take"
+            ? { _id: user._id, coinBalance: { $gte: amount } }
+            : { _id: user._id },
+        update: { $inc: { coinBalance: delta } },
+      },
+    });
+
+    transactions.push({
+      student: user._id,
+      amount,
+      type,
+      description: reason,
+      balanceAfter: newBalance,
+      meta: {
+        givenBy,
+        reason,
+        filterType,
+        filterValue,
+      },
+      date: now,
+    });
+  }
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  if (bulkOps.length > 0) {
     try {
-      let updatedUser;
+      const bulkResult = await User.bulkWrite(bulkOps);
+      await CoinTransaction.insertMany(transactions);
+
+      successCount = bulkResult.modifiedCount || bulkOps.length;
 
       if (action === "give") {
-        updatedUser = await User.findByIdAndUpdate(
-          user._id,
-          { $inc: { coinBalance: amount } },
-          { new: true },
-        );
-      } else {
-        updatedUser = await User.findOneAndUpdate(
-          { _id: user._id, coinBalance: { $gte: amount } },
-          { $inc: { coinBalance: -amount } },
-          { new: true },
-        );
-
-        if (!updatedUser) {
-          skippedCount++;
-          continue;
-        }
+        await _updateDailyCoinStat(amount * successCount, now);
       }
-
-      await CoinTransaction.create({
-        student: user._id,
-        amount,
-        type,
-        description: reason,
-        balanceAfter: updatedUser.coinBalance,
-        meta: {
-          givenBy,
-          reason,
-          filterType,
-          filterValue,
-        },
-        date: new Date(),
-      });
-
-      if (action === "give") {
-        await _updateDailyCoinStat(amount, new Date());
-      }
-
-      successCount++;
     } catch (err) {
       logger.error(
-        `[CoinService] Manual ${action} error for user ${user._id}: ${err.message}`,
+        `[CoinService] Manual ${action} batch error: ${err.message}`,
       );
-      errorCount++;
+      errorCount = bulkOps.length;
     }
   }
 
