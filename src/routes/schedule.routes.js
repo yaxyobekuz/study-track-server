@@ -12,43 +12,50 @@ const {
   getClassesBySubject,
 } = require("../controllers/schedule.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
+const { ROLES } = require("../utils/constants");
 
 // All routes are protected
 router.use(protect);
 
 // Teacher's today schedule
-router.get("/my-today", authorize("teacher"), getMyTodaySchedule);
+router.get("/my-today", authorize(ROLES.TEACHER), getMyTodaySchedule);
 
 // All today schedules (Owner only)
-router.get("/all-today", authorize("owner"), getAllTodaySchedules);
+router.get("/all-today", authorize(ROLES.OWNER), getAllTodaySchedules);
 
 // Schedule by class (Owner and Teacher can view)
 router.get(
   "/class/:classId",
-  authorize("owner", "teacher"),
+  validateObjectId("classId"),
+  authorize(ROLES.OWNER, ROLES.TEACHER),
   getScheduleByClass,
 );
 router.get(
   "/class/:classId/export",
-  authorize("owner", "teacher"),
+  validateObjectId("classId"),
+  authorize(ROLES.OWNER, ROLES.TEACHER),
   exportScheduleByClass,
 );
 router.get(
   "/class/:classId/day/:day",
-  authorize("owner", "teacher"),
+  validateObjectId("classId"),
+  authorize(ROLES.OWNER, ROLES.TEACHER),
   getScheduleByDay,
 );
 
 // Get all classes by subject (Owner only)
-router.get("/subject/:subjectId", authorize("owner"), getClassesBySubject);
+router.get("/subject/:subjectId", validateObjectId("subjectId"), authorize(ROLES.OWNER), getClassesBySubject);
 
 // CRUD operations for owner only
-router.post("/", authorize("owner"), createOrUpdateSchedule);
+router.post("/", authorize(ROLES.OWNER), createOrUpdateSchedule);
 router.patch(
   "/class/:classId/subject/:subjectId/topic",
-  authorize("owner"),
+  validateObjectId("classId"),
+  validateObjectId("subjectId"),
+  authorize(ROLES.OWNER),
   updateCurrentTopic,
 );
-router.delete("/:id", authorize("owner"), deleteSchedule);
+router.delete("/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteSchedule);
 
 module.exports = router;
