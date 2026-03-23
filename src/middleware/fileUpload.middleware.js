@@ -1,4 +1,5 @@
 const multer = require("multer");
+const { config } = require("../config/env.config");
 
 const FILE_MIME_TYPES = {
   image: ["image/jpeg", "image/jpg", "image/png", "image/webp"],
@@ -37,7 +38,7 @@ const createSingleFileUpload = ({
   fieldName = "file",
   categories = ["image"],
 } = {}) => {
-  const maxFileSizeMb = Number(process.env.MAX_UPLOAD_FILE_SIZE_MB || 20);
+  const maxFileSizeMb = config.maxUploadFileSizeMb;
   const maxFileSizeBytes = Math.max(1, maxFileSizeMb) * 1024 * 1024;
   const allowedMimeTypes = getAllowedMimeTypes(categories);
 
@@ -68,7 +69,7 @@ const createMultiFileUpload = ({
   categories = ["image"],
   maxFiles = 3,
 } = {}) => {
-  const maxFileSizeMb = Number(process.env.MAX_UPLOAD_FILE_SIZE_MB || 20);
+  const maxFileSizeMb = config.maxUploadFileSizeMb;
   const maxFileSizeBytes = Math.max(1, maxFileSizeMb) * 1024 * 1024;
   const allowedMimeTypes = getAllowedMimeTypes(categories);
 
@@ -100,7 +101,7 @@ const handleFileUploadError = (err, req, res, next) => {
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(400).json({
         success: false,
-        message: `File is too large. Maximum size is ${process.env.MAX_UPLOAD_FILE_SIZE_MB || 20}MB.`,
+        message: `Fayl juda katta. Maksimal hajm ${config.maxUploadFileSizeMb}MB.`,
       });
     }
 
