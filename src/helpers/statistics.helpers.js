@@ -1,3 +1,5 @@
+const { getNowInUzbekistan } = require("./date.helpers");
+
 /**
  * Yil ichidagi hafta raqamini qaytaradi (1-52)
  * @param {Date} date - Sana
@@ -19,7 +21,7 @@ const getWeekNumber = (date) => {
  * @returns {{weekStart: Date, weekEnd: Date, weekNumber: number, year: number}}
  */
 const getCurrentWeekRange = () => {
-  const today = new Date();
+  const today = getNowInUzbekistan();
   const dayOfWeek = today.getDay(); // 0=yakshanba, 1=dushanba, ..., 6=shanba
 
   // Dushanba = hafta boshi
