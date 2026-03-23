@@ -1,4 +1,5 @@
 const logger = require("../utils/logger");
+const { config } = require("../config/env.config");
 
 // Error handling middleware
 const errorHandler = (err, req, res, next) => {
@@ -60,7 +61,7 @@ const errorHandler = (err, req, res, next) => {
   res.status(err.statusCode || 500).json({
     success: false,
     message: err.message || "Server xatosi",
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+    ...(config.isDevelopment && { stack: err.stack }),
   });
 };
 
