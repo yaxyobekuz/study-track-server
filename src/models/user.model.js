@@ -139,9 +139,9 @@ userSchema.post("save", async function (doc) {
       // Create stats for current week
       await createWeeklyStatsForStudent(this._id, weekNumber, year);
 
-      console.log(`Created WeeklyStats for new student: ${this._id}`);
+      require("../utils/logger").info(`WeeklyStats yaratildi yangi o'quvchi uchun: ${this._id}`);
     } catch (error) {
-      console.error("Error creating WeeklyStats for new student:", error);
+      require("../utils/logger").error("Yangi o'quvchi uchun WeeklyStats yaratishda xato:", error);
       // Don't throw - user is already created
     }
   }
