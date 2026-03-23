@@ -1,11 +1,13 @@
 const mongoose = require("mongoose");
+const { config } = require("./env.config");
+const logger = require("../utils/logger");
 
 const connectDB = async () => {
   try {
-    const db = await mongoose.connect(process.env.MONGODB_URI);
-    console.log(`MongoDB connected: ${db.connection.host}`);
+    const db = await mongoose.connect(config.mongodbUri);
+    logger.info(`MongoDB connected: ${db.connection.host}`);
   } catch (error) {
-    console.error(`Error: ${error.message}`);
+    logger.error(`MongoDB ulanish xatosi: ${error.message}`);
     process.exit(1);
   }
 };
