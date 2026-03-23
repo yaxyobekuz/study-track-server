@@ -5,7 +5,8 @@ const logger = require("../utils/logger");
 class PenaltyNotificationQueueService {
   constructor() {
     this.isProcessing = false;
-    this.rateLimit = parseInt(process.env.MESSAGE_RATE_LIMIT_MS || "1000", 10);
+    const { config } = require("../config/env.config");
+    this.rateLimit = config.messageRateLimitMs;
     this.recoverStuckItems();
   }
 
