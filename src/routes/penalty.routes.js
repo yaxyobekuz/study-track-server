@@ -30,7 +30,7 @@ const { ROLES } = require("../utils/constants");
 router.use(protect);
 
 // ─── Sozlamalar ─────────────────────────────────────────────────────
-router.get("/settings", authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.STUDENT), getSettings);
+router.get("/settings", getSettings);
 router.put("/settings", authorize(ROLES.OWNER), updateSettings);
 
 // ─── Statistika (owner) ───────────────────────────────────────────
@@ -49,8 +49,8 @@ router.get("/reductions", authorize(ROLES.OWNER), getReductions);
 // ─── Pending (owner) ──────────────────────────────────────────────
 router.get("/pending", authorize(ROLES.OWNER), getPendingPenalties);
 
-// ─── O'z jarimalari (student, teacher) ────────────────────────────
-router.get("/my", authorize(ROLES.STUDENT, ROLES.TEACHER), getMyPenalties);
+// ─── O'z jarimalari (barcha authenticated userlar) ────────────────
+router.get("/my", getMyPenalties);
 
 // ─── Ustoz bergan jarimalar (teacher) ─────────────────────────────
 router.get("/given", authorize(ROLES.TEACHER), getGivenPenalties);

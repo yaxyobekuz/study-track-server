@@ -1,6 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const penaltyService = require("../services/penalty.service");
+const Role = require("../models/role.model");
 
 // ─── KATEGORIYA ────────────────────────────────────────────────────
 
@@ -25,8 +26,13 @@ exports.createPenaltyCategory = asyncHandler(async (req, res) => {
     throw new BadRequestError("Sarlavha, ball va maqsadli rol majburiy");
   }
 
-  if (!["teacher", "student"].includes(targetRole)) {
-    throw new BadRequestError("Maqsadli rol noto'g'ri");
+  if (targetRole === "owner") {
+    throw new BadRequestError("Owner uchun kategoriya yaratib bo'lmaydi");
+  }
+
+  const roleExists = await Role.findOne({ value: targetRole });
+  if (!roleExists) {
+    throw new BadRequestError("Maqsadli rol topilmadi");
   }
 
   if (points < 1) {
@@ -146,8 +152,23 @@ exports.getSettings = asyncHandler(async (req, res) => {
  * @access Private (owner)
  */
 exports.updateSettings = asyncHandler(async (req, res) => {
-  const { studentFineAmount, teacherFineAmount } = req.body;
+  const { fineAmounts, studentFineAmount, teacherFineAmount } = req.body;
 
+  // Yangi format: fineAmounts object validatsiya
+  if (fineAmounts !== undefined) {
+    if (typeof fineAmounts !== "object" || Array.isArray(fineAmounts)) {
+      throw new BadRequestError("fineAmounts object bo'lishi kerak");
+    }
+    for (const [role, amount] of Object.entries(fineAmounts)) {
+      if (typeof amount !== "number" || amount < 0) {
+        throw new BadRequestError(
+          `${role} uchun jarima miqdori noto'g'ri`,
+        );
+      }
+    }
+  }
+
+  // Backward compat validatsiya
   if (studentFineAmount !== undefined && studentFineAmount < 0) {
     throw new BadRequestError("Jarima miqdori manfiy bo'lishi mumkin emas");
   }
@@ -156,7 +177,7 @@ exports.updateSettings = asyncHandler(async (req, res) => {
   }
 
   const settings = await penaltyService.updateSettings(
-    { studentFineAmount, teacherFineAmount },
+    { fineAmounts, studentFineAmount, teacherFineAmount },
     req.user._id,
   );
   return res.json({
