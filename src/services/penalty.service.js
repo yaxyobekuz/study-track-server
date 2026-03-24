@@ -206,10 +206,7 @@ const createPenalty = async ({
 
   // PenaltySettings dan joriy jarima miqdorini olish (snapshot)
   const settings = await PenaltySettings.getSettings();
-  const fineAmount =
-    user.role === "student"
-      ? settings.studentFineAmount
-      : settings.teacherFineAmount;
+  const fineAmount = settings.fineAmounts?.get(user.role) || 0;
 
   // Fayllarni yuklash
   const attachments = await uploadPenaltyAttachments(files);
@@ -339,10 +336,7 @@ const reducePenalty = async ({
   }
 
   const settings = await PenaltySettings.getSettings();
-  const fineAmount =
-    user.role === "student"
-      ? settings.studentFineAmount
-      : settings.teacherFineAmount;
+  const fineAmount = settings.fineAmounts?.get(user.role) || 0;
 
   // Owner tomonidan yaratilgan kamaytirish darhol tasdiqlanadi
   const status = reducedByRole === "owner" ? "approved" : "pending";
@@ -561,39 +555,34 @@ const getPenaltyStats = async () => {
   const [
     totalApprovedPoints,
     totalReducedPoints,
+    topUsers,
     topStudents,
-    topTeachers,
     pendingCount,
   ] = await Promise.all([
-    // Umumiy approved jarima bali (faqat oddiy jarimalar)
     Penalty.aggregate([
       { $match: { type: "penalty", status: "approved" } },
       { $group: { _id: null, total: { $sum: "$points" } } },
     ]),
-    // Umumiy kamaytirilgan ball (faqat approved reductions)
     Penalty.aggregate([
       { $match: { type: "reduction", status: "approved" } },
       { $group: { _id: null, total: { $sum: "$points" } } },
     ]),
-    // Top 10 o'quvchi
+    User.find({ role: { $nin: ["owner", "student"] }, penaltyPoints: { $gt: 0 } })
+      .select("firstName lastName username penaltyPoints role")
+      .sort({ penaltyPoints: -1 })
+      .limit(10),
     User.find({ role: "student", penaltyPoints: { $gt: 0 } })
-      .select("firstName lastName username penaltyPoints")
+      .select("firstName lastName username penaltyPoints role")
       .sort({ penaltyPoints: -1 })
       .limit(10),
-    // Top 10 o'qituvchi
-    User.find({ role: "teacher", penaltyPoints: { $gt: 0 } })
-      .select("firstName lastName username penaltyPoints")
-      .sort({ penaltyPoints: -1 })
-      .limit(10),
-    // Pending count
     Penalty.countDocuments({ status: "pending" }),
   ]);
 
   return {
     totalApprovedPoints: totalApprovedPoints[0]?.total || 0,
     totalReducedPoints: totalReducedPoints[0]?.total || 0,
+    topUsers,
     topStudents,
-    topTeachers,
     pendingCount,
   };
 };
@@ -611,20 +600,31 @@ const getSettings = async () => {
 /**
  * Jarima sozlamalarini yangilash
  * @param {object} data - Yangilanadigan maydonlar
+ * @param {object} data.fineAmounts - Har bir rol uchun jarima miqdori ({ student: N, teacher: N, ... })
  * @param {string} updatedBy - Yangilovchi foydalanuvchi IDsi
  * @returns {Promise<Document>} Yangilangan PenaltySettings
  */
 const updateSettings = async (data, updatedBy) => {
   const settings = await PenaltySettings.getSettings();
 
+  // Yangi format: fineAmounts object
+  if (data.fineAmounts && typeof data.fineAmounts === "object") {
+    for (const [role, amount] of Object.entries(data.fineAmounts)) {
+      settings.fineAmounts.set(role, Number(amount));
+    }
+  }
+
+  // Backward compat: eski format ham qabul qilinadi
   if (data.studentFineAmount !== undefined) {
     settings.studentFineAmount = data.studentFineAmount;
+    settings.fineAmounts.set("student", data.studentFineAmount);
   }
   if (data.teacherFineAmount !== undefined) {
     settings.teacherFineAmount = data.teacherFineAmount;
+    settings.fineAmounts.set("teacher", data.teacherFineAmount);
   }
-  settings.updatedBy = updatedBy;
 
+  settings.updatedBy = updatedBy;
   await settings.save();
   return settings;
 };
