@@ -20,7 +20,6 @@ const penaltyCategorySchema = new mongoose.Schema(
     },
     targetRole: {
       type: String,
-      enum: ["teacher", "student"],
       required: [true, "Maqsadli rol majburiy"],
     },
     isActive: {
