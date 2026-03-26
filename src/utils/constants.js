@@ -30,7 +30,7 @@ const DAYS_UZ = [
 ];
 
 // Baho chegaralari
-const GRADE_MIN = 2;
+const GRADE_MIN = 1;
 const GRADE_MAX = 5;
 
 // Pagination default qiymatlari
