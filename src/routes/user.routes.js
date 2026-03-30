@@ -11,6 +11,7 @@ const {
   getStats,
   exportUsersToExcel,
   getStudents,
+  updateMe,
 } = require("../controllers/user.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -18,6 +19,9 @@ const { ROLES } = require("../utils/constants");
 
 // /students route is accessible to both owner and teacher
 router.get("/students", protect, authorize(ROLES.OWNER, ROLES.TEACHER), getStudents);
+
+// Own profile update — accessible to any authenticated user
+router.put("/me", protect, updateMe);
 
 // All routes below are protected and for owner only
 router.use(protect);

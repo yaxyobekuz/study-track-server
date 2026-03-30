@@ -107,6 +107,19 @@ const getStudents = asyncHandler(async (req, res) => {
   res.json({ success: true, data: students });
 });
 
+// Update own profile (any authenticated user)
+const updateMe = asyncHandler(async (req, res) => {
+  const { firstName, lastName } = req.body;
+
+  const user = await userService.updateSelfProfile(req.user._id, { firstName, lastName });
+
+  res.json({
+    success: true,
+    message: "Profil muvaffaqiyatli yangilandi",
+    data: user,
+  });
+});
+
 module.exports = {
   getAllUsers,
   getAllUsersShort,
@@ -118,4 +131,5 @@ module.exports = {
   getStats,
   exportUsersToExcel,
   getStudents,
+  updateMe,
 };

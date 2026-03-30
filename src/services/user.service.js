@@ -296,6 +296,28 @@ async function getStudents(query) {
     .limit(parseInt(limit, 10));
 }
 
+/**
+ * Foydalanuvchining o'z profilini yangilash (faqat firstName va lastName).
+ * @param {string} userId - Foydalanuvchi ID si
+ * @param {{firstName?: string, lastName?: string}} data - Yangilanadigan ma'lumotlar
+ * @returns {Promise<import('../models/user.model')>}
+ */
+async function updateSelfProfile(userId, data) {
+  const { firstName, lastName } = data;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new NotFoundError("Foydalanuvchi topilmadi");
+  }
+
+  if (firstName !== undefined) user.firstName = firstName;
+  if (lastName !== undefined) user.lastName = lastName;
+
+  await user.save();
+
+  return User.findById(user._id).select("-password");
+}
+
 module.exports = {
   getStats,
   getAllUsers,
@@ -307,4 +329,5 @@ module.exports = {
   getUsersForExport,
   getAllUsersShort,
   getStudents,
+  updateSelfProfile,
 };
