@@ -5,6 +5,7 @@ const {
   getClassRankings,
   getSchoolRankings,
   exportWeeklyStatistics,
+  getAllStudentWeeklyStats,
 } = require("../controllers/statistics.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -29,10 +30,10 @@ router.get(
   getClassRankings
 );
 
-// Maktab bo'yicha reytinglar (faqat owner)
+// Maktab bo'yicha reytinglar (owner yoki student)
 router.get(
   "/weekly/school/rankings",
-  authorize(ROLES.OWNER),
+  authorize(ROLES.OWNER, ROLES.STUDENT),
   getSchoolRankings
 );
 
@@ -41,6 +42,14 @@ router.get(
   "/weekly/export",
   authorize(ROLES.OWNER),
   exportWeeklyStatistics
+);
+
+// O'quvchining barcha haftalik statistikasi (owner yoki student o'zini)
+router.get(
+  "/weekly/student/:studentId/all",
+  validateObjectId("studentId"),
+  authorize(ROLES.OWNER, ROLES.STUDENT),
+  getAllStudentWeeklyStats
 );
 
 module.exports = router;

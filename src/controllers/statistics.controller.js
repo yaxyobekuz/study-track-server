@@ -311,6 +311,27 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
 });
 
 /**
+ * O'quvchining barcha haftalik statistikasini olish (ALL WEEKS, ALL YEARS)
+ * GET /api/statistics/weekly/student/:studentId/all
+ * @access Private (Owner yoki student o'zini)
+ */
+exports.getAllStudentWeeklyStats = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+
+  // Student faqat o'z statistikasini ko'rishi mumkin
+  if (req.user.role === "student" && req.user._id.toString() !== studentId) {
+    throw new ForbiddenError("Siz faqat o'z statistikangizni ko'rishingiz mumkin");
+  }
+
+  const allStats = await WeeklyStats.find({ student: studentId })
+    .populate("simpleStats.subjects.subject", "name")
+    .sort({ year: 1, weekNumber: 1 })
+    .lean();
+
+  return res.json({ success: true, data: allStats });
+});
+
+/**
  * Haftalik statistikani Excel formatida export qilish
  * GET /api/statistics/weekly/export
  * @access Private (Owner only)
