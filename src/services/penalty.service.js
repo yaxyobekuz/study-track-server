@@ -552,12 +552,18 @@ const getReductions = async (req) => {
  * @returns {Promise<object>} Statistika ob'yekti
  */
 const getPenaltyStats = async () => {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
+  thirtyDaysAgo.setHours(0, 0, 0, 0);
+
   const [
     totalApprovedPoints,
     totalReducedPoints,
     topUsers,
     topStudents,
     pendingCount,
+    dailyPenalties,
+    dailyReductions,
   ] = await Promise.all([
     Penalty.aggregate([
       { $match: { type: "penalty", status: "approved" } },
@@ -576,7 +582,70 @@ const getPenaltyStats = async () => {
       .sort({ penaltyPoints: -1 })
       .limit(10),
     Penalty.countDocuments({ status: "pending" }),
+    Penalty.aggregate([
+      {
+        $match: {
+          type: "penalty",
+          status: "approved",
+          createdAt: { $gte: thirtyDaysAgo },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" },
+          },
+          points: { $sum: "$points" },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
+    ]),
+    Penalty.aggregate([
+      {
+        $match: {
+          type: "reduction",
+          status: "approved",
+          createdAt: { $gte: thirtyDaysAgo },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" },
+          },
+          points: { $sum: "$points" },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
+    ]),
   ]);
+
+  // So'nggi 30 kun uchun to'liq kunlik massiv hosil qilish
+  const dailyTrend = [];
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(thirtyDaysAgo);
+    d.setDate(d.getDate() + i);
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+
+    const penaltyEntry = dailyPenalties.find(
+      (e) => e._id.year === year && e._id.month === month && e._id.day === day,
+    );
+    const reductionEntry = dailyReductions.find(
+      (e) => e._id.year === year && e._id.month === month && e._id.day === day,
+    );
+
+    dailyTrend.push({
+      date: d.toISOString().split("T")[0],
+      penaltyPoints: penaltyEntry?.points || 0,
+      reductionPoints: reductionEntry?.points || 0,
+    });
+  }
 
   return {
     totalApprovedPoints: totalApprovedPoints[0]?.total || 0,
@@ -584,6 +653,7 @@ const getPenaltyStats = async () => {
     topUsers,
     topStudents,
     pendingCount,
+    dailyTrend,
   };
 };
 
