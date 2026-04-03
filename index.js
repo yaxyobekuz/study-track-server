@@ -36,6 +36,7 @@ const initRoles = require("./src/utils/initRoles");
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
 const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
+const { startTaskPenaltyCron } = require("./src/jobs/taskPenalty.job");
 
 // ================================
 
@@ -102,6 +103,7 @@ const bootstrap = async () => {
   startWeeklyStatsCron();
   startTopicIncrementCron();
   startDailyCoinCron();
+  await startTaskPenaltyCron();
 
   app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);
