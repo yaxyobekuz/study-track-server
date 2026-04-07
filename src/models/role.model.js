@@ -29,6 +29,32 @@ const roleSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Ish jadvali — davomat tizimi uchun
+    workStartTime: {
+      type: String,
+      default: null,
+      match: [
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Ish boshlanish vaqti HH:MM formatida bo'lishi kerak",
+      ],
+    },
+    workEndTime: {
+      type: String,
+      default: null,
+      match: [
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Ish tugash vaqti HH:MM formatida bo'lishi kerak",
+      ],
+    },
+    // 0=Yakshanba, 1=Dushanba, ..., 6=Shanba
+    workDays: {
+      type: [Number],
+      default: [1, 2, 3, 4, 5],
+      validate: {
+        validator: (arr) => arr.every((d) => d >= 0 && d <= 6),
+        message: "Ish kunlari 0-6 orasida bo'lishi kerak",
+      },
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

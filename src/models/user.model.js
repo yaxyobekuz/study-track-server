@@ -75,6 +75,35 @@ const userSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    // Davomat uchun ish jadvali override (null = roldan meros oladi)
+    workStartTime: {
+      type: String,
+      default: null,
+      match: [
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Ish boshlanish vaqti HH:MM formatida bo'lishi kerak",
+      ],
+    },
+    workEndTime: {
+      type: String,
+      default: null,
+      match: [
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        "Ish tugash vaqti HH:MM formatida bo'lishi kerak",
+      ],
+    },
+    // null = roldan meros oladi (bo'sh array null sifatida qaraladi)
+    workDays: {
+      type: [Number],
+      default: undefined,
+      validate: {
+        validator: function (arr) {
+          if (!arr || arr.length === 0) return true;
+          return arr.every((d) => d >= 0 && d <= 6);
+        },
+        message: "Ish kunlari 0-6 orasida bo'lishi kerak",
+      },
+    },
   },
   { timestamps: true }
 );
