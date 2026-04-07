@@ -82,6 +82,9 @@ async function createUser(data) {
     role,
     gender,
     classes: userClasses,
+    workStartTime,
+    workEndTime,
+    workDays,
   } = data;
 
   if (!username || !password || !firstName || !lastName || !role) {
@@ -114,6 +117,11 @@ async function createUser(data) {
     role,
     gender: gender || null,
     classes: role === "student" ? userClasses : [],
+    ...(role !== "student" && {
+      workStartTime: workStartTime || null,
+      workEndTime: workEndTime || null,
+      workDays: workDays || undefined,
+    }),
   });
 
   return User.findById(user._id)
@@ -134,6 +142,9 @@ async function updateUser(id, data) {
     gender,
     classes: userClasses,
     isActive,
+    workStartTime,
+    workEndTime,
+    workDays,
   } = data;
 
   const user = await User.findById(id);
@@ -149,6 +160,13 @@ async function updateUser(id, data) {
   if (lastName) user.lastName = lastName;
   if (isActive !== undefined) user.isActive = isActive;
   if (gender !== undefined) user.gender = gender || null;
+
+  // Ish jadvali override (davomat uchun)
+  if (user.role !== "student") {
+    if (workStartTime !== undefined) user.workStartTime = workStartTime || null;
+    if (workEndTime !== undefined) user.workEndTime = workEndTime || null;
+    if (workDays !== undefined) user.workDays = workDays || [];
+  }
 
   if (user.role === "student" && userClasses) {
     for (const classId of userClasses) {
