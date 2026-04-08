@@ -4,18 +4,18 @@ const ExcuseRequest = require("../models/excuseRequest.model");
 const Penalty = require("../models/penalty.model");
 const User = require("../models/user.model");
 const Role = require("../models/role.model");
-const Holiday = require("../models/holiday.model");
 const { checkOfficeLocation } = require("../helpers/geolocation.helpers");
-const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
-const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
+const {
+  getPaginationParams,
+  formatPaginationResponse,
+} = require("../utils/pagination");
+const {
+  BadRequestError,
+  NotFoundError,
+  ForbiddenError,
+} = require("../utils/errors");
 const logger = require("../utils/logger");
 
-// ─── Yordamchi funksiyalar ────────────────────────────────────────────────────
-
-/**
- * Toshkent vaqti bo'yicha bugungi sanani UTC midnight sifatida qaytaradi
- * @returns {Date}
- */
 function getTodayNormalized() {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -24,11 +24,6 @@ function getTodayNormalized() {
   return new Date(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()));
 }
 
-/**
- * Berilgan sana uchun UTC midnight qaytaradi (Toshkent vaqtiga asoslanib)
- * @param {Date|string} dateInput
- * @returns {Date}
- */
 function normalizeDateTashkent(dateInput) {
   const d = new Date(dateInput);
   const utcMs = d.getTime() + d.getTimezoneOffset() * 60000;
@@ -37,21 +32,11 @@ function normalizeDateTashkent(dateInput) {
   return new Date(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()));
 }
 
-/**
- * "HH:MM" stringni daqiqalarga o'giradi
- * @param {string} timeStr
- * @returns {number}
- */
 function timeToMinutes(timeStr) {
   const [h, m] = timeStr.split(":").map(Number);
   return h * 60 + m;
 }
 
-/**
- * Toshkent vaqtida hozirgi HH:MM ni daqiqalarda qaytaradi
- * @param {Date} date
- * @returns {number}
- */
 function getCurrentMinutesTashkent(date = new Date()) {
   const utcMs = date.getTime() + date.getTimezoneOffset() * 60000;
   const tashkentMs = utcMs + 5 * 3600000;
@@ -59,30 +44,22 @@ function getCurrentMinutesTashkent(date = new Date()) {
   return t.getHours() * 60 + t.getMinutes();
 }
 
-/**
- * Toshkent vaqtida haftaning kuni raqamini qaytaradi (0=Yakshanba)
- * @param {Date} date
- * @returns {number}
- */
 function getDayOfWeekTashkent(date = new Date()) {
   const utcMs = date.getTime() + date.getTimezoneOffset() * 60000;
   const tashkentMs = utcMs + 5 * 3600000;
   return new Date(tashkentMs).getDay();
 }
 
-/**
- * Foydalanuvchining effektiv ish jadvalini qaytaradi.
- * User darajasida override bo'lsa, uni qaytaradi. Aks holda roldan oladi.
- * @param {Object} user Mongoose user hujjati (lean yoki to'liq)
- * @returns {Promise<{ workStartTime: string|null, workEndTime: string|null, workDays: number[] }>}
- */
 async function getEffectiveSchedule(user) {
   // User darajasida override bo'lsa (kamida bitta ish vaqti belgilangan bo'lsa)
   if (user.workStartTime && user.workEndTime) {
     return {
       workStartTime: user.workStartTime,
       workEndTime: user.workEndTime,
-      workDays: user.workDays && user.workDays.length > 0 ? user.workDays : [1, 2, 3, 4, 5],
+      workDays:
+        user.workDays && user.workDays.length > 0
+          ? user.workDays
+          : [1, 2, 3, 4, 5],
     };
   }
   // Roldan olish
@@ -91,32 +68,24 @@ async function getEffectiveSchedule(user) {
     workStartTime: role?.workStartTime ?? null,
     workEndTime: role?.workEndTime ?? null,
     workDays:
-      role?.workDays && role.workDays.length > 0 ? role.workDays : [1, 2, 3, 4, 5],
+      role?.workDays && role.workDays.length > 0
+        ? role.workDays
+        : [1, 2, 3, 4, 5],
   };
 }
 
-/**
- * Foydalanuvchi uchun jarima pauza qilinganligini tekshiradi
- * @param {Object} settings AttendanceSettings hujjati
- * @param {string} userId
- * @param {string} userRole
- * @returns {boolean}
- */
 function isPenaltyPaused(settings, userId, userRole) {
   if (settings.penaltyPaused) return true;
-  if (settings.pausedRoles && settings.pausedRoles.includes(userRole)) return true;
-  if (settings.pausedUsers && settings.pausedUsers.some((id) => id.toString() === userId.toString())) return true;
+  if (settings.pausedRoles && settings.pausedRoles.includes(userRole))
+    return true;
+  if (
+    settings.pausedUsers &&
+    settings.pausedUsers.some((id) => id.toString() === userId.toString())
+  )
+    return true;
   return false;
 }
 
-/**
- * Davomat jarimasi yozadi va foydalanuvchi penaltyPoints ni yangilaydi
- * @param {string} userId
- * @param {string} givenByUserId
- * @param {string} title
- * @param {number} points
- * @returns {Promise<Object>} Yaratilgan Penalty hujjati
- */
 async function createAttendancePenalty(userId, givenByUserId, title, points) {
   const penalty = await Penalty.create({
     user: userId,
@@ -133,17 +102,6 @@ async function createAttendancePenalty(userId, givenByUserId, title, points) {
   return penalty;
 }
 
-// ─── Asosiy service funksiyalari ──────────────────────────────────────────────
-
-/**
- * Foydalanuvchi uchun check-in amalga oshiradi
- * @param {string} userId
- * @param {number} lat
- * @param {number} lng
- * @param {number} accuracy GPS aniqligi (metr)
- * @param {string} adminUserId Jarima uchun "givenBy" (owner user)
- * @returns {Promise<Object>} AttendanceRecord
- */
 async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   const user = await User.findById(userId).lean();
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
@@ -171,14 +129,18 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   if (lat !== undefined && lng !== undefined) {
     checkInLocation = { lat, lng, accuracy: accuracy || 0 };
 
-    if (settings.officeLocation && settings.officeLocation.lat && settings.officeLocation.lng) {
+    if (
+      settings.officeLocation &&
+      settings.officeLocation.lat &&
+      settings.officeLocation.lng
+    ) {
       const geoResult = checkOfficeLocation(
         lat,
         lng,
         accuracy || 0,
         settings.officeLocation.lat,
         settings.officeLocation.lng,
-        settings.officeRadius
+        settings.officeRadius,
       );
       outOfOffice = geoResult.outOfOffice;
       locationWarning = geoResult.locationWarning;
@@ -240,7 +202,7 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
         userId,
         adminUserId || userId,
         `Kech kelish: ${dateStr} (${lateMinutes} daqiqa)`,
-        settings.lateArrivalPenaltyPoints
+        settings.lateArrivalPenaltyPoints,
       );
       record.penaltyApplied = true;
       record.penaltyRef = penalty._id;
@@ -251,15 +213,6 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   return record;
 }
 
-/**
- * Foydalanuvchi uchun check-out amalga oshiradi
- * @param {string} userId
- * @param {number} lat
- * @param {number} lng
- * @param {number} accuracy
- * @param {string} adminUserId
- * @returns {Promise<Object>} AttendanceRecord
- */
 async function checkOut(userId, lat, lng, accuracy, adminUserId) {
   const user = await User.findById(userId).lean();
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
@@ -288,14 +241,18 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
   if (lat !== undefined && lng !== undefined) {
     checkOutLocation = { lat, lng, accuracy: accuracy || 0 };
 
-    if (settings.officeLocation && settings.officeLocation.lat && settings.officeLocation.lng) {
+    if (
+      settings.officeLocation &&
+      settings.officeLocation.lat &&
+      settings.officeLocation.lng
+    ) {
       const geoResult = checkOfficeLocation(
         lat,
         lng,
         accuracy || 0,
         settings.officeLocation.lat,
         settings.officeLocation.lng,
-        settings.officeRadius
+        settings.officeRadius,
       );
       checkOutOutOfOffice = geoResult.outOfOffice;
       checkOutWarning = geoResult.locationWarning;
@@ -333,7 +290,11 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
   }
 
   // Erta ketish jarimasi (avval penaltyApplied bo'lmagan bo'lsa)
-  if (isEarlyOut && settings.earlyDeparturePenaltyPoints > 0 && !record.penaltyApplied) {
+  if (
+    isEarlyOut &&
+    settings.earlyDeparturePenaltyPoints > 0 &&
+    !record.penaltyApplied
+  ) {
     const penaltyPaused = isPenaltyPaused(settings, userId, user.role);
     if (!penaltyPaused) {
       const dateStr = today.toISOString().split("T")[0];
@@ -341,7 +302,7 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
         userId,
         adminUserId || userId,
         `Erta ketish: ${dateStr} (${earlyOutMinutes} daqiqa)`,
-        settings.earlyDeparturePenaltyPoints
+        settings.earlyDeparturePenaltyPoints,
       );
       record.penaltyApplied = true;
       record.penaltyRef = penalty._id;
@@ -352,11 +313,6 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
   return record;
 }
 
-/**
- * Bugungi davomat yozuvini qaytaradi
- * @param {string} userId
- * @returns {Promise<Object|null>}
- */
 async function getTodayRecord(userId) {
   const today = getTodayNormalized();
   return Attendance.findOne({ user: userId, date: today })
@@ -364,13 +320,6 @@ async function getTodayRecord(userId) {
     .lean();
 }
 
-/**
- * Foydalanuvchining oylik davomat tarixini qaytaradi
- * @param {string} userId
- * @param {number} month 1-12
- * @param {number} year
- * @returns {Promise<{ records: Object[], summary: Object }>}
- */
 async function getMyHistory(userId, month, year) {
   const m = parseInt(month, 10);
   const y = parseInt(year, 10);
@@ -397,11 +346,6 @@ async function getMyHistory(userId, month, year) {
   return { records, summary };
 }
 
-/**
- * Admin uchun barcha foydalanuvchilar davomat ro'yxatini qaytaradi
- * @param {Object} query { userId, role, month, year, page, limit }
- * @returns {Promise<Object>} Paginated response
- */
 async function getAllRecords(query) {
   const { userId, role, month, year } = query;
   const page = parseInt(query.page, 10) || 1;
@@ -440,35 +384,21 @@ async function getAllRecords(query) {
   return formatPaginationResponse(records, total, page, limit);
 }
 
-/**
- * Bitta foydalanuvchining oylik davomatini qaytaradi (admin uchun)
- * @param {string} userId
- * @param {number} month
- * @param {number} year
- * @returns {Promise<{ user: Object, records: Object[], summary: Object }>}
- */
 async function getUserMonthRecords(userId, month, year) {
-  const user = await User.findById(userId, "firstName lastName username role").lean();
+  const user = await User.findById(
+    userId,
+    "firstName lastName username role",
+  ).lean();
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   const { records, summary } = await getMyHistory(userId, month, year);
   return { user, records, summary };
 }
 
-/**
- * Davomat sozlamalarini qaytaradi
- * @returns {Promise<Object>}
- */
 async function getSettings() {
   return AttendanceSettings.getSettings();
 }
 
-/**
- * Davomat sozlamalarini yangilaydi
- * @param {Object} data
- * @param {string} updatedBy
- * @returns {Promise<Object>}
- */
 async function updateSettings(data, updatedBy) {
   const settings = await AttendanceSettings.getSettings();
 
@@ -494,14 +424,6 @@ async function updateSettings(data, updatedBy) {
   return settings;
 }
 
-/**
- * Excuse so'rov yaratadi
- * @param {string} userId
- * @param {string} date
- * @param {string} reason
- * @param {string} type advance | after
- * @returns {Promise<Object>}
- */
 async function createExcuseRequest(userId, date, reason, type) {
   const normalizedDate = normalizeDateTashkent(date);
 
@@ -523,12 +445,6 @@ async function createExcuseRequest(userId, date, reason, type) {
   });
 }
 
-/**
- * Foydalanuvchining o'z excuse so'rovlarini qaytaradi
- * @param {string} userId
- * @param {Object} req
- * @returns {Promise<Object>}
- */
 async function getMyExcuses(userId, req) {
   const { page, limit, skip } = getPaginationParams(req);
 
@@ -547,11 +463,6 @@ async function getMyExcuses(userId, req) {
   return formatPaginationResponse(data, total, page, limit);
 }
 
-/**
- * Admin uchun barcha excuse so'rovlarini qaytaradi
- * @param {Object} req
- * @returns {Promise<Object>}
- */
 async function getAllExcuses(req) {
   const { page, limit, skip } = getPaginationParams(req);
 
@@ -572,19 +483,11 @@ async function getAllExcuses(req) {
   return formatPaginationResponse(data, total, page, limit);
 }
 
-/**
- * Excuse so'rovni ko'rib chiqadi (tasdiqlash / rad etish)
- * Tasdiqlanganda: AttendanceRecord ni excused ga o'zgartiradi, jarimani bekor qiladi
- * @param {string} excuseId
- * @param {string} status approved | rejected
- * @param {string|null} rejectionReason
- * @param {string} reviewedBy
- * @returns {Promise<Object>}
- */
 async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
   const excuse = await ExcuseRequest.findById(excuseId);
   if (!excuse) throw new NotFoundError("So'rov topilmadi");
-  if (excuse.status !== "pending") throw new BadRequestError("So'rov allaqachon ko'rib chiqilgan");
+  if (excuse.status !== "pending")
+    throw new BadRequestError("So'rov allaqachon ko'rib chiqilgan");
 
   excuse.status = status;
   excuse.reviewedBy = reviewedBy;
@@ -596,11 +499,21 @@ async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
 
   if (status === "approved") {
     const settings = await AttendanceSettings.getSettings();
-    let record = await Attendance.findOne({ user: excuse.user, date: excuse.date });
+    let record = await Attendance.findOne({
+      user: excuse.user,
+      date: excuse.date,
+    });
 
-    if (record && record.status === "absent" && record.penaltyApplied && record.penaltyRef) {
+    if (
+      record &&
+      record.status === "absent" &&
+      record.penaltyApplied &&
+      record.penaltyRef
+    ) {
       // Yozilgan jarimani bekor qilish
-      await Penalty.findByIdAndUpdate(record.penaltyRef, { status: "rejected" });
+      await Penalty.findByIdAndUpdate(record.penaltyRef, {
+        status: "rejected",
+      });
       await User.findByIdAndUpdate(excuse.user, {
         $inc: { penaltyPoints: -settings.absentPenaltyPoints },
       });
