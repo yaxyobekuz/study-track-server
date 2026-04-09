@@ -94,7 +94,7 @@ async function runAbsentMarking(ownerUser) {
           const penalty = await createAttendancePenalty(
             user._id,
             ownerUser._id,
-            `Davomatsizlik: ${dateStr}`,
+            `Kelmaganlik uchun: ${dateStr}`,
             settings.absentPenaltyPoints
           );
           record.penaltyApplied = true;
