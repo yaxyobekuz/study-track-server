@@ -24,6 +24,7 @@ const coinTransactionSchema = new mongoose.Schema(
         "holiday_bonus",
         "manual_give",
         "manual_take",
+        "premium_purchase",
       ],
       required: [true, "Tur majburiy"],
       index: true,
@@ -67,6 +68,10 @@ const coinTransactionSchema = new mongoose.Schema(
       reason: String,
       filterType: String,
       filterValue: String,
+      premiumId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Premium",
+      },
     },
     date: {
       type: Date,

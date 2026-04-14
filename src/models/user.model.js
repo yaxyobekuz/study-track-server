@@ -104,6 +104,38 @@ const userSchema = new mongoose.Schema(
         message: "Ish kunlari 0-6 orasida bo'lishi kerak",
       },
     },
+    // Premium subscription
+    premium: {
+      isActive: {
+        type: Boolean,
+        default: false,
+        index: true,
+      },
+      expiresAt: {
+        type: Date,
+        default: null,
+      },
+    },
+    profilePicture: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Image",
+      default: null,
+    },
+    emojiBadgeId: {
+      type: Number,
+      default: null,
+      min: 1,
+    },
+    displayName: {
+      type: String,
+      trim: true,
+      maxlength: [48, "Ko'rsatma ismi maksimal 48 ta belgidan iborat bo'lishi kerak"],
+      default: null,
+    },
+    nameColor: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );
