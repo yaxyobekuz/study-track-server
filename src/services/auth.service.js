@@ -47,7 +47,9 @@ async function login(username, password) {
  * @returns {Promise<object>} foydalanuvchi ma'lumotlari
  */
 async function getMe(userId) {
-  const user = await User.findById(userId).populate("classes", "name");
+  const user = await User.findById(userId)
+    .populate("classes", "name")
+    .populate("profilePicture");
   return user;
 }
 
