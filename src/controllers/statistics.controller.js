@@ -33,7 +33,11 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
     student: studentId,
     year,
     weekNumber,
-  }).populate("student classes simpleStats.subjects.subject");
+  }).populate([
+    { path: "student", populate: { path: "profilePicture" } },
+    { path: "classes" },
+    { path: "simpleStats.subjects.subject" },
+  ]);
 
   // If doesn't exist, create it now (fallback)
   if (!weeklyStats) {
@@ -92,6 +96,11 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
         firstName: weeklyStats.student.firstName,
         lastName: weeklyStats.student.lastName,
         fullName: weeklyStats.student.fullName,
+        displayName: weeklyStats.student.displayName || null,
+        nameColor: weeklyStats.student.nameColor || null,
+        premium: weeklyStats.student.premium || { isActive: false },
+        emojiBadgeId: weeklyStats.student.emojiBadgeId || null,
+        profilePictureUrl: weeklyStats.student.profilePicture?.variants?.sm?.url || null,
       },
       class:
         weeklyStats.classes && weeklyStats.classes[0]
@@ -139,7 +148,11 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
     year,
     weekNumber,
   })
-    .populate("student")
+    .populate({
+      path: "student",
+      populate: { path: "profilePicture" },
+      select: "firstName lastName premium emojiBadgeId displayName nameColor profilePicture classes",
+    })
     .select("student simpleStats.totalSum simpleStats.totalGrades");
 
   // Convert to plain objects to include virtuals like fullName
@@ -181,6 +194,11 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,
+        displayName: stat.student.displayName || null,
+        nameColor: stat.student.nameColor || null,
+        premium: stat.student.premium || { isActive: false },
+        emojiBadgeId: stat.student.emojiBadgeId || null,
+        profilePictureUrl: stat.student.profilePicture?.variants?.sm?.url || null,
       },
       totalSum: stat.simpleStats.totalSum,
       totalGrades: stat.simpleStats.totalGrades,
@@ -234,9 +252,11 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
   })
     .populate({
       path: "student",
-      populate: {
-        path: "classes",
-      },
+      populate: [
+        { path: "classes" },
+        { path: "profilePicture" },
+      ],
+      select: "firstName lastName premium emojiBadgeId displayName nameColor profilePicture classes",
     })
     .select("student simpleStats.totalSum simpleStats.totalGrades");
 
@@ -278,6 +298,11 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,
+        displayName: stat.student.displayName || null,
+        nameColor: stat.student.nameColor || null,
+        premium: stat.student.premium || { isActive: false },
+        emojiBadgeId: stat.student.emojiBadgeId || null,
+        profilePictureUrl: stat.student.profilePicture?.variants?.sm?.url || null,
       },
       classes: stat.student.classes || [],
       totalSum: stat.simpleStats.totalSum,
