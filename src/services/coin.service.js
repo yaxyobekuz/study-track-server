@@ -109,9 +109,7 @@ async function distributeDailyCoins(targetDate) {
       continue;
     }
 
-    const coinAmount = Math.floor(
-      (dailyGradeSum * dailyCoinPercentage) / 100,
-    );
+    const coinAmount = Math.floor((dailyGradeSum * dailyCoinPercentage) / 100);
 
     if (coinAmount <= 0) {
       skippedCount++;
@@ -153,9 +151,7 @@ async function distributeDailyCoins(targetDate) {
       await CoinTransaction.insertMany(transactions);
       await _updateDailyCoinStat(totalCoins, startOfDay);
     } catch (err) {
-      logger.error(
-        `[CoinService] Daily batch write error: ${err.message}`,
-      );
+      logger.error(`[CoinService] Daily batch write error: ${err.message}`);
       errorCount = successCount;
       successCount = 0;
     }
@@ -313,21 +309,30 @@ async function getCoinStats() {
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
   thirtyDaysAgo.setHours(0, 0, 0, 0);
 
-  const [totalDistributed, totalStudents, topEarners, dailyStats] =
-    await Promise.all([
-      CoinTransaction.aggregate([
-        { $group: { _id: null, total: { $sum: "$amount" } } },
-      ]),
-      User.countDocuments({ role: "student", isActive: true }),
-      User.find({ role: "student", isActive: true })
-        .sort({ coinBalance: -1 })
-        .limit(10)
-        .select("firstName lastName coinBalance classes")
-        .populate("classes", "name"),
-      DailyCoinStat.find({ date: { $gte: thirtyDaysAgo } })
-        .sort({ date: 1 })
-        .lean(),
-    ]);
+  const [
+    totalDistributed,
+    availableCoinsAgg,
+    totalStudents,
+    topEarners,
+    dailyStats,
+  ] = await Promise.all([
+    CoinTransaction.aggregate([
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+    User.aggregate([
+      { $match: { isActive: true } },
+      { $group: { _id: null, total: { $sum: "$coinBalance" } } },
+    ]),
+    User.countDocuments({ role: "student", isActive: true }),
+    User.find({ role: "student", isActive: true })
+      .sort({ coinBalance: -1 })
+      .limit(10)
+      .select("firstName lastName coinBalance classes")
+      .populate("classes", "name"),
+    DailyCoinStat.find({ date: { $gte: thirtyDaysAgo } })
+      .sort({ date: 1 })
+      .lean(),
+  ]);
 
   const mapStats = new Map(
     dailyStats.map((stat) => [
@@ -351,6 +356,7 @@ async function getCoinStats() {
 
   return {
     totalCoinsDistributed: totalDistributed[0]?.total || 0,
+    availableCoins: availableCoinsAgg[0]?.total || 0,
     totalStudents,
     topEarners,
     dailyDistribution: dailyDistributionFormatted,
