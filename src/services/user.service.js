@@ -2,20 +2,22 @@ const User = require("../models/user.model");
 const Role = require("../models/role.model");
 const Class = require("../models/class.model");
 const TgUser = require("../models/tguser.model");
-const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
+const Premium = require("../models/premium.model");
+const {
+  NotFoundError,
+  ForbiddenError,
+  BadRequestError,
+} = require("../utils/errors");
 
-/**
- * Foydalanuvchilar statistikasini olish.
- * @returns {Promise<{telegramUsers: number, teachers: number, students: number}>}
- */
 async function getStats() {
-  const [telegramUsers, teachers, students] = await Promise.all([
+  const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
     TgUser.countDocuments(),
-    User.countDocuments({ role: "teacher" }),
+    User.countDocuments({ role: { $nin: ["owner", "student"] } }),
     User.countDocuments({ role: "student" }),
+    Premium.countDocuments({ status: "active" }),
   ]);
 
-  return { telegramUsers, teachers, students };
+  return { telegramUsers, workers, students, premiumUsers };
 }
 
 /**
@@ -153,7 +155,9 @@ async function updateUser(id, data) {
   }
 
   if (user.role === "owner") {
-    throw new ForbiddenError("Egasi foydalanuvchisini o'zgartirish mumkin emas");
+    throw new ForbiddenError(
+      "Egasi foydalanuvchisini o'zgartirish mumkin emas",
+    );
   }
 
   if (firstName) user.firstName = firstName;
@@ -202,7 +206,9 @@ async function resetPassword(id, newPassword) {
   }
 
   if (user.role === "owner") {
-    throw new ForbiddenError("Egasi foydalanuvchisi parolini tiklash mumkin emas");
+    throw new ForbiddenError(
+      "Egasi foydalanuvchisi parolini tiklash mumkin emas",
+    );
   }
 
   user.password = newPassword;
