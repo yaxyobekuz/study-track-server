@@ -22,6 +22,7 @@ const socialNetworkRoutes = require("./socialNetwork.routes");
 const monitorRoutes = require("./monitor.routes");
 const attendanceRoutes = require("./attendance.routes");
 const leadRoutes = require("./lead.routes");
+const premiumRoutes = require("./premium.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -43,6 +44,7 @@ router.use("/social-networks", socialNetworkRoutes);
 router.use("/monitor", monitorRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/leads", leadRoutes);
+router.use("/premium", premiumRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
