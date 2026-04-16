@@ -360,9 +360,8 @@ const extendDeadline = async (
     penaltyPoints: withPenalty ? penaltyPoints || task.penaltyPoints : 0,
   });
 
-  // Faqat pending yoki pending_rejected statusida "extended" ga o'tkaziladi
-  // pending_review statusida status o'zgarmaydi
-  if (["pending", "pending_rejected"].includes(task.status)) {
+  // pending, pending_rejected va pending_review statuslarida "extended" ga o'tkaziladi
+  if (["pending", "pending_rejected", "pending_review"].includes(task.status)) {
     task.status = "extended";
   }
 
