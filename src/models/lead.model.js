@@ -43,6 +43,16 @@ const leadSchema = new mongoose.Schema(
       ref: "LeadSource",
       required: [true, "Manba majburiy"],
     },
+    direction: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LeadDirection",
+      required: [true, "Yo'nalish majburiy"],
+    },
+    category: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "LeadCategory",
+      required: [true, "Toifa majburiy"],
+    },
     status: {
       type: String,
       enum: LEAD_STATUSES,
@@ -102,6 +112,8 @@ leadSchema.set("toObject", { virtuals: true });
 leadSchema.index({ status: 1, source: 1, createdAt: -1 });
 leadSchema.index({ phone: 1 });
 leadSchema.index({ createdBy: 1 });
+leadSchema.index({ direction: 1 });
+leadSchema.index({ category: 1 });
 
 module.exports = mongoose.model("Lead", leadSchema);
 module.exports.LEAD_STATUSES = LEAD_STATUSES;
