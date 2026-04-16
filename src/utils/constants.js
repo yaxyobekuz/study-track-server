@@ -6,6 +6,7 @@ const ROLES = {
   TEACHER: "teacher",
   STUDENT: "student",
   DEVELOPER: "developer",
+  RECEPTION: "reception",
 };
 
 // Days of the week

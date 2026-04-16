@@ -29,6 +29,10 @@ const initRoles = async () => {
         name: "Dasturchi",
         value: "developer",
       },
+      {
+        name: "Qabulxona",
+        value: "reception",
+      },
     ];
 
     const upsertOperations = defaultRoles.map((role) => ({
