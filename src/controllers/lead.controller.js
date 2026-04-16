@@ -119,6 +119,20 @@ const getTrendAnalytics = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// Get direction analytics
+const getDirectionAnalytics = asyncHandler(async (req, res) => {
+  const data = await leadService.getDirectionAnalytics(req.query);
+
+  res.json({ success: true, data });
+});
+
+// Get category analytics
+const getCategoryAnalytics = asyncHandler(async (req, res) => {
+  const data = await leadService.getCategoryAnalytics(req.query);
+
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getAllLeads,
   getLeadById,
@@ -132,4 +146,6 @@ module.exports = {
   getSourceAnalytics,
   getConversionFunnel,
   getTrendAnalytics,
+  getDirectionAnalytics,
+  getCategoryAnalytics,
 };
