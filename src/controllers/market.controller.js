@@ -141,11 +141,30 @@ const updateOrderStatusByOwner = asyncHandler(async (req, res) => {
     req.params.orderId,
     req.body,
     req.user._id,
+    req.file || null,
   );
 
   return res.json({
     success: true,
     message: "Buyurtma holati yangilandi",
+    data: order,
+  });
+});
+
+/**
+ * PATCH /api/market/admin/orders/:orderId/delivery-image
+ * @access Private (owner)
+ */
+const addDeliveryImage = asyncHandler(async (req, res) => {
+  const order = await marketService.addDeliveryImageByOwner(
+    req.params.orderId,
+    req.file || null,
+    req.user._id,
+  );
+
+  return res.json({
+    success: true,
+    message: "Yetkazib berish rasmi qo'shildi",
     data: order,
   });
 });
@@ -211,4 +230,5 @@ module.exports = {
   getStudentProducts,
   getStudentProductById,
   updateOrderStatusByOwner,
+  addDeliveryImage,
 };

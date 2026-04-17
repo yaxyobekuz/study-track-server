@@ -555,7 +555,7 @@ const cancelOrderByStudent = async (orderId, studentId) => {
     throw new Error("Buyurtma topilmadi");
   }
 
-  if (order.status === "approved" || order.status === "rejected") {
+  if (["delivering", "approved", "rejected"].includes(order.status)) {
     throw new Error("Ushbu buyurtmani bekor qilib bo'lmaydi");
   }
 
@@ -579,13 +579,14 @@ const cancelOrderByStudent = async (orderId, studentId) => {
  * @param {string} orderId Order ID.
  * @param {object} payload Status payload.
  * @param {string} ownerId Owner user ID.
+ * @param {object|null} file Uploaded delivery image file (optional).
  * @returns {Promise<object>} Updated order.
  */
-const updateOrderStatusByOwner = async (orderId, payload, ownerId) => {
+const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) => {
   const status = String(payload.status || "").trim();
   const rejectReason = String(payload.rejectReason || "").trim();
 
-  if (!["approved", "rejected"].includes(status)) {
+  if (!["delivering", "approved", "rejected"].includes(status)) {
     throw new Error("Noto'g'ri status yuborildi");
   }
 
@@ -598,8 +599,16 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId) => {
     throw new Error("Buyurtma topilmadi");
   }
 
-  if (order.status !== "pending") {
-    throw new Error("Faqat kutilayotgan buyurtma holatini o'zgartirish mumkin");
+  if (status === "delivering" || status === "rejected") {
+    if (order.status !== "pending") {
+      throw new Error("Faqat kutilayotgan buyurtma holatini o'zgartirish mumkin");
+    }
+  }
+
+  if (status === "approved") {
+    if (order.status !== "delivering") {
+      throw new Error("Faqat yetkazilmoqda holatidagi buyurtmani yetkazib berildi deb belgilash mumkin");
+    }
   }
 
   if (status === "rejected" && rejectReason.length < 3) {
@@ -607,16 +616,40 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId) => {
   }
 
   order.status = status;
-  order.rejectReason = status === "rejected" ? rejectReason : "";
+  order.rejectReason = status === "rejected" ? rejectReason : order.rejectReason;
 
   if (status === "rejected") {
     await applyRefundAndRollback(order, "owner tomonidan rad etildi");
   }
 
+  if (status === "approved" && file) {
+    const processedImage = await uploadImageWithVariants({
+      buffer: file.buffer,
+      mimeType: file.mimetype,
+    });
+
+    const image = await Image.create({
+      uploadedBy: ownerId,
+      variants: processedImage.variants,
+      extension: processedImage.extension,
+      mimeType: processedImage.mimeType,
+      originalName: file.originalname,
+      originalSizeBytes: file.size,
+    });
+
+    order.deliveryImage = image._id;
+  }
+
+  const noteMap = {
+    delivering: "Buyurtma yetkazilmoqda",
+    approved: "Buyurtma yetkazib berildi",
+    rejected: rejectReason,
+  };
+
   order.statusHistory.push({
     status,
     changedBy: ownerId,
-    note: status === "rejected" ? rejectReason : "buyurtma tasdiqlandi",
+    note: noteMap[status] || "",
     changedAt: new Date(),
   });
 
@@ -625,7 +658,60 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId) => {
   return MarketOrder.findById(order._id)
     .populate("student", "firstName lastName username coinBalance classes")
     .populate("product", "name quantity price")
+    .populate("deliveryImage")
     .populate("student.classes", "name");
+};
+
+/**
+ * Adds or replaces delivery image on an approved order.
+ * @param {string} orderId Order ID.
+ * @param {object} file Uploaded image file.
+ * @param {string} ownerId Owner user ID.
+ * @returns {Promise<object>} Updated order.
+ */
+const addDeliveryImageByOwner = async (orderId, file, ownerId) => {
+  if (!file) {
+    throw new Error("Rasm majburiy");
+  }
+
+  const order = await MarketOrder.findById(orderId).populate("deliveryImage");
+
+  if (!order) {
+    throw new Error("Buyurtma topilmadi");
+  }
+
+  if (order.status !== "approved") {
+    throw new Error("Faqat yetkazib berilgan buyurtmaga rasm qo'shish mumkin");
+  }
+
+  const oldImage = order.deliveryImage;
+
+  const processedImage = await uploadImageWithVariants({
+    buffer: file.buffer,
+    mimeType: file.mimetype,
+  });
+
+  const image = await Image.create({
+    uploadedBy: ownerId,
+    variants: processedImage.variants,
+    extension: processedImage.extension,
+    mimeType: processedImage.mimeType,
+    originalName: file.originalname,
+    originalSizeBytes: file.size,
+  });
+
+  order.deliveryImage = image._id;
+  await order.save();
+
+  if (oldImage) {
+    await deleteImageVariants(oldImage.variants);
+    await Image.findByIdAndDelete(oldImage._id);
+  }
+
+  return MarketOrder.findById(order._id)
+    .populate("student", "firstName lastName username coinBalance classes")
+    .populate("product", "name quantity price")
+    .populate("deliveryImage");
 };
 
 /**
@@ -633,14 +719,17 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId) => {
  * @param {object} params Query params.
  * @returns {Promise<object>} Orders with pagination.
  */
-const getAdminOrders = async ({ page = 1, limit = 20, status = "" } = {}) => {
+const getAdminOrders = async ({ page = 1, limit = 20, status = "", productId = "" } = {}) => {
   const pageNumber = parsePositiveInt(page, 1);
   const limitNumber = parsePositiveInt(limit, 20);
   const skip = (pageNumber - 1) * limitNumber;
 
   const query = {};
-  if (["pending", "approved", "rejected", "cancelled"].includes(status)) {
+  if (["pending", "delivering", "approved", "rejected", "cancelled"].includes(status)) {
     query.status = status;
+  }
+  if (productId) {
+    query.product = productId;
   }
 
   const [orders, totalItems] = await Promise.all([
@@ -651,6 +740,7 @@ const getAdminOrders = async ({ page = 1, limit = 20, status = "" } = {}) => {
       .populate("product", "name quantity price")
       .populate("student", "firstName lastName username coinBalance classes")
       .populate("student.classes", "name")
+      .populate("deliveryImage")
       .lean(),
     MarketOrder.countDocuments(query),
   ]);
@@ -687,6 +777,7 @@ const getStudentOrders = async (studentId, { page = 1, limit = 20 } = {}) => {
       .skip(skip)
       .limit(limitNumber)
       .populate("product", "name quantity price")
+      .populate("deliveryImage")
       .lean(),
     MarketOrder.countDocuments(query),
   ]);
@@ -716,4 +807,5 @@ module.exports = {
   getStudentProducts,
   cancelOrderByStudent,
   updateOrderStatusByOwner,
+  addDeliveryImageByOwner,
 };

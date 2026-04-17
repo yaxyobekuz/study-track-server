@@ -4,6 +4,7 @@ const router = express.Router();
 const { protect, authorize } = require("../middleware/auth.middleware");
 const {
   createMultiFileUpload,
+  createSingleFileUpload,
   handleFileUploadError,
 } = require("../middleware/fileUpload.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -22,12 +23,18 @@ const {
   getStudentProducts,
   getStudentProductById,
   updateOrderStatusByOwner,
+  addDeliveryImage,
 } = require("../controllers/market.controller");
 
 const uploadProductImages = createMultiFileUpload({
   fieldName: "images",
   categories: ["image"],
   maxFiles: 3,
+});
+
+const uploadDeliveryImage = createSingleFileUpload({
+  fieldName: "deliveryImage",
+  categories: ["image"],
 });
 
 router.use(protect);
@@ -56,7 +63,18 @@ router.patch(
   "/admin/orders/:orderId/status",
   validateObjectId("orderId"),
   authorize(ROLES.OWNER),
+  uploadDeliveryImage,
+  handleFileUploadError,
   updateOrderStatusByOwner,
+);
+
+router.patch(
+  "/admin/orders/:orderId/delivery-image",
+  validateObjectId("orderId"),
+  authorize(ROLES.OWNER),
+  uploadDeliveryImage,
+  handleFileUploadError,
+  addDeliveryImage,
 );
 
 router.get("/products", authorize(ROLES.STUDENT), getStudentProducts);
