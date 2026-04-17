@@ -4,7 +4,7 @@ const marketOrderHistorySchema = new mongoose.Schema(
   {
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected", "cancelled"],
+      enum: ["pending", "delivering", "approved", "rejected", "cancelled"],
       required: true,
     },
     changedBy: {
@@ -75,9 +75,14 @@ const marketOrderSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "approved", "rejected", "cancelled"],
+      enum: ["pending", "delivering", "approved", "rejected", "cancelled"],
       default: "pending",
       index: true,
+    },
+    deliveryImage: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Image",
+      default: null,
     },
     rejectReason: {
       type: String,
