@@ -1,6 +1,8 @@
 const Penalty = require("../models/penalty.model");
 const PenaltyCategory = require("../models/penaltyCategory.model");
 const PenaltySettings = require("../models/penaltySettings.model");
+const FineReductionPackage = require("../models/fineReductionPackage.model");
+const CoinTransaction = require("../models/coinTransaction.model");
 const User = require("../models/user.model");
 const TgUser = require("../models/tguser.model");
 const penaltyNotificationQueueService = require("./penaltyNotificationQueue.service");
@@ -13,6 +15,7 @@ const {
   formatPaginationResponse,
 } = require("../utils/pagination");
 const logger = require("../utils/logger");
+const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 // ─── KATEGORIYA CRUD ───────────────────────────────────────────────
 
@@ -573,7 +576,10 @@ const getPenaltyStats = async () => {
       { $match: { type: "reduction", status: "approved" } },
       { $group: { _id: null, total: { $sum: "$points" } } },
     ]),
-    User.find({ role: { $nin: ["owner", "student"] }, penaltyPoints: { $gt: 0 } })
+    User.find({
+      role: { $nin: ["owner", "student"] },
+      penaltyPoints: { $gt: 0 },
+    })
       .select("firstName lastName username penaltyPoints role")
       .sort({ penaltyPoints: -1 })
       .limit(10),
@@ -694,9 +700,167 @@ const updateSettings = async (data, updatedBy) => {
     settings.fineAmounts.set("teacher", data.teacherFineAmount);
   }
 
+  if (data.premiumReductionDiscountPercent !== undefined) {
+    settings.premiumReductionDiscountPercent =
+      data.premiumReductionDiscountPercent;
+  }
+
   settings.updatedBy = updatedBy;
   await settings.save();
   return settings;
+};
+
+// ─── KAMAYTIRISH PAKETLARI CRUD ────────────────────────────────────
+
+/**
+ * Yangi kamaytirish paketi yaratadi
+ * @param {object} data - { title, points, coinCost, order }
+ * @param {string} createdBy - Owner user IDsi
+ * @returns {Promise<Document>}
+ */
+const createReductionPackage = async (data, createdBy) => {
+  return FineReductionPackage.create({
+    title: data.title,
+    points: data.points,
+    coinCost: data.coinCost,
+    order: data.order ?? 0,
+    createdBy,
+  });
+};
+
+/**
+ * Kamaytirish paketlari ro'yxatini qaytaradi
+ * @param {boolean} onlyActive - Faqat faol paketlarmi
+ * @returns {Promise<Array>}
+ */
+const getReductionPackages = async (onlyActive = false) => {
+  const filter = onlyActive ? { isActive: true } : {};
+  return FineReductionPackage.find(filter).sort({ order: 1, createdAt: 1 });
+};
+
+/**
+ * Kamaytirish paketini yangilaydi
+ * @param {string} id - Paket IDsi
+ * @param {object} data - Yangilanadigan maydonlar
+ * @returns {Promise<Document>}
+ */
+const updateReductionPackage = async (id, data) => {
+  const pkg = await FineReductionPackage.findByIdAndUpdate(
+    id,
+    {
+      ...(data.title !== undefined && { title: data.title }),
+      ...(data.points !== undefined && { points: data.points }),
+      ...(data.coinCost !== undefined && { coinCost: data.coinCost }),
+      ...(data.order !== undefined && { order: data.order }),
+      ...(data.isActive !== undefined && { isActive: data.isActive }),
+    },
+    { new: true, runValidators: true },
+  );
+  if (!pkg) throw new NotFoundError("Paket topilmadi");
+  return pkg;
+};
+
+/**
+ * Kamaytirish paketini soft delete qiladi
+ * @param {string} id - Paket IDsi
+ * @returns {Promise<Document>}
+ */
+const deleteReductionPackage = async (id) => {
+  const pkg = await FineReductionPackage.findByIdAndUpdate(
+    id,
+    { isActive: false },
+    { new: true },
+  );
+  if (!pkg) throw new NotFoundError("Paket topilmadi");
+  return pkg;
+};
+
+/**
+ * O'quvchi tanga evaziga jarima balini kamaytiradi (atomic)
+ * @param {string} studentId - O'quvchi IDsi
+ * @param {string} packageId - FineReductionPackage IDsi
+ * @returns {Promise<{ penalty: Document, transaction: Document }>}
+ */
+const purchaseReductionPackage = async (studentId, packageId) => {
+  const pkg = await FineReductionPackage.findById(packageId);
+  if (!pkg || !pkg.isActive) throw new NotFoundError("Paket topilmadi");
+
+  const settings = await PenaltySettings.getSettings();
+  const student = await User.findById(studentId);
+  if (!student) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  if (student.role !== "student") {
+    throw new BadRequestError("Faqat o'quvchilar paket sotib ola oladi");
+  }
+
+  if (student.penaltyPoints < 1) {
+    throw new BadRequestError(
+      "Jarima balingiz nolga teng, kamaytirish kerak emas",
+    );
+  }
+
+  const discountPercent = student.premium?.isActive
+    ? (settings.premiumReductionDiscountPercent ?? 0)
+    : 0;
+  const finalCoinCost = Math.ceil(pkg.coinCost * (1 - discountPercent / 100));
+
+  if (student.coinBalance < finalCoinCost) {
+    throw new BadRequestError(
+      `Tangalar yetarli emas. Kerak: ${finalCoinCost}, balans: ${student.coinBalance}`,
+    );
+  }
+
+  const pointsReduced = Math.min(pkg.points, student.penaltyPoints);
+
+  // Atomic findOneAndUpdate — race condition himoyasi (replica set shart emas)
+  const updatedUser = await User.findOneAndUpdate(
+    {
+      _id: studentId,
+      coinBalance: { $gte: finalCoinCost },
+      penaltyPoints: { $gte: 1 },
+    },
+    { $inc: { coinBalance: -finalCoinCost, penaltyPoints: -pointsReduced } },
+    { new: true },
+  );
+
+  if (!updatedUser) {
+    throw new BadRequestError(
+      "Tangalar yetarli emas yoki jarima balingiz o'zgardi",
+    );
+  }
+
+  const penalty = await Penalty.create({
+    type: "reduction",
+    user: studentId,
+    givenBy: studentId,
+    title: `Jarima paketi xaridi`,
+    description: `"${pkg.title}" jarima paketi xarid qilindi`,
+    points: pointsReduced,
+    status: "approved",
+    isCustom: false,
+    fineAmount: 0,
+    reviewedBy: studentId,
+    reviewedAt: new Date(),
+  });
+
+  const transaction = await CoinTransaction.create({
+    student: studentId,
+    amount: finalCoinCost,
+    type: "fine_reduction_purchase",
+    description: `Jarima kamaytirishga sarflandi: ${pkg.title} (-${pointsReduced} ball)`,
+    balanceAfter: updatedUser.coinBalance,
+    date: new Date(),
+    meta: {
+      packageId: pkg._id,
+      pointsReduced,
+      originalCoinCost: pkg.coinCost,
+      discountPercent,
+      finalCoinCost,
+      penaltyRecordId: penalty._id,
+    },
+  });
+
+  return { penalty, transaction };
 };
 
 module.exports = {
@@ -717,4 +881,9 @@ module.exports = {
   getPenaltyStats,
   getSettings,
   updateSettings,
+  createReductionPackage,
+  getReductionPackages,
+  updateReductionPackage,
+  deleteReductionPackage,
+  purchaseReductionPackage,
 };

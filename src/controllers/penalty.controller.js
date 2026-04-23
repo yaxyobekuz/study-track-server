@@ -2,6 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const penaltyService = require("../services/penalty.service");
 const Role = require("../models/role.model");
+const { ROLES } = require("../utils/constants");
 
 // ─── KATEGORIYA ────────────────────────────────────────────────────
 
@@ -152,7 +153,7 @@ exports.getSettings = asyncHandler(async (req, res) => {
  * @access Private (owner)
  */
 exports.updateSettings = asyncHandler(async (req, res) => {
-  const { fineAmounts, studentFineAmount, teacherFineAmount } = req.body;
+  const { fineAmounts, studentFineAmount, teacherFineAmount, premiumReductionDiscountPercent } = req.body;
 
   // Yangi format: fineAmounts object validatsiya
   if (fineAmounts !== undefined) {
@@ -176,8 +177,18 @@ exports.updateSettings = asyncHandler(async (req, res) => {
     throw new BadRequestError("Jarima miqdori manfiy bo'lishi mumkin emas");
   }
 
+  if (premiumReductionDiscountPercent !== undefined) {
+    if (
+      typeof premiumReductionDiscountPercent !== "number" ||
+      premiumReductionDiscountPercent < 0 ||
+      premiumReductionDiscountPercent > 100
+    ) {
+      throw new BadRequestError("Premium chegirma 0 dan 100 gacha bo'lishi kerak");
+    }
+  }
+
   const settings = await penaltyService.updateSettings(
-    { fineAmounts, studentFineAmount, teacherFineAmount },
+    { fineAmounts, studentFineAmount, teacherFineAmount, premiumReductionDiscountPercent },
     req.user._id,
   );
   return res.json({
@@ -254,6 +265,77 @@ exports.reviewPenalty = asyncHandler(async (req, res) => {
 exports.getUserPenalties = asyncHandler(async (req, res) => {
   const result = await penaltyService.getUserPenalties(req.params.userId, req);
   return res.json(result);
+});
+
+// ─── KAMAYTIRISH PAKETLARI ─────────────────────────────────────────
+
+/**
+ * GET /api/penalties/reduction-packages
+ * @access Private (all authenticated)
+ */
+exports.getReductionPackages = asyncHandler(async (req, res) => {
+  const onlyActive = req.user.role !== ROLES.OWNER;
+  const packages = await penaltyService.getReductionPackages(onlyActive);
+  return res.json({ success: true, data: packages });
+});
+
+/**
+ * POST /api/penalties/reduction-packages
+ * @access Private (owner)
+ */
+exports.createReductionPackage = asyncHandler(async (req, res) => {
+  const { title, points, coinCost, order } = req.body;
+
+  if (!title) throw new BadRequestError("Sarlavha majburiy");
+  if (!points || Number(points) < 1) throw new BadRequestError("Ball kamida 1 bo'lishi kerak");
+  if (!coinCost || Number(coinCost) < 1) throw new BadRequestError("Narx kamida 1 tanga bo'lishi kerak");
+
+  const pkg = await penaltyService.createReductionPackage(
+    { title, points: Number(points), coinCost: Number(coinCost), order: order !== undefined ? Number(order) : 0 },
+    req.user._id,
+  );
+  return res.status(201).json({ success: true, data: pkg });
+});
+
+/**
+ * PUT /api/penalties/reduction-packages/:id
+ * @access Private (owner)
+ */
+exports.updateReductionPackage = asyncHandler(async (req, res) => {
+  const { title, points, coinCost, order, isActive } = req.body;
+  const pkg = await penaltyService.updateReductionPackage(req.params.id, {
+    title,
+    points: points !== undefined ? Number(points) : undefined,
+    coinCost: coinCost !== undefined ? Number(coinCost) : undefined,
+    order: order !== undefined ? Number(order) : undefined,
+    isActive,
+  });
+  return res.json({ success: true, message: "Paket yangilandi", data: pkg });
+});
+
+/**
+ * DELETE /api/penalties/reduction-packages/:id
+ * @access Private (owner)
+ */
+exports.deleteReductionPackage = asyncHandler(async (req, res) => {
+  await penaltyService.deleteReductionPackage(req.params.id);
+  return res.json({ success: true, message: "Paket o'chirildi" });
+});
+
+/**
+ * POST /api/penalties/reduction-packages/purchase
+ * @access Private (student)
+ */
+exports.purchaseReductionPackage = asyncHandler(async (req, res) => {
+  const { packageId } = req.body;
+  if (!packageId) throw new BadRequestError("Paket IDsi majburiy");
+
+  const result = await penaltyService.purchaseReductionPackage(req.user._id, packageId);
+  return res.status(201).json({
+    success: true,
+    message: "Jarima muvaffaqiyatli kamaytirildi",
+    data: result,
+  });
 });
 
 /**

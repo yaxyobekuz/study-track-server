@@ -18,6 +18,11 @@ const {
   reviewPenalty,
   getUserPenalties,
   reducePenalty,
+  getReductionPackages,
+  createReductionPackage,
+  updateReductionPackage,
+  deleteReductionPackage,
+  purchaseReductionPackage,
 } = require("../controllers/penalty.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -32,6 +37,13 @@ router.use(protect);
 // ─── Sozlamalar ─────────────────────────────────────────────────────
 router.get("/settings", getSettings);
 router.put("/settings", authorize(ROLES.OWNER), updateSettings);
+
+// ─── Kamaytirish paketlari ─────────────────────────────────────────
+router.get("/reduction-packages", getReductionPackages);
+router.post("/reduction-packages", authorize(ROLES.OWNER), createReductionPackage);
+router.post("/reduction-packages/purchase", authorize(ROLES.STUDENT), purchaseReductionPackage);
+router.put("/reduction-packages/:id", validateObjectId("id"), authorize(ROLES.OWNER), updateReductionPackage);
+router.delete("/reduction-packages/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteReductionPackage);
 
 // ─── Statistika (owner) ───────────────────────────────────────────
 router.get("/stats", authorize(ROLES.OWNER), getPenaltyStats);
