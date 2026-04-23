@@ -566,7 +566,7 @@ async function getCoinLeaderboard(page = 1, limit = 50) {
       .limit(limit)
       .select("firstName lastName coinBalance premium displayName nameColor emojiBadgeId classes")
       .populate("classes", "name")
-      .populate("profilePicture", "url thumbnailUrl")
+      .populate("profilePicture")
       .lean(),
     User.countDocuments({ role: "student", isActive: true }),
   ]);
