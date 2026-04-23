@@ -18,6 +18,12 @@ const penaltySettingsSchema = new mongoose.Schema(
       default: 2100000,
       min: [0, "Jarima miqdori manfiy bo'lishi mumkin emas"],
     },
+    premiumReductionDiscountPercent: {
+      type: Number,
+      default: 0,
+      min: [0, "Chegirma manfiy bo'lishi mumkin emas"],
+      max: [100, "Chegirma 100% dan oshmasligi kerak"],
+    },
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

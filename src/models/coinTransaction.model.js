@@ -25,6 +25,7 @@ const coinTransactionSchema = new mongoose.Schema(
         "manual_give",
         "manual_take",
         "premium_purchase",
+        "fine_reduction_purchase",
       ],
       required: [true, "Tur majburiy"],
       index: true,
@@ -71,6 +72,18 @@ const coinTransactionSchema = new mongoose.Schema(
       premiumId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Premium",
+      },
+      packageId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "FineReductionPackage",
+      },
+      pointsReduced: Number,
+      originalCoinCost: Number,
+      discountPercent: Number,
+      finalCoinCost: Number,
+      penaltyRecordId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Penalty",
       },
     },
     date: {
