@@ -8,6 +8,7 @@ const {
   getStudentTransactions,
   getMyBalance,
   distributeCoins,
+  getCoinLeaderboard,
 } = require("../controllers/coin.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -25,5 +26,6 @@ router.post("/distribute", authorize(ROLES.OWNER), distributeCoins);
 // Student routes
 router.get("/balance", authorize(ROLES.STUDENT), getMyBalance);
 router.get("/transactions", authorize(ROLES.STUDENT), getMyTransactions);
+router.get("/leaderboard", authorize(ROLES.STUDENT), getCoinLeaderboard);
 
 module.exports = router;

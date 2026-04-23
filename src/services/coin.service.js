@@ -556,6 +556,42 @@ async function distributeManualCoins({
   return { successCount, skippedCount, errorCount, totalFound };
 }
 
+async function getCoinLeaderboard(page = 1, limit = 50) {
+  const skip = (page - 1) * limit;
+
+  const [students, total] = await Promise.all([
+    User.find({ role: "student", isActive: true })
+      .sort({ coinBalance: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select("firstName lastName coinBalance premium displayName nameColor emojiBadgeId classes")
+      .populate("classes", "name")
+      .populate("profilePicture", "url thumbnailUrl")
+      .lean(),
+    User.countDocuments({ role: "student", isActive: true }),
+  ]);
+
+  const ranked = students.map((student, i) => ({
+    rank: skip + i + 1,
+    student: {
+      ...student,
+      profilePictureUrl: student.profilePicture?.variants?.sm?.url || null,
+    },
+  }));
+
+  return {
+    rankings: ranked,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      hasNextPage: page * limit < total,
+      hasPrevPage: page > 1,
+    },
+  };
+}
+
 module.exports = {
   getSettings,
   updateSettings,
@@ -565,4 +601,5 @@ module.exports = {
   getStudentTransactions,
   getFilteredUsersPreview,
   distributeManualCoins,
+  getCoinLeaderboard,
 };

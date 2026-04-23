@@ -1,6 +1,7 @@
 const coinService = require("../services/coin.service");
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError } = require("../utils/errors");
+const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 
 /**
  * GET /api/coins/settings
@@ -146,4 +147,14 @@ exports.getMyBalance = asyncHandler(async (req, res) => {
     success: true,
     data: { coinBalance: req.user.coinBalance || 0 },
   });
+});
+
+/**
+ * GET /api/coins/leaderboard
+ * @access Private (student)
+ */
+exports.getCoinLeaderboard = asyncHandler(async (req, res) => {
+  const { page, limit } = getPaginationParams(req, 50);
+  const result = await coinService.getCoinLeaderboard(page, limit);
+  return res.json(formatPaginationResponse(result.rankings, result.pagination.total, page, limit));
 });
