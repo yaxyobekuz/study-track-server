@@ -201,6 +201,16 @@ const getMyOrders = asyncHandler(async (req, res) => {
 });
 
 /**
+ * GET /api/market/admin/products/:productId/stats
+ * @access Private (owner)
+ */
+const getProductStats = asyncHandler(async (req, res) => {
+  const data = await marketService.getProductStats(req.params.productId, req.query);
+
+  return res.json({ success: true, data });
+});
+
+/**
  * PATCH /api/market/orders/:orderId/cancel
  * @access Private (student)
  */
@@ -227,6 +237,7 @@ module.exports = {
   cancelMyOrder,
   getAdminProducts,
   getProductById: getAdminProductById,
+  getProductStats,
   getStudentProducts,
   getStudentProductById,
   updateOrderStatusByOwner,

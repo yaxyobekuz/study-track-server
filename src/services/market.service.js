@@ -795,6 +795,111 @@ const getStudentOrders = async (studentId, { page = 1, limit = 20 } = {}) => {
   };
 };
 
+/**
+ * Returns order statistics for a specific product.
+ * @param {string} productId Product ID.
+ * @param {object} params Query params { days, startDate, endDate }.
+ * @returns {Promise<object>} Stats data.
+ */
+const getProductStats = async (productId, { days, startDate: qStartDate, endDate: qEndDate } = {}) => {
+  const mongoose = require("mongoose");
+
+  let rangeEnd = new Date();
+  rangeEnd.setHours(23, 59, 59, 999);
+
+  let rangeStart;
+  if (qStartDate) {
+    rangeStart = new Date(qStartDate);
+    rangeStart.setHours(0, 0, 0, 0);
+  } else {
+    const daysNum = parsePositiveInt(days, 30);
+    rangeStart = new Date();
+    rangeStart.setDate(rangeStart.getDate() - daysNum);
+    rangeStart.setHours(0, 0, 0, 0);
+  }
+
+  if (qEndDate) {
+    rangeEnd = new Date(qEndDate);
+    rangeEnd.setHours(23, 59, 59, 999);
+  }
+
+  const diffDays = Math.ceil((rangeEnd - rangeStart) / (1000 * 60 * 60 * 24));
+  let groupBy;
+  if (diffDays <= 90) groupBy = "day";
+  else if (diffDays <= 365) groupBy = "week";
+  else groupBy = "month";
+
+  let dateFormat;
+  if (groupBy === "month") dateFormat = "%Y-%m";
+  else if (groupBy === "week") dateFormat = "%G-W%V";
+  else dateFormat = "%Y-%m-%d";
+
+  const matchBase = {
+    product: new mongoose.Types.ObjectId(productId),
+    createdAt: { $gte: rangeStart, $lte: rangeEnd },
+  };
+
+  const [byStatusRaw, trendsRaw] = await Promise.all([
+    MarketOrder.aggregate([
+      { $match: matchBase },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          coins: { $sum: "$totalPrice" },
+          quantity: { $sum: "$quantity" },
+        },
+      },
+    ]),
+    MarketOrder.aggregate([
+      { $match: matchBase },
+      {
+        $group: {
+          _id: { $dateToString: { format: dateFormat, date: "$createdAt" } },
+          total: { $sum: 1 },
+          approved: { $sum: { $cond: [{ $eq: ["$status", "approved"] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
+          cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+      {
+        $project: {
+          _id: 0,
+          date: "$_id",
+          total: 1,
+          approved: 1,
+          rejected: 1,
+          cancelled: 1,
+        },
+      },
+    ]),
+  ]);
+
+  const allStatuses = ["pending", "delivering", "approved", "rejected", "cancelled"];
+  const statusMap = {};
+  byStatusRaw.forEach((s) => { statusMap[s._id] = s; });
+
+  const byStatus = allStatuses.map((status) => ({
+    status,
+    count: statusMap[status]?.count || 0,
+    coins: statusMap[status]?.coins || 0,
+    quantity: statusMap[status]?.quantity || 0,
+  }));
+
+  const summary = byStatus.reduce(
+    (acc, s) => {
+      acc.total += s.count;
+      acc.totalCoins += s.coins;
+      acc.totalQuantity += s.quantity;
+      return acc;
+    },
+    { total: 0, totalCoins: 0, totalQuantity: 0 },
+  );
+
+  return { summary, byStatus, trends: trendsRaw, groupBy };
+};
+
 module.exports = {
   createOrder,
   getProductById,
@@ -805,6 +910,7 @@ module.exports = {
   getAdminProducts,
   getStudentOrders,
   getStudentProducts,
+  getProductStats,
   cancelOrderByStudent,
   updateOrderStatusByOwner,
   addDeliveryImageByOwner,

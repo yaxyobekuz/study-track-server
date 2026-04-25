@@ -20,6 +20,7 @@ const {
   cancelMyOrder,
   getAdminProducts,
   getProductById,
+  getProductStats,
   getStudentProducts,
   getStudentProductById,
   updateOrderStatusByOwner,
@@ -41,6 +42,7 @@ router.use(protect);
 
 router.get("/admin/products", authorize(ROLES.OWNER), getAdminProducts);
 router.get("/admin/products/:productId", validateObjectId("productId"), authorize(ROLES.OWNER), getProductById);
+router.get("/admin/products/:productId/stats", validateObjectId("productId"), authorize(ROLES.OWNER), getProductStats);
 router.post(
   "/admin/products",
   authorize(ROLES.OWNER),
