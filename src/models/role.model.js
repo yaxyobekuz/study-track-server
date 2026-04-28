@@ -55,6 +55,24 @@ const roleSchema = new mongoose.Schema(
         message: "Ish kunlari 0-6 orasida bo'lishi kerak",
       },
     },
+    // Haftalik jadval: har bir kun uchun alohida vaqt (ixtiyoriy override)
+    weeklySchedule: {
+      type: Map,
+      of: new (require("mongoose").Schema)(
+        {
+          startTime: {
+            type: String,
+            match: [/^([01]\d|2[0-3]):[0-5]\d$/, "HH:MM formatida bo'lishi kerak"],
+          },
+          endTime: {
+            type: String,
+            match: [/^([01]\d|2[0-3]):[0-5]\d$/, "HH:MM formatida bo'lishi kerak"],
+          },
+        },
+        { _id: false },
+      ),
+      default: () => ({}),
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
