@@ -80,7 +80,7 @@ async function createRole(data, createdBy) {
  * @returns {Promise<object>} yangilangan rol
  */
 async function updateRole(id, data) {
-  const { name, value } = data;
+  const { name, value, workStartTime, workEndTime, workDays, weeklySchedule } = data;
 
   const role = await Role.findById(id);
 
@@ -103,6 +103,11 @@ async function updateRole(id, data) {
   }
 
   if (name) role.name = name;
+
+  if (workStartTime !== undefined) role.workStartTime = workStartTime || null;
+  if (workEndTime !== undefined) role.workEndTime = workEndTime || null;
+  if (workDays !== undefined) role.workDays = workDays || [1, 2, 3, 4, 5];
+  if (weeklySchedule !== undefined) role.weeklySchedule = weeklySchedule || {};
 
   try {
     await role.save();
