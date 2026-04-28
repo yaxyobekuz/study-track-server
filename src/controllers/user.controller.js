@@ -27,6 +27,18 @@ const createUser = asyncHandler(async (req, res) => {
   });
 });
 
+// Get single user (Owner only)
+const getUser = asyncHandler(async (req, res) => {
+  const User = require("../models/user.model");
+  const { NotFoundError } = require("../utils/errors");
+  const user = await User.findById(req.params.id)
+    .populate("classes", "name")
+    .select("-password")
+    .lean();
+  if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
+  res.json({ success: true, data: user });
+});
+
 // Update user (Owner only)
 const updateUser = asyncHandler(async (req, res) => {
   const user = await userService.updateUser(req.params.id, req.body);
@@ -123,6 +135,7 @@ const updateMe = asyncHandler(async (req, res) => {
 module.exports = {
   getAllUsers,
   getAllUsersShort,
+  getUser,
   createUser,
   updateUser,
   resetPassword,

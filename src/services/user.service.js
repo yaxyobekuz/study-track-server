@@ -87,6 +87,7 @@ async function createUser(data) {
     workStartTime,
     workEndTime,
     workDays,
+    weeklySchedule,
   } = data;
 
   if (!username || !password || !firstName || !lastName || !role) {
@@ -123,6 +124,7 @@ async function createUser(data) {
       workStartTime: workStartTime || null,
       workEndTime: workEndTime || null,
       workDays: workDays || undefined,
+      weeklySchedule: weeklySchedule || {},
     }),
   });
 
@@ -147,6 +149,7 @@ async function updateUser(id, data) {
     workStartTime,
     workEndTime,
     workDays,
+    weeklySchedule,
   } = data;
 
   const user = await User.findById(id);
@@ -170,6 +173,7 @@ async function updateUser(id, data) {
     if (workStartTime !== undefined) user.workStartTime = workStartTime || null;
     if (workEndTime !== undefined) user.workEndTime = workEndTime || null;
     if (workDays !== undefined) user.workDays = workDays || [];
+    if (weeklySchedule !== undefined) user.weeklySchedule = weeklySchedule || {};
   }
 
   if (user.role === "student" && userClasses) {

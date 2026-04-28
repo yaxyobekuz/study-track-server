@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getAllUsers,
   getAllUsersShort,
+  getUser,
   createUser,
   updateUser,
   resetPassword,
@@ -32,7 +33,7 @@ router.get("/export", exportUsersToExcel);
 router.get("/all-short", getAllUsersShort);
 router.route("/").get(getAllUsers).post(createUser);
 
-router.route("/:id").all(validateObjectId("id")).put(updateUser).delete(deleteUser);
+router.route("/:id").all(validateObjectId("id")).get(getUser).put(updateUser).delete(deleteUser);
 
 router.put("/:id/reset-password", validateObjectId("id"), resetPassword);
 router.get("/:id/password", validateObjectId("id"), getUserPassword);
