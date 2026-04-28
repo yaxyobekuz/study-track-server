@@ -101,7 +101,7 @@ async function getLeadById(id) {
  * @returns {Promise<object>}
  */
 async function createLead(data, userId) {
-  const { firstName, lastName, phone, source, direction, category } = data;
+  const { firstName, lastName, phone, source, direction, category, createdAt } = data;
 
   if (!firstName || !lastName || !phone || !source || !direction || !category) {
     throw new BadRequestError("Ism, familiya, telefon, manba, yo'nalish va toifa majburiy");
@@ -122,10 +122,10 @@ async function createLead(data, userId) {
     throw new NotFoundError("Toifa topilmadi");
   }
 
-  const lead = await Lead.create({
-    ...data,
-    createdBy: userId,
-  });
+  const leadData = { ...data, createdBy: userId };
+  if (createdAt) leadData.createdAt = new Date(createdAt);
+
+  const lead = await Lead.create(leadData);
 
   // Auto-create first activity
   await LeadActivity.create({
@@ -157,6 +157,8 @@ async function updateLead(id, data) {
   // Don't allow status change through this method
   delete data.status;
   delete data.createdBy;
+
+  if (data.createdAt) data.createdAt = new Date(data.createdAt);
 
   if (data.source) {
     const sourceExists = await LeadSource.findById(data.source);
@@ -613,7 +615,7 @@ async function getDirectionAnalytics(query) {
         as: "direction",
       },
     },
-    { $unwind: { path: "$direction", preserveNullAndEmpty: false } },
+    { $unwind: "$direction" },
     {
       $project: {
         _id: 1,
@@ -683,7 +685,7 @@ async function getCategoryAnalytics(query) {
         as: "category",
       },
     },
-    { $unwind: { path: "$category", preserveNullAndEmpty: false } },
+    { $unwind: "$category" },
     {
       $project: {
         _id: 1,

@@ -15,6 +15,10 @@ const LEAD_STATUSES = [
 
 const leadSchema = new mongoose.Schema(
   {
+    createdAt: {
+      type: Date,
+      immutable: false,
+    },
     firstName: {
       type: String,
       required: [true, "Ism majburiy"],
