@@ -120,22 +120,15 @@ async function runAbsentMarking(ownerUser) {
  * Har kuni soat 23:45 da ishga tushadi (Asia/Tashkent)
  */
 async function startAttendanceAbsentCron() {
-  let ownerUser;
-
-  try {
-    ownerUser = await User.findOne({ role: "owner" }).select("_id");
-    if (!ownerUser) {
-      logger.warn("[AttendanceCron] Owner topilmadi — cron ishlaydi lekin jarimalar qo'llanilmaydi");
-    }
-  } catch (error) {
-    logger.error("[AttendanceCron] Owner yuklashda xato:", error);
-  }
-
   cron.schedule(
     "45 23 * * *",
     async () => {
       logger.info("[AttendanceCron] Davomatsiz xodimlarni belgilash boshlandi...");
       try {
+        const ownerUser = await User.findOne({ role: "owner" }).select("_id").lean();
+        if (!ownerUser) {
+          logger.warn("[AttendanceCron] Owner topilmadi — jarimalar qo'llanilmaydi");
+        }
         await runAbsentMarking(ownerUser);
       } catch (error) {
         logger.error("[AttendanceCron] Cron xatosi:", error);
