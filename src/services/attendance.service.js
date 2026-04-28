@@ -50,23 +50,59 @@ function getDayOfWeekTashkent(date = new Date()) {
   return new Date(tashkentMs).getDay();
 }
 
-async function getEffectiveSchedule(user) {
-  // User darajasida override bo'lsa (kamida bitta ish vaqti belgilangan bo'lsa)
+function getWeeklyOverride(weeklySchedule, dayOfWeek) {
+  if (!weeklySchedule) return null;
+  const key = String(dayOfWeek);
+  const entry = weeklySchedule instanceof Map
+    ? weeklySchedule.get(key)
+    : weeklySchedule[key];
+  if (entry && entry.startTime && entry.endTime) {
+    return { startTime: entry.startTime, endTime: entry.endTime };
+  }
+  return null;
+}
+
+async function getEffectiveSchedule(user, forDate) {
+  const dayOfWeek = getDayOfWeekTashkent(forDate);
+
+  // User darajasida override bo'lsa
   if (user.workStartTime && user.workEndTime) {
+    let startTime = user.workStartTime;
+    let endTime = user.workEndTime;
+
+    // Kun uchun alohida vaqt belgilangan bo'lsa, uni ishlatamiz
+    const dayOverride = getWeeklyOverride(user.weeklySchedule, dayOfWeek);
+    if (dayOverride) {
+      startTime = dayOverride.startTime;
+      endTime = dayOverride.endTime;
+    }
+
     return {
-      workStartTime: user.workStartTime,
-      workEndTime: user.workEndTime,
+      workStartTime: startTime,
+      workEndTime: endTime,
       workDays:
         user.workDays && user.workDays.length > 0
           ? user.workDays
           : [1, 2, 3, 4, 5],
     };
   }
+
   // Roldan olish
   const role = await Role.findOne({ value: user.role }).lean();
+
+  let startTime = role?.workStartTime ?? null;
+  let endTime = role?.workEndTime ?? null;
+
+  // Rol darajasida kun uchun alohida vaqt belgilangan bo'lsa
+  const dayOverride = getWeeklyOverride(role?.weeklySchedule, dayOfWeek);
+  if (dayOverride) {
+    startTime = dayOverride.startTime;
+    endTime = dayOverride.endTime;
+  }
+
   return {
-    workStartTime: role?.workStartTime ?? null,
-    workEndTime: role?.workEndTime ?? null,
+    workStartTime: startTime,
+    workEndTime: endTime,
     workDays:
       role?.workDays && role.workDays.length > 0
         ? role.workDays
@@ -348,6 +384,7 @@ async function getMyHistory(userId, month, year) {
 
 async function getAllRecords(query) {
   const { userId, role, month, year } = query;
+  const noPagination = query.noPagination === "true" || query.noPagination === true;
   const page = parseInt(query.page, 10) || 1;
   const limit = parseInt(query.limit, 10) || 30;
   const skip = (page - 1) * limit;
@@ -368,6 +405,15 @@ async function getAllRecords(query) {
   if (role && !userId) {
     const users = await User.find({ role, isActive: true }, "_id").lean();
     filter.user = { $in: users.map((u) => u._id) };
+  }
+
+  if (noPagination) {
+    const records = await Attendance.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .populate("user", "firstName lastName username role")
+      .populate("penaltyRef", "title points status")
+      .lean();
+    return { success: true, data: records };
   }
 
   const [records, total] = await Promise.all([
@@ -393,6 +439,50 @@ async function getUserMonthRecords(userId, month, year) {
 
   const { records, summary } = await getMyHistory(userId, month, year);
   return { user, records, summary };
+}
+
+async function getTodayAllRecords(roleFilter) {
+  const today = getTodayNormalized();
+
+  const userFilter = { isActive: true, role: { $nin: ["owner", "student"] } };
+  if (roleFilter) userFilter.role = roleFilter;
+
+  const allUsers = await User.find(userFilter, "_id firstName lastName role").lean();
+  const userIds = allUsers.map((u) => u._id);
+
+  const records = await Attendance.find({ user: { $in: userIds }, date: today })
+    .populate("user", "firstName lastName role")
+    .lean();
+
+  const recordByUser = {};
+  records.forEach((r) => {
+    const uid = r.user?._id?.toString() || r.user?.toString();
+    recordByUser[uid] = r;
+  });
+
+  const rows = allUsers.map((u) => {
+    const rec = recordByUser[u._id.toString()];
+    return {
+      user: u,
+      status: rec?.status || "not_marked",
+      checkIn: rec?.checkIn || null,
+      checkOut: rec?.checkOut || null,
+      isLate: rec?.isLate || false,
+      lateMinutes: rec?.lateMinutes || 0,
+      outOfOffice: rec?.outOfOffice || false,
+    };
+  });
+
+  const summary = {
+    total: rows.length,
+    present: rows.filter((r) => r.status === "present").length,
+    late: rows.filter((r) => r.status === "late").length,
+    absent: rows.filter((r) => r.status === "absent").length,
+    excused: rows.filter((r) => r.status === "excused").length,
+    notMarked: rows.filter((r) => r.status === "not_marked").length,
+  };
+
+  return { rows, summary, date: today };
 }
 
 async function getSettings() {
@@ -541,6 +631,7 @@ module.exports = {
   checkIn,
   checkOut,
   getTodayRecord,
+  getTodayAllRecords,
   getMyHistory,
   getAllRecords,
   getUserMonthRecords,

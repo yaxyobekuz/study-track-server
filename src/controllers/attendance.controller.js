@@ -56,6 +56,11 @@ const getMyHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+const getTodayAll = asyncHandler(async (req, res) => {
+  const result = await attendanceService.getTodayAllRecords(req.query.role || null);
+  res.json({ success: true, ...result });
+});
+
 const getSettings = asyncHandler(async (req, res) => {
   const settings = await attendanceService.getSettings();
   res.json({ success: true, data: settings });
@@ -159,6 +164,7 @@ const reviewExcuse = asyncHandler(async (req, res) => {
 
 module.exports = {
   getToday,
+  getTodayAll,
   checkIn,
   checkOut,
   getMyHistory,

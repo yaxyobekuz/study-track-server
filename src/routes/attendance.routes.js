@@ -3,6 +3,7 @@ const router = express.Router();
 const { protect, authorize } = require("../middleware/auth.middleware");
 const {
   getToday,
+  getTodayAll,
   checkIn,
   checkOut,
   getMyHistory,
@@ -22,6 +23,7 @@ router.get("/settings", protect, authorize("owner"), getSettings);
 router.put("/settings", protect, authorize("owner"), updateSettings);
 
 router.get("/today", protect, getToday);
+router.get("/today/all", protect, authorize("owner"), getTodayAll);
 router.get("/my", protect, getMyHistory);
 router.post("/check-in", protect, checkIn);
 router.post("/check-out", protect, checkOut);
