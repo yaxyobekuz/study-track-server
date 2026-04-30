@@ -55,13 +55,13 @@ router.delete("/reduction-packages/:id", validateObjectId("id"), authorize(ROLES
 router.get("/stats", authorize(ROLES.OWNER), getPenaltyStats);
 
 // ─── Kategoriyalar ─────────────────────────────────────────────────
-router.get("/categories", authorize(ROLES.OWNER, ROLES.TEACHER), getCategories);
+router.get("/categories", authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION), getCategories);
 router.post("/categories", authorize(ROLES.OWNER), createPenaltyCategory);
 router.put("/categories/:id", validateObjectId("id"), authorize(ROLES.OWNER), updateCategory);
 router.delete("/categories/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteCategory);
 
-// ─── Kamaytirish (owner) ──────────────────────────────────────────
-router.post("/reduce", authorize(ROLES.OWNER), reducePenalty);
+// ─── Kamaytirish (owner, reception) ──────────────────────────────
+router.post("/reduce", authorize(ROLES.OWNER, ROLES.RECEPTION), reducePenalty);
 router.get("/reductions", authorize(ROLES.OWNER), getReductions);
 
 // ─── Pending (owner) ──────────────────────────────────────────────
@@ -70,8 +70,8 @@ router.get("/pending", authorize(ROLES.OWNER), getPendingPenalties);
 // ─── O'z jarimalari (barcha authenticated userlar) ────────────────
 router.get("/my", getMyPenalties);
 
-// ─── Ustoz bergan jarimalar (teacher) ─────────────────────────────
-router.get("/given", authorize(ROLES.TEACHER), getGivenPenalties);
+// ─── Bergan jarimalar (teacher, reception) ────────────────────────
+router.get("/given", authorize(ROLES.TEACHER, ROLES.RECEPTION), getGivenPenalties);
 
 // ─── Foydalanuvchi jarimalari (owner) ─────────────────────────────
 router.get("/user/:userId", validateObjectId("userId"), authorize(ROLES.OWNER), getUserPenalties);
@@ -79,7 +79,7 @@ router.get("/user/:userId", validateObjectId("userId"), authorize(ROLES.OWNER), 
 // ─── Jarima CRUD ──────────────────────────────────────────────────
 router.post(
   "/",
-  authorize(ROLES.OWNER, ROLES.TEACHER),
+  authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION),
   createMultiFileUpload({
     fieldName: "files",
     categories: ["image", "video", "document"],
