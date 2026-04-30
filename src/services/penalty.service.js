@@ -863,6 +863,34 @@ const purchaseReductionPackage = async (studentId, packageId) => {
   return { penalty, transaction };
 };
 
+// ============================================================
+// Baho qo'ymaslik jarima sozlamalari
+// ============================================================
+
+const GradePenaltySettings = require("../models/gradePenaltySettings.model");
+
+const getGradePenaltySettings = async () => {
+  const settings = await GradePenaltySettings.getSettings();
+  await settings.populate("exemptTeachers", "firstName lastName");
+  return settings;
+};
+
+const updateGradePenaltySettings = async (data, userId) => {
+  const settings = await GradePenaltySettings.getSettings();
+
+  if (data.isEnabled !== undefined) settings.isEnabled = data.isEnabled;
+  if (data.penaltyPoints !== undefined) settings.penaltyPoints = data.penaltyPoints;
+  if (data.missingThresholdPercent !== undefined)
+    settings.missingThresholdPercent = data.missingThresholdPercent;
+  if (data.exemptTeachers !== undefined) settings.exemptTeachers = data.exemptTeachers;
+
+  settings.updatedBy = userId;
+  await settings.save();
+
+  await settings.populate("exemptTeachers", "firstName lastName");
+  return settings;
+};
+
 module.exports = {
   createPenaltyCategory,
   getCategories,
@@ -886,4 +914,6 @@ module.exports = {
   updateReductionPackage,
   deleteReductionPackage,
   purchaseReductionPackage,
+  getGradePenaltySettings,
+  updateGradePenaltySettings,
 };

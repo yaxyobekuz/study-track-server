@@ -367,3 +367,46 @@ exports.reducePenalty = asyncHandler(async (req, res) => {
     data: reduction,
   });
 });
+
+/**
+ * GET /api/penalties/grade-settings
+ * @access Private (owner)
+ */
+exports.getGradePenaltySettings = asyncHandler(async (req, res) => {
+  const settings = await penaltyService.getGradePenaltySettings();
+
+  return res.json({
+    success: true,
+    data: settings,
+  });
+});
+
+/**
+ * PUT /api/penalties/grade-settings
+ * @access Private (owner)
+ */
+exports.updateGradePenaltySettings = asyncHandler(async (req, res) => {
+  const { isEnabled, penaltyPoints, missingThresholdPercent, exemptTeachers } = req.body;
+
+  if (penaltyPoints !== undefined && penaltyPoints < 1) {
+    throw new BadRequestError("Jarima bali kamida 1 bo'lishi kerak");
+  }
+
+  if (
+    missingThresholdPercent !== undefined &&
+    (missingThresholdPercent < 0 || missingThresholdPercent > 100)
+  ) {
+    throw new BadRequestError("Foiz 0 dan 100 gacha bo'lishi kerak");
+  }
+
+  const settings = await penaltyService.updateGradePenaltySettings(
+    { isEnabled, penaltyPoints, missingThresholdPercent, exemptTeachers },
+    req.user._id,
+  );
+
+  return res.json({
+    success: true,
+    message: "Sozlamalar saqlandi",
+    data: settings,
+  });
+});

@@ -23,6 +23,8 @@ const {
   updateReductionPackage,
   deleteReductionPackage,
   purchaseReductionPackage,
+  getGradePenaltySettings,
+  updateGradePenaltySettings,
 } = require("../controllers/penalty.controller");
 const { protect, authorize } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
@@ -37,6 +39,10 @@ router.use(protect);
 // ─── Sozlamalar ─────────────────────────────────────────────────────
 router.get("/settings", getSettings);
 router.put("/settings", authorize(ROLES.OWNER), updateSettings);
+
+// ─── Baho qo'ymaslik jarima sozlamalari ──────────────────────────
+router.get("/grade-settings", authorize(ROLES.OWNER), getGradePenaltySettings);
+router.put("/grade-settings", authorize(ROLES.OWNER), updateGradePenaltySettings);
 
 // ─── Kamaytirish paketlari ─────────────────────────────────────────
 router.get("/reduction-packages", getReductionPackages);
