@@ -193,9 +193,19 @@ const createPenalty = async ({
     throw new Error("Ownerga jarima yozib bo'lmaydi");
   }
 
+  // Reception ownerdan boshqa hamma rollarga jarima yozishi mumkin
+  if (givenByRole === "reception" && user.role === "owner") {
+    throw new Error("Ownerga jarima yozib bo'lmaydi");
+  }
+
   // O'qituvchi faqat kategoriya bo'yicha jarima yoza oladi
   if (givenByRole === "teacher" && isCustom) {
     throw new Error("O'qituvchi faqat kategoriya bo'yicha jarima yoza oladi");
+  }
+
+  // Reception faqat kategoriya bo'yicha jarima yoza oladi
+  if (givenByRole === "reception" && isCustom) {
+    throw new Error("Reception faqat kategoriya bo'yicha jarima yoza oladi");
   }
 
   // Kategoriya bo'lsa, undan ma'lumot olish
@@ -214,8 +224,9 @@ const createPenalty = async ({
   // Fayllarni yuklash
   const attachments = await uploadPenaltyAttachments(files);
 
-  // Owner yozgan jarima darhol approved
-  const status = givenByRole === "owner" ? "approved" : "pending";
+  // Owner va reception yozgan jarima darhol approved
+  const status =
+    givenByRole === "owner" || givenByRole === "reception" ? "approved" : "pending";
 
   const penalty = await Penalty.create({
     user: userId,
