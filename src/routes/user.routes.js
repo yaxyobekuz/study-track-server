@@ -24,13 +24,15 @@ router.get("/students", protect, authorize(ROLES.OWNER, ROLES.TEACHER), getStude
 // Own profile update — accessible to any authenticated user
 router.put("/me", protect, updateMe);
 
+// all-short — owner, teacher, reception uchun
+router.get("/all-short", protect, authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
+
 // All routes below are protected and for owner only
 router.use(protect);
 router.use(authorize(ROLES.OWNER));
 
 router.get("/stats", getStats);
 router.get("/export", exportUsersToExcel);
-router.get("/all-short", getAllUsersShort);
 router.route("/").get(getAllUsers).post(createUser);
 
 router.route("/:id").all(validateObjectId("id")).get(getUser).put(updateUser).delete(deleteUser);
