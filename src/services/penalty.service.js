@@ -385,7 +385,7 @@ const reducePenalty = async ({
  */
 const getPenalties = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
-  const { status, startDate, endDate } = req.query;
+  const { status, startDate, endDate, search } = req.query;
 
   const filter = {};
   if (status) filter.status = status;
@@ -397,6 +397,19 @@ const getPenalties = async (req) => {
       end.setHours(23, 59, 59, 999);
       filter.createdAt.$lte = end;
     }
+  }
+
+  if (search) {
+    const regex = new RegExp(search, "i");
+    const matchedUsers = await User.find({
+      $or: [{ firstName: regex }, { lastName: regex }, { username: regex }],
+    }).select("_id");
+    const userIds = matchedUsers.map((u) => u._id);
+    filter.$or = [
+      { title: regex },
+      { description: regex },
+      { user: { $in: userIds } },
+    ];
   }
 
   const [penalties, total] = await Promise.all([
