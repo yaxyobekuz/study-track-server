@@ -15,6 +15,7 @@ const {
   getGivenPenalties,
   getReductions,
   getPenaltyById,
+  deletePenalty,
   reviewPenalty,
   getUserPenalties,
   reducePenalty,
@@ -92,5 +93,6 @@ router.post(
 router.get("/", authorize(ROLES.OWNER), getPenalties);
 router.get("/:id", validateObjectId("id"), authorize(ROLES.OWNER, ROLES.TEACHER), getPenaltyById);
 router.put("/:id/review", validateObjectId("id"), authorize(ROLES.OWNER), reviewPenalty);
+router.delete("/:id", validateObjectId("id"), authorize(ROLES.OWNER), deletePenalty);
 
 module.exports = router;

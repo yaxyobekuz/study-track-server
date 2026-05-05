@@ -235,6 +235,15 @@ exports.getPenaltyById = asyncHandler(async (req, res) => {
 });
 
 /**
+ * DELETE /api/penalties/:id
+ * @access Private (owner)
+ */
+exports.deletePenalty = asyncHandler(async (req, res) => {
+  await penaltyService.deletePenalty(req.params.id);
+  return res.json({ success: true, message: "Jarima o'chirildi" });
+});
+
+/**
  * PUT /api/penalties/:id/review
  * @access Private (owner)
  */

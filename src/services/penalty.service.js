@@ -887,6 +887,34 @@ const purchaseReductionPackage = async (studentId, packageId) => {
   return { penalty, transaction };
 };
 
+// ─── JARIMA O'CHIRISH ──────────────────────────────────────────────
+
+/**
+ * Jarimani o'chiradi va bog'liq ma'lumotlarni tiklaydi
+ * @param {string} penaltyId - Jarima IDsi
+ * @returns {Promise<Document>} O'chirilgan jarima
+ */
+const deletePenalty = async (penaltyId) => {
+  const penalty = await Penalty.findById(penaltyId);
+  if (!penalty) throw new NotFoundError("Jarima topilmadi");
+
+  // Approved jarimaning ta'sirini bekor qilish
+  if (penalty.status === "approved") {
+    const inc = penalty.type === "reduction" ? penalty.points : -penalty.points;
+    await User.findByIdAndUpdate(penalty.user, {
+      $inc: { penaltyPoints: inc },
+    });
+  }
+
+  // S3 dan fayllarni o'chirish
+  if (penalty.attachments?.length > 0) {
+    await deletePenaltyAttachments(penalty.attachments);
+  }
+
+  await penalty.deleteOne();
+  return penalty;
+};
+
 // ============================================================
 // Baho qo'ymaslik jarima sozlamalari
 // ============================================================
@@ -921,6 +949,7 @@ module.exports = {
   updateCategory,
   deleteCategory,
   createPenalty,
+  deletePenalty,
   reviewPenalty,
   reducePenalty,
   getPenalties,
