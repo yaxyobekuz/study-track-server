@@ -44,6 +44,18 @@ const checkOut = asyncHandler(async (req, res) => {
   res.json({ success: true, data: record });
 });
 
+const getMySchedule = asyncHandler(async (req, res) => {
+  const schedule = await attendanceService.getScheduleForUser(req.user._id);
+  res.json({ success: true, data: schedule });
+});
+
+const getUserSchedule = asyncHandler(async (req, res) => {
+  const schedule = await attendanceService.getScheduleForUser(
+    req.params.userId,
+  );
+  res.json({ success: true, data: schedule });
+});
+
 const getMyHistory = asyncHandler(async (req, res) => {
   const month = req.query.month || new Date().getMonth() + 1;
   const year = req.query.year || new Date().getFullYear();
@@ -167,6 +179,8 @@ module.exports = {
   getTodayAll,
   checkIn,
   checkOut,
+  getMySchedule,
+  getUserSchedule,
   getMyHistory,
   getSettings,
   updateSettings,

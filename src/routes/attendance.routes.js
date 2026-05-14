@@ -6,6 +6,8 @@ const {
   getTodayAll,
   checkIn,
   checkOut,
+  getMySchedule,
+  getUserSchedule,
   getMyHistory,
   getSettings,
   updateSettings,
@@ -25,6 +27,7 @@ router.put("/settings", protect, authorize("owner"), updateSettings);
 router.get("/today", protect, getToday);
 router.get("/today/all", protect, authorize("owner"), getTodayAll);
 router.get("/my", protect, getMyHistory);
+router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);
 router.post("/check-out", protect, checkOut);
 
@@ -35,6 +38,12 @@ router.get("/excuse/:id", protect, authorize("owner"), getExcuse);
 router.put("/excuse/:id/review", protect, authorize("owner"), reviewExcuse);
 
 router.get("/user/:userId", protect, authorize("owner"), getUserMonthRecords);
+router.get(
+  "/user-schedule/:userId",
+  protect,
+  authorize("owner"),
+  getUserSchedule,
+);
 router.get("/", protect, authorize("owner"), getAllRecords);
 router.get("/:id", protect, authorize("owner"), getRecord);
 
