@@ -38,6 +38,7 @@ const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
 const { startTaskPenaltyCron } = require("./src/jobs/taskPenalty.job");
 const { startAttendanceAbsentCron } = require("./src/jobs/attendanceAbsent.job");
+const { startStudentAttendanceAbsentCron } = require("./src/jobs/studentAttendanceAbsent.job");
 const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
 
 // ================================
@@ -107,6 +108,7 @@ const bootstrap = async () => {
   startDailyCoinCron();
   await startTaskPenaltyCron();
   await startAttendanceAbsentCron();
+  await startStudentAttendanceAbsentCron();
   startGradePenaltyCron();
 
   app.listen(config.port, () => {
