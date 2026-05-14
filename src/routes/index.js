@@ -21,6 +21,7 @@ const roleRoutes = require("./role.routes");
 const socialNetworkRoutes = require("./socialNetwork.routes");
 const monitorRoutes = require("./monitor.routes");
 const attendanceRoutes = require("./attendance.routes");
+const studentAttendanceRoutes = require("./studentAttendance.routes");
 const leadRoutes = require("./lead.routes");
 const premiumRoutes = require("./premium.routes");
 
@@ -43,6 +44,7 @@ router.use("/roles", roleRoutes);
 router.use("/social-networks", socialNetworkRoutes);
 router.use("/monitor", monitorRoutes);
 router.use("/attendance", attendanceRoutes);
+router.use("/student-attendance", studentAttendanceRoutes);
 router.use("/leads", leadRoutes);
 router.use("/premium", premiumRoutes);
 
