@@ -88,8 +88,10 @@ async function runAbsentMarking(ownerUser) {
       if (status === "absent") {
         markedAbsent++;
 
+        // Ish vaqti umuman sozlanmagan rol/foydalanuvchi uchun jarima yozilmaydi
+        const hasWorkSchedule = !!schedule.workStartTime;
         const penaltyPaused = isPenaltyPaused(settings, user._id, user.role);
-        if (!penaltyPaused && settings.absentPenaltyPoints > 0) {
+        if (hasWorkSchedule && !penaltyPaused && settings.absentPenaltyPoints > 0) {
           const dateStr = today.toISOString().split("T")[0];
           const penalty = await createAttendancePenalty(
             user._id,
