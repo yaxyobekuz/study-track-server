@@ -88,21 +88,20 @@ async function updateRole(id, data) {
     throw new NotFoundError("Rol topilmadi");
   }
 
-  if (role.isSystem) {
-    throw new BadRequestError("Tizim rollarini o'zgartirib bo'lmaydi");
-  }
-
-  if (value && value !== role.value) {
-    const usersCount = await User.countDocuments({ role: role.value });
-    if (usersCount > 0) {
-      throw new BadRequestError(
-        "Bu rol qiymatini o'zgartirib bo'lmaydi, chunki foydalanuvchilar mavjud",
-      );
+  // Tizim rollarining nomi va kaliti o'zgartirilmaydi, faqat ish vaqti sozlanadi
+  if (!role.isSystem) {
+    if (value && value !== role.value) {
+      const usersCount = await User.countDocuments({ role: role.value });
+      if (usersCount > 0) {
+        throw new BadRequestError(
+          "Bu rol qiymatini o'zgartirib bo'lmaydi, chunki foydalanuvchilar mavjud",
+        );
+      }
+      role.value = value;
     }
-    role.value = value;
-  }
 
-  if (name) role.name = name;
+    if (name) role.name = name;
+  }
 
   if (workStartTime !== undefined) role.workStartTime = workStartTime || null;
   if (workEndTime !== undefined) role.workEndTime = workEndTime || null;

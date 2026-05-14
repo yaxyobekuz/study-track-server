@@ -55,10 +55,38 @@ async function getAllUsers(query) {
       .limit(limitNum),
   ]);
 
+  // Har bir foydalanuvchi uchun effektiv default ish vaqti (rol → user merosi).
+  // Rollar bir marta yuklanadi — N+1 so'rov yo'q.
+  const roles = await Role.find().select("value workStartTime workEndTime").lean();
+  const roleMap = {};
+  roles.forEach((r) => {
+    roleMap[r.value] = r;
+  });
+
+  const usersWithSchedule = users.map((u) => {
+    const obj = u.toObject({ virtuals: true });
+    if (u.role === "student" || u.role === "owner") {
+      obj.effectiveSchedule = null;
+    } else {
+      const role = roleMap[u.role];
+      const hasUserOverride = u.workStartTime && u.workEndTime;
+      obj.effectiveSchedule = {
+        workStartTime: hasUserOverride
+          ? u.workStartTime
+          : role?.workStartTime || null,
+        workEndTime: hasUserOverride
+          ? u.workEndTime
+          : role?.workEndTime || null,
+        source: hasUserOverride ? "user" : "role",
+      };
+    }
+    return obj;
+  });
+
   const totalPages = Math.ceil(total / limitNum);
 
   return {
-    users,
+    users: usersWithSchedule,
     pagination: {
       total,
       page: pageNum,
