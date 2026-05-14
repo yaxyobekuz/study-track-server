@@ -545,8 +545,29 @@ async function updateSettings(data, updatedBy) {
   return settings;
 }
 
+const EXCUSE_STATUS_LABELS_UZ = {
+  pending: "kutilmoqda",
+  approved: "tasdiqlangan",
+  rejected: "rad etilgan",
+};
+
 async function createExcuseRequest(userId, date, reason, type) {
   const normalizedDate = normalizeDateTashkent(date);
+  const today = getTodayNormalized();
+
+  // Sana cheklovi: juda eski yoki juda uzoq kelajak sanaga ruxsat berilmaydi
+  const dayMs = 24 * 3600000;
+  const diffDays = Math.round((normalizedDate.getTime() - today.getTime()) / dayMs);
+  if (diffDays < -30) {
+    throw new BadRequestError(
+      "30 kundan eski sana uchun so'rov yuborib bo'lmaydi",
+    );
+  }
+  if (diffDays > 90) {
+    throw new BadRequestError(
+      "90 kundan uzoq kelajak sana uchun so'rov yuborib bo'lmaydi",
+    );
+  }
 
   // Bir kun uchun bir so'rov
   const existing = await ExcuseRequest.findOne({
@@ -555,7 +576,11 @@ async function createExcuseRequest(userId, date, reason, type) {
     status: { $ne: "rejected" },
   });
   if (existing) {
-    throw new BadRequestError("Bu kun uchun allaqachon so'rov yuborilgan");
+    const statusLabel =
+      EXCUSE_STATUS_LABELS_UZ[existing.status] || existing.status;
+    throw new BadRequestError(
+      `Bu kun uchun allaqachon so'rov bor (holati: ${statusLabel})`,
+    );
   }
 
   return ExcuseRequest.create({
@@ -564,6 +589,60 @@ async function createExcuseRequest(userId, date, reason, type) {
     reason,
     type: type || "after",
   });
+}
+
+/**
+ * Foydalanuvchi o'zining kutilayotgan so'rovini bekor qiladi.
+ * @param {string} excuseId
+ * @param {string} userId
+ */
+async function cancelExcuseRequest(excuseId, userId) {
+  const excuse = await ExcuseRequest.findById(excuseId);
+  if (!excuse) throw new NotFoundError("So'rov topilmadi");
+
+  if (excuse.user.toString() !== userId.toString()) {
+    throw new ForbiddenError("Bu so'rov sizga tegishli emas");
+  }
+  if (excuse.status !== "pending") {
+    throw new BadRequestError(
+      "Faqat kutilayotgan so'rovni bekor qilish mumkin",
+    );
+  }
+
+  await excuse.deleteOne();
+}
+
+/**
+ * Admin bosh sahifasi uchun so'nggi uzrli so'rovlar.
+ * So'nggi 10 ta "pending" so'rov; yetishmasa "approved" bilan to'ldiriladi.
+ * @returns {Promise<{items: Array, pendingCount: number}>}
+ */
+async function getRecentExcuses() {
+  const LIMIT = 10;
+  const userFields = "firstName lastName username role";
+
+  const [pending, pendingCount] = await Promise.all([
+    ExcuseRequest.find({ status: "pending" })
+      .sort({ createdAt: -1 })
+      .limit(LIMIT)
+      .populate("user", userFields)
+      .lean(),
+    ExcuseRequest.countDocuments({ status: "pending" }),
+  ]);
+
+  let items = pending;
+
+  if (items.length < LIMIT) {
+    const approved = await ExcuseRequest.find({ status: "approved" })
+      .sort({ reviewedAt: -1 })
+      .limit(LIMIT - items.length)
+      .populate("user", userFields)
+      .populate("reviewedBy", "firstName lastName")
+      .lean();
+    items = items.concat(approved);
+  }
+
+  return { items, pendingCount };
 }
 
 async function getMyExcuses(userId, req) {
@@ -669,6 +748,8 @@ module.exports = {
   getSettings,
   updateSettings,
   createExcuseRequest,
+  cancelExcuseRequest,
+  getRecentExcuses,
   getMyExcuses,
   getAllExcuses,
   reviewExcuse,

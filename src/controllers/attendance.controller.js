@@ -138,6 +138,16 @@ const getMyExcuses = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+const cancelExcuseRequest = asyncHandler(async (req, res) => {
+  await attendanceService.cancelExcuseRequest(req.params.id, req.user._id);
+  res.json({ success: true });
+});
+
+const getRecentExcuses = asyncHandler(async (req, res) => {
+  const result = await attendanceService.getRecentExcuses();
+  res.json({ success: true, data: result });
+});
+
 const getAllExcuses = asyncHandler(async (req, res) => {
   const result = await attendanceService.getAllExcuses(req);
   res.json(result);
@@ -188,6 +198,8 @@ module.exports = {
   getUserMonthRecords,
   getRecord,
   createExcuseRequest,
+  cancelExcuseRequest,
+  getRecentExcuses,
   getMyExcuses,
   getAllExcuses,
   getExcuse,

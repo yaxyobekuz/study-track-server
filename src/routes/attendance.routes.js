@@ -9,6 +9,8 @@ const {
   getMySchedule,
   getUserSchedule,
   getMyHistory,
+  cancelExcuseRequest,
+  getRecentExcuses,
   getSettings,
   updateSettings,
   getAllRecords,
@@ -33,7 +35,9 @@ router.post("/check-out", protect, checkOut);
 
 router.post("/excuse", protect, createExcuseRequest);
 router.get("/excuse/my", protect, getMyExcuses);
+router.get("/excuse/recent", protect, authorize("owner"), getRecentExcuses);
 router.get("/excuse", protect, authorize("owner"), getAllExcuses);
+router.delete("/excuse/:id", protect, cancelExcuseRequest);
 router.get("/excuse/:id", protect, authorize("owner"), getExcuse);
 router.put("/excuse/:id/review", protect, authorize("owner"), reviewExcuse);
 
