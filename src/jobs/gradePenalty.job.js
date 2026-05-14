@@ -158,11 +158,11 @@ async function runGradePenaltyPass(ownerUser) {
 
 /**
  * Baho qo'ymaslik jarima cron job ni boshlaydi.
- * Har kuni soat 23:55 da ishga tushadi (Asia/Tashkent)
+ * Har kuni soat 20:00 da ishga tushadi (Asia/Tashkent)
  */
 async function startGradePenaltyCron() {
   cron.schedule(
-    "55 23 * * *",
+    "0 20 * * *",
     async () => {
       logger.info("[GradePenaltyCron] Baho qo'ymaslik tekshiruvi boshlandi...");
       try {
@@ -181,7 +181,7 @@ async function startGradePenaltyCron() {
     },
   );
 
-  logger.info("Baho jarima cron job belgilandi: Har kuni 23:55 (Asia/Tashkent)");
+  logger.info("Baho jarima cron job belgilandi: Har kuni 20:00 (Asia/Tashkent)");
 }
 
 module.exports = { startGradePenaltyCron, runGradePenaltyPass };
