@@ -110,6 +110,24 @@ async function getEffectiveSchedule(user, forDate) {
   };
 }
 
+/**
+ * Foydalanuvchining bugungi kun uchun effektiv ish jadvalini oladi.
+ * @param {string} userId
+ * @returns {Promise<{workStartTime, workEndTime, workDays, isWorkDayToday}>}
+ */
+async function getScheduleForUser(userId) {
+  const user = await User.findById(userId).lean();
+  if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  const schedule = await getEffectiveSchedule(user);
+  const todayDayOfWeek = getDayOfWeekTashkent();
+
+  return {
+    ...schedule,
+    isWorkDayToday: schedule.workDays.includes(todayDayOfWeek),
+  };
+}
+
 function isPenaltyPaused(settings, userId, userRole) {
   if (settings.penaltyPaused) return true;
   if (settings.pausedRoles && settings.pausedRoles.includes(userRole))
@@ -447,7 +465,10 @@ async function getTodayAllRecords(roleFilter) {
   const userFilter = { isActive: true, role: { $nin: ["owner", "student"] } };
   if (roleFilter) userFilter.role = roleFilter;
 
-  const allUsers = await User.find(userFilter, "_id firstName lastName role").lean();
+  const allUsers = await User.find(
+    userFilter,
+    "_id firstName lastName role workStartTime workEndTime workDays weeklySchedule",
+  ).lean();
   const userIds = allUsers.map((u) => u._id);
 
   const records = await Attendance.find({ user: { $in: userIds }, date: today })
@@ -460,18 +481,28 @@ async function getTodayAllRecords(roleFilter) {
     recordByUser[uid] = r;
   });
 
-  const rows = allUsers.map((u) => {
-    const rec = recordByUser[u._id.toString()];
-    return {
-      user: u,
-      status: rec?.status || "not_marked",
-      checkIn: rec?.checkIn || null,
-      checkOut: rec?.checkOut || null,
-      isLate: rec?.isLate || false,
-      lateMinutes: rec?.lateMinutes || 0,
-      outOfOffice: rec?.outOfOffice || false,
-    };
-  });
+  const rows = await Promise.all(
+    allUsers.map(async (u) => {
+      const rec = recordByUser[u._id.toString()];
+      const schedule = await getEffectiveSchedule(u);
+      return {
+        user: {
+          _id: u._id,
+          firstName: u.firstName,
+          lastName: u.lastName,
+          role: u.role,
+        },
+        status: rec?.status || "not_marked",
+        checkIn: rec?.checkIn || null,
+        checkOut: rec?.checkOut || null,
+        isLate: rec?.isLate || false,
+        lateMinutes: rec?.lateMinutes || 0,
+        outOfOffice: rec?.outOfOffice || false,
+        expectedStart: schedule.workStartTime || null,
+        expectedEnd: schedule.workEndTime || null,
+      };
+    }),
+  );
 
   const summary = {
     total: rows.length,
@@ -643,6 +674,7 @@ module.exports = {
   reviewExcuse,
   getTodayNormalized,
   getEffectiveSchedule,
+  getScheduleForUser,
   isPenaltyPaused,
   createAttendancePenalty,
   getDayOfWeekTashkent,
