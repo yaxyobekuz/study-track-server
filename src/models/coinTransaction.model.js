@@ -26,6 +26,8 @@ const coinTransactionSchema = new mongoose.Schema(
         "manual_take",
         "premium_purchase",
         "fine_reduction_purchase",
+        "season_absolute_reward",
+        "season_class_top_reward",
       ],
       required: [true, "Tur majburiy"],
       index: true,
@@ -85,6 +87,14 @@ const coinTransactionSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: "Penalty",
       },
+      // Mavsum mukofotlari uchun
+      seasonId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "TestSeason",
+      },
+      tierName: String,
+      seasonTotalScore: Number,
+      classPosition: Number,
     },
     date: {
       type: Date,

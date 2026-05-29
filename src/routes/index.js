@@ -24,6 +24,13 @@ const attendanceRoutes = require("./attendance.routes");
 const studentAttendanceRoutes = require("./studentAttendance.routes");
 const leadRoutes = require("./lead.routes");
 const premiumRoutes = require("./premium.routes");
+const testSeasonRoutes = require("./testSeason.routes");
+const teacherAssignmentRoutes = require("./teacherAssignment.routes");
+const questionRoutes = require("./question.routes");
+const testRoutes = require("./test.routes");
+const testBindingRoutes = require("./testBinding.routes");
+const testSessionRoutes = require("./testSession.routes");
+const testResultRoutes = require("./testResult.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -47,6 +54,13 @@ router.use("/attendance", attendanceRoutes);
 router.use("/student-attendance", studentAttendanceRoutes);
 router.use("/leads", leadRoutes);
 router.use("/premium", premiumRoutes);
+router.use("/test-seasons", testSeasonRoutes);
+router.use("/teacher-assignments", teacherAssignmentRoutes);
+router.use("/questions", questionRoutes);
+router.use("/tests", testRoutes);
+router.use("/bindings", testBindingRoutes);
+router.use("/test-sessions", testSessionRoutes);
+router.use("/test-results", testResultRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
