@@ -183,6 +183,44 @@ class MessageQueueService {
   }
 
   /**
+   * Cancel pending deliveries of a message.
+   * Stops anything still in the queue (status "pending"). Items already being
+   * sent ("processing") or already delivered ("completed"/"sent") are left
+   * untouched — those cannot be recalled.
+   * @param {string} messageId - Message to cancel
+   * @returns {Promise<number>} - Number of cancelled queue items
+   */
+  async cancelMessage(messageId) {
+    try {
+      const queueResult = await MessageQueue.updateMany(
+        { messageId, status: "pending" },
+        {
+          $set: {
+            status: "cancelled",
+            errorMessage: "Bekor qilindi",
+            processedAt: new Date(),
+          },
+        },
+      );
+
+      await Message.updateOne(
+        { _id: messageId },
+        { $set: { "deliveryStatus.$[elem].status": "cancelled" } },
+        { arrayFilters: [{ "elem.status": "pending" }] },
+      );
+
+      logger.info(
+        `Xabar bekor qilindi: ${messageId} (${queueResult.modifiedCount} ta navbatdagi xabar to'xtatildi)`,
+      );
+
+      return queueResult.modifiedCount;
+    } catch (error) {
+      logger.error(`Xabarni bekor qilishda xato: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Get queue statistics
    * @returns {Promise<Object>} - Queue statistics
    */

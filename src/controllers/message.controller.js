@@ -45,6 +45,20 @@ const sendMessage = asyncHandler(async (req, res) => {
     throw new ForbiddenError("O'qituvchi barchaga xabar yubora olmaydi");
   }
 
+  // Guard against accidental duplicate submits: reject an identical message
+  // (same sender + same text) created within the last few seconds.
+  const duplicateWindowMs = 5000;
+  const recentDuplicate = await Message.findOne({
+    sentBy: req.user._id,
+    messageText: messageText.trim(),
+    recipientType,
+    createdAt: { $gte: new Date(Date.now() - duplicateWindowMs) },
+  }).select("_id");
+
+  if (recentDuplicate) {
+    throw new BadRequestError("Bu xabar hozirgina yuborildi. Iltimos, biroz kuting.");
+  }
+
   let recipientIds = [];
   let recipients = [];
   let messageClassId = null;
@@ -304,8 +318,38 @@ const getMessageById = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Cancel a message's pending deliveries
+ * PATCH /api/messages/:id/cancel
+ */
+const cancelMessage = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const message = await Message.findById(id).select("sentBy");
+  if (!message) {
+    throw new NotFoundError("Xabar topilmadi");
+  }
+
+  // Owner can cancel any message; teacher can cancel only their own
+  if (req.user.role === "teacher" && message.sentBy.toString() !== req.user._id.toString()) {
+    throw new ForbiddenError("Ruxsat berilmagan");
+  }
+
+  const cancelledCount = await messageQueueService.cancelMessage(id);
+
+  res.json({
+    success: true,
+    message:
+      cancelledCount > 0
+        ? `${cancelledCount} ta navbatdagi xabar to'xtatildi`
+        : "To'xtatish uchun navbatda xabar qolmagan",
+    data: { cancelledCount },
+  });
+});
+
 module.exports = {
   sendMessage,
   getMessages,
   getMessageById,
+  cancelMessage,
 };

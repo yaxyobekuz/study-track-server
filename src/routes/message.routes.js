@@ -7,6 +7,7 @@ const {
   sendMessage,
   getMessages,
   getMessageById,
+  cancelMessage,
 } = require("../controllers/message.controller");
 
 // Middlewares
@@ -28,5 +29,7 @@ router
   .post(createSingleFileUpload({ categories: ["image", "document"] }), handleFileUploadError, sendMessage);
 
 router.route("/:id").all(validateObjectId("id")).get(getMessageById);
+
+router.route("/:id/cancel").all(validateObjectId("id")).patch(cancelMessage);
 
 module.exports = router;

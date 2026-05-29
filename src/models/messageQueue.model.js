@@ -36,7 +36,7 @@ const messageQueueSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "processing", "completed", "failed"],
+      enum: ["pending", "processing", "completed", "failed", "cancelled"],
       default: "pending",
     },
     priority: {

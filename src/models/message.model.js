@@ -49,7 +49,7 @@ const messageSchema = new mongoose.Schema(
         },
         status: {
           type: String,
-          enum: ["pending", "sent", "failed"],
+          enum: ["pending", "sent", "failed", "cancelled"],
           default: "pending",
         },
         errorMessage: {
