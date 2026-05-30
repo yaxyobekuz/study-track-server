@@ -237,6 +237,59 @@ async function updateQuestion(id, data, files, teacherId) {
 }
 
 /**
+ * Bir nechta savolni (AI generatsiya natijasi) testga to'g'ridan-to'g'ri qo'shadi.
+ * Faqat matnli savollar (rasmsiz) — AI rasm yaratmaydi.
+ * Yaroqsiz savollar (pre-save validatsiyadan o'tmaganlar) skip qilinadi.
+ * @param {string} testId Test ID.
+ * @param {Array} questionsArray Normallashtirilgan savollar massivi.
+ * @param {string} teacherId O'qituvchi ID (mualliflik tekshiruvi).
+ * @returns {Promise<{ created: number, questions: Array }>} Yaratilganlar.
+ */
+async function bulkCreateQuestions(testId, questionsArray, teacherId) {
+  const test = await _loadTestOwned(testId, teacherId);
+
+  if (!Array.isArray(questionsArray) || questionsArray.length === 0) {
+    throw new BadRequestError("Qo'shish uchun savollar yo'q");
+  }
+
+  let order = await Question.countDocuments({
+    test: test._id,
+    isActive: true,
+  });
+
+  const created = [];
+
+  // insertMany pre("save") validatorni o'tkazib yuboradi — shuning uchun create loop.
+  for (const q of questionsArray) {
+    order += 1;
+    try {
+      const question = await Question.create({
+        test: test._id,
+        type: q.type,
+        text: q.text || undefined,
+        image: null,
+        points: typeof q.points === "number" ? q.points : 1,
+        options:
+          q.type === "standard"
+            ? (q.options || []).map((opt) => ({
+                text: opt.text || undefined,
+                image: null,
+                isCorrect: Boolean(opt.isCorrect),
+              }))
+            : [],
+        order,
+      });
+      created.push(question);
+    } catch (error) {
+      // Yaroqsiz savolni o'tkazib yuboramiz, lekin order ortmaydi
+      order -= 1;
+    }
+  }
+
+  return { created: created.length, questions: created };
+}
+
+/**
  * Savolni o'chiradi (soft delete).
  * Sessiya snapshot'idagi nusxa tegmaydi.
  */
@@ -286,6 +339,7 @@ async function reorderQuestions(testId, orderedIds, teacherId) {
 module.exports = {
   listQuestionsForTest,
   createQuestion,
+  bulkCreateQuestions,
   updateQuestion,
   deactivateQuestion,
   reorderQuestions,

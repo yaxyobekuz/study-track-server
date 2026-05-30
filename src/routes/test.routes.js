@@ -26,6 +26,8 @@ const {
   reorderQuestions,
 } = require("../controllers/question.controller");
 
+const { generateQuestions } = require("../controllers/ai.controller");
+
 const {
   getBindingsForTest,
   createBinding,
@@ -35,6 +37,13 @@ const questionUpload = createMultiFileUpload({
   fieldName: "images",
   categories: ["image"],
   maxFiles: 100,
+});
+
+// AI generatsiyasi: rasm (Vision) + hujjat (PDF/Word/matn) qabul qiladi
+const aiUpload = createMultiFileUpload({
+  fieldName: "files",
+  categories: ["image", "document"],
+  maxFiles: 10,
 });
 
 router.use(protect);
@@ -86,6 +95,16 @@ router.patch(
   authorize(ROLES.TEACHER),
   validateObjectId("testId"),
   reorderQuestions,
+);
+
+// AI yordamida savol generatsiyasi (prompt yoki fayl orqali)
+router.post(
+  "/:testId/questions/ai-generate",
+  authorize(ROLES.TEACHER),
+  validateObjectId("testId"),
+  aiUpload,
+  handleFileUploadError,
+  generateQuestions,
 );
 
 // ───── Test biriktiruvlari (nested) ─────
