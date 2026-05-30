@@ -89,6 +89,12 @@ const config = {
   // Telegram
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
 
+  // AI (OpenAI) — savol generatsiyasi uchun (ixtiyoriy)
+  openaiApiKey: process.env.OPENAI_API_KEY,
+  openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
+  aiMaxQuestionsPerRequest:
+    parseInt(process.env.AI_MAX_QUESTIONS_PER_REQUEST, 10) || 20,
+
   // Message queue
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,
 
