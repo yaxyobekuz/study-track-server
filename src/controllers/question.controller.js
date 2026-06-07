@@ -78,10 +78,27 @@ const deleteQuestion = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Testning barcha savollarini o'chirish (soft delete).
+ * DELETE /api/tests/:testId/questions
+ */
+const deleteAllQuestionsForTest = asyncHandler(async (req, res) => {
+  const result = await questionService.deactivateAllQuestions(
+    req.params.testId,
+    req.user._id,
+  );
+  res.json({
+    success: true,
+    data: result,
+    message: "Barcha savollar o'chirildi",
+  });
+});
+
 module.exports = {
   getQuestionsForTest,
   createQuestion,
   reorderQuestions,
   updateQuestion,
   deleteQuestion,
+  deleteAllQuestionsForTest,
 };

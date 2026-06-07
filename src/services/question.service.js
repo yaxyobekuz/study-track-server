@@ -302,6 +302,34 @@ async function deactivateQuestion(id, teacherId) {
 
   question.isActive = false;
   await question.save();
+
+  // Qolgan faol savollar tartibini 1..N qilib qayta normallashtirish (bo'shliqsiz)
+  const remaining = await Question.find({
+    test: question.test,
+    isActive: true,
+  }).sort({ order: 1, createdAt: 1 });
+  await Promise.all(
+    remaining.map((q, index) =>
+      Question.updateOne({ _id: q._id }, { $set: { order: index + 1 } }),
+    ),
+  );
+}
+
+/**
+ * Testning barcha faol savollarini o'chiradi (soft delete).
+ * @param {string} testId Test ID.
+ * @param {string} teacherId O'qituvchi ID (mualliflik tekshiruvi).
+ * @returns {Promise<{ deleted: number }>} O'chirilganlar soni.
+ */
+async function deactivateAllQuestions(testId, teacherId) {
+  await _loadTestOwned(testId, teacherId);
+
+  const res = await Question.updateMany(
+    { test: testId, isActive: true },
+    { $set: { isActive: false } },
+  );
+
+  return { deleted: res.modifiedCount };
 }
 
 /**
@@ -342,5 +370,6 @@ module.exports = {
   bulkCreateQuestions,
   updateQuestion,
   deactivateQuestion,
+  deactivateAllQuestions,
   reorderQuestions,
 };

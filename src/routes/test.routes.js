@@ -24,6 +24,7 @@ const {
   getQuestionsForTest,
   createQuestion,
   reorderQuestions,
+  deleteAllQuestionsForTest,
 } = require("../controllers/question.controller");
 
 const { generateQuestions } = require("../controllers/ai.controller");
@@ -39,10 +40,10 @@ const questionUpload = createMultiFileUpload({
   maxFiles: 100,
 });
 
-// AI generatsiyasi: rasm (Vision) + hujjat (PDF/Word/matn) qabul qiladi
+// AI generatsiyasi: faqat rasm (Vision) qabul qiladi
 const aiUpload = createMultiFileUpload({
   fieldName: "files",
-  categories: ["image", "document"],
+  categories: ["image"],
   maxFiles: 10,
 });
 
@@ -96,8 +97,14 @@ router.patch(
   validateObjectId("testId"),
   reorderQuestions,
 );
+router.delete(
+  "/:testId/questions",
+  authorize(ROLES.TEACHER),
+  validateObjectId("testId"),
+  deleteAllQuestionsForTest,
+);
 
-// AI yordamida savol generatsiyasi (prompt yoki fayl orqali)
+// AI yordamida savol generatsiyasi (prompt yoki rasm orqali)
 router.post(
   "/:testId/questions/ai-generate",
   authorize(ROLES.TEACHER),
