@@ -1,11 +1,15 @@
 // OpenAI orqali test savollarini generatsiya qilish servisi.
-// Matn prompti, rasmlar (Vision) yoki fayldan ajratilgan matn asosida ishlaydi.
+// Matn prompti yoki rasmlar (Vision) asosida ishlaydi.
 const OpenAI = require("openai");
 const { config } = require("../config/env.config");
 const logger = require("../utils/logger");
 const { BadRequestError } = require("../utils/errors");
 
 const MAX_COUNT = config.aiMaxQuestionsPerRequest;
+
+// AI ba'zan formatga to'g'ri kelmaydigan savollar qaytaradi va ular validatsiyada
+// filtrlanadi. So'ralgan songa yetish uchun bir necha marta to'ldirib so'raymiz.
+const MAX_GEN_ATTEMPTS = 3;
 
 let _client = null;
 
@@ -146,53 +150,80 @@ async function _requestQuestions(messages, type) {
   return _normalizeAndValidate(parsed.questions, type);
 }
 
-async function generateFromPrompt({ prompt, count, difficulty, type }) {
-  const safeCount = _clampCount(count);
-  const messages = [
-    { role: "system", content: _buildSystemPrompt({ count: safeCount, difficulty, type }) },
-    { role: "user", content: _buildUserText({ prompt }) },
-  ];
-  return _requestQuestions(messages, type);
+/**
+ * Validatsiyadan keyin kerakli songa yetguncha AI'dan to'ldirib so'raydi.
+ * Takror savollar (matn bo'yicha) chiqarib tashlanadi, oxirida aniq target taga kesiladi.
+ * @param {object} params
+ * @param {(remaining:number)=>Array} params.buildMessages Qolgan miqdor uchun messages quruvchi.
+ * @param {number} params.target Kerakli savollar soni.
+ * @param {string} params.type Savol turi.
+ * @returns {Promise<Array>} Yig'ilgan savollar (<= target).
+ */
+async function _collectQuestions({ buildMessages, target, type }) {
+  const collected = [];
+  const seen = new Set();
+
+  for (let i = 0; i < MAX_GEN_ATTEMPTS && collected.length < target; i++) {
+    const remaining = target - collected.length;
+    const batch = await _requestQuestions(buildMessages(remaining), type);
+    for (const q of batch) {
+      const key = (q.text || "").trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      collected.push(q);
+      if (collected.length >= target) break;
+    }
+  }
+
+  return collected.slice(0, target);
 }
 
-async function generateFromText({ extractedText, prompt, count, difficulty, type }) {
-  const safeCount = _clampCount(count);
-  const messages = [
-    { role: "system", content: _buildSystemPrompt({ count: safeCount, difficulty, type }) },
-    { role: "user", content: _buildUserText({ prompt, extractedText }) },
-  ];
-  return _requestQuestions(messages, type);
+async function generateFromPrompt({ prompt, count, difficulty, type }) {
+  const target = _clampCount(count);
+  return _collectQuestions({
+    target,
+    type,
+    buildMessages: (remaining) => [
+      { role: "system", content: _buildSystemPrompt({ count: remaining, difficulty, type }) },
+      { role: "user", content: _buildUserText({ prompt }) },
+    ],
+  });
 }
 
 async function generateFromImages({
   images,
   prompt,
-  extractedText,
   count,
   difficulty,
   type,
 }) {
-  const safeCount = _clampCount(count);
+  const target = _clampCount(count);
 
-  const userContent = [
-    { type: "text", text: _buildUserText({ prompt, extractedText }) },
-  ];
-
+  // Rasmlarni bir marta base64 ga aylantiramiz (har urinishda qayta ishlatiladi)
+  const imageParts = [];
   for (const img of images || []) {
     if (!img?.buffer) continue;
     const base64 = img.buffer.toString("base64");
-    userContent.push({
+    imageParts.push({
       type: "image_url",
       image_url: { url: `data:${img.mimeType};base64,${base64}` },
     });
   }
 
-  const messages = [
-    { role: "system", content: _buildSystemPrompt({ count: safeCount, difficulty, type }) },
-    { role: "user", content: userContent },
-  ];
-
-  return _requestQuestions(messages, type);
+  return _collectQuestions({
+    target,
+    type,
+    buildMessages: (remaining) => [
+      { role: "system", content: _buildSystemPrompt({ count: remaining, difficulty, type }) },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: _buildUserText({ prompt }) },
+          ...imageParts,
+        ],
+      },
+    ],
+  });
 }
 function isAiEnabled() {
   return Boolean(config.openaiApiKey);
@@ -200,7 +231,6 @@ function isAiEnabled() {
 
 module.exports = {
   generateFromPrompt,
-  generateFromText,
   generateFromImages,
   isAiEnabled,
 };
