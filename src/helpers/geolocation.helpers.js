@@ -24,7 +24,7 @@ function haversineDistance(coord1, coord2) {
 
 /**
  * Foydalanuvchi ofis hududida ekanligini tekshiradi.
- * Accuracy ni bufer sifatida ishlatadi — agar distance - accuracy <= officeRadius bo'lsa true.
+ * Accuracy ni bufer sifatida ishlatadi - agar distance - accuracy <= officeRadius bo'lsa true.
  * @param {number} lat Foydalanuvchi kengligi
  * @param {number} lng Foydalanuvchi uzunligi
  * @param {number} accuracy GPS aniqligi (metr)

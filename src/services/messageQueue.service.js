@@ -186,7 +186,7 @@ class MessageQueueService {
    * Cancel pending deliveries of a message.
    * Stops anything still in the queue (status "pending"). Items already being
    * sent ("processing") or already delivered ("completed"/"sent") are left
-   * untouched — those cannot be recalled.
+   * untouched - those cannot be recalled.
    * @param {string} messageId - Message to cancel
    * @returns {Promise<number>} - Number of cancelled queue items
    */

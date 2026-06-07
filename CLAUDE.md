@@ -1,4 +1,4 @@
-# Claude Code — Server Module Rules
+# Claude Code - Server Module Rules
 
 > Global rules in root CLAUDE.md also apply.
 
@@ -35,10 +35,10 @@ server/src/
 
 ## Middleware
 
-- `auth.middleware.js` — verify JWT, attach `req.user`.
-- `validate.middleware.js` — validate body/params against schema, reject early.
-- `error.middleware.js` — single global error handler, never swallow errors.
-- `async.middleware.js` — wrap async controllers to forward errors.
+- `auth.middleware.js` - verify JWT, attach `req.user`.
+- `validate.middleware.js` - validate body/params against schema, reject early.
+- `error.middleware.js` - single global error handler, never swallow errors.
+- `async.middleware.js` - wrap async controllers to forward errors.
 
 ## Error handling
 
@@ -49,7 +49,7 @@ server/src/
 ## Environment variables
 
 - All env vars are validated at startup in `config/env.config.js`.
-- Never access `process.env` directly in business code — import from config.
+- Never access `process.env` directly in business code - import from config.
 - Keep `.env.example` up to date when adding new variables.
 
 ## File uploads
@@ -64,7 +64,7 @@ server/src/
 - All scheduled jobs live in `src/jobs/`.
 - Each job file exports a single `start()` function.
 - Jobs must log start/end/errors via `logger`.
-- Jobs must not crash the process — wrap logic in try/catch.
+- Jobs must not crash the process - wrap logic in try/catch.
 
 ## Logging
 
@@ -79,6 +79,6 @@ server/src/
 
 ## Code style
 
-- Use `async/await` — no `.then()/.catch()` chains.
+- Use `async/await` - no `.then()/.catch()` chains.
 - One export per controller/service file (named exports preferred).
 - File naming: `<name>.<type>.js` (e.g., `user.service.js`, `auth.controller.js`).

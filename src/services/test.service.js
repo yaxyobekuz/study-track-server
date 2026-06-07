@@ -89,8 +89,8 @@ async function getTestById(id, user) {
 }
 
 /**
- * Yangi test yaratadi (V3 — minimal: title + questionCount + timeLimitMinutes).
- * Mavsum/fan/sinflar bu yerda yo'q — TestBinding orqali keyinroq biriktiriladi.
+ * Yangi test yaratadi (V3 - minimal: title + questionCount + timeLimitMinutes).
+ * Mavsum/fan/sinflar bu yerda yo'q - TestBinding orqali keyinroq biriktiriladi.
  */
 async function createTest(data, teacherId) {
   const { title, questionCount, timeLimitMinutes } = data;
@@ -142,7 +142,7 @@ async function updateTest(id, data, teacherId) {
       });
       if (activeQuestions < newCount) {
         throw new BadRequestError(
-          `E'lon qilingan biriktiruv bor — mavjud savollar yetarli emas (${activeQuestions}/${newCount}). Avval savollar qo'shing.`,
+          `E'lon qilingan biriktiruv bor - mavjud savollar yetarli emas (${activeQuestions}/${newCount}). Avval savollar qo'shing.`,
         );
       }
     }

@@ -277,7 +277,7 @@ async function previewDistribution(seasonId) {
 }
 
 /**
- * Coinlarni tarqatish (idempotent — agar avval tarqatilgan bo'lsa, qayta urinishni bloklash).
+ * Coinlarni tarqatish (idempotent - agar avval tarqatilgan bo'lsa, qayta urinishni bloklash).
  */
 async function distributeCoins(seasonId, distributorId, { force = false } = {}) {
   const season = await TestSeason.findById(seasonId);

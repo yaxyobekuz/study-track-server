@@ -10,7 +10,7 @@ const getToday = asyncHandler(async (req, res) => {
 const checkIn = asyncHandler(async (req, res) => {
   const { lat, lng, accuracy } = req.body;
 
-  // Admin (owner) userId ni topish — jarima "givenBy" uchun
+  // Admin (owner) userId ni topish - jarima "givenBy" uchun
   const User = require("../models/user.model");
   const adminUser = await User.findOne({ role: "owner" }, "_id").lean();
   const adminUserId = adminUser?._id || req.user._id;

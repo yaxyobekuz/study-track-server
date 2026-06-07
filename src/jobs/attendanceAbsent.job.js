@@ -129,7 +129,7 @@ async function startAttendanceAbsentCron() {
       try {
         const ownerUser = await User.findOne({ role: "owner" }).select("_id").lean();
         if (!ownerUser) {
-          logger.warn("[AttendanceCron] Owner topilmadi — jarimalar qo'llanilmaydi");
+          logger.warn("[AttendanceCron] Owner topilmadi - jarimalar qo'llanilmaydi");
         }
         await runAbsentMarking(ownerUser);
       } catch (error) {

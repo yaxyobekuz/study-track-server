@@ -29,7 +29,7 @@ const roleSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    // Ish jadvali — davomat tizimi uchun
+    // Ish jadvali - davomat tizimi uchun
     workStartTime: {
       type: String,
       default: null,

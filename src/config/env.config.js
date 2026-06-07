@@ -55,7 +55,7 @@ const validateEnv = () => {
 
 /**
  * Markazlashtirilgan config object
- * Barcha env var'lar shu yerdan olinadi — boshqa fayllar process.env ishlatmasligi kerak
+ * Barcha env var'lar shu yerdan olinadi - boshqa fayllar process.env ishlatmasligi kerak
  */
 const config = {
   // Server
@@ -89,7 +89,7 @@ const config = {
   // Telegram
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
 
-  // AI (OpenAI) — savol generatsiyasi uchun (ixtiyoriy)
+  // AI (OpenAI) - savol generatsiyasi uchun (ixtiyoriy)
   openaiApiKey: process.env.OPENAI_API_KEY,
   openaiModel: process.env.OPENAI_MODEL || "gpt-4o-mini",
   aiMaxQuestionsPerRequest:

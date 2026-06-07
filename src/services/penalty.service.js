@@ -243,7 +243,7 @@ const createPenalty = async ({
     reviewedAt: status === "approved" ? new Date() : undefined,
   });
 
-  // Agar darhol approved bo'lsa — penaltyPoints oshirish
+  // Agar darhol approved bo'lsa - penaltyPoints oshirish
   if (status === "approved") {
     const updatedUser = await User.findByIdAndUpdate(
       userId,
@@ -298,7 +298,7 @@ const reviewPenalty = async (
 
   await penalty.save();
 
-  // Approved bo'lsa — penaltyPoints o'zgartirish (tur bo'yicha)
+  // Approved bo'lsa - penaltyPoints o'zgartirish (tur bo'yicha)
   if (status === "approved") {
     const inc = penalty.type === "reduction" ? -penalty.points : penalty.points;
     const updatedUser = await User.findByIdAndUpdate(
@@ -368,7 +368,7 @@ const reducePenalty = async ({
     reviewedAt: status === "approved" ? new Date() : undefined,
   });
 
-  // Agar darhol approved bo'lsa — penaltyPoints kamaytirish
+  // Agar darhol approved bo'lsa - penaltyPoints kamaytirish
   if (status === "approved") {
     await User.findByIdAndUpdate(userId, { $inc: { penaltyPoints: -points } });
   }
@@ -836,7 +836,7 @@ const purchaseReductionPackage = async (studentId, packageId) => {
 
   const pointsReduced = Math.min(pkg.points, student.penaltyPoints);
 
-  // Atomic findOneAndUpdate — race condition himoyasi (replica set shart emas)
+  // Atomic findOneAndUpdate - race condition himoyasi (replica set shart emas)
   const updatedUser = await User.findOneAndUpdate(
     {
       _id: studentId,

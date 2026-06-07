@@ -2,7 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const testSessionService = require("../services/testSession.service");
 
 /**
- * Test sessiyasini boshlash (V3 — binding ID).
+ * Test sessiyasini boshlash (V3 - binding ID).
  * POST /api/test-sessions
  */
 const startSession = asyncHandler(async (req, res) => {

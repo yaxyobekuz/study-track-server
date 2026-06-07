@@ -91,7 +91,7 @@ async function _loadTestOwned(testId, teacherId) {
 
 /**
  * Testning barcha (faol) savollarini order bo'yicha qaytaradi.
- * Pagination yo'q — bitta testda odatda < 100 savol.
+ * Pagination yo'q - bitta testda odatda < 100 savol.
  */
 async function listQuestionsForTest(testId, teacherId) {
   await _loadTestOwned(testId, teacherId);
@@ -238,7 +238,7 @@ async function updateQuestion(id, data, files, teacherId) {
 
 /**
  * Bir nechta savolni (AI generatsiya natijasi) testga to'g'ridan-to'g'ri qo'shadi.
- * Faqat matnli savollar (rasmsiz) — AI rasm yaratmaydi.
+ * Faqat matnli savollar (rasmsiz) - AI rasm yaratmaydi.
  * Yaroqsiz savollar (pre-save validatsiyadan o'tmaganlar) skip qilinadi.
  * @param {string} testId Test ID.
  * @param {Array} questionsArray Normallashtirilgan savollar massivi.
@@ -259,7 +259,7 @@ async function bulkCreateQuestions(testId, questionsArray, teacherId) {
 
   const created = [];
 
-  // insertMany pre("save") validatorni o'tkazib yuboradi — shuning uchun create loop.
+  // insertMany pre("save") validatorni o'tkazib yuboradi - shuning uchun create loop.
   for (const q of questionsArray) {
     order += 1;
     try {

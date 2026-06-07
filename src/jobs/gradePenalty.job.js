@@ -168,7 +168,7 @@ async function startGradePenaltyCron() {
       try {
         const ownerUser = await User.findOne({ role: "owner" }).select("_id").lean();
         if (!ownerUser) {
-          logger.warn("[GradePenaltyCron] Owner topilmadi — jarimalar qo'llanilmaydi");
+          logger.warn("[GradePenaltyCron] Owner topilmadi - jarimalar qo'llanilmaydi");
         }
         await runGradePenaltyPass(ownerUser);
       } catch (error) {

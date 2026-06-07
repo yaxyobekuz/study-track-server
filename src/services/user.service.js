@@ -56,7 +56,7 @@ async function getAllUsers(query) {
   ]);
 
   // Har bir foydalanuvchi uchun effektiv default ish vaqti (rol → user merosi).
-  // Rollar bir marta yuklanadi — N+1 so'rov yo'q.
+  // Rollar bir marta yuklanadi - N+1 so'rov yo'q.
   const roles = await Role.find().select("value workStartTime workEndTime").lean();
   const roleMap = {};
   roles.forEach((r) => {

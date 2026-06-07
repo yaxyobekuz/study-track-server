@@ -2,7 +2,7 @@
 const mongoose = require("mongoose");
 
 /**
- * TestBinding — testni mavsum + fan + sinflarga biriktirish (V3).
+ * TestBinding - testni mavsum + fan + sinflarga biriktirish (V3).
  * Bir test ko'p biriktirishga ega bo'lishi mumkin (har yili qayta ishlatish,
  * turli sinflar uchun ishlatish, va h.k.).
  *

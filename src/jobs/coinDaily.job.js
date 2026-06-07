@@ -15,7 +15,7 @@ const isAfterDailyRunTime = (date) =>
 
 async function runDistributionForDate(date, reason) {
   if (date.getDay() === 0) {
-    logger.info(`[CoinCron] ${reason}: Yakshanba — o'tkazib yuborildi`);
+    logger.info(`[CoinCron] ${reason}: Yakshanba - o'tkazib yuborildi`);
     return;
   }
 
@@ -29,7 +29,7 @@ async function runDistributionForDate(date, reason) {
 /**
  * Kunlik coin tarqatish cron job.
  * Har kuni soat 23:30 da ishlaydi (Asia/Tashkent).
- * Yakshanba kuni (0) o'tkazib yuboriladi — baholar berilmaydi.
+ * Yakshanba kuni (0) o'tkazib yuboriladi - baholar berilmaydi.
  */
 function startDailyCoinCron() {
   cron.schedule(

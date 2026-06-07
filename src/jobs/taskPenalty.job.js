@@ -72,7 +72,7 @@ async function startTaskPenaltyCron() {
   try {
     ownerUser = await User.findOne({ role: "owner" }).select("_id");
     if (!ownerUser) {
-      logger.warn("[TaskPenaltyCron] Owner topilmadi — cron ishlaydi lekin jarimalar qo'llanilmaydi");
+      logger.warn("[TaskPenaltyCron] Owner topilmadi - cron ishlaydi lekin jarimalar qo'llanilmaydi");
     }
   } catch (error) {
     logger.error("[TaskPenaltyCron] Owner yuklashda xato:", error);

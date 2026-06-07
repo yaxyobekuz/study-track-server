@@ -2,8 +2,8 @@
 const mongoose = require("mongoose");
 
 /**
- * Test — sof "savol konteyneri" (V3).
- * Mavsum/fan/sinflar/status/reopenGrants — bularning hammasi TestBinding'ga ko'chdi.
+ * Test - sof "savol konteyneri" (V3).
+ * Mavsum/fan/sinflar/status/reopenGrants - bularning hammasi TestBinding'ga ko'chdi.
  * Test endi mustaqil: o'qituvchi istalgan vaqt yaratib savol qo'shadi, keyin
  * alohida biriktirish jarayonida (TestBinding) mavsum + fan + sinflarga ulanadi.
  */
