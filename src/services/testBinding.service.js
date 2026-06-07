@@ -97,25 +97,17 @@ async function createBinding(testId, data, teacherId) {
     season,
     subject,
     classes: classIds,
-    status: "draft",
   });
 
   return binding;
 }
 
 /**
- * Biriktiruvni yangilaydi (sinflar, status draft bo'lganda mavsum/fan).
+ * Biriktiruvni yangilaydi (sinflar, mavsum, fan).
  */
 async function updateBinding(id, data, teacherId) {
   const binding = await _loadBindingOwned(id, teacherId);
   const { season, subject, classes } = data;
-
-  // Mavsum/fan'ni faqat draft holatda o'zgartirish mumkin
-  if ((season !== undefined || subject !== undefined) && binding.status !== "draft") {
-    throw new BadRequestError(
-      "Faqat 'Tayyorlanmoqda' holatidagi biriktiruvda mavsum yoki fanni o'zgartirish mumkin",
-    );
-  }
 
   if (season !== undefined) binding.season = season;
   if (subject !== undefined) binding.subject = subject;
@@ -133,49 +125,6 @@ async function updateBinding(id, data, teacherId) {
     binding.classes = classIds;
   }
 
-  await binding.save();
-  return binding;
-}
-
-/**
- * Biriktiruvni e'lon qiladi.
- */
-async function publishBinding(id, teacherId) {
-  const binding = await _loadBindingOwned(id, teacherId);
-
-  if (binding.status === "closed") {
-    throw new BadRequestError("Yopilgan biriktiruvni e'lon qilib bo'lmaydi");
-  }
-  if (!binding.classes || binding.classes.length === 0) {
-    throw new BadRequestError(
-      "Biriktiruvga kamida bitta sinf qo'shilishi kerak",
-    );
-  }
-
-  const test = await Test.findById(binding.test);
-  if (!test) throw new NotFoundError("Test topilmadi");
-
-  const activeCount = await Question.countDocuments({
-    test: binding.test,
-    isActive: true,
-  });
-  if (activeCount < test.questionCount) {
-    throw new BadRequestError(
-      `Test'da yetarli faol savol yo'q (${activeCount}/${test.questionCount})`,
-    );
-  }
-
-  binding.status = "published";
-  await binding.save();
-  return binding;
-}
-
-/**
- * Biriktiruvni yopadi.
- */
-async function closeBinding(id, teacherId) {
-  const binding = await _loadBindingOwned(id, teacherId);
-  binding.status = "closed";
   await binding.save();
   return binding;
 }
@@ -242,7 +191,7 @@ async function reopenSessionForStudent(bindingId, studentId, teacherId) {
 
 /**
  * O'quvchi topshira oladigan biriktiruvlarni qaytaradi.
- * student.classes ∩ binding.classes, status=published, mavsum faol va vaqti to'g'ri.
+ * student.classes ∩ binding.classes, test savollari yetarli, mavsum faol va vaqti to'g'ri.
  */
 async function listAvailableBindingsForStudent(studentId) {
   const student = await User.findById(studentId).select("classes");
@@ -262,8 +211,7 @@ async function listAvailableBindingsForStudent(studentId) {
   const seasonIds = activeSeasons.map((s) => s._id);
   if (seasonIds.length === 0) return [];
 
-  const bindings = await TestBinding.find({
-    status: "published",
+  const candidateBindings = await TestBinding.find({
     isActive: true,
     classes: { $in: classIds },
     season: { $in: seasonIds },
@@ -273,6 +221,27 @@ async function listAvailableBindingsForStudent(studentId) {
     .populate("subject", "name")
     .populate("classes", "name")
     .sort({ createdAt: -1 });
+
+  // Faqat savollari yetarli (faol savol soni >= test.questionCount) testlar
+  // o'quvchilarga avtomatik ko'rinadi.
+  const testIds = [
+    ...new Set(
+      candidateBindings.map((b) => b.test?._id).filter(Boolean),
+    ),
+  ];
+  const questionCounts = await Question.aggregate([
+    { $match: { test: { $in: testIds }, isActive: true } },
+    { $group: { _id: "$test", count: { $sum: 1 } } },
+  ]);
+  const activeCountMap = new Map(
+    questionCounts.map((q) => [q._id.toString(), q.count]),
+  );
+
+  const bindings = candidateBindings.filter((b) => {
+    if (!b.test) return false;
+    const activeCount = activeCountMap.get(b.test._id.toString()) || 0;
+    return activeCount >= (b.test.questionCount || 0);
+  });
 
   // O'quvchining shu biriktiruvlardagi sessiyalari
   const bindingIds = bindings.map((b) => b._id);
@@ -319,8 +288,6 @@ module.exports = {
   listBindingsForTest,
   createBinding,
   updateBinding,
-  publishBinding,
-  closeBinding,
   deleteBinding,
   reopenSessionForStudent,
   listAvailableBindingsForStudent,

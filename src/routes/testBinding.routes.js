@@ -10,8 +10,6 @@ const { ROLES } = require("../utils/constants");
 // Controller
 const {
   updateBinding,
-  publishBinding,
-  closeBinding,
   deleteBinding,
   reopenSession,
   getAvailableBindings,
@@ -28,18 +26,6 @@ router.put(
   authorize(ROLES.TEACHER),
   validateObjectId("id"),
   updateBinding,
-);
-router.patch(
-  "/:id/publish",
-  authorize(ROLES.TEACHER),
-  validateObjectId("id"),
-  publishBinding,
-);
-router.patch(
-  "/:id/close",
-  authorize(ROLES.TEACHER),
-  validateObjectId("id"),
-  closeBinding,
 );
 router.delete(
   "/:id",

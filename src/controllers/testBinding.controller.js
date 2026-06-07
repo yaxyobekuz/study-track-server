@@ -40,30 +40,6 @@ const updateBinding = asyncHandler(async (req, res) => {
 });
 
 /**
- * Biriktiruvni e'lon qilish.
- * PATCH /api/bindings/:id/publish
- */
-const publishBinding = asyncHandler(async (req, res) => {
-  const binding = await testBindingService.publishBinding(
-    req.params.id,
-    req.user._id,
-  );
-  res.json({ success: true, data: binding, message: "Biriktiruv e'lon qilindi" });
-});
-
-/**
- * Biriktiruvni yopish.
- * PATCH /api/bindings/:id/close
- */
-const closeBinding = asyncHandler(async (req, res) => {
-  const binding = await testBindingService.closeBinding(
-    req.params.id,
-    req.user._id,
-  );
-  res.json({ success: true, data: binding, message: "Biriktiruv yopildi" });
-});
-
-/**
  * Biriktiruvni o'chirish.
  * DELETE /api/bindings/:id
  */
@@ -112,8 +88,6 @@ module.exports = {
   getBindingsForTest,
   createBinding,
   updateBinding,
-  publishBinding,
-  closeBinding,
   deleteBinding,
   reopenSession,
   getAvailableBindings,

@@ -6,8 +6,9 @@ const mongoose = require("mongoose");
  * Bir test ko'p biriktirishga ega bo'lishi mumkin (har yili qayta ishlatish,
  * turli sinflar uchun ishlatish, va h.k.).
  *
- * O'quvchilar testni biriktirish orqali topshiradilar.
- * Status (draft/published/closed) va reopenGrants endi biriktirish darajasida.
+ * O'quvchilar testni biriktirish orqali topshiradilar. Test savollari yetarli
+ * bo'lsa (faol savol soni >= test.questionCount) biriktirish avtomatik ko'rinadi.
+ * `status` maydoni endi ishlatilmaydi (eski ma'lumotlar uchun saqlangan).
  */
 const testBindingSchema = new mongoose.Schema(
   {

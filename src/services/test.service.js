@@ -129,24 +129,9 @@ async function updateTest(id, data, teacherId) {
     test.timeLimitMinutes = Number(timeLimitMinutes);
   }
   if (questionCount !== undefined) {
-    const newCount = Number(questionCount);
-    // Agar published biriktiruv bo'lsa, savollar yetarli ekanligini tekshirish
-    const hasPublishedBindings = await TestBinding.exists({
-      test: test._id,
-      status: "published",
-    });
-    if (hasPublishedBindings) {
-      const activeQuestions = await Question.countDocuments({
-        test: test._id,
-        isActive: true,
-      });
-      if (activeQuestions < newCount) {
-        throw new BadRequestError(
-          `E'lon qilingan biriktiruv bor - mavjud savollar yetarli emas (${activeQuestions}/${newCount}). Avval savollar qo'shing.`,
-        );
-      }
-    }
-    test.questionCount = newCount;
+    // Avtomatik ko'rinish modeli: questionCount savollardan ko'p bo'lsa, test
+    // shunchaki o'quvchilarga ko'rinmaydi - alohida cheklov shart emas.
+    test.questionCount = Number(questionCount);
   }
 
   await test.save();

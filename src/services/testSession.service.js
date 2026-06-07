@@ -101,15 +101,18 @@ async function startSession(bindingId, studentId) {
   if (!binding || !binding.isActive) {
     throw new NotFoundError("Biriktiruv topilmadi");
   }
-  if (binding.status !== "published") {
-    throw new ForbiddenError(
-      "Bu biriktiruv hali e'lon qilinmagan yoki yopilgan",
-    );
-  }
-
   const test = binding.test;
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
+  }
+
+  // Test savollari yetarli bo'lsa (faol savol soni >= questionCount) ko'rinadi
+  const activeCount = await Question.countDocuments({
+    test: test._id,
+    isActive: true,
+  });
+  if (activeCount < test.questionCount) {
+    throw new ForbiddenError("Bu test hali o'quvchilar uchun tayyor emas");
   }
 
   // Mavsum tekshiruvi
