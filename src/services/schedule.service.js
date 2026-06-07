@@ -18,11 +18,19 @@ async function getScheduleByClass(classId) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  return Schedule.find({ class: classId })
+  const schedules = await Schedule.find({ class: classId })
     .populate("subjects.subject", "name")
     .populate("subjects.teacher", "firstName lastName")
     .sort({ day: 1 })
     .lean();
+
+  // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
+  return schedules.map((schedule) => ({
+    ...schedule,
+    subjects: [...(schedule.subjects || [])].sort(
+      (a, b) => (a.order || 0) - (b.order || 0),
+    ),
+  }));
 }
 
 /**
@@ -44,13 +52,60 @@ async function getScheduleByDay(classId, day) {
 }
 
 /**
+ * O'qituvchining parallel to'qnashuvini tekshirish.
+ * Bir o'qituvchi bir kunda bir xil tartib (order) raqamida turli sinflarda
+ * band bo'lsa, xato beriladi.
+ * @param {string} classId - joriy sinf ID (o'zini tekshirmaslik uchun)
+ * @param {string} day - kun nomi
+ * @param {Array} subjects - kiritilayotgan darslar
+ * @returns {Promise<void>}
+ */
+async function ensureNoTeacherConflicts(classId, day, subjects) {
+  const otherSchedules = await Schedule.find({
+    day,
+    class: { $ne: classId },
+  })
+    .populate("class", "name")
+    .populate("subjects.teacher", "firstName lastName")
+    .lean();
+
+  // Map: "teacherId-order" -> { className, teacherName }
+  const occupied = new Map();
+  for (const schedule of otherSchedules) {
+    for (const item of schedule.subjects || []) {
+      const teacherId =
+        item.teacher && item.teacher._id
+          ? item.teacher._id.toString()
+          : String(item.teacher);
+      const key = `${teacherId}-${item.order}`;
+      occupied.set(key, {
+        className: schedule.class?.name || "",
+        teacherName: item.teacher
+          ? `${item.teacher.firstName} ${item.teacher.lastName || ""}`.trim()
+          : "",
+      });
+    }
+  }
+
+  for (const item of subjects) {
+    const teacherId = String(item.teacher);
+    const conflict = occupied.get(`${teacherId}-${Number(item.order)}`);
+    if (conflict) {
+      throw new BadRequestError(
+        `${conflict.teacherName} o'qituvchisi shu kuni ${item.order}-tartibda "${conflict.className}" sinfida band. Parallel dars belgilab bo'lmaydi`,
+      );
+    }
+  }
+}
+
+/**
  * Dars jadvalini yaratish yoki yangilash.
- * @param {object} data - { classId, day, subjects, startingOrder }
+ * @param {object} data - { classId, day, subjects }
  * @param {string} createdBy - yaratuvchi foydalanuvchi ID
  * @returns {Promise<object>} saqlangan jadval
  */
 async function createOrUpdateSchedule(data, createdBy) {
-  const { classId, day, subjects, startingOrder } = data;
+  const { classId, day, subjects } = data;
 
   if (!classId || !day || !subjects || subjects.length === 0) {
     throw new BadRequestError("All required fields must be filled");
@@ -59,6 +114,23 @@ async function createOrUpdateSchedule(data, createdBy) {
   const classExists = await Class.findById(classId);
   if (!classExists) {
     throw new NotFoundError("Sinf topilmadi");
+  }
+
+  // Validate lesson order numbers (manual 1..100, no duplicates within a day)
+  const seenOrders = new Set();
+  for (const item of subjects) {
+    const order = Number(item.order);
+    if (!Number.isInteger(order) || order < 1 || order > 100) {
+      throw new BadRequestError(
+        "Dars tartibi 1 dan 100 gacha bo'lgan butun son bo'lishi kerak",
+      );
+    }
+    if (seenOrders.has(order)) {
+      throw new BadRequestError(
+        `${order}-tartib bir necha marta ishlatilgan. Har bir dars tartibi takrorlanmasligi kerak`,
+      );
+    }
+    seenOrders.add(order);
   }
 
   // Validate subjects and teachers
@@ -113,18 +185,19 @@ async function createOrUpdateSchedule(data, createdBy) {
     }
   }
 
+  // Check for teacher conflicts across other classes (same day + same order)
+  await ensureNoTeacherConflicts(classId, day, subjects);
+
   let schedule = await Schedule.findOne({ class: classId, day });
 
   if (schedule) {
     schedule.subjects = subjects;
-    schedule.startingOrder = startingOrder || 1;
     await schedule.save();
   } else {
     schedule = await Schedule.create({
       class: classId,
       day,
       subjects,
-      startingOrder: startingOrder || 1,
       createdBy,
     });
   }
@@ -202,8 +275,7 @@ async function getScheduleForExport(classId) {
     }
 
     subjects.forEach((subj, index) => {
-      const displayOrder =
-        (schedule.startingOrder || 1) + (subj.order || index + 1) - 1;
+      const displayOrder = subj.order || index + 1;
       const teacherName = subj.teacher
         ? `${subj.teacher.firstName} ${subj.teacher.lastName || ""}`.trim()
         : "-";
@@ -245,7 +317,6 @@ async function getAllTodaySchedules() {
   return schedules.map((schedule) => ({
     class: schedule.class,
     subjects: schedule.subjects.sort((a, b) => a.order - b.order),
-    startingOrder: schedule.startingOrder || 1,
   }));
 }
 
@@ -280,7 +351,6 @@ async function getMyTodaySchedule(teacherId) {
       return {
         class: schedule.class,
         subjects: teacherSubjects,
-        startingOrder: schedule.startingOrder || 1,
       };
     })
     .filter((schedule) => schedule.subjects.length > 0);

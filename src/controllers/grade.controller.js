@@ -873,7 +873,6 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   // Include ALL lessons (with duplicates) and add order/lessonNumber
   const teacherSubjects = [];
   const subjectCountMap = {}; // Track how many times each subject appears
-  const startingOrder = todaySchedule.startingOrder || 1;
 
   // Get unique subject IDs for progress lookup
   const teacherSubjectIds = new Set();
@@ -910,7 +909,6 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
         _id: item.subject._id,
         name: item.subject.name,
         order: item.order,
-        startingOrder: startingOrder,
         lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
         currentTopicNumber: progressMap.get(subjectId) || 1,
       });
@@ -924,7 +922,6 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     success: true,
     data: teacherSubjects,
     day: todayDayName,
-    startingOrder: startingOrder,
   });
 });
 

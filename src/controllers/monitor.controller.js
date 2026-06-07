@@ -114,7 +114,6 @@ const getAllTodaySchedules = asyncHandler(async (req, res) => {
   const formattedSchedules = schedules.map((schedule) => ({
     class: schedule.class,
     subjects: schedule.subjects.sort((a, b) => a.order - b.order),
-    startingOrder: schedule.startingOrder || 1,
   }));
 
   return res.json({ success: true, data: formattedSchedules });
@@ -140,7 +139,15 @@ const getClassSchedule = asyncHandler(async (req, res) => {
     .sort({ day: 1 })
     .lean();
 
-  return res.json({ success: true, data: schedules });
+  // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
+  const sortedSchedules = schedules.map((schedule) => ({
+    ...schedule,
+    subjects: [...(schedule.subjects || [])].sort(
+      (a, b) => (a.order || 0) - (b.order || 0),
+    ),
+  }));
+
+  return res.json({ success: true, data: sortedSchedules });
 });
 
 /**

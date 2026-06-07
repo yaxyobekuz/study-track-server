@@ -5,15 +5,10 @@ const { config } = require("../config/env.config");
 const logger = require("../utils/logger");
 const { BadRequestError } = require("../utils/errors");
 
-// Generatsiya qilinadigan savollarning maksimal soni (bitta so'rovda)
 const MAX_COUNT = config.aiMaxQuestionsPerRequest;
 
 let _client = null;
 
-/**
- * OpenAI clientni lazy yaratadi. API key sozlanmagan bo'lsa xato beradi.
- * @returns {OpenAI} OpenAI client.
- */
 function _getClient() {
   if (!config.openaiApiKey) {
     throw new BadRequestError(
@@ -26,25 +21,12 @@ function _getClient() {
   return _client;
 }
 
-/**
- * So'ralgan savol sonini ruxsat etilgan oraliqqa keltiradi.
- * @param {number} count Foydalanuvchi so'ragan son.
- * @returns {number} 1..MAX_COUNT oralig'idagi son.
- */
 function _clampCount(count) {
   const n = parseInt(count, 10);
   if (Number.isNaN(n) || n < 1) return 5;
   return Math.min(n, MAX_COUNT);
 }
 
-/**
- * Modeldan qat'iy JSON formatda savol so'raydigan tizim promptini quradi.
- * @param {object} params
- * @param {number} params.count Savollar soni.
- * @param {string} params.difficulty Qiyinlik: easy|medium|hard.
- * @param {string} params.type Savol turi: standard|open.
- * @returns {string} Tizim prompti.
- */
 function _buildSystemPrompt({ count, difficulty, type }) {
   const difficultyText =
     { easy: "oson", medium: "o'rta", hard: "qiyin" }[difficulty] || "o'rta";
@@ -65,13 +47,6 @@ function _buildSystemPrompt({ count, difficulty, type }) {
   ].join(" ");
 }
 
-/**
- * Foydalanuvchi prompti va kontekstdan user xabari matnini quradi.
- * @param {object} params
- * @param {string} [params.prompt] Foydalanuvchi ko'rsatmasi/mavzusi.
- * @param {string} [params.extractedText] Fayldan ajratilgan matn (ixtiyoriy).
- * @returns {string} User xabari matni.
- */
 function _buildUserText({ prompt, extractedText }) {
   const parts = [];
   if (prompt && prompt.trim()) {
@@ -88,13 +63,6 @@ function _buildUserText({ prompt, extractedText }) {
   return parts.join("\n\n");
 }
 
-/**
- * AI qaytargan savollarni Question modeli qoidalariga moslab tozalaydi va tekshiradi.
- * Yaroqsiz savollar tashlab yuboriladi.
- * @param {Array} rawQuestions AI dan kelgan xom savollar.
- * @param {string} requestedType So'ralgan savol turi.
- * @returns {Array} Yaroqli, normallashtirilgan savollar.
- */
 function _normalizeAndValidate(rawQuestions, requestedType) {
   if (!Array.isArray(rawQuestions)) return [];
 
@@ -148,12 +116,6 @@ function _normalizeAndValidate(rawQuestions, requestedType) {
   return result;
 }
 
-/**
- * OpenAI chat completion chaqiradi va savollar massivini qaytaradi.
- * @param {Array} messages Chat xabarlari.
- * @param {string} type So'ralgan savol turi.
- * @returns {Promise<Array>} Yaroqli savollar.
- */
 async function _requestQuestions(messages, type) {
   const client = _getClient();
 
@@ -184,15 +146,6 @@ async function _requestQuestions(messages, type) {
   return _normalizeAndValidate(parsed.questions, type);
 }
 
-/**
- * Sof matn prompt asosida savollar generatsiya qiladi.
- * @param {object} params
- * @param {string} params.prompt Mavzu/ko'rsatma.
- * @param {number} params.count Savollar soni.
- * @param {string} params.difficulty Qiyinlik.
- * @param {string} params.type Savol turi.
- * @returns {Promise<Array>} Yaroqli savollar.
- */
 async function generateFromPrompt({ prompt, count, difficulty, type }) {
   const safeCount = _clampCount(count);
   const messages = [
@@ -202,16 +155,6 @@ async function generateFromPrompt({ prompt, count, difficulty, type }) {
   return _requestQuestions(messages, type);
 }
 
-/**
- * Fayldan ajratilgan matn (PDF/Word/txt) asosida savollar generatsiya qiladi.
- * @param {object} params
- * @param {string} params.extractedText Ajratilgan matn.
- * @param {string} [params.prompt] Qo'shimcha ko'rsatma.
- * @param {number} params.count Savollar soni.
- * @param {string} params.difficulty Qiyinlik.
- * @param {string} params.type Savol turi.
- * @returns {Promise<Array>} Yaroqli savollar.
- */
 async function generateFromText({ extractedText, prompt, count, difficulty, type }) {
   const safeCount = _clampCount(count);
   const messages = [
@@ -221,17 +164,6 @@ async function generateFromText({ extractedText, prompt, count, difficulty, type
   return _requestQuestions(messages, type);
 }
 
-/**
- * Rasmlar (Vision) va ixtiyoriy matn kontekst asosida savollar generatsiya qiladi.
- * @param {object} params
- * @param {Array<{buffer: Buffer, mimeType: string}>} params.images Rasm fayllari.
- * @param {string} [params.prompt] Qo'shimcha ko'rsatma.
- * @param {string} [params.extractedText] Fayldan ajratilgan qo'shimcha matn.
- * @param {number} params.count Savollar soni.
- * @param {string} params.difficulty Qiyinlik.
- * @param {string} params.type Savol turi.
- * @returns {Promise<Array>} Yaroqli savollar.
- */
 async function generateFromImages({
   images,
   prompt,
@@ -262,11 +194,6 @@ async function generateFromImages({
 
   return _requestQuestions(messages, type);
 }
-
-/**
- * AI funksiyasi yoqilganligini bildiradi (API key mavjudligi).
- * @returns {boolean} Yoqilgan bo'lsa true.
- */
 function isAiEnabled() {
   return Boolean(config.openaiApiKey);
 }
