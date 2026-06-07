@@ -24,7 +24,8 @@ const extraPointsSchema = new mongoose.Schema(
       default: Date.now,
     },
   },
-  { _id: false },
+  // Har bir yozuv barqaror _id ga ega bo'lsin (tahrirlash/o'chirish uchun)
+  { _id: true },
 );
 
 // Har bir savol bo'yicha baholash tafsiloti
@@ -134,8 +135,23 @@ const testResultSchema = new mongoose.Schema(
       default: "pending",
     },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  },
 );
+
+/**
+ * Erishish mumkin bo'lgan maksimal ball — savollar maxPoints yig'indisi.
+ * Test modelida endi maxScore yo'q (V3), shuning uchun natijaning o'zidan hisoblanadi.
+ */
+testResultSchema.virtual("maxScore").get(function () {
+  return (this.perQuestion || []).reduce(
+    (sum, pq) => sum + (pq.maxPoints || 0),
+    0,
+  );
+});
 
 testResultSchema.index({ test: 1 });
 testResultSchema.index({ binding: 1 });

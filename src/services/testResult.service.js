@@ -236,6 +236,83 @@ async function addExtraPoints(resultId, teacherId, data) {
 }
 
 /**
+ * Natija egaligini tekshirib, natijani qaytaradi (qo'shimcha ball amallari uchun).
+ */
+async function _loadResultOwnedByTeacher(resultId, teacherId) {
+  const result = await TestResult.findById(resultId);
+  if (!result) {
+    throw new NotFoundError("Natija topilmadi");
+  }
+
+  const test = await Test.findById(result.test);
+  if (!test) {
+    throw new NotFoundError("Test topilmadi");
+  }
+  if (test.teacher.toString() !== teacherId.toString()) {
+    throw new ForbiddenError("Bu test sizga tegishli emas");
+  }
+
+  return result;
+}
+
+/**
+ * Mavjud qo'shimcha ball yozuvini tahrirlaydi (test muallifi tomonidan).
+ * @param {string} resultId - natija ID
+ * @param {string} entryId - qo'shimcha ball yozuvi ID
+ * @param {string} teacherId - o'qituvchi ID
+ * @param {object} data - { amount, reason }
+ * @returns {Promise<object>} yangilangan natija
+ */
+async function editExtraPoints(resultId, entryId, teacherId, data) {
+  const { amount, reason } = data;
+
+  if (amount === undefined || amount === null) {
+    throw new BadRequestError("Ball miqdori majburiy");
+  }
+  if (!reason) {
+    throw new BadRequestError("Qo'shimcha ball sababi majburiy");
+  }
+
+  const result = await _loadResultOwnedByTeacher(resultId, teacherId);
+
+  const entry = result.extraPoints.id(entryId);
+  if (!entry) {
+    throw new NotFoundError("Qo'shimcha ball yozuvi topilmadi");
+  }
+
+  entry.amount = Number(amount);
+  entry.reason = reason;
+
+  _recomputeFinalScore(result);
+  await result.save();
+
+  return result;
+}
+
+/**
+ * Qo'shimcha ball yozuvini o'chiradi (test muallifi tomonidan).
+ * @param {string} resultId - natija ID
+ * @param {string} entryId - qo'shimcha ball yozuvi ID
+ * @param {string} teacherId - o'qituvchi ID
+ * @returns {Promise<object>} yangilangan natija
+ */
+async function deleteExtraPoints(resultId, entryId, teacherId) {
+  const result = await _loadResultOwnedByTeacher(resultId, teacherId);
+
+  const entry = result.extraPoints.id(entryId);
+  if (!entry) {
+    throw new NotFoundError("Qo'shimcha ball yozuvi topilmadi");
+  }
+
+  result.extraPoints.pull(entryId);
+
+  _recomputeFinalScore(result);
+  await result.save();
+
+  return result;
+}
+
+/**
  * O'quvchining natijalarini oladi.
  * @param {string} studentId - o'quvchi ID
  * @param {string} [seasonId] - mavsum ID (ixtiyoriy filtr)
@@ -246,7 +323,7 @@ async function getResultsForStudent(studentId, seasonId) {
   if (seasonId) filter.season = seasonId;
 
   return TestResult.find(filter)
-    .populate("test", "title type minScore maxScore")
+    .populate("test", "title")
     .populate("season", "name")
     .populate("subject", "name")
     .populate("class", "name")
@@ -261,7 +338,7 @@ async function getResultsForStudent(studentId, seasonId) {
  */
 async function getResultById(id, user) {
   const result = await TestResult.findById(id)
-    .populate("test", "title type minScore maxScore teacher")
+    .populate("test", "title teacher")
     .populate("season", "name")
     .populate("subject", "name")
     .populate("class", "name")
@@ -326,6 +403,8 @@ module.exports = {
   gradeSession,
   gradeOpenAnswer,
   addExtraPoints,
+  editExtraPoints,
+  deleteExtraPoints,
   getResultsForStudent,
   getResultById,
   getResultsForTest,

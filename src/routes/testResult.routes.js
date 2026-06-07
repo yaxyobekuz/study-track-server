@@ -14,6 +14,8 @@ const {
   getResultsByTest,
   gradeOpenAnswer,
   addExtraPoints,
+  editExtraPoints,
+  deleteExtraPoints,
 } = require("../controllers/testResult.controller");
 
 router.use(protect);
@@ -41,6 +43,20 @@ router.patch(
   authorize(ROLES.TEACHER),
   validateObjectId("id"),
   addExtraPoints,
+);
+router.patch(
+  "/:id/extra-points/:entryId",
+  authorize(ROLES.TEACHER),
+  validateObjectId("id"),
+  validateObjectId("entryId"),
+  editExtraPoints,
+);
+router.delete(
+  "/:id/extra-points/:entryId",
+  authorize(ROLES.TEACHER),
+  validateObjectId("id"),
+  validateObjectId("entryId"),
+  deleteExtraPoints,
 );
 
 // Bitta natija - o'quvchi (o'ziniki) yoki o'qituvchi (o'z testiniki)

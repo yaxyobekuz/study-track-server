@@ -80,10 +80,47 @@ const addExtraPoints = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Qo'shimcha ball yozuvini tahrirlash
+ * PATCH /api/test-results/:id/extra-points/:entryId
+ */
+const editExtraPoints = asyncHandler(async (req, res) => {
+  const result = await testResultService.editExtraPoints(
+    req.params.id,
+    req.params.entryId,
+    req.user._id,
+    req.body,
+  );
+  res.json({
+    success: true,
+    data: result,
+    message: "Qo'shimcha ball yangilandi",
+  });
+});
+
+/**
+ * Qo'shimcha ball yozuvini o'chirish
+ * DELETE /api/test-results/:id/extra-points/:entryId
+ */
+const deleteExtraPoints = asyncHandler(async (req, res) => {
+  const result = await testResultService.deleteExtraPoints(
+    req.params.id,
+    req.params.entryId,
+    req.user._id,
+  );
+  res.json({
+    success: true,
+    data: result,
+    message: "Qo'shimcha ball o'chirildi",
+  });
+});
+
 module.exports = {
   getMyResults,
   getResultById,
   getResultsByTest,
   gradeOpenAnswer,
   addExtraPoints,
+  editExtraPoints,
+  deleteExtraPoints,
 };
