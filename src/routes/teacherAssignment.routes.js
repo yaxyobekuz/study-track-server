@@ -12,6 +12,7 @@ const {
   getAssignments,
   getMyAssignments,
   createAssignment,
+  bulkCreateAssignments,
   updateAssignment,
   deleteAssignment,
 } = require("../controllers/teacherAssignment.controller");
@@ -24,6 +25,7 @@ router.get("/my", authorize(ROLES.TEACHER), getMyAssignments);
 // Faqat owner uchun - CRUD
 router.get("/", authorize(ROLES.OWNER), getAssignments);
 router.post("/", authorize(ROLES.OWNER), createAssignment);
+router.post("/bulk", authorize(ROLES.OWNER), bulkCreateAssignments);
 router.put(
   "/:id",
   authorize(ROLES.OWNER),

@@ -135,6 +135,101 @@ async function createAssignment(data, createdBy) {
 }
 
 /**
+ * Bir nechta biriktiruvni bittada yaratadi (bulk).
+ * Dublikatlar va yaroqsiz yozuvlar o'tkazib yuboriladi va hisobotda qaytariladi.
+ * @param {object} data - { season, items: [{ class, subject, teacher }] }
+ * @param {string} createdBy - yaratuvchi foydalanuvchi ID
+ * @returns {Promise<object>} { createdCount, skippedCount, created, skipped }
+ */
+async function bulkCreateAssignments(data, createdBy) {
+  const { season, items } = data;
+
+  if (!season) {
+    throw new BadRequestError("Mavsum majburiy");
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new BadRequestError("Kamida bitta biriktiruv kerak");
+  }
+
+  const seasonDoc = await TestSeason.findById(season);
+  if (!seasonDoc) throw new NotFoundError("Mavsum topilmadi");
+
+  // Shaklni tekshirib, batch ichidagi dublikatlarni olib tashlash
+  const seen = new Set();
+  const normalized = [];
+  for (const it of items) {
+    const classId = it.class;
+    const subject = it.subject;
+    const teacher = it.teacher;
+    if (!classId || !subject || !teacher) {
+      throw new BadRequestError(
+        "Har bir biriktiruvda sinf, fan va o'qituvchi majburiy",
+      );
+    }
+    const key = `${classId}|${subject}|${teacher}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({ class: classId, subject, teacher });
+  }
+
+  // Havola qilingan ID'lar mavjudligini bitta so'rovda tekshirish
+  const classIds = [...new Set(normalized.map((n) => n.class))];
+  const subjectIds = [...new Set(normalized.map((n) => n.subject))];
+  const teacherIds = [...new Set(normalized.map((n) => n.teacher))];
+
+  const [classes, subjects, teachers, existing] = await Promise.all([
+    Class.find({ _id: { $in: classIds } }).select("_id"),
+    Subject.find({ _id: { $in: subjectIds } }).select("_id"),
+    User.find({ _id: { $in: teacherIds } }).select("_id role"),
+    TeacherAssignment.find({ season }).select("class subject teacher"),
+  ]);
+
+  const classSet = new Set(classes.map((c) => String(c._id)));
+  const subjectSet = new Set(subjects.map((s) => String(s._id)));
+  const teacherRole = new Map(teachers.map((t) => [String(t._id), t.role]));
+  const existingSet = new Set(
+    existing.map((e) => `${e.class}|${e.subject}|${e.teacher}`),
+  );
+
+  const toCreate = [];
+  const skipped = [];
+
+  for (const n of normalized) {
+    if (!classSet.has(String(n.class))) {
+      skipped.push({ ...n, reason: "Sinf topilmadi" });
+    } else if (!subjectSet.has(String(n.subject))) {
+      skipped.push({ ...n, reason: "Fan topilmadi" });
+    } else if (!teacherRole.has(String(n.teacher))) {
+      skipped.push({ ...n, reason: "O'qituvchi topilmadi" });
+    } else if (teacherRole.get(String(n.teacher)) !== ROLES.TEACHER) {
+      skipped.push({ ...n, reason: "Foydalanuvchi o'qituvchi emas" });
+    } else if (existingSet.has(`${n.class}|${n.subject}|${n.teacher}`)) {
+      skipped.push({ ...n, reason: "Allaqachon mavjud" });
+    } else {
+      toCreate.push({
+        season,
+        class: n.class,
+        subject: n.subject,
+        teacher: n.teacher,
+        createdBy,
+      });
+    }
+  }
+
+  let created = [];
+  if (toCreate.length > 0) {
+    created = await TeacherAssignment.insertMany(toCreate, { ordered: false });
+  }
+
+  return {
+    createdCount: created.length,
+    skippedCount: skipped.length,
+    created,
+    skipped,
+  };
+}
+
+/**
  * Biriktiruvni yangilaydi.
  * @param {string} id - biriktiruv ID
  * @param {object} data - yangilash ma'lumotlari
@@ -196,6 +291,7 @@ module.exports = {
   listAssignments,
   getAssignmentsForTeacher,
   createAssignment,
+  bulkCreateAssignments,
   updateAssignment,
   deleteAssignment,
 };

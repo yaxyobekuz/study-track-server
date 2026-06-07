@@ -41,6 +41,21 @@ const createAssignment = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Bir nechta biriktiruvni bittada yaratish (bulk)
+ * POST /api/teacher-assignments/bulk
+ */
+const bulkCreateAssignments = asyncHandler(async (req, res) => {
+  const result = await teacherAssignmentService.bulkCreateAssignments(
+    req.body,
+    req.user._id,
+  );
+  res.status(201).json({
+    success: true,
+    data: result,
+  });
+});
+
+/**
  * Biriktiruvni yangilash
  * PUT /api/teacher-assignments/:id
  */
@@ -71,6 +86,7 @@ module.exports = {
   getAssignments,
   getMyAssignments,
   createAssignment,
+  bulkCreateAssignments,
   updateAssignment,
   deleteAssignment,
 };
