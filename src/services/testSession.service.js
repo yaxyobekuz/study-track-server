@@ -4,6 +4,8 @@ const TestBinding = require("../models/testBinding.model");
 const TestSeason = require("../models/testSeason.model");
 const Question = require("../models/question.model");
 const User = require("../models/user.model");
+const TestSettings = require("../models/testSettings.model");
+const { distributePoints } = require("../helpers/scoring.helper");
 const { gradeSession } = require("./testResult.service");
 const {
   BadRequestError,
@@ -53,7 +55,9 @@ function _freezeQuestion(question) {
     type: question.type,
     text: question.text,
     image: question.image || null,
-    points: question.points,
+    difficulty: question.difficulty || "medium",
+    // points qiyinlik bo'yicha distributePoints() da o'rnatiladi
+    points: 0,
     options: [],
     correctOptionId: null,
   };
@@ -189,6 +193,10 @@ async function startSession(bindingId, studentId) {
   const selected = _shuffle(activeQuestions).slice(0, test.questionCount);
   const frozenQuestions = selected.map(_freezeQuestion);
 
+  // Tizimdagi max ballni savollarga qiyinlik bo'yicha taqsimlash
+  const settings = await TestSettings.getSettings();
+  distributePoints(frozenQuestions, settings.maxScore);
+
   const expiresAt = new Date(
     now.getTime() + test.timeLimitMinutes * 60 * 1000,
   );
@@ -202,6 +210,8 @@ async function startSession(bindingId, studentId) {
     status: "in_progress",
     startedAt: now,
     expiresAt,
+    gradingMin: settings.minScore,
+    gradingMax: settings.maxScore,
     questions: frozenQuestions,
     answers: [],
   });

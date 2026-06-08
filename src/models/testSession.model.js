@@ -42,7 +42,13 @@ const frozenQuestionSchema = new mongoose.Schema({
   },
   text: { type: String },
   image: { type: attachmentSchema, default: null },
-  points: { type: Number, required: true },
+  // Qiyinlik darajasi (ball taqsimoti uchun) va undan hisoblangan ball (float)
+  difficulty: {
+    type: String,
+    enum: ["easy", "medium", "hard"],
+    default: "medium",
+  },
+  points: { type: Number, default: 0 },
   // Aralashtirilgan tartibdagi variantlar (isCorrect bu yerda saqlanmaydi)
   options: {
     type: [frozenOptionSchema],
@@ -128,6 +134,9 @@ const testSessionSchema = new mongoose.Schema(
     submittedAt: {
       type: Date,
     },
+    // Sessiya muzlatilgan paytdagi ball shkalasi (keyin sozlama o'zgarsa ham barqaror)
+    gradingMin: { type: Number },
+    gradingMax: { type: Number },
     // Session boshlanganda muzlatilgan savollar snapshot'i
     questions: {
       type: [frozenQuestionSchema],
