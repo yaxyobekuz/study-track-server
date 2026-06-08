@@ -17,13 +17,14 @@ const {
   deleteSeason,
   getSeasonAnnounceClasses,
   announceSeason,
+  finalizeSeason,
 } = require("../controllers/testSeason.controller");
 
 const {
   getStats,
   getClassStats,
   getMyStats,
-  setAbsoluteTiers,
+  setSchoolTiers,
   setClassTiers,
   previewDistribution,
   distributeCoins,
@@ -94,10 +95,10 @@ router.get(
 
 // Darajalar konfiguratsiyasi
 router.put(
-  "/:id/absolute-tiers",
+  "/:id/school-tiers",
   authorize(ROLES.OWNER),
   validateObjectId("id"),
-  setAbsoluteTiers,
+  setSchoolTiers,
 );
 router.put(
   "/:id/class/:classId/tiers",
@@ -119,6 +120,14 @@ router.post(
   authorize(ROLES.OWNER),
   validateObjectId("id"),
   distributeCoins,
+);
+
+// To'liq yakunlash (coin tarqatish + o'quvchilarga bot orqali natija)
+router.post(
+  "/:id/finalize",
+  authorize(ROLES.OWNER),
+  validateObjectId("id"),
+  finalizeSeason,
 );
 
 module.exports = router;

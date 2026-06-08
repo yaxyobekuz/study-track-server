@@ -109,6 +109,22 @@ const announceSeason = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Mavsumni to'liq yakunlash: coin tarqatish + o'quvchilarga bot orqali natija
+ * POST /api/test-seasons/:id/finalize
+ */
+const finalizeSeason = asyncHandler(async (req, res) => {
+  const result = await testSeasonService.finalizeSeason(
+    req.params.id,
+    req.user._id,
+  );
+  res.json({
+    success: true,
+    message: `Mavsum yakunlandi. ${result.distributed} ta mukofot tarqatildi, ${result.notified} ta xabar navbatga qo'shildi`,
+    data: result,
+  });
+});
+
 module.exports = {
   getSeasons,
   getActiveSeasons,
@@ -118,4 +134,5 @@ module.exports = {
   deleteSeason,
   getSeasonAnnounceClasses,
   announceSeason,
+  finalizeSeason,
 };

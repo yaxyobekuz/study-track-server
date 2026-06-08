@@ -39,11 +39,11 @@ const getMyStats = asyncHandler(async (req, res) => {
 });
 
 /**
- * Absolyut darajalarni belgilash (owner).
- * PUT /api/test-seasons/:id/absolute-tiers
+ * Maktab bo'yicha o'rin mukofotlarini belgilash (owner).
+ * PUT /api/test-seasons/:id/school-tiers
  */
-const setAbsoluteTiers = asyncHandler(async (req, res) => {
-  const season = await seasonRewardService.setAbsoluteTiers(
+const setSchoolTiers = asyncHandler(async (req, res) => {
+  const season = await seasonRewardService.setSchoolTiers(
     req.params.id,
     req.body.tiers,
     req.user._id,
@@ -51,7 +51,7 @@ const setAbsoluteTiers = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: season,
-    message: "Absolyut darajalar saqlandi",
+    message: "Maktab darajalari saqlandi",
   });
 });
 
@@ -103,7 +103,7 @@ module.exports = {
   getStats,
   getClassStats,
   getMyStats,
-  setAbsoluteTiers,
+  setSchoolTiers,
   setClassTiers,
   previewDistribution,
   distributeCoins,

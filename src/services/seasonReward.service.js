@@ -202,9 +202,10 @@ async function getMyStats(seasonId, studentId) {
 }
 
 /**
- * Mavsumning absolyut darajalarini belgilash (faqat owner).
+ * Maktab bo'yicha o'rin mukofotlarini belgilash (faqat owner).
+ * Har tier: { position, coinReward, note? }
  */
-async function setAbsoluteTiers(seasonId, tiers, userId) {
+async function setSchoolTiers(seasonId, tiers, userId) {
   const season = await TestSeason.findById(seasonId);
   if (!season) throw new NotFoundError("Mavsum topilmadi");
 
@@ -213,17 +214,17 @@ async function setAbsoluteTiers(seasonId, tiers, userId) {
   }
 
   for (const t of tiers) {
-    if (!t.name || t.minScore === undefined || t.coinReward === undefined) {
+    if (t.position === undefined || t.coinReward === undefined) {
       throw new BadRequestError(
-        "Har darajada nom, minimal ball va coin miqdori bo'lishi kerak",
+        "Har o'rinda o'rin (position) va coin miqdori bo'lishi kerak",
       );
     }
   }
 
-  season.absoluteTiers = tiers.map((t) => ({
-    name: t.name.trim(),
-    minScore: Number(t.minScore),
+  season.schoolTiers = tiers.map((t) => ({
+    position: Number(t.position),
     coinReward: Number(t.coinReward),
+    note: t.note ? String(t.note).trim() : undefined,
   }));
 
   await season.save();
@@ -273,6 +274,7 @@ async function setClassTiers(seasonId, classId, tiers, user) {
       class: classId,
       position: Number(t.position),
       coinReward: Number(t.coinReward),
+      note: t.note ? String(t.note).trim() : undefined,
       createdBy: user._id,
     });
   }
@@ -292,20 +294,20 @@ async function previewDistribution(seasonId) {
   const stats = await getSeasonStats(seasonId);
   const awards = []; // har bir award: { student, amount, type, tierName, reason, ... }
 
-  // 1) Absolyut darajalar (eng yuqori chegaraga mos keladigan)
-  const sortedAbs = [...(season.absoluteTiers || [])].sort(
-    (a, b) => b.minScore - a.minScore,
-  );
-  for (const row of stats) {
-    const matched = sortedAbs.find((t) => row.averageScore >= t.minScore);
-    if (matched) {
+  // 1) Maktab bo'yicha o'rin mukofotlari (stats o'rtacha bo'yicha saralangan)
+  for (const tier of season.schoolTiers || []) {
+    const winner = stats[tier.position - 1]; // 1-based
+    if (winner) {
       awards.push({
-        student: row.student,
-        amount: matched.coinReward,
-        type: "season_absolute_reward",
-        tierName: matched.name,
-        reason: `Mavsum mukofoti: ${matched.name} (o'rtacha ${row.averageScore.toFixed(2)} ball)`,
-        seasonAverageScore: row.averageScore,
+        student: winner.student,
+        amount: tier.coinReward,
+        type: "season_school_top_reward",
+        tierName: `Maktab ${tier.position}-o'rin`,
+        reason:
+          tier.note ||
+          `Maktab bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
+        schoolPosition: tier.position,
+        seasonAverageScore: winner.averageScore,
       });
     }
   }
@@ -327,8 +329,10 @@ async function previewDistribution(seasonId) {
           student: winner.student,
           amount: tier.coinReward,
           type: "season_class_top_reward",
-          tierName: `${tier.position}-o'rin`,
-          reason: `Sinf bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
+          tierName: `Sinf ${tier.position}-o'rin`,
+          reason:
+            tier.note ||
+            `Sinf bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
           classId,
           classPosition: tier.position,
           seasonAverageScore: winner.averageScore,
@@ -425,6 +429,7 @@ async function distributeCoins(seasonId, distributorId, { force = false } = {}) 
         seasonId,
         tierName: award.tierName,
         seasonAverageScore: award.seasonAverageScore,
+        ...(award.schoolPosition && { schoolPosition: award.schoolPosition }),
         ...(award.classId && { classId: award.classId }),
         ...(award.classPosition && { classPosition: award.classPosition }),
         givenBy: distributorId,
@@ -450,7 +455,7 @@ module.exports = {
   getSeasonStats,
   getClassStats,
   getMyStats,
-  setAbsoluteTiers,
+  setSchoolTiers,
   setClassTiers,
   previewDistribution,
   distributeCoins,

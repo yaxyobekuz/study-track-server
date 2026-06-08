@@ -5,6 +5,8 @@ const Class = require("../models/class.model");
 const User = require("../models/user.model");
 const Message = require("../models/message.model");
 const messageQueueService = require("./messageQueue.service");
+const seasonRewardService = require("./seasonReward.service");
+const { config } = require("../config/env.config");
 const { ROLES } = require("../utils/constants");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
@@ -317,6 +319,150 @@ async function announceSeason(seasonId, data, sentBy) {
   };
 }
 
+/**
+ * Mavsumni to'liq yakunlaydi: mukofot tangalarini tarqatadi va har bir o'quvchiga
+ * bot orqali batafsil natija (maktab + sinf bo'yicha o'rin/o'rtacha + yutilgan
+ * tanga) yuboradi. Xabar ostida student panelga ochiladigan WebApp tugmasi bo'ladi.
+ * @param {string} seasonId
+ * @param {string} userId - yakunlovchi (owner) ID
+ * @returns {Promise<object>} { finalizedAt, distributed, notified }
+ */
+async function finalizeSeason(seasonId, userId) {
+  const season = await TestSeason.findById(seasonId);
+  if (!season) throw new NotFoundError("Mavsum topilmadi");
+  if (season.finalizedAt) {
+    throw new BadRequestError("Mavsum allaqachon to'liq yakunlangan");
+  }
+
+  // 1) Mukofot tangalarini tarqatish (idempotent - takror bermaydi)
+  const distRes = await seasonRewardService.distributeCoins(seasonId, userId, {
+    force: true,
+  });
+
+  // 2) Har o'quvchining yutgan tangasi (preview dan)
+  const preview = await seasonRewardService.previewDistribution(seasonId);
+  const coinByStudent = new Map(
+    preview.students.map((s) => [s.student._id.toString(), s.totalAmount]),
+  );
+
+  // 3) Maktab va sinf reytinglari
+  const schoolRows = await seasonRewardService.getSeasonStats(seasonId);
+  const classRankByStudent = new Map();
+  const classIds = new Set();
+  for (const r of schoolRows) {
+    const firstClass = (r.student.classes || [])[0];
+    if (firstClass) classIds.add(firstClass._id.toString());
+  }
+  for (const cid of classIds) {
+    const classRows = await seasonRewardService.getClassStats(seasonId, cid);
+    for (const r of classRows) {
+      const sid = r.student._id.toString();
+      if (!classRankByStudent.has(sid)) {
+        const cls = (r.student.classes || []).find(
+          (c) => c._id.toString() === cid,
+        );
+        classRankByStudent.set(sid, {
+          classRank: r.classRank,
+          className: cls ? cls.name : null,
+        });
+      }
+    }
+  }
+
+  // 4) Telegramga ulangan o'quvchilar
+  const studentIds = schoolRows.map((r) => r.student._id);
+  const users = await User.find({
+    _id: { $in: studentIds },
+    telegramIds: { $exists: true, $ne: [] },
+  }).select("_id telegramIds");
+  const tgByStudent = new Map(
+    users.map((u) => [u._id.toString(), u.telegramIds]),
+  );
+
+  const webappUrl = `${config.studentWebappUrl.replace(/\/$/, "")}/seasons/${seasonId}/rewards`;
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "📊 Batafsil statistika", web_app: { url: webappUrl } }],
+    ],
+  };
+
+  // 5) Har o'quvchi uchun xabar matni va navbat elementlari
+  const recipientIds = [];
+  const deliveryStatus = [];
+  const perStudentText = new Map();
+  for (const r of schoolRows) {
+    const sid = r.student._id.toString();
+    const tgIds = tgByStudent.get(sid);
+    if (!tgIds || tgIds.length === 0) continue;
+
+    const classInfo = classRankByStudent.get(sid);
+    const coins = coinByStudent.get(sid) || 0;
+
+    let text = `🏁 <b>${escapeHtml(season.name)}</b> yakunlandi!\n\n`;
+    text += `🏫 Maktab bo'yicha: <b>${r.rank}-o'rin</b> (o'rtacha ${r.averageScore.toFixed(2)} ball)\n`;
+    if (classInfo) {
+      text += `👥 Sinf bo'yicha${classInfo.className ? ` (${escapeHtml(classInfo.className)})` : ""}: <b>${classInfo.classRank}-o'rin</b>\n`;
+    }
+    text += `✅ Topshirilgan: ${r.resultCount}/${r.assignedCount} test`;
+    if (coins > 0) {
+      text += `\n\n🎁 Tabriklaymiz! Siz <b>${coins}</b> tanga yutdingiz!`;
+    }
+
+    perStudentText.set(sid, text);
+    for (const tgId of tgIds) {
+      recipientIds.push(tgId);
+      deliveryStatus.push({
+        telegramId: tgId,
+        userId: r.student._id,
+        status: "pending",
+      });
+    }
+  }
+
+  if (recipientIds.length > 0) {
+    const message = await Message.create({
+      messageText: `${season.name} — yakuniy natijalar`,
+      sentBy: userId,
+      recipientType: "season",
+      season: seasonId,
+      recipientIds,
+      totalRecipients: recipientIds.length,
+      deliveryStatus,
+    });
+
+    const queueItems = [];
+    for (const r of schoolRows) {
+      const sid = r.student._id.toString();
+      const tgIds = tgByStudent.get(sid);
+      const text = perStudentText.get(sid);
+      if (!tgIds || !text) continue;
+      for (const tgId of tgIds) {
+        queueItems.push({
+          messageId: message._id,
+          telegramId: tgId,
+          userId: r.student._id,
+          messageText: text,
+          replyMarkup,
+        });
+      }
+    }
+    await messageQueueService.addBulkToQueue(queueItems);
+  }
+
+  // 6) Mavsumni yakunlangan deb belgilash (distributedAt ni saqlab qolish uchun
+  //    yangidan yuklaymiz)
+  const fresh = await TestSeason.findById(seasonId);
+  fresh.finalizedAt = new Date();
+  fresh.finalizedBy = userId;
+  await fresh.save();
+
+  return {
+    finalizedAt: fresh.finalizedAt,
+    distributed: distRes.distributed,
+    notified: deliveryStatus.length,
+  };
+}
+
 module.exports = {
   listSeasons,
   getActiveSeasons,
@@ -327,4 +473,5 @@ module.exports = {
   findOverlappingSeasons,
   getSeasonClasses,
   announceSeason,
+  finalizeSeason,
 };

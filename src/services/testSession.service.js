@@ -124,6 +124,9 @@ async function startSession(bindingId, studentId) {
   if (!season || !season.isActive) {
     throw new ForbiddenError("Test mavsumi faol emas");
   }
+  if (season.finalizedAt) {
+    throw new ForbiddenError("Test mavsumi to'liq yakunlangan");
+  }
   const now = new Date();
   if (now < season.startDate) {
     throw new ForbiddenError("Test mavsumi hali boshlanmagan");

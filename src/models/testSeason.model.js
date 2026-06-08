@@ -39,17 +39,17 @@ const testSeasonSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
-    // Absolyut chegaralar - admin tomonidan belgilanadi.
-    // Masalan: { name: 'Oltin', minScore: 500, coinReward: 100 }
-    absoluteTiers: [
+    // Maktab bo'yicha o'rin (top-N) mukofotlari.
+    // Masalan: { position: 1, coinReward: 100, note: 'Tabriklaymiz!' }
+    schoolTiers: [
       {
-        name: { type: String, required: true, trim: true },
-        minScore: { type: Number, required: true, min: 0 },
+        position: { type: Number, required: true, min: 1 },
         coinReward: { type: Number, required: true, min: 0 },
+        note: { type: String, trim: true, maxlength: 512 },
       },
     ],
-    // Sinf bo'yicha o'rin (top-N) chegaralari.
-    // Masalan: { class: ObjectId, position: 1, coinReward: 50 }
+    // Sinf bo'yicha o'rin (top-N) mukofotlari.
+    // Masalan: { class: ObjectId, position: 1, coinReward: 50, note: '...' }
     classTiers: [
       {
         class: {
@@ -59,6 +59,7 @@ const testSeasonSchema = new mongoose.Schema(
         },
         position: { type: Number, required: true, min: 1 },
         coinReward: { type: Number, required: true, min: 0 },
+        note: { type: String, trim: true, maxlength: 512 },
         createdBy: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "User",
@@ -68,6 +69,13 @@ const testSeasonSchema = new mongoose.Schema(
     // Tarqatish holatini kuzatish (idempotentlik uchun)
     distributedAt: { type: Date },
     distributedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    // To'liq yakunlash (admin tasdig'i) - sanaviy "closed" dan alohida.
+    // Belgilangach o'quvchilar test ishlay olmaydi va natijalar tarqatiladi.
+    finalizedAt: { type: Date },
+    finalizedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
