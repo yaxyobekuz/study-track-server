@@ -114,6 +114,7 @@ class MessageQueueService {
         queueItem.fileType,
         queueItem.fileName,
         queueItem.fileContentType,
+        queueItem.replyMarkup,
       );
 
       if (result.success) {

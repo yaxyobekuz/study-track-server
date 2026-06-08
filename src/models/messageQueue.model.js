@@ -34,6 +34,10 @@ const messageQueueSchema = new mongoose.Schema(
       type: String,
       enum: ["photo", "document", null],
     },
+    // Telegram inline klaviatura (reply_markup) - masalan WebApp tugmasi
+    replyMarkup: {
+      type: mongoose.Schema.Types.Mixed,
+    },
     status: {
       type: String,
       enum: ["pending", "processing", "completed", "failed", "cancelled"],

@@ -88,6 +88,8 @@ const config = {
 
   // Telegram
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
+  // O'quvchi paneli (Telegram WebApp) public URL - bot tugmalari uchun
+  studentWebappUrl: process.env.STUDENT_WEBAPP_URL || "http://localhost:3000",
 
   // AI (OpenAI) - savol generatsiyasi uchun (ixtiyoriy)
   openaiApiKey: process.env.OPENAI_API_KEY,

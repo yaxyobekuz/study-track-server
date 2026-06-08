@@ -26,15 +26,15 @@ class TelegramService {
    * @param {string} text - Message text
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendMessage(telegramId, text) {
+  async sendMessage(telegramId, text, replyMarkup = null) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
 
     try {
-      const result = await bot.sendMessage(telegramId, text, {
-        parse_mode: "HTML",
-      });
+      const options = { parse_mode: "HTML" };
+      if (replyMarkup) options.reply_markup = replyMarkup;
+      const result = await bot.sendMessage(telegramId, text, options);
       return { success: true, data: result };
     } catch (error) {
       logger.error(`Telegram xabar yuborishda xato: ${error.message}`);
@@ -147,7 +147,7 @@ class TelegramService {
    * @param {string} fileType - File type: 'photo' or 'document' (optional)
    * @returns {Promise<Object>} - Telegram API response
    */
-  async sendMessageWithFile(telegramId, text, filePath = null, fileType = null, fileName = null, fileContentType = null) {
+  async sendMessageWithFile(telegramId, text, filePath = null, fileType = null, fileName = null, fileContentType = null, replyMarkup = null) {
     if (!bot) {
       throw new Error("Telegram bot not initialized");
     }
@@ -164,7 +164,7 @@ class TelegramService {
           throw new Error("Invalid file type. Use 'photo' or 'document'");
         }
       } else {
-        result = await this.sendMessage(telegramId, text);
+        result = await this.sendMessage(telegramId, text, replyMarkup);
       }
 
       return result;
