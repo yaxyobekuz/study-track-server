@@ -140,13 +140,19 @@ async function updateSeason(id, data) {
     throw new NotFoundError("Mavsum topilmadi");
   }
 
-  const { name, description, startDate, endDate, isActive } = data;
+  const { name, description, startDate, endDate, status, isActive } = data;
 
   if (name !== undefined) season.name = name;
   if (description !== undefined) season.description = description;
   if (startDate !== undefined) season.startDate = new Date(startDate);
   if (endDate !== undefined) season.endDate = new Date(endDate);
   if (isActive !== undefined) season.isActive = isActive;
+  if (status !== undefined) {
+    if (!["draft", "active", "closed"].includes(status)) {
+      throw new BadRequestError("Noto'g'ri mavsum holati");
+    }
+    season.status = status;
+  }
 
   if (season.endDate <= season.startDate) {
     throw new BadRequestError(
