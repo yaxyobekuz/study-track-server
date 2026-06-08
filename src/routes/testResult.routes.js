@@ -10,6 +10,8 @@ const { ROLES } = require("../utils/constants");
 // Controller
 const {
   getMyResults,
+  getStudentSeasonResults,
+  getResultForAdmin,
   getResultById,
   getResultsByTest,
   gradeOpenAnswer,
@@ -22,6 +24,21 @@ router.use(protect);
 
 // O'quvchi - o'z natijalari
 router.get("/my", authorize(ROLES.STUDENT), getMyResults);
+
+// Admin (owner) - mavsumdagi o'quvchining natijalari va bitta natija (javoblar bilan)
+router.get(
+  "/season/:seasonId/student/:studentId",
+  authorize(ROLES.OWNER),
+  validateObjectId("seasonId"),
+  validateObjectId("studentId"),
+  getStudentSeasonResults,
+);
+router.get(
+  "/admin/:id",
+  authorize(ROLES.OWNER),
+  validateObjectId("id"),
+  getResultForAdmin,
+);
 
 // O'qituvchi - test bo'yicha natijalar
 router.get(

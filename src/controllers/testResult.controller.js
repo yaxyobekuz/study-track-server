@@ -32,6 +32,27 @@ const getResultById = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Mavsum bo'yicha o'quvchining natijalari (admin)
+ * GET /api/test-results/season/:seasonId/student/:studentId
+ */
+const getStudentSeasonResults = asyncHandler(async (req, res) => {
+  const results = await testResultService.getResultsForStudent(
+    req.params.studentId,
+    req.params.seasonId,
+  );
+  res.json({ success: true, data: results });
+});
+
+/**
+ * Bitta natijani admin uchun olish (to'g'ri javoblar bilan)
+ * GET /api/test-results/admin/:id
+ */
+const getResultForAdmin = asyncHandler(async (req, res) => {
+  const result = await testResultService.getResultForAdmin(req.params.id);
+  res.json({ success: true, data: result });
+});
+
+/**
  * Test bo'yicha natijalarni olish (o'qituvchi - o'z testiniki)
  * GET /api/test-results/by-test/:testId
  */
@@ -117,6 +138,8 @@ const deleteExtraPoints = asyncHandler(async (req, res) => {
 
 module.exports = {
   getMyResults,
+  getStudentSeasonResults,
+  getResultForAdmin,
   getResultById,
   getResultsByTest,
   gradeOpenAnswer,

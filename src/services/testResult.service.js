@@ -379,6 +379,31 @@ async function getResultById(id, user) {
 }
 
 /**
+ * Natijani admin (owner) uchun to'liq oladi - to'g'ri javoblar bilan.
+ * O'quvchidan farqli, bu yerda frozen savollarning correctOptionId si ham
+ * qaytariladi (admin javoblarni tekshirishi uchun).
+ * @param {string} id - natija ID
+ * @returns {Promise<object>} natija
+ */
+async function getResultForAdmin(id) {
+  const result = await TestResult.findById(id)
+    .populate("test", "title")
+    .populate("season", "name")
+    .populate("subject", "name")
+    .populate("class", "name")
+    .populate("student", "firstName lastName username")
+    .populate({ path: "session", select: "+questions.correctOptionId" })
+    .populate("perQuestion.gradedBy", "firstName lastName")
+    .populate("extraPoints.addedBy", "firstName lastName");
+
+  if (!result) {
+    throw new NotFoundError("Natija topilmadi");
+  }
+
+  return result;
+}
+
+/**
  * Test bo'yicha barcha natijalarni sahifalash bilan oladi (test muallifi uchun).
  * @param {object} req - Express request object
  * @param {string} testId - test ID
@@ -421,5 +446,6 @@ module.exports = {
   deleteExtraPoints,
   getResultsForStudent,
   getResultById,
+  getResultForAdmin,
   getResultsForTest,
 };
