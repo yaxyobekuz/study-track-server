@@ -1,6 +1,7 @@
 const TestResult = require("../models/testResult.model");
 const TestSession = require("../models/testSession.model");
 const Test = require("../models/test.model");
+const TestSettings = require("../models/testSettings.model");
 const {
   BadRequestError,
   NotFoundError,
@@ -23,6 +24,9 @@ function _recomputeFinalScore(result) {
     (result.autoGradedScore || 0) +
     (result.manualGradedScore || 0) +
     extraSum;
+
+  // O'tish holati: finalScore >= o'tish bali (gradingMin)
+  result.passed = result.finalScore >= (result.gradingMin ?? 0);
 
   // Holatni perQuestion bo'yicha aniqlash
   const pending = result.perQuestion.filter((pq) => pq.status === "pending");
@@ -119,6 +123,16 @@ async function gradeSession(sessionId) {
       class: bindingClass,
       subject: bindingSubject,
     });
+  }
+
+  // Ball shkalasini sessiyadan olish (eski sessiyalar uchun joriy sozlamadan)
+  if (session.gradingMin != null && session.gradingMax != null) {
+    result.gradingMin = session.gradingMin;
+    result.gradingMax = session.gradingMax;
+  } else if (result.gradingMin == null || result.gradingMax == null) {
+    const settings = await TestSettings.getSettings();
+    result.gradingMin = settings.minScore;
+    result.gradingMax = settings.maxScore;
   }
 
   result.autoGradedScore = autoGradedScore;

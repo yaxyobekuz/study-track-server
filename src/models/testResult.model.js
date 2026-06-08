@@ -118,10 +118,18 @@ const testResultSchema = new mongoose.Schema(
       type: [extraPointsSchema],
       default: [],
     },
-    // clamp(autoGradedScore + manualGradedScore + ΣextraPoints, test.minScore, test.maxScore)
+    // autoGradedScore + manualGradedScore + ΣextraPoints (odatda [0, maxScore])
     finalScore: {
       type: Number,
       default: 0,
+    },
+    // Sessiya muzlatilgan paytdagi ball shkalasi (barqaror tarix uchun)
+    gradingMin: { type: Number },
+    gradingMax: { type: Number },
+    // finalScore >= gradingMin bo'lsa o'quvchi testdan o'tgan
+    passed: {
+      type: Boolean,
+      default: false,
     },
     // Har bir savol bo'yicha baholash tafsiloti
     perQuestion: {
@@ -143,10 +151,12 @@ const testResultSchema = new mongoose.Schema(
 );
 
 /**
- * Erishish mumkin bo'lgan maksimal ball — savollar maxPoints yig'indisi.
- * Test modelida endi maxScore yo'q (V3), shuning uchun natijaning o'zidan hisoblanadi.
+ * Erishish mumkin bo'lgan maksimal ball.
+ * Yangi natijalar uchun muzlatilgan shkala (gradingMax); eski natijalar uchun
+ * savollar maxPoints yig'indisiga teng (fallback).
  */
 testResultSchema.virtual("maxScore").get(function () {
+  if (this.gradingMax != null) return this.gradingMax;
   return (this.perQuestion || []).reduce(
     (sum, pq) => sum + (pq.maxPoints || 0),
     0,
