@@ -2,11 +2,17 @@ const Question = require("../models/question.model");
 const Test = require("../models/test.model");
 const { uploadFile } = require("./file.service");
 const { deleteObject } = require("./fileStorage.service");
+const { DIFFICULTY_VALUES } = require("../helpers/scoring.helper");
 const {
   BadRequestError,
   NotFoundError,
   ForbiddenError,
 } = require("../utils/errors");
+
+/** Qiyinlik darajasini tekshiradi (noto'g'ri/bo'sh bo'lsa - "medium"). */
+function _normalizeDifficulty(difficulty) {
+  return DIFFICULTY_VALUES.includes(difficulty) ? difficulty : "medium";
+}
 
 /**
  * Multer fayllarini DO Spaces ga yuklaydi va attachment obyektlarini qaytaradi.
@@ -107,11 +113,8 @@ async function listQuestionsForTest(testId, teacherId) {
 async function createQuestion(testId, data, files, teacherId) {
   const test = await _loadTestOwned(testId, teacherId);
 
-  const { type, text, points } = data;
+  const { type, text, difficulty } = data;
   if (!type) throw new BadRequestError("Savol turi majburiy");
-  if (points === undefined || points === null || points === "") {
-    throw new BadRequestError("Savol balli majburiy");
-  }
 
   let options = data.options || [];
   if (typeof options === "string") {
@@ -141,7 +144,7 @@ async function createQuestion(testId, data, files, teacherId) {
       type,
       text: text || undefined,
       image: questionImage,
-      points: Number(points),
+      difficulty: _normalizeDifficulty(difficulty),
       options: [],
       order: existingCount + 1,
     };
@@ -173,7 +176,7 @@ async function updateQuestion(id, data, files, teacherId) {
   // Test orqali muallifligini tekshirish
   await _loadTestOwned(question.test, teacherId);
 
-  const { type, text, points } = data;
+  const { type, text, difficulty } = data;
 
   let options = data.options;
   if (typeof options === "string") {
@@ -194,7 +197,9 @@ async function updateQuestion(id, data, files, teacherId) {
     );
 
     if (text !== undefined) question.text = text || undefined;
-    if (points !== undefined) question.points = Number(points);
+    if (difficulty !== undefined) {
+      question.difficulty = _normalizeDifficulty(difficulty);
+    }
     if (type !== undefined) question.type = type;
 
     if (questionImage) {
@@ -245,7 +250,12 @@ async function updateQuestion(id, data, files, teacherId) {
  * @param {string} teacherId O'qituvchi ID (mualliflik tekshiruvi).
  * @returns {Promise<{ created: number, questions: Array }>} Yaratilganlar.
  */
-async function bulkCreateQuestions(testId, questionsArray, teacherId) {
+async function bulkCreateQuestions(
+  testId,
+  questionsArray,
+  teacherId,
+  batchDifficulty,
+) {
   const test = await _loadTestOwned(testId, teacherId);
 
   if (!Array.isArray(questionsArray) || questionsArray.length === 0) {
@@ -268,7 +278,7 @@ async function bulkCreateQuestions(testId, questionsArray, teacherId) {
         type: q.type,
         text: q.text || undefined,
         image: null,
-        points: typeof q.points === "number" ? q.points : 1,
+        difficulty: _normalizeDifficulty(q.difficulty || batchDifficulty),
         options:
           q.type === "standard"
             ? (q.options || []).map((opt) => ({

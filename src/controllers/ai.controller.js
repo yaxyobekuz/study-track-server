@@ -64,6 +64,7 @@ const generateQuestions = asyncHandler(async (req, res) => {
     testId,
     questions,
     req.user._id,
+    difficulty,
   );
 
   res.status(201).json({

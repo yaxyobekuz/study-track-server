@@ -53,10 +53,18 @@ const questionSchema = new mongoose.Schema(
       type: attachmentSchema,
       default: null,
     },
-    // Savolning ball qiymati
+    // Savol qiyinlik darajasi: 'easy' - oson, 'medium' - o'rta, 'hard' - qiyin.
+    // Ball shu daraja asosida sessiya muzlatilganda avtomatik taqsimlanadi.
+    difficulty: {
+      type: String,
+      enum: ["easy", "medium", "hard"],
+      default: "medium",
+    },
+    // Eski ma'lumotlar uchun saqlangan (endi qo'lda kiritilmaydi; ball
+    // sessiya muzlatilganda qiyinlik darajasiga qarab hisoblanadi).
     points: {
       type: Number,
-      required: [true, "Savol balli majburiy"],
+      default: 0,
       min: [0, "Ball manfiy bo'lishi mumkin emas"],
     },
     // Faqat 'standard' tur uchun javob variantlari
