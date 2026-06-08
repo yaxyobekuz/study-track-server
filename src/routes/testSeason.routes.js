@@ -71,16 +71,16 @@ router.post(
 
 // ───── Mavsum mukofotlari (V4) ─────
 
-// Statistika: owner va o'qituvchi (sinflari bo'yicha)
+// Statistika: maktab va sinf darajasida - owner, o'qituvchi va o'quvchi ko'ra oladi
 router.get(
   "/:id/stats",
-  authorize(ROLES.OWNER, ROLES.TEACHER),
+  authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.STUDENT),
   validateObjectId("id"),
   getStats,
 );
 router.get(
   "/:id/class/:classId/stats",
-  authorize(ROLES.OWNER, ROLES.TEACHER),
+  authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.STUDENT),
   validateObjectId("id"),
   validateObjectId("classId"),
   getClassStats,

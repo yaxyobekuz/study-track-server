@@ -5,7 +5,10 @@ const TestBinding = require("../models/testBinding.model");
 const TeacherAssignment = require("../models/teacherAssignment.model");
 const User = require("../models/user.model");
 const Class = require("../models/class.model");
+const Test = require("../models/test.model");
+const Question = require("../models/question.model");
 const CoinTransaction = require("../models/coinTransaction.model");
+const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const {
   BadRequestError,
@@ -15,11 +18,13 @@ const {
 
 /**
  * Mavsumdagi o'quvchilar statistikasini hisoblaydi.
- * Stat metrikasi: barcha test natijalari (`finalScore`) yig'indisi.
+ * Stat metrikasi: o'rtacha ball = (natijalar finalScore yig'indisi) / (biriktirilgan
+ * testlar soni). Topshirilmagan biriktirilgan test 0 sifatida hisoblanadi.
  *
  * @param {string} seasonId
  * @param {object} [filter] - { classId, subjectId } (ixtiyoriy filterlar)
- * @returns {Promise<Array>} sorted array: { student, totalScore, resultCount, classes, rank }
+ * @returns {Promise<Array>} sorted array:
+ *   { student, averageScore, totalScore, resultCount, assignedCount, rank }
  */
 async function getSeasonStats(seasonId, filter = {}) {
   const season = await TestSeason.findById(seasonId);
@@ -30,53 +35,128 @@ async function getSeasonStats(seasonId, filter = {}) {
     match.subject = new mongoose.Types.ObjectId(filter.subjectId);
   }
 
-  // O'quvchi bo'yicha agregat
+  // 1) Natijalar yig'indisi (o'quvchi bo'yicha)
   const grouped = await TestResult.aggregate([
     { $match: match },
     {
       $group: {
         _id: "$student",
-        totalScore: { $sum: "$finalScore" },
+        sumScore: { $sum: "$finalScore" },
         resultCount: { $sum: 1 },
       },
     },
-    { $sort: { totalScore: -1 } },
   ]);
+  const resultMap = new Map(grouped.map((g) => [g._id.toString(), g]));
 
-  // O'quvchi ma'lumotlarini olib kelish
-  const studentIds = grouped.map((g) => g._id);
-  let users = await User.find({ _id: { $in: studentIds } })
-    .select("firstName lastName username classes")
-    .populate("classes", "name");
+  // 2) Mavsumdagi faol biriktirishlar (status ishlatilmaydi)
+  const bindingFilter = { season: seasonId, isActive: true };
+  if (filter.subjectId) bindingFilter.subject = filter.subjectId;
+  const bindings = await TestBinding.find(bindingFilter).select("test classes");
+
+  // 3) "Tayyor" testlar (faol savol soni >= questionCount) - faqat shular biriktirilgan deyiladi
+  const testIds = [...new Set(bindings.map((b) => b.test.toString()))];
+  const readyTestIds = new Set();
+  if (testIds.length > 0) {
+    const tests = await Test.find({
+      _id: { $in: testIds },
+      isActive: true,
+    }).select("questionCount");
+    const counts = await Question.aggregate([
+      {
+        $match: {
+          test: { $in: tests.map((t) => t._id) },
+          isActive: true,
+        },
+      },
+      { $group: { _id: "$test", count: { $sum: 1 } } },
+    ]);
+    const countMap = new Map(counts.map((c) => [c._id.toString(), c.count]));
+    for (const t of tests) {
+      if ((countMap.get(t._id.toString()) || 0) >= t.questionCount) {
+        readyTestIds.add(t._id.toString());
+      }
+    }
+  }
+
+  // 4) Sinf -> biriktirilgan (tayyor) testlar to'plami
+  const classToTests = new Map();
+  const bindingClassIds = new Set();
+  for (const b of bindings) {
+    const tid = b.test.toString();
+    if (!readyTestIds.has(tid)) continue;
+    for (const c of b.classes || []) {
+      const cid = c.toString();
+      bindingClassIds.add(cid);
+      if (!classToTests.has(cid)) classToTests.set(cid, new Set());
+      classToTests.get(cid).add(tid);
+    }
+  }
+
+  // 5) O'quvchilar universumi: biriktirilgan sinflardagilar (natijasi yo'qlar ham) ∪ natijasi borlar
+  const userMap = new Map();
+  if (bindingClassIds.size > 0) {
+    const assignedStudents = await User.find({
+      role: ROLES.STUDENT,
+      isActive: { $ne: false },
+      classes: {
+        $in: [...bindingClassIds].map((id) => new mongoose.Types.ObjectId(id)),
+      },
+    })
+      .select("firstName lastName username classes")
+      .populate("classes", "name");
+    for (const u of assignedStudents) userMap.set(u._id.toString(), u);
+  }
+  const missingIds = grouped
+    .map((g) => g._id)
+    .filter((id) => !userMap.has(id.toString()));
+  if (missingIds.length > 0) {
+    const extra = await User.find({ _id: { $in: missingIds } })
+      .select("firstName lastName username classes")
+      .populate("classes", "name");
+    for (const u of extra) userMap.set(u._id.toString(), u);
+  }
+
+  // 6) Har o'quvchi uchun assignedCount va o'rtacha ball
+  let rows = [...userMap.values()].map((u) => {
+    const sid = u._id.toString();
+    const assigned = new Set();
+    for (const c of u.classes || []) {
+      const set = classToTests.get(c._id.toString());
+      if (set) for (const t of set) assigned.add(t);
+    }
+    const g = resultMap.get(sid);
+    const sumScore = g ? g.sumScore : 0;
+    const resultCount = g ? g.resultCount : 0;
+    const assignedCount = assigned.size;
+    const averageScore = assignedCount > 0 ? sumScore / assignedCount : 0;
+    return {
+      student: {
+        _id: u._id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        username: u.username,
+        classes: u.classes,
+      },
+      averageScore,
+      totalScore: sumScore,
+      resultCount,
+      assignedCount,
+    };
+  });
 
   // Sinf filtri
   if (filter.classId) {
     const cid = filter.classId.toString();
-    users = users.filter((u) =>
-      (u.classes || []).some((c) => c._id.toString() === cid),
+    rows = rows.filter((r) =>
+      (r.student.classes || []).some((c) => c._id.toString() === cid),
     );
   }
-  const userMap = new Map(users.map((u) => [u._id.toString(), u]));
 
-  // Yakuniy ro'yxat
-  let rows = grouped
-    .filter((g) => userMap.has(g._id.toString()))
-    .map((g) => {
-      const u = userMap.get(g._id.toString());
-      return {
-        student: {
-          _id: u._id,
-          firstName: u.firstName,
-          lastName: u.lastName,
-          username: u.username,
-          classes: u.classes,
-        },
-        totalScore: g.totalScore,
-        resultCount: g.resultCount,
-      };
-    });
+  // Faqat biriktirilgan yoki natijasi borlarni ko'rsatish
+  rows = rows.filter((r) => r.assignedCount > 0 || r.resultCount > 0);
 
-  // Rank (umumiy)
+  // Rank (o'rtacha ball bo'yicha)
+  rows.sort((a, b) => b.averageScore - a.averageScore);
   rows = rows.map((r, idx) => ({ ...r, rank: idx + 1 }));
 
   return rows;
@@ -98,7 +178,15 @@ async function getMyStats(seasonId, studentId) {
   const all = await getSeasonStats(seasonId);
   const me = all.find((r) => r.student._id.toString() === studentId.toString());
   if (!me) {
-    return { student: null, totalScore: 0, resultCount: 0, rank: null };
+    return {
+      student: null,
+      averageScore: 0,
+      totalScore: 0,
+      resultCount: 0,
+      assignedCount: 0,
+      rank: null,
+      classRank: null,
+    };
   }
   // Sinf rank ham qo'shimcha
   const myClassIds = (me.student.classes || []).map((c) => c._id.toString());
@@ -209,15 +297,15 @@ async function previewDistribution(seasonId) {
     (a, b) => b.minScore - a.minScore,
   );
   for (const row of stats) {
-    const matched = sortedAbs.find((t) => row.totalScore >= t.minScore);
+    const matched = sortedAbs.find((t) => row.averageScore >= t.minScore);
     if (matched) {
       awards.push({
         student: row.student,
         amount: matched.coinReward,
         type: "season_absolute_reward",
         tierName: matched.name,
-        reason: `Mavsum mukofoti: ${matched.name} (${row.totalScore} ball)`,
-        seasonTotalScore: row.totalScore,
+        reason: `Mavsum mukofoti: ${matched.name} (o'rtacha ${row.averageScore.toFixed(2)} ball)`,
+        seasonAverageScore: row.averageScore,
       });
     }
   }
@@ -240,10 +328,10 @@ async function previewDistribution(seasonId) {
           amount: tier.coinReward,
           type: "season_class_top_reward",
           tierName: `${tier.position}-o'rin`,
-          reason: `Sinf bo'yicha ${tier.position}-o'rin (${winner.totalScore} ball)`,
+          reason: `Sinf bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
           classId,
           classPosition: tier.position,
-          seasonTotalScore: winner.totalScore,
+          seasonAverageScore: winner.averageScore,
         });
       }
     }
@@ -336,7 +424,7 @@ async function distributeCoins(seasonId, distributorId, { force = false } = {}) 
       meta: {
         seasonId,
         tierName: award.tierName,
-        seasonTotalScore: award.seasonTotalScore,
+        seasonAverageScore: award.seasonAverageScore,
         ...(award.classId && { classId: award.classId }),
         ...(award.classPosition && { classPosition: award.classPosition }),
         givenBy: distributorId,
