@@ -48,22 +48,13 @@ const testSeasonSchema = new mongoose.Schema(
         note: { type: String, trim: true, maxlength: 512 },
       },
     ],
-    // Sinf bo'yicha o'rin (top-N) mukofotlari.
-    // Masalan: { class: ObjectId, position: 1, coinReward: 50, note: '...' }
+    // Sinf bo'yicha o'rin (top-N) mukofotlari - UMUMIY, har bir sinfga qo'llanadi.
+    // Masalan: { position: 1, coinReward: 50, note: '...' } - har sinfning 1-o'rni.
     classTiers: [
       {
-        class: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "Class",
-          required: true,
-        },
         position: { type: Number, required: true, min: 1 },
         coinReward: { type: Number, required: true, min: 0 },
         note: { type: String, trim: true, maxlength: 512 },
-        createdBy: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: "User",
-        },
       },
     ],
     // Tarqatish holatini kuzatish (idempotentlik uchun)

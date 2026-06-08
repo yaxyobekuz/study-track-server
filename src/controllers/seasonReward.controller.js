@@ -56,15 +56,14 @@ const setSchoolTiers = asyncHandler(async (req, res) => {
 });
 
 /**
- * Sinf top-N darajalarini belgilash (owner yoki biriktirilgan o'qituvchi).
- * PUT /api/test-seasons/:id/class/:classId/tiers
+ * Sinf bo'yicha o'rin mukofotlarini belgilash (owner) - umumiy, har sinfga.
+ * PUT /api/test-seasons/:id/class-tiers
  */
 const setClassTiers = asyncHandler(async (req, res) => {
   const season = await seasonRewardService.setClassTiers(
     req.params.id,
-    req.params.classId,
     req.body.tiers,
-    req.user,
+    req.user._id,
   );
   res.json({
     success: true,

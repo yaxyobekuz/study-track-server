@@ -2,7 +2,6 @@ const mongoose = require("mongoose");
 const TestSeason = require("../models/testSeason.model");
 const TestResult = require("../models/testResult.model");
 const TestBinding = require("../models/testBinding.model");
-const TeacherAssignment = require("../models/teacherAssignment.model");
 const User = require("../models/user.model");
 const Class = require("../models/class.model");
 const Test = require("../models/test.model");
@@ -10,11 +9,7 @@ const Question = require("../models/question.model");
 const CoinTransaction = require("../models/coinTransaction.model");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
-const {
-  BadRequestError,
-  NotFoundError,
-  ForbiddenError,
-} = require("../utils/errors");
+const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 /**
  * Mavsumdagi o'quvchilar statistikasini hisoblaydi.
@@ -232,27 +227,13 @@ async function setSchoolTiers(seasonId, tiers, userId) {
 }
 
 /**
- * Sinf bo'yicha top-N darajalarni belgilash.
- * Owner istalgan sinf, o'qituvchi faqat o'ziga biriktirilgan sinfga.
+ * Sinf bo'yicha o'rin mukofotlarini belgilash (faqat owner) - UMUMIY.
+ * Belgilangan o'rinlar har bir sinfning top-N o'quvchilariga qo'llanadi.
+ * Har tier: { position, coinReward, note? }
  */
-async function setClassTiers(seasonId, classId, tiers, user) {
+async function setClassTiers(seasonId, tiers, userId) {
   const season = await TestSeason.findById(seasonId);
   if (!season) throw new NotFoundError("Mavsum topilmadi");
-
-  if (user.role !== "owner") {
-    // O'qituvchi shu mavsum+sinf bo'yicha biriktirilganligi
-    const hasAssignment = await TeacherAssignment.exists({
-      season: seasonId,
-      class: classId,
-      teacher: user._id,
-      isActive: true,
-    });
-    if (!hasAssignment) {
-      throw new ForbiddenError(
-        "Siz ushbu mavsum va sinf bo'yicha biriktirilmagansiz",
-      );
-    }
-  }
 
   if (!Array.isArray(tiers)) {
     throw new BadRequestError("Darajalar ro'yxati noto'g'ri");
@@ -260,24 +241,16 @@ async function setClassTiers(seasonId, classId, tiers, user) {
   for (const t of tiers) {
     if (t.position === undefined || t.coinReward === undefined) {
       throw new BadRequestError(
-        "Har darajada o'rin (position) va coin miqdori bo'lishi kerak",
+        "Har o'rinda o'rin (position) va coin miqdori bo'lishi kerak",
       );
     }
   }
 
-  // Ushbu sinf uchun mavjud darajalarni almashtirish
-  season.classTiers = (season.classTiers || []).filter(
-    (ct) => ct.class.toString() !== classId.toString(),
-  );
-  for (const t of tiers) {
-    season.classTiers.push({
-      class: classId,
-      position: Number(t.position),
-      coinReward: Number(t.coinReward),
-      note: t.note ? String(t.note).trim() : undefined,
-      createdBy: user._id,
-    });
-  }
+  season.classTiers = tiers.map((t) => ({
+    position: Number(t.position),
+    coinReward: Number(t.coinReward),
+    note: t.note ? String(t.note).trim() : undefined,
+  }));
 
   await season.save();
   return season;
@@ -312,31 +285,36 @@ async function previewDistribution(seasonId) {
     }
   }
 
-  // 2) Sinf top-N: har sinfning top-N o'quvchilari
-  const classTiersByClass = new Map();
-  for (const ct of season.classTiers || []) {
-    const key = ct.class.toString();
-    if (!classTiersByClass.has(key)) classTiersByClass.set(key, []);
-    classTiersByClass.get(key).push(ct);
-  }
+  // 2) Sinf top-N: UMUMIY darajalar har bir sinfning top-N o'quvchilariga
+  const classTiers = [...(season.classTiers || [])];
+  if (classTiers.length > 0) {
+    // Mavsumdagi barcha sinflar (o'quvchilar sinflaridan)
+    const classMap = new Map(); // classId -> className
+    for (const row of stats) {
+      for (const c of row.student.classes || []) {
+        classMap.set(c._id.toString(), c.name);
+      }
+    }
 
-  for (const [classId, tiers] of classTiersByClass.entries()) {
-    const classStats = await getClassStats(seasonId, classId);
-    for (const tier of tiers) {
-      const winner = classStats[tier.position - 1]; // 1-based
-      if (winner) {
-        awards.push({
-          student: winner.student,
-          amount: tier.coinReward,
-          type: "season_class_top_reward",
-          tierName: `Sinf ${tier.position}-o'rin`,
-          reason:
-            tier.note ||
-            `Sinf bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
-          classId,
-          classPosition: tier.position,
-          seasonAverageScore: winner.averageScore,
-        });
+    for (const [classId, className] of classMap.entries()) {
+      const classStats = await getClassStats(seasonId, classId);
+      for (const tier of classTiers) {
+        const winner = classStats[tier.position - 1]; // 1-based
+        if (winner) {
+          awards.push({
+            student: winner.student,
+            amount: tier.coinReward,
+            type: "season_class_top_reward",
+            tierName: `Sinf ${tier.position}-o'rin`,
+            reason:
+              tier.note ||
+              `Sinf bo'yicha ${tier.position}-o'rin (o'rtacha ${winner.averageScore.toFixed(2)} ball)`,
+            classId,
+            className,
+            classPosition: tier.position,
+            seasonAverageScore: winner.averageScore,
+          });
+        }
       }
     }
   }

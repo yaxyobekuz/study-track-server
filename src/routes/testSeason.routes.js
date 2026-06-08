@@ -101,10 +101,9 @@ router.put(
   setSchoolTiers,
 );
 router.put(
-  "/:id/class/:classId/tiers",
-  authorize(ROLES.OWNER, ROLES.TEACHER),
+  "/:id/class-tiers",
+  authorize(ROLES.OWNER),
   validateObjectId("id"),
-  validateObjectId("classId"),
   setClassTiers,
 );
 
