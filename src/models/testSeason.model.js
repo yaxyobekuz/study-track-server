@@ -1,5 +1,6 @@
 // Mongoose
 const mongoose = require("mongoose");
+const { computeSeasonStatus } = require("../helpers/seasonStatus.helper");
 
 const testSeasonSchema = new mongoose.Schema(
   {
@@ -22,7 +23,9 @@ const testSeasonSchema = new mongoose.Schema(
       type: Date,
       required: [true, "Tugash sanasi majburiy"],
     },
-    // Mavsum holati: 'draft' - tayyorlanmoqda, 'active' - faol, 'closed' - yopilgan
+    // Mavsum holati - sanalardan avtomatik hisoblanadi (qo'lda belgilanmaydi):
+    // 'draft' - kutilmoqda, 'active' - faol, 'closed' - yakunlangan.
+    // pre-save hook va seasonStatus cron joriy holatda saqlaydi.
     status: {
       type: String,
       enum: ["draft", "active", "closed"],
@@ -75,13 +78,15 @@ const testSeasonSchema = new mongoose.Schema(
 testSeasonSchema.index({ status: 1, startDate: 1 });
 testSeasonSchema.index({ startDate: 1, endDate: 1 });
 
-// Tugash sanasi boshlanish sanasidan keyin bo'lishi kerak
+// Tugash sanasi boshlanish sanasidan keyin bo'lishi kerak hamda
+// holatni sanalardan avtomatik hisoblash
 testSeasonSchema.pre("save", function (next) {
   if (this.endDate <= this.startDate) {
     return next(
       new Error("Tugash sanasi boshlanish sanasidan keyin bo'lishi kerak"),
     );
   }
+  this.status = computeSeasonStatus(this.startDate, this.endDate);
   next();
 });
 

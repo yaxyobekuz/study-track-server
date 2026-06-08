@@ -67,21 +67,6 @@ const updateSeason = asyncHandler(async (req, res) => {
 });
 
 /**
- * Mavsum holatini o'zgartirish
- * PATCH /api/test-seasons/:id/status
- */
-const setSeasonStatus = asyncHandler(async (req, res) => {
-  const season = await testSeasonService.setSeasonStatus(
-    req.params.id,
-    req.body.status,
-  );
-  res.json({
-    success: true,
-    data: season,
-  });
-});
-
-/**
  * Mavsumni o'chirish
  * DELETE /api/test-seasons/:id
  */
@@ -130,7 +115,6 @@ module.exports = {
   getSeasonById,
   createSeason,
   updateSeason,
-  setSeasonStatus,
   deleteSeason,
   getSeasonAnnounceClasses,
   announceSeason,

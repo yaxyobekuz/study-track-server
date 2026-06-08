@@ -41,6 +41,7 @@ const { startAttendanceAbsentCron } = require("./src/jobs/attendanceAbsent.job")
 const { startStudentAttendanceAbsentCron } = require("./src/jobs/studentAttendanceAbsent.job");
 const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
 const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job");
+const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 
 // ================================
 
@@ -112,6 +113,7 @@ const bootstrap = async () => {
   await startStudentAttendanceAbsentCron();
   startGradePenaltyCron();
   startTestSessionExpiryCron();
+  startSeasonStatusCron();
 
   app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);

@@ -14,7 +14,6 @@ const {
   getSeasonById,
   createSeason,
   updateSeason,
-  setSeasonStatus,
   deleteSeason,
   getSeasonAnnounceClasses,
   announceSeason,
@@ -49,12 +48,6 @@ router.get(
   getSeasonById,
 );
 router.put("/:id", authorize(ROLES.OWNER), validateObjectId("id"), updateSeason);
-router.patch(
-  "/:id/status",
-  authorize(ROLES.OWNER),
-  validateObjectId("id"),
-  setSeasonStatus,
-);
 router.delete(
   "/:id",
   authorize(ROLES.OWNER),

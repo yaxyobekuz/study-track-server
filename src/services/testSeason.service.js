@@ -100,7 +100,7 @@ async function getSeasonById(id) {
  * @returns {Promise<object>} yaratilgan mavsum va ustma-ust mavsumlar
  */
 async function createSeason(data, createdBy) {
-  const { name, description, startDate, endDate, status } = data;
+  const { name, description, startDate, endDate } = data;
 
   if (!name || !startDate || !endDate) {
     throw new BadRequestError("Nom, boshlanish va tugash sanasi majburiy");
@@ -114,12 +114,12 @@ async function createSeason(data, createdBy) {
     );
   }
 
+  // status sanalardan avtomatik hisoblanadi (pre-save hook)
   const season = await TestSeason.create({
     name,
     description,
     startDate: start,
     endDate: end,
-    status: status || "draft",
     createdBy,
   });
 
@@ -140,19 +140,14 @@ async function updateSeason(id, data) {
     throw new NotFoundError("Mavsum topilmadi");
   }
 
-  const { name, description, startDate, endDate, status, isActive } = data;
+  // status sanalardan avtomatik hisoblanadi (pre-save hook), qo'lda o'zgartirilmaydi
+  const { name, description, startDate, endDate, isActive } = data;
 
   if (name !== undefined) season.name = name;
   if (description !== undefined) season.description = description;
   if (startDate !== undefined) season.startDate = new Date(startDate);
   if (endDate !== undefined) season.endDate = new Date(endDate);
   if (isActive !== undefined) season.isActive = isActive;
-  if (status !== undefined) {
-    if (!["draft", "active", "closed"].includes(status)) {
-      throw new BadRequestError("Noto'g'ri mavsum holati");
-    }
-    season.status = status;
-  }
 
   if (season.endDate <= season.startDate) {
     throw new BadRequestError(
@@ -172,28 +167,6 @@ async function updateSeason(id, data) {
 }
 
 /**
- * Mavsum holatini o'zgartiradi.
- * @param {string} id - mavsum ID
- * @param {string} status - yangi holat (draft, active, closed)
- * @returns {Promise<object>} yangilangan mavsum
- */
-async function setSeasonStatus(id, status) {
-  if (!["draft", "active", "closed"].includes(status)) {
-    throw new BadRequestError("Noto'g'ri mavsum holati");
-  }
-
-  const season = await TestSeason.findById(id);
-  if (!season) {
-    throw new NotFoundError("Mavsum topilmadi");
-  }
-
-  season.status = status;
-  await season.save();
-
-  return season;
-}
-
-/**
  * Mavsumni o'chiradi. Agar testlar mavjud bo'lsa, o'chirish o'rniga yopadi.
  * @param {string} id - mavsum ID
  * @returns {Promise<object>} natija ({ deleted: boolean })
@@ -206,7 +179,8 @@ async function deleteSeason(id) {
 
   const testCount = await Test.countDocuments({ season: id });
   if (testCount > 0) {
-    season.status = "closed";
+    // Testlari bor mavsumni o'chirib bo'lmaydi - faqat nofaol qilamiz
+    // (status sanalardan avtomatik hisoblanadi)
     season.isActive = false;
     await season.save();
     return { deleted: false, season };
@@ -349,7 +323,6 @@ module.exports = {
   getSeasonById,
   createSeason,
   updateSeason,
-  setSeasonStatus,
   deleteSeason,
   findOverlappingSeasons,
   getSeasonClasses,
