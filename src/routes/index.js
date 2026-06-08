@@ -31,6 +31,7 @@ const testRoutes = require("./test.routes");
 const testBindingRoutes = require("./testBinding.routes");
 const testSessionRoutes = require("./testSession.routes");
 const testResultRoutes = require("./testResult.routes");
+const testSettingsRoutes = require("./testSettings.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -61,6 +62,7 @@ router.use("/tests", testRoutes);
 router.use("/bindings", testBindingRoutes);
 router.use("/test-sessions", testSessionRoutes);
 router.use("/test-results", testResultRoutes);
+router.use("/test-settings", testSettingsRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
