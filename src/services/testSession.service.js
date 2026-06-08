@@ -115,14 +115,17 @@ async function startSession(bindingId, studentId) {
     throw new ForbiddenError("Bu test hali o'quvchilar uchun tayyor emas");
   }
 
-  // Mavsum tekshiruvi
+  // Mavsum tekshiruvi - o'quvchi faqat boshlanish va tugash vaqti oralig'ida ishlay oladi
   const season = await TestSeason.findById(binding.season);
-  if (!season || season.status !== "active" || !season.isActive) {
+  if (!season || !season.isActive) {
     throw new ForbiddenError("Test mavsumi faol emas");
   }
   const now = new Date();
-  if (now < season.startDate || now > season.endDate) {
-    throw new ForbiddenError("Test mavsumi vaqti tugagan yoki hali boshlanmagan");
+  if (now < season.startDate) {
+    throw new ForbiddenError("Test mavsumi hali boshlanmagan");
+  }
+  if (now > season.endDate) {
+    throw new ForbiddenError("Test mavsumi yakunlangan");
   }
 
   // O'quvchi biriktiruv sinflaridan birortasiga tegishli ekanligini tekshirish
