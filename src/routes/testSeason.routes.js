@@ -16,6 +16,8 @@ const {
   updateSeason,
   setSeasonStatus,
   deleteSeason,
+  getSeasonAnnounceClasses,
+  announceSeason,
 } = require("../controllers/testSeason.controller");
 
 const {
@@ -58,6 +60,20 @@ router.delete(
   authorize(ROLES.OWNER),
   validateObjectId("id"),
   deleteSeason,
+);
+
+// ───── Mavsum e'loni (bot orqali) ─────
+router.get(
+  "/:id/announce/classes",
+  authorize(ROLES.OWNER),
+  validateObjectId("id"),
+  getSeasonAnnounceClasses,
+);
+router.post(
+  "/:id/announce",
+  authorize(ROLES.OWNER),
+  validateObjectId("id"),
+  announceSeason,
 );
 
 // ───── Mavsum mukofotlari (V4) ─────

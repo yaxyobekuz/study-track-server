@@ -95,6 +95,35 @@ const deleteSeason = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Mavsumga biriktirilgan sinflar (e'lon modali uchun)
+ * GET /api/test-seasons/:id/announce/classes
+ */
+const getSeasonAnnounceClasses = asyncHandler(async (req, res) => {
+  const classes = await testSeasonService.getSeasonClasses(req.params.id);
+  res.json({
+    success: true,
+    data: classes,
+  });
+});
+
+/**
+ * Mavsum e'lonini bot orqali yuborish
+ * POST /api/test-seasons/:id/announce
+ */
+const announceSeason = asyncHandler(async (req, res) => {
+  const result = await testSeasonService.announceSeason(
+    req.params.id,
+    req.body,
+    req.user._id,
+  );
+  res.json({
+    success: true,
+    message: `E'lon ${result.studentCount} ta o'quvchiga navbatga qo'shildi`,
+    data: result,
+  });
+});
+
 module.exports = {
   getSeasons,
   getActiveSeasons,
@@ -103,4 +132,6 @@ module.exports = {
   updateSeason,
   setSeasonStatus,
   deleteSeason,
+  getSeasonAnnounceClasses,
+  announceSeason,
 };

@@ -16,7 +16,7 @@ const messageSchema = new mongoose.Schema(
     },
     recipientType: {
       type: String,
-      enum: ["all", "class", "student"],
+      enum: ["all", "class", "student", "season"],
       required: [true, "Qabul qiluvchi turi majburiy"],
     },
     recipientIds: [
@@ -28,6 +28,11 @@ const messageSchema = new mongoose.Schema(
     classId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Class",
+    },
+    // recipientType "season" uchun - qaysi mavsum e'loni
+    season: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "TestSeason",
     },
     studentId: {
       type: mongoose.Schema.Types.ObjectId,
