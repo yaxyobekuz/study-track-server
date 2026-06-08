@@ -421,7 +421,7 @@ async function finalizeSeason(seasonId, userId) {
 
   if (recipientIds.length > 0) {
     const message = await Message.create({
-      messageText: `${season.name} — yakuniy natijalar`,
+      messageText: `${season.name} - yakuniy natijalar`,
       sentBy: userId,
       recipientType: "season",
       season: seasonId,
