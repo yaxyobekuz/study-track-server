@@ -121,9 +121,15 @@ const getStudents = asyncHandler(async (req, res) => {
 
 // Update own profile (any authenticated user)
 const updateMe = asyncHandler(async (req, res) => {
-  const { firstName, lastName } = req.body;
+  const { firstName, lastName, username, currentPassword, newPassword } = req.body;
 
-  const user = await userService.updateSelfProfile(req.user._id, { firstName, lastName });
+  const user = await userService.updateSelfProfile(req.user._id, {
+    firstName,
+    lastName,
+    username,
+    currentPassword,
+    newPassword,
+  });
 
   res.json({
     success: true,

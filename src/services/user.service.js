@@ -359,7 +359,7 @@ async function getStudents(query) {
  * @returns {Promise<import('../models/user.model')>}
  */
 async function updateSelfProfile(userId, data) {
-  const { firstName, lastName } = data;
+  const { firstName, lastName, username, currentPassword, newPassword } = data;
 
   const user = await User.findById(userId);
   if (!user) {
@@ -368,6 +368,35 @@ async function updateSelfProfile(userId, data) {
 
   if (firstName !== undefined) user.firstName = firstName;
   if (lastName !== undefined) user.lastName = lastName;
+
+  // Username o'zgartirish - unikallik tekshiruvi bilan
+  if (username !== undefined) {
+    const normalizedUsername = String(username).toLowerCase().trim();
+    if (normalizedUsername !== user.username) {
+      const usernameTaken = await User.findOne({
+        username: normalizedUsername,
+        _id: { $ne: user._id },
+      });
+      if (usernameTaken) {
+        throw new BadRequestError("Bu username allaqachon band");
+      }
+      user.username = normalizedUsername;
+    }
+  }
+
+  // Parol o'zgartirish - joriy parolni tasdiqlash talab qilinadi
+  if (newPassword) {
+    if (!currentPassword) {
+      throw new BadRequestError("Joriy parolni kiriting");
+    }
+
+    const isMatch = await user.matchPassword(currentPassword);
+    if (!isMatch) {
+      throw new BadRequestError("Joriy parol noto'g'ri");
+    }
+
+    user.password = newPassword;
+  }
 
   await user.save();
 
