@@ -99,23 +99,13 @@ async function ensureNoTeacherConflicts(classId, day, subjects) {
 }
 
 /**
- * Dars jadvalini yaratish yoki yangilash.
- * @param {object} data - { classId, day, subjects }
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<object>} saqlangan jadval
+ * Bir kunlik darslar ro'yxatini tekshirish: tartib raqamlari, vaqtlar,
+ * fan/o'qituvchi mavjudligi va vaqtlar to'qnashuvi.
+ * O'qituvchining boshqa sinflar bilan to'qnashuvi bu yerda tekshirilmaydi.
+ * @param {Array} subjects - bir kun uchun darslar
+ * @returns {Promise<void>}
  */
-async function createOrUpdateSchedule(data, createdBy) {
-  const { classId, day, subjects } = data;
-
-  if (!classId || !day || !subjects || subjects.length === 0) {
-    throw new BadRequestError("All required fields must be filled");
-  }
-
-  const classExists = await Class.findById(classId);
-  if (!classExists) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
-
+async function validateScheduleSubjects(subjects) {
   // Validate lesson order numbers (manual 1..100, no duplicates within a day)
   const seenOrders = new Set();
   for (const item of subjects) {
@@ -133,7 +123,7 @@ async function createOrUpdateSchedule(data, createdBy) {
     seenOrders.add(order);
   }
 
-  // Validate subjects and teachers
+  // Validate times, subjects and teachers
   for (const item of subjects) {
     if (item.startTime || item.endTime) {
       if (!item.startTime || !item.endTime) {
@@ -184,6 +174,27 @@ async function createOrUpdateSchedule(data, createdBy) {
       }
     }
   }
+}
+
+/**
+ * Dars jadvalini yaratish yoki yangilash.
+ * @param {object} data - { classId, day, subjects }
+ * @param {string} createdBy - yaratuvchi foydalanuvchi ID
+ * @returns {Promise<object>} saqlangan jadval
+ */
+async function createOrUpdateSchedule(data, createdBy) {
+  const { classId, day, subjects } = data;
+
+  if (!classId || !day || !subjects || subjects.length === 0) {
+    throw new BadRequestError("All required fields must be filled");
+  }
+
+  const classExists = await Class.findById(classId);
+  if (!classExists) {
+    throw new NotFoundError("Sinf topilmadi");
+  }
+
+  await validateScheduleSubjects(subjects);
 
   // Check for teacher conflicts across other classes (same day + same order)
   await ensureNoTeacherConflicts(classId, day, subjects);
@@ -205,6 +216,75 @@ async function createOrUpdateSchedule(data, createdBy) {
   return Schedule.findById(schedule._id)
     .populate("subjects.subject", "name")
     .populate("subjects.teacher", "firstName lastName");
+}
+
+/**
+ * Sinf uchun butun hafta dars jadvalini bir martada saqlash.
+ * Har bir kun uchun darslar bo'lsa - yaratiladi/yangilanadi,
+ * darslar bo'sh bo'lsa - o'sha kun jadvali o'chiriladi.
+ * Barcha kunlar avval tekshiriladi, keyin yoziladi (qisman saqlanish bo'lmaydi).
+ * @param {string} classId - sinf ID
+ * @param {Array} schedules - [{ day, subjects }]
+ * @param {string} createdBy - yaratuvchi foydalanuvchi ID
+ * @returns {Promise<Array>} sinfning yangilangan jadvallari
+ */
+async function saveClassSchedule(classId, schedules, createdBy) {
+  if (!classId || !Array.isArray(schedules)) {
+    throw new BadRequestError("Sinf va dars jadvali majburiy");
+  }
+
+  const classExists = await Class.findById(classId);
+  if (!classExists) {
+    throw new NotFoundError("Sinf topilmadi");
+  }
+
+  const validDays = [
+    "dushanba",
+    "seshanba",
+    "chorshanba",
+    "payshanba",
+    "juma",
+    "shanba",
+  ];
+
+  // Validate everything first so a single bad day doesn't leave a partial save
+  const seenDays = new Set();
+  for (const entry of schedules) {
+    const { day, subjects = [] } = entry;
+
+    if (!validDays.includes(day)) {
+      throw new BadRequestError(`Noto'g'ri kun: ${day}`);
+    }
+    if (seenDays.has(day)) {
+      throw new BadRequestError(`${day} kuni bir necha marta yuborildi`);
+    }
+    seenDays.add(day);
+
+    if (subjects.length === 0) continue;
+
+    await validateScheduleSubjects(subjects);
+    await ensureNoTeacherConflicts(classId, day, subjects);
+  }
+
+  // Persist: upsert days with lessons, delete days that were cleared
+  for (const entry of schedules) {
+    const { day, subjects = [] } = entry;
+
+    if (subjects.length === 0) {
+      await Schedule.deleteOne({ class: classId, day });
+      continue;
+    }
+
+    const schedule = await Schedule.findOne({ class: classId, day });
+    if (schedule) {
+      schedule.subjects = subjects;
+      await schedule.save();
+    } else {
+      await Schedule.create({ class: classId, day, subjects, createdBy });
+    }
+  }
+
+  return getScheduleByClass(classId);
 }
 
 /**
@@ -456,6 +536,7 @@ module.exports = {
   getScheduleByClass,
   getScheduleByDay,
   createOrUpdateSchedule,
+  saveClassSchedule,
   deleteSchedule,
   getScheduleForExport,
   getAllTodaySchedules,

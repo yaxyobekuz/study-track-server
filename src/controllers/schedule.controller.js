@@ -28,6 +28,21 @@ const createOrUpdateSchedule = asyncHandler(async (req, res) => {
   });
 });
 
+// Create or update the whole week schedule for a class (Owner only)
+const saveClassSchedule = asyncHandler(async (req, res) => {
+  const data = await scheduleService.saveClassSchedule(
+    req.params.classId,
+    req.body.schedules,
+    req.user._id,
+  );
+
+  res.json({
+    success: true,
+    message: "Dars jadvali muvaffaqiyatli saqlandi",
+    data,
+  });
+});
+
 // Delete schedule (Owner only)
 const deleteSchedule = asyncHandler(async (req, res) => {
   await scheduleService.deleteSchedule(req.params.id);
@@ -99,6 +114,7 @@ module.exports = {
   getScheduleByClass,
   getScheduleByDay,
   createOrUpdateSchedule,
+  saveClassSchedule,
   deleteSchedule,
   getMyTodaySchedule,
   getAllTodaySchedules,

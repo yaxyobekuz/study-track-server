@@ -7,6 +7,7 @@ const {
   getMyTodaySchedule,
   getAllTodaySchedules,
   createOrUpdateSchedule,
+  saveClassSchedule,
   updateCurrentTopic,
   exportScheduleByClass,
   getClassesBySubject,
@@ -49,6 +50,12 @@ router.get("/subject/:subjectId", validateObjectId("subjectId"), authorize(ROLES
 
 // CRUD operations for owner only
 router.post("/", authorize(ROLES.OWNER), createOrUpdateSchedule);
+router.put(
+  "/class/:classId",
+  validateObjectId("classId"),
+  authorize(ROLES.OWNER),
+  saveClassSchedule,
+);
 router.patch(
   "/class/:classId/subject/:subjectId/topic",
   validateObjectId("classId"),
