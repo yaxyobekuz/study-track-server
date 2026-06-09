@@ -115,13 +115,32 @@ const bootstrap = async () => {
   startTestSessionExpiryCron();
   startSeasonStatusCron();
 
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);
     logger.info(`Muhit: ${config.nodeEnv}`);
+  });
+
+  // app.listen xatolarini ushlash (masalan, port band bo'lsa EADDRINUSE)
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      // console.error ishlatamiz, chunki logger faylga yozib ulgurmasdan process.exit bo'lib ketadi
+      console.error(
+        `\n[XATO] Port ${config.port} band. Boshqa jarayon shu portni egallab turibdi.\n` +
+          `Yechim: o'sha jarayonni to'xtating yoki .env faylida PORT qiymatini o'zgartiring.\n`,
+      );
+      logger.error(`Port ${config.port} band (EADDRINUSE)`);
+    } else {
+      console.error("[XATO] Server ishga tushmadi:", err);
+      logger.error("Server listen xatosi:", err);
+    }
+    process.exit(1);
   });
 };
 
 bootstrap().catch((err) => {
+  // logger async faylga yozadi, process.exit dan oldin flush bo'lmasligi mumkin -
+  // shuning uchun konsolga ham chiqaramiz
+  console.error("[XATO] Server ishga tushishda xato:", err);
   logger.error("Server ishga tushishda xato:", err);
   process.exit(1);
 });
