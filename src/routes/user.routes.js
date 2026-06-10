@@ -9,6 +9,8 @@ const {
   resetPassword,
   getUserPassword,
   deleteUser,
+  archiveStudent,
+  restoreStudent,
   getStats,
   exportUsersToExcel,
   getStudents,
@@ -39,5 +41,9 @@ router.route("/:id").all(validateObjectId("id")).get(getUser).put(updateUser).de
 
 router.put("/:id/reset-password", validateObjectId("id"), resetPassword);
 router.get("/:id/password", validateObjectId("id"), getUserPassword);
+
+// Arxivlash / arxivdan qaytarish (faqat o'quvchilar uchun)
+router.put("/:id/archive", validateObjectId("id"), archiveStudent);
+router.put("/:id/restore", validateObjectId("id"), restoreStudent);
 
 module.exports = router;

@@ -75,6 +75,21 @@ const userSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    // Arxivlash (o'quvchini o'chirish o'rniga yumshoq o'chirish)
+    isArchived: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+    // 0lashtirishdan oldingi asl qiymatlar zaxirasi (har ehtimolga qarshi)
+    archiveSnapshot: {
+      coinBalance: { type: Number, default: null },
+      penaltyPoints: { type: Number, default: null },
+    },
     // Davomat uchun ish jadvali override (null = roldan meros oladi)
     workStartTime: {
       type: String,
@@ -205,6 +220,7 @@ userSchema.set("toJSON", {
 
 // Indexes for better query performance
 userSchema.index({ role: 1, isActive: 1 });
+userSchema.index({ role: 1, isArchived: 1 });
 userSchema.index({ classes: 1 });
 
 // POST-SAVE HOOK: Create WeeklyStats for new student

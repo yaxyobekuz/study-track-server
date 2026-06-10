@@ -80,6 +80,33 @@ const deleteUser = asyncHandler(async (req, res) => {
   });
 });
 
+// Archive student (Owner only)
+const archiveStudent = asyncHandler(async (req, res) => {
+  const { resetCoins, resetPenalties } = req.body;
+
+  const user = await userService.archiveStudent(req.params.id, {
+    resetCoins: Boolean(resetCoins),
+    resetPenalties: Boolean(resetPenalties),
+  });
+
+  res.json({
+    success: true,
+    message: "O'quvchi muvaffaqiyatli arxivlandi",
+    data: user,
+  });
+});
+
+// Restore archived student (Owner only)
+const restoreStudent = asyncHandler(async (req, res) => {
+  const user = await userService.restoreStudent(req.params.id);
+
+  res.json({
+    success: true,
+    message: "O'quvchi arxivdan qaytarildi",
+    data: user,
+  });
+});
+
 // Export users to Excel (Owner only)
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
@@ -147,6 +174,8 @@ module.exports = {
   resetPassword,
   getUserPassword,
   deleteUser,
+  archiveStudent,
+  restoreStudent,
   getStats,
   exportUsersToExcel,
   getStudents,

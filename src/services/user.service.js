@@ -13,7 +13,7 @@ async function getStats() {
   const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
     TgUser.countDocuments(),
     User.countDocuments({ role: { $nin: ["owner", "student"] } }),
-    User.countDocuments({ role: "student" }),
+    User.countDocuments({ role: "student", isArchived: { $ne: true } }),
     Premium.countDocuments({ status: "active" }),
   ]);
 
@@ -26,11 +26,18 @@ async function getStats() {
  * @returns {Promise<{users: Array, pagination: object}>}
  */
 async function getAllUsers(query) {
-  const { role, class: classId, page = 1, limit = 24, search } = query;
+  const { role, class: classId, page = 1, limit = 24, search, archived } = query;
 
   const filter = {};
   if (role) filter.role = role;
   if (classId) filter.classes = classId;
+
+  // Arxivlangan tab faqat arxivlanganlarni, Asosiy tab esa qolganlarni ko'rsatadi
+  if (archived === "true" || archived === true) {
+    filter.isArchived = true;
+  } else {
+    filter.isArchived = { $ne: true };
+  }
 
   if (search && search.trim()) {
     const searchRegex = new RegExp(search.trim(), "i");
@@ -276,7 +283,82 @@ async function deleteUser(id) {
     throw new ForbiddenError("Egasi foydalanuvchisini o'chirish mumkin emas");
   }
 
+  if (user.role === "student") {
+    throw new BadRequestError(
+      "O'quvchini o'chirib bo'lmaydi. Uning o'rniga arxivlang",
+    );
+  }
+
   await user.deleteOne();
+}
+
+/**
+ * O'quvchini arxivlash (yumshoq o'chirish).
+ * Ixtiyoriy ravishda Tangalar va/yoki Jarimalarni 0 ga tushiradi.
+ * Asl qiymatlar har ehtimolga qarshi archiveSnapshot da saqlanadi.
+ * @param {string} id - o'quvchi ID
+ * @param {{ resetCoins?: boolean, resetPenalties?: boolean }} options
+ * @returns {Promise<object>} arxivlangan o'quvchi
+ */
+async function archiveStudent(id, options = {}) {
+  const { resetCoins = false, resetPenalties = false } = options;
+
+  const user = await User.findById(id);
+  if (!user) {
+    throw new NotFoundError("Foydalanuvchi topilmadi");
+  }
+
+  if (user.role !== "student") {
+    throw new BadRequestError("Faqat o'quvchini arxivlash mumkin");
+  }
+
+  if (user.isArchived) {
+    throw new BadRequestError("O'quvchi allaqachon arxivlangan");
+  }
+
+  // 0lashtirishdan oldingi asl qiymatlarni saqlab qo'yamiz
+  user.archiveSnapshot = {
+    coinBalance: user.coinBalance,
+    penaltyPoints: user.penaltyPoints,
+  };
+
+  if (resetCoins) user.coinBalance = 0;
+  if (resetPenalties) user.penaltyPoints = 0;
+
+  user.isArchived = true;
+  user.archivedAt = new Date();
+
+  await user.save();
+
+  return User.findById(user._id)
+    .populate("classes", "name")
+    .select("-password");
+}
+
+/**
+ * Arxivlangan o'quvchini qaytarish.
+ * Balanslar o'zgartirilmaydi (0 holatda qoladi), archiveSnapshot saqlanib qoladi.
+ * @param {string} id - o'quvchi ID
+ * @returns {Promise<object>} qaytarilgan o'quvchi
+ */
+async function restoreStudent(id) {
+  const user = await User.findById(id);
+  if (!user) {
+    throw new NotFoundError("Foydalanuvchi topilmadi");
+  }
+
+  if (!user.isArchived) {
+    throw new BadRequestError("O'quvchi arxivlanmagan");
+  }
+
+  user.isArchived = false;
+  user.archivedAt = null;
+
+  await user.save();
+
+  return User.findById(user._id)
+    .populate("classes", "name")
+    .select("-password");
 }
 
 /**
@@ -320,7 +402,11 @@ async function getUsersForExport(role) {
  * @returns {Promise<Array>}
  */
 async function getAllUsersShort() {
-  return User.find({ isActive: true, role: { $ne: "owner" } })
+  return User.find({
+    isActive: true,
+    isArchived: { $ne: true },
+    role: { $ne: "owner" },
+  })
     .select("firstName lastName role")
     .sort({ role: 1, firstName: 1 })
     .lean();
@@ -334,7 +420,7 @@ async function getAllUsersShort() {
 async function getStudents(query) {
   const { search, limit = 500 } = query;
 
-  const filter = { role: "student" };
+  const filter = { role: "student", isArchived: { $ne: true } };
 
   if (search && search.trim()) {
     const searchRegex = new RegExp(search.trim(), "i");
@@ -411,6 +497,8 @@ module.exports = {
   resetPassword,
   getUserPassword,
   deleteUser,
+  archiveStudent,
+  restoreStudent,
   getUsersForExport,
   getAllUsersShort,
   getStudents,
