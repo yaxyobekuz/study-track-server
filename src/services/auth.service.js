@@ -25,6 +25,10 @@ async function login(username, password) {
     throw new ForbiddenError("Sizning hisobingiz faol emas");
   }
 
+  if (user.isArchived) {
+    throw new ForbiddenError("Sizning hisobingiz arxivlangan");
+  }
+
   const token = generateToken(user._id);
 
   return {

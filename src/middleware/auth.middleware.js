@@ -37,6 +37,10 @@ const protect = asyncHandler(async (req, res, next) => {
     throw new UnauthorizedError("Sizning hisobingiz faol emas");
   }
 
+  if (user.isArchived) {
+    throw new UnauthorizedError("Sizning hisobingiz arxivlangan");
+  }
+
   // Lazy premium expiry check
   if (user.premium?.isActive && user.premium?.expiresAt < new Date()) {
     User.findByIdAndUpdate(user._id, { "premium.isActive": false }).exec().catch(() => {});
