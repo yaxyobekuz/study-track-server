@@ -6,6 +6,9 @@ const {
   createClass,
   updateClass,
   deleteClass,
+  addStudentsToClass,
+  removeStudentsFromClass,
+  moveStudentsToClass,
   exportClassStudents,
   exportClasses,
 } = require("../controllers/class.controller");
@@ -26,5 +29,10 @@ router.get("/:id/export", validateObjectId("id"), authorize(ROLES.OWNER), export
 router.post("/", authorize(ROLES.OWNER), createClass);
 router.put("/:id", validateObjectId("id"), authorize(ROLES.OWNER), updateClass);
 router.delete("/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteClass);
+
+// Sinf o'quvchilarini boshqarish (owner only)
+router.post("/:id/students/add", validateObjectId("id"), authorize(ROLES.OWNER), addStudentsToClass);
+router.post("/:id/students/remove", validateObjectId("id"), authorize(ROLES.OWNER), removeStudentsFromClass);
+router.post("/:id/students/move", validateObjectId("id"), authorize(ROLES.OWNER), moveStudentsToClass);
 
 module.exports = router;

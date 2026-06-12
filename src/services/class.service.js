@@ -122,6 +122,104 @@ async function deleteClass(id) {
 }
 
 /**
+ * Mavjud o'quvchilarni sinfga qo'shish.
+ * @param {string} classId - sinf ID
+ * @param {string[]} studentIds - o'quvchilar ID lari
+ * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
+ */
+async function addStudentsToClass(classId, studentIds) {
+  const classData = await Class.findById(classId);
+  if (!classData) {
+    throw new NotFoundError("Sinf topilmadi");
+  }
+
+  if (!Array.isArray(studentIds) || studentIds.length === 0) {
+    throw new BadRequestError("O'quvchilar tanlanmagan");
+  }
+
+  const result = await User.updateMany(
+    { _id: { $in: studentIds }, role: "student" },
+    { $addToSet: { classes: classId } },
+  );
+
+  return { modified: result.modifiedCount };
+}
+
+/**
+ * O'quvchilarni sinfdan chiqarish (tanlangan yoki barchasini).
+ * @param {string} classId - sinf ID
+ * @param {object} options - { studentIds, all }
+ * @param {string[]} [options.studentIds] - tanlangan o'quvchilar ID lari
+ * @param {boolean} [options.all] - sinfdagi barcha o'quvchilarni chiqarish
+ * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
+ */
+async function removeStudentsFromClass(classId, { studentIds, all } = {}) {
+  const classData = await Class.findById(classId);
+  if (!classData) {
+    throw new NotFoundError("Sinf topilmadi");
+  }
+
+  const filter = { role: "student", classes: classId };
+
+  if (!all) {
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      throw new BadRequestError("O'quvchilar tanlanmagan");
+    }
+    filter._id = { $in: studentIds };
+  }
+
+  const result = await User.updateMany(filter, {
+    $pull: { classes: classId },
+  });
+
+  return { modified: result.modifiedCount };
+}
+
+/**
+ * Tanlangan o'quvchilarni boshqa sinfga ko'chirish.
+ * Joriy sinfdan chiqarib, maqsadli sinfga qo'shadi.
+ * @param {string} classId - joriy sinf ID
+ * @param {string[]} studentIds - o'quvchilar ID lari
+ * @param {string} targetClassId - maqsadli sinf ID
+ * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
+ */
+async function moveStudentsToClass(classId, studentIds, targetClassId) {
+  if (!targetClassId) {
+    throw new BadRequestError("Maqsadli sinf tanlanmagan");
+  }
+
+  if (String(targetClassId) === String(classId)) {
+    throw new BadRequestError("O'quvchilar allaqachon shu sinfda");
+  }
+
+  if (!Array.isArray(studentIds) || studentIds.length === 0) {
+    throw new BadRequestError("O'quvchilar tanlanmagan");
+  }
+
+  const [source, target] = await Promise.all([
+    Class.findById(classId),
+    Class.findById(targetClassId),
+  ]);
+
+  if (!source) {
+    throw new NotFoundError("Sinf topilmadi");
+  }
+  if (!target) {
+    throw new NotFoundError("Maqsadli sinf topilmadi");
+  }
+
+  const matchFilter = { _id: { $in: studentIds }, role: "student" };
+
+  // $pull va $addToSet bir xil maydonga bitta amalda kelisha olmaydi - ikki bosqich
+  await User.updateMany(matchFilter, { $pull: { classes: classId } });
+  const result = await User.updateMany(matchFilter, {
+    $addToSet: { classes: targetClassId },
+  });
+
+  return { modified: result.modifiedCount };
+}
+
+/**
  * Sinf o'quvchilarini Excel eksport uchun olish.
  * @param {string} classId - sinf ID
  * @returns {Promise<{classData: object, data: Array}>} sinf va formatlangan o'quvchilar
@@ -183,6 +281,9 @@ module.exports = {
   createClass,
   updateClass,
   deleteClass,
+  addStudentsToClass,
+  removeStudentsFromClass,
+  moveStudentsToClass,
   getClassStudentsForExport,
   getAllClassesForExport,
 };

@@ -55,6 +55,49 @@ const deleteClass = asyncHandler(async (req, res) => {
   });
 });
 
+// Add existing students to class (Owner only)
+const addStudentsToClass = asyncHandler(async (req, res) => {
+  const { studentIds } = req.body;
+  const data = await classService.addStudentsToClass(req.params.id, studentIds);
+
+  res.json({
+    success: true,
+    message: "O'quvchilar sinfga qo'shildi",
+    data,
+  });
+});
+
+// Remove students from class (Owner only)
+const removeStudentsFromClass = asyncHandler(async (req, res) => {
+  const { studentIds, all } = req.body;
+  const data = await classService.removeStudentsFromClass(req.params.id, {
+    studentIds,
+    all,
+  });
+
+  res.json({
+    success: true,
+    message: "O'quvchilar sinfdan chiqarildi",
+    data,
+  });
+});
+
+// Move students to another class (Owner only)
+const moveStudentsToClass = asyncHandler(async (req, res) => {
+  const { studentIds, targetClassId } = req.body;
+  const data = await classService.moveStudentsToClass(
+    req.params.id,
+    studentIds,
+    targetClassId,
+  );
+
+  res.json({
+    success: true,
+    message: "O'quvchilar boshqa sinfga ko'chirildi",
+    data,
+  });
+});
+
 // Export class students to Excel
 const exportClassStudents = asyncHandler(async (req, res) => {
   const { classData, data } = await classService.getClassStudentsForExport(
@@ -108,6 +151,9 @@ module.exports = {
   createClass,
   updateClass,
   deleteClass,
+  addStudentsToClass,
+  removeStudentsFromClass,
+  moveStudentsToClass,
   exportClassStudents,
   exportClasses,
 };
