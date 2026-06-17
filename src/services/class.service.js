@@ -137,8 +137,20 @@ async function addStudentsToClass(classId, studentIds) {
     throw new BadRequestError("O'quvchilar tanlanmagan");
   }
 
+  // Arxivlangan o'quvchilarga sinf biriktirib bo'lmaydi
+  const archivedCount = await User.countDocuments({
+    _id: { $in: studentIds },
+    role: "student",
+    isArchived: true,
+  });
+  if (archivedCount > 0) {
+    throw new BadRequestError(
+      "Arxivlangan o'quvchilarga sinf biriktirish mumkin emas",
+    );
+  }
+
   const result = await User.updateMany(
-    { _id: { $in: studentIds }, role: "student" },
+    { _id: { $in: studentIds }, role: "student", isArchived: { $ne: true } },
     { $addToSet: { classes: classId } },
   );
 
@@ -208,7 +220,23 @@ async function moveStudentsToClass(classId, studentIds, targetClassId) {
     throw new NotFoundError("Maqsadli sinf topilmadi");
   }
 
-  const matchFilter = { _id: { $in: studentIds }, role: "student" };
+  // Arxivlangan o'quvchilarni boshqa sinfga ko'chirib bo'lmaydi
+  const archivedCount = await User.countDocuments({
+    _id: { $in: studentIds },
+    role: "student",
+    isArchived: true,
+  });
+  if (archivedCount > 0) {
+    throw new BadRequestError(
+      "Arxivlangan o'quvchilarni sinfga ko'chirish mumkin emas",
+    );
+  }
+
+  const matchFilter = {
+    _id: { $in: studentIds },
+    role: "student",
+    isArchived: { $ne: true },
+  };
 
   // $pull va $addToSet bir xil maydonga bitta amalda kelisha olmaydi - ikki bosqich
   await User.updateMany(matchFilter, { $pull: { classes: classId } });

@@ -212,6 +212,11 @@ async function updateUser(id, data) {
   }
 
   if (user.role === "student" && userClasses) {
+    if (user.isArchived && userClasses.length > 0) {
+      throw new BadRequestError(
+        "Arxivlangan o'quvchiga sinf biriktirish mumkin emas",
+      );
+    }
     for (const classId of userClasses) {
       const classExists = await Class.findById(classId);
       if (!classExists) {
@@ -324,6 +329,9 @@ async function archiveStudent(id, options = {}) {
 
   if (resetCoins) user.coinBalance = 0;
   if (resetPenalties) user.penaltyPoints = 0;
+
+  // Arxivlangan o'quvchi barcha sinflardan avtomatik chiqariladi
+  user.classes = [];
 
   user.isArchived = true;
   user.archivedAt = new Date();
