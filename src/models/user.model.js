@@ -155,10 +155,10 @@ const userSchema = new mongoose.Schema(
       ref: "Image",
       default: null,
     },
+    // EmojiConfig hujjati _id si (string sifatida saqlanadi)
     emojiBadgeId: {
-      type: Number,
+      type: String,
       default: null,
-      min: 1,
     },
     displayName: {
       type: String,

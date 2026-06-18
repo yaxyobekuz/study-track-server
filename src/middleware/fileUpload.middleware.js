@@ -13,6 +13,8 @@ const FILE_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/plain",
   ],
+  // Lottie animatsiya (.json) fayllari
+  json: ["application/json", "text/plain", "application/octet-stream"],
 };
 
 /**

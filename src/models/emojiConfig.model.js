@@ -2,31 +2,21 @@ const mongoose = require("mongoose");
 
 const emojiConfigSchema = new mongoose.Schema(
   {
-    emojiId: {
-      type: Number,
-      required: true,
-      unique: true,
-      min: 1,
-    },
-    // Matches the animation file basename used in the frontend mapping
-    key: {
+    // Emoji nomi (admin tomonidan kiritiladi)
+    name: {
       type: String,
       required: true,
       trim: true,
     },
-    label: {
+    // S3 (DigitalOcean Spaces) dagi lottie-react .json fayl URL manzili
+    animationUrl: {
       type: String,
       required: true,
-      trim: true,
     },
-    isActive: {
-      type: Boolean,
-      default: true,
-      index: true,
-    },
-    sortOrder: {
-      type: Number,
-      default: 0,
+    // S3 obyekt kaliti (o'chirish/almashtirish uchun)
+    fileKey: {
+      type: String,
+      required: true,
     },
   },
   { timestamps: true }
