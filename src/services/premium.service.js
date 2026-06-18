@@ -8,6 +8,7 @@ const PremiumSettings = require("../models/premiumSettings.model");
 const CoinTransaction = require("../models/coinTransaction.model");
 const { uploadImageWithVariants, deleteImageVariants } = require("./image.service");
 const fileStorageService = require("./fileStorage.service");
+const { notifyPremiumEvent } = require("./premiumNotification.service");
 const { ValidationError, NotFoundError, BadRequestError } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const logger = require("../utils/logger");
@@ -77,6 +78,13 @@ const purchasePremium = async (studentId) => {
   logger.info(`Premium sotib olindi: student=${studentId}, endDate=${endDate}`);
 
   const updatedUser = await User.findById(studentId).populate("profilePicture");
+
+  // Bot orqali xabar (asosiy oqimni bloklamaydi)
+  notifyPremiumEvent(updatedUser, "purchased", {
+    durationDays,
+    expiresAt: endDate,
+  });
+
   return updatedUser;
 };
 
@@ -528,7 +536,12 @@ const grantPremium = async (studentId, durationDays, adminId) => {
 
   logger.info(`Premium qo'lda berildi: student=${studentId}, by=${adminId}, endDate=${endDate}`);
 
-  return User.findById(studentId).populate("profilePicture");
+  const updatedUser = await User.findById(studentId).populate("profilePicture");
+
+  // Bot orqali xabar
+  notifyPremiumEvent(updatedUser, "granted", { durationDays: days, expiresAt: endDate });
+
+  return updatedUser;
 };
 
 /**
@@ -556,7 +569,12 @@ const revokePremium = async (studentId, adminId) => {
 
   logger.info(`Premium bekor qilindi: student=${studentId}, by=${adminId}`);
 
-  return User.findById(studentId).populate("profilePicture");
+  const updatedUser = await User.findById(studentId).populate("profilePicture");
+
+  // Bot orqali xabar
+  notifyPremiumEvent(updatedUser, "revoked");
+
+  return updatedUser;
 };
 
 // ─────────────────────────────────────────────────────────────────
