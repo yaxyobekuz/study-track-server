@@ -105,6 +105,14 @@ const bootstrap = async () => {
   await initOwner();
   await initRoles();
 
+  // Eski/yetim indekslarni tozalash (masalan, EmojiConfig.emojiId_1 UNIQUE)
+  try {
+    const EmojiConfig = require("./src/models/emojiConfig.model");
+    await EmojiConfig.dropLegacyIndexes();
+  } catch (err) {
+    logger.warn(`EmojiConfig indekslarini tozalashda xato: ${err.message}`);
+  }
+
   // Cron job'larni faqat DB ulanganidan keyin ishga tushirish
   startWeeklyStatsCron();
   startTopicIncrementCron();
