@@ -27,13 +27,26 @@ const premiumSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["active", "expired"],
+      enum: ["active", "expired", "revoked"],
       default: "active",
       index: true,
     },
     coinBalanceAfter: {
       type: Number,
       required: true,
+    },
+    // Obuna manbasi: o'quvchi sotib oldimi yoki admin qo'lda berdimi
+    source: {
+      type: String,
+      enum: ["purchase", "admin_grant"],
+      default: "purchase",
+      index: true,
+    },
+    // Admin qo'lda bergan/bekor qilgan bo'lsa, kim qilgani
+    grantedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
     },
   },
   { timestamps: true }
