@@ -90,10 +90,19 @@ async function createWeeklyStatsForStudent(studentId, weekNumber, year) {
 async function recalculateWeeklyStats(weeklyStats) {
   const { weekStart, weekEnd } = weeklyStats;
 
-  // 1. Get all grades for this week (from all student's classes)
+  // Keep the class snapshot in sync with the student's CURRENT classes.
+  // Stats are per-student per-week; a mid-week class change must not drop
+  // the student from their new class's rankings.
+  const student = await User.findById(weeklyStats.student).select("classes");
+  if (student && student.classes && student.classes.length > 0) {
+    weeklyStats.classes = student.classes;
+  }
+
+  // 1. Get all grades for this week (regardless of class).
+  // Weekly stats reflect every grade the student earned during the week;
+  // the class is just a label and must not filter the calculation.
   const grades = await Grade.find({
     student: weeklyStats.student,
-    class: { $in: weeklyStats.classes },
     date: { $gte: weekStart, $lte: weekEnd },
   }).populate("subject teacher");
 
