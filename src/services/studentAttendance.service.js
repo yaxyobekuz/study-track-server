@@ -63,11 +63,12 @@ async function updateRecord(recordId, { status, excuseReason }, modifiedBy) {
   return record;
 }
 
-async function getTodayClassAttendance(classId) {
+async function getTodayClassAttendance(classId, dateInput) {
   const classDoc = await Class.findById(classId).lean();
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
-  const today = getTodayNormalized();
+  // Sana berilsa o'sha kun, aks holda bugun (default)
+  const today = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
 
   const students = await User.find(
     { classes: classId, role: "student", isActive: true },

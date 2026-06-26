@@ -21,7 +21,10 @@ const updateRecord = asyncHandler(async (req, res) => {
 });
 
 const getTodayClass = asyncHandler(async (req, res) => {
-  const result = await studentAttendanceService.getTodayClassAttendance(req.params.classId);
+  const result = await studentAttendanceService.getTodayClassAttendance(
+    req.params.classId,
+    req.query.date || null,
+  );
   res.json({ success: true, ...result });
 });
 

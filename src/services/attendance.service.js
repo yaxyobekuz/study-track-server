@@ -459,8 +459,9 @@ async function getUserMonthRecords(userId, month, year) {
   return { user, records, summary };
 }
 
-async function getTodayAllRecords(roleFilter) {
-  const today = getTodayNormalized();
+async function getTodayAllRecords(roleFilter, dateInput) {
+  // Sana berilsa o'sha kun, aks holda bugun (default)
+  const day = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
 
   const userFilter = { isActive: true, role: { $nin: ["owner", "student"] } };
   if (roleFilter) userFilter.role = roleFilter;
@@ -471,7 +472,7 @@ async function getTodayAllRecords(roleFilter) {
   ).lean();
   const userIds = allUsers.map((u) => u._id);
 
-  const records = await Attendance.find({ user: { $in: userIds }, date: today })
+  const records = await Attendance.find({ user: { $in: userIds }, date: day })
     .populate("user", "firstName lastName role")
     .lean();
 
@@ -513,7 +514,7 @@ async function getTodayAllRecords(roleFilter) {
     notMarked: rows.filter((r) => r.status === "not_marked").length,
   };
 
-  return { rows, summary, date: today };
+  return { rows, summary, date: day };
 }
 
 async function getSettings() {

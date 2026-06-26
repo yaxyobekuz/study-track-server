@@ -69,7 +69,10 @@ const getMyHistory = asyncHandler(async (req, res) => {
 });
 
 const getTodayAll = asyncHandler(async (req, res) => {
-  const result = await attendanceService.getTodayAllRecords(req.query.role || null);
+  const result = await attendanceService.getTodayAllRecords(
+    req.query.role || null,
+    req.query.date || null,
+  );
   res.json({ success: true, ...result });
 });
 
