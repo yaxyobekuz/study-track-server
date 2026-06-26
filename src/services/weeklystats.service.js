@@ -43,6 +43,28 @@ async function updateWeeklyStatsForGrade(gradeDoc) {
 }
 
 /**
+ * Recalculate the current week's stats for a single student.
+ * Use when something other than a grade changes the inputs — e.g. the
+ * student is moved to a different class mid-week. Without this, the weekly
+ * stats only refresh on the next grade event.
+ */
+async function recalculateCurrentWeekForStudent(studentId) {
+  const { weekNumber, year } = getCurrentWeekRange();
+
+  const weeklyStats = await WeeklyStats.findOne({
+    student: studentId,
+    year,
+    weekNumber,
+  });
+
+  if (weeklyStats) {
+    await recalculateWeeklyStats(weeklyStats);
+  } else {
+    await createWeeklyStatsForStudent(studentId, weekNumber, year);
+  }
+}
+
+/**
  * Create WeeklyStats for a student
  */
 async function createWeeklyStatsForStudent(studentId, weekNumber, year) {
@@ -402,6 +424,7 @@ function getWeekRangeByNumber(weekNumber, year) {
 
 module.exports = {
   updateWeeklyStatsForGrade,
+  recalculateCurrentWeekForStudent,
   createWeeklyStatsForStudent,
   recalculateWeeklyStats,
   generateWeeklyStatsForAllStudents,

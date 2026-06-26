@@ -8,6 +8,10 @@ const {
   ForbiddenError,
   BadRequestError,
 } = require("../utils/errors");
+const logger = require("../utils/logger");
+const {
+  recalculateCurrentWeekForStudent,
+} = require("./weeklystats.service");
 
 async function getStats() {
   const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
@@ -211,6 +215,7 @@ async function updateUser(id, data) {
     if (weeklySchedule !== undefined) user.weeklySchedule = weeklySchedule || {};
   }
 
+  let classesChanged = false;
   if (user.role === "student" && userClasses) {
     if (user.isArchived && userClasses.length > 0) {
       throw new BadRequestError(
@@ -223,10 +228,32 @@ async function updateUser(id, data) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
     }
+
+    // Sinf haqiqatan o'zgardimi - aniqlaymiz (keraksiz qayta hisoblashning oldini olish uchun)
+    const prevClasses = user.classes.map((c) => c.toString()).sort();
+    const nextClasses = userClasses.map((c) => c.toString()).sort();
+    classesChanged =
+      prevClasses.length !== nextClasses.length ||
+      prevClasses.some((c, i) => c !== nextClasses[i]);
+
     user.classes = userClasses;
   }
 
   await user.save();
+
+  // Sinf o'zgargan bo'lsa, joriy hafta statistikasini darhol qayta hisoblaymiz.
+  // Aks holda statistika faqat keyingi baho hodisasida yangilanardi.
+  // Statistika xatosi foydalanuvchi yangilanishini buzmasligi kerak.
+  if (classesChanged) {
+    try {
+      await recalculateCurrentWeekForStudent(user._id);
+    } catch (error) {
+      logger.error(
+        "Sinf o'zgarganda haftalik statistikani yangilashda xato:",
+        error,
+      );
+    }
+  }
 
   return User.findById(user._id)
     .populate("classes", "name")
