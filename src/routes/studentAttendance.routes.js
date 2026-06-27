@@ -5,6 +5,7 @@ const {
   mark,
   updateRecord,
   getTodayClass,
+  getTodayAllStudents,
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,
@@ -13,6 +14,7 @@ const {
 
 // Reception va owner: belgilash va ko'rish
 router.get("/classes", protect, authorize("owner", "reception"), getClasses);
+router.get("/today", protect, authorize("owner", "reception"), getTodayAllStudents);
 router.get("/today/:classId", protect, authorize("owner", "reception"), getTodayClass);
 router.post("/mark", protect, authorize("owner", "reception"), mark);
 router.put("/:id", protect, authorize("owner", "reception"), updateRecord);

@@ -28,6 +28,11 @@ const getTodayClass = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+const getTodayAllStudents = asyncHandler(async (req, res) => {
+  const result = await studentAttendanceService.getTodayAllStudents(req);
+  res.json({ success: true, ...result });
+});
+
 const getClasses = asyncHandler(async (req, res) => {
   const result = await studentAttendanceService.getClassList();
   res.json({ success: true, data: result });
@@ -64,6 +69,7 @@ module.exports = {
   mark,
   updateRecord,
   getTodayClass,
+  getTodayAllStudents,
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,

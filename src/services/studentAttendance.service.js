@@ -102,6 +102,91 @@ async function getTodayClassAttendance(classId, dateInput) {
   return { classInfo: classDoc, students: data, summary, date: today };
 }
 
+/**
+ * Barcha sinflar bo'yicha bir kunlik o'quvchilar davomati (sahifalangan).
+ * Ko'p yuklamani kamaytirish uchun o'quvchilar sahifalab qaytariladi.
+ * Yig'indi esa barcha faol o'quvchilar bo'yicha hisoblanadi (sahifadan qat'i nazar).
+ * @param {Object} req - Express request (query: date, status, page, limit)
+ */
+async function getTodayAllStudents(req) {
+  const { page, limit, skip } = getPaginationParams(req, 20);
+  const dateInput = req.query.date || null;
+  const status = req.query.status || null;
+
+  // Sana berilsa o'sha kun, aks holda bugun (default)
+  const day = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
+
+  // Shu kunning barcha o'quvchi davomat yozuvlari (xarita va yig'indi uchun)
+  const dayRecords = await StudentAttendance.find({ date: day })
+    .select("student status markedAt excuseReason")
+    .lean();
+
+  const recordMap = {};
+  for (const rec of dayRecords) {
+    recordMap[String(rec.student)] = rec;
+  }
+
+  // Yig'indi - barcha faol o'quvchilar bo'yicha
+  const totalStudents = await User.countDocuments({
+    role: "student",
+    isActive: true,
+  });
+
+  const summary = { present: 0, late: 0, absent: 0, excused: 0, unmarked: 0 };
+  for (const rec of dayRecords) {
+    if (summary[rec.status] !== undefined) summary[rec.status]++;
+  }
+  summary.unmarked = Math.max(
+    0,
+    totalStudents -
+      (summary.present + summary.late + summary.absent + summary.excused)
+  );
+
+  // Status filtri bo'yicha o'quvchilarni cheklash
+  const userFilter = { role: "student", isActive: true };
+  if (status) {
+    if (status === "unmarked") {
+      userFilter._id = { $nin: dayRecords.map((r) => r.student) };
+    } else {
+      const matchedIds = dayRecords
+        .filter((r) => r.status === status)
+        .map((r) => r.student);
+      userFilter._id = { $in: matchedIds };
+    }
+  }
+
+  const [students, total] = await Promise.all([
+    User.find(userFilter, "firstName lastName classes")
+      .populate("classes", "name")
+      .sort({ lastName: 1, firstName: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    User.countDocuments(userFilter),
+  ]);
+
+  const data = students.map((student) => ({
+    student,
+    attendance: recordMap[String(student._id)] || null,
+  }));
+
+  const totalPages = Math.ceil(total / limit) || 1;
+
+  return {
+    students: data,
+    summary,
+    date: day,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPrevPage: page > 1,
+    },
+  };
+}
+
 async function getClassList() {
   const today = getTodayNormalized();
 
@@ -210,6 +295,7 @@ module.exports = {
   markAttendance,
   updateRecord,
   getTodayClassAttendance,
+  getTodayAllStudents,
   getClassList,
   getClassMonthRecords,
   getStudentMonthRecords,
