@@ -26,7 +26,7 @@ const emojiConfigSchema = new mongoose.Schema(
  * Eski sxemadan qolib ketgan yetim indekslarni (masalan, `emojiId_1` UNIQUE)
  * o'chiradi. Yangi sxemada faqat `_id` indeksi kerak. Bu funksiya har bir
  * muhitda (localhost, prod) ishga tushishda chaqiriladi va o'zini-o'zi
- * tuzatadi — natijada "emojiId allaqachon mavjud" (E11000 null duplicate)
+ * tuzatadi - natijada "emojiId allaqachon mavjud" (E11000 null duplicate)
  * xatosi yo'qoladi.
  * @returns {Promise<void>}
  */

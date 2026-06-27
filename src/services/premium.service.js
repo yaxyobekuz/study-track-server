@@ -328,7 +328,7 @@ const buildSubscriptionFilter = (query = {}) => {
     filter.status = query.status;
   }
   if (query.source && ["purchase", "admin_grant"].includes(query.source)) {
-    // Eski hujjatlarda source maydoni yo'q — ularni "purchase" deb hisoblaymiz
+    // Eski hujjatlarda source maydoni yo'q - ularni "purchase" deb hisoblaymiz
     filter.source =
       query.source === "purchase"
         ? { $in: ["purchase", null] }

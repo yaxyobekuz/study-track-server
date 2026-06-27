@@ -44,7 +44,7 @@ async function updateWeeklyStatsForGrade(gradeDoc) {
 
 /**
  * Recalculate the current week's stats for a single student.
- * Use when something other than a grade changes the inputs — e.g. the
+ * Use when something other than a grade changes the inputs - e.g. the
  * student is moved to a different class mid-week. Without this, the weekly
  * stats only refresh on the next grade event.
  */
