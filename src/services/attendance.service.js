@@ -498,6 +498,7 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         checkOut: rec?.checkOut || null,
         isLate: rec?.isLate || false,
         lateMinutes: rec?.lateMinutes || 0,
+        excuseReason: rec?.excuseReason || null,
         outOfOffice: rec?.outOfOffice || false,
         expectedStart: schedule.workStartTime || null,
         expectedEnd: schedule.workEndTime || null,
@@ -515,6 +516,60 @@ async function getTodayAllRecords(roleFilter, dateInput) {
   };
 
   return { rows, summary, date: day };
+}
+
+/**
+ * Xodimlar davomatini qo'lda belgilash/o'zgartirish (istalgan kun uchun).
+ * Geolokatsiyasiz, to'g'ridan-to'g'ri status qo'yiladi (admin tuzatishi).
+ * @param {{date: string, records: Array<{userId, status, excuseReason}>}} payload
+ * @param {string} markedBy - belgilayotgan admin _id
+ */
+async function markStaffAttendance({ date, records }, markedBy) {
+  if (!Array.isArray(records) || records.length === 0) {
+    throw new BadRequestError("Belgilash uchun yozuvlar yo'q");
+  }
+
+  const normalizedDate = date ? normalizeDateTashkent(date) : getTodayNormalized();
+  const validStatuses = ["present", "late", "absent", "excused"];
+
+  const results = [];
+  for (const rec of records) {
+    const { userId, status, excuseReason } = rec;
+
+    if (!validStatuses.includes(status)) {
+      throw new BadRequestError(`Noto'g'ri status: ${status}`);
+    }
+
+    const user = await User.findById(userId, "role").lean();
+    if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
+    if (user.role === "student" || user.role === "owner") {
+      throw new BadRequestError(
+        "Bu foydalanuvchi uchun davomat belgilab bo'lmaydi",
+      );
+    }
+
+    const updated = await Attendance.findOneAndUpdate(
+      { user: userId, date: normalizedDate },
+      {
+        $set: {
+          status,
+          excuseReason: status === "excused" ? excuseReason || null : null,
+          autoMarked: false,
+          lastModifiedBy: markedBy,
+        },
+        $setOnInsert: {
+          user: userId,
+          date: normalizedDate,
+          createdBy: markedBy,
+        },
+      },
+      { upsert: true, new: true, runValidators: true },
+    );
+
+    results.push(updated);
+  }
+
+  return results;
 }
 
 async function getSettings() {
@@ -743,6 +798,7 @@ module.exports = {
   checkOut,
   getTodayRecord,
   getTodayAllRecords,
+  markStaffAttendance,
   getMyHistory,
   getAllRecords,
   getUserMonthRecords,

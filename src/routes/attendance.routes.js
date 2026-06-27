@@ -4,6 +4,7 @@ const { protect, authorize } = require("../middleware/auth.middleware");
 const {
   getToday,
   getTodayAll,
+  markStaff,
   checkIn,
   checkOut,
   getMySchedule,
@@ -28,6 +29,7 @@ router.put("/settings", protect, authorize("owner"), updateSettings);
 
 router.get("/today", protect, getToday);
 router.get("/today/all", protect, authorize("owner"), getTodayAll);
+router.post("/mark", protect, authorize("owner"), markStaff);
 router.get("/my", protect, getMyHistory);
 router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);

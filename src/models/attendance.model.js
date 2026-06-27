@@ -78,12 +78,25 @@ const attendanceSchema = new mongoose.Schema(
       ref: "Penalty",
       default: null,
     },
+    // "Sababli" (excused) holat uchun sabab (qo'lda belgilashda)
+    excuseReason: {
+      type: String,
+      maxlength: [300, "Sabab matni 300 ta belgidan oshmasligi kerak"],
+      default: null,
+      trim: true,
+    },
     // Cron job tomonidan avtomatik yaratilgan
     autoMarked: {
       type: Boolean,
       default: false,
     },
     createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    // Qo'lda oxirgi marta o'zgartirgan admin
+    lastModifiedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       default: null,

@@ -76,6 +76,15 @@ const getTodayAll = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+const markStaff = asyncHandler(async (req, res) => {
+  const { date, records } = req.body;
+  const result = await attendanceService.markStaffAttendance(
+    { date, records },
+    req.user._id,
+  );
+  res.json({ success: true, data: result });
+});
+
 const getSettings = asyncHandler(async (req, res) => {
   const settings = await attendanceService.getSettings();
   res.json({ success: true, data: settings });
@@ -190,6 +199,7 @@ const reviewExcuse = asyncHandler(async (req, res) => {
 module.exports = {
   getToday,
   getTodayAll,
+  markStaff,
   checkIn,
   checkOut,
   getMySchedule,
