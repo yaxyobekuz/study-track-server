@@ -378,6 +378,21 @@ async function getScheduleForExport(classId) {
 }
 
 /**
+ * Dars mavjud (kamida bitta fan) sinf+kun juftliklari to'plamini qaytaradi.
+ * Kalit formati: "<classId>|<dayName>" (masalan "65f...|dushanba").
+ * Davomat cron va hisobotlarida "bu sinfda shu kuni dars bormi?" tekshiruvi uchun.
+ * @returns {Promise<Set<string>>}
+ */
+async function getLessonDayMap() {
+  const schedules = await Schedule.find(
+    { "subjects.0": { $exists: true } },
+    "class day",
+  ).lean();
+
+  return new Set(schedules.map((s) => `${s.class}|${s.day}`));
+}
+
+/**
  * Bugungi barcha jadvallarni olish.
  * @returns {Promise<Array>} formatlangan jadvallar
  */
@@ -539,6 +554,7 @@ module.exports = {
   saveClassSchedule,
   deleteSchedule,
   getScheduleForExport,
+  getLessonDayMap,
   getAllTodaySchedules,
   getMyTodaySchedule,
   getClassesBySubject,

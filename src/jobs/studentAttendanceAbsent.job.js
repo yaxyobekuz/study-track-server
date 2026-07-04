@@ -4,15 +4,29 @@ const StudentAttendance = require("../models/studentAttendance.model");
 const Holiday = require("../models/holiday.model");
 const logger = require("../utils/logger");
 const { getTodayNormalized } = require("../services/attendance.service");
+const { getLessonDayMap } = require("../services/schedule.service");
+const { DAYS_UZ } = require("../utils/constants");
 
 async function runStudentAbsentMarking() {
   const today = getTodayNormalized();
+
+  // Normallashgan sananing UTC kuni = Toshkent hafta kuni
+  const dayName = DAYS_UZ[today.getUTCDay()];
+
+  // Yakshanba - dars yo'q, hech kim absent belgilanmaydi
+  if (today.getUTCDay() === 0) {
+    logger.info("[StudentAttendanceCron] Bugun yakshanba, o'tkazib yuborildi");
+    return;
+  }
 
   const { isHoliday } = await Holiday.isHoliday(today);
   if (isHoliday) {
     logger.info("[StudentAttendanceCron] Bugun bayram kuni, o'tkazib yuborildi");
     return;
   }
+
+  // Bugun darsi bor sinflar to'plami ("classId|dayName")
+  const lessonDays = await getLessonDayMap();
 
   const students = await User.find(
     { isActive: true, role: "student" },
@@ -26,6 +40,7 @@ async function runStudentAbsentMarking() {
 
   let marked = 0;
   let skipped = 0;
+  let skippedNoLesson = 0;
   let errors = 0;
 
   for (const student of students) {
@@ -40,11 +55,14 @@ async function runStudentAbsentMarking() {
         continue;
       }
 
-      const classId =
-        student.classes && student.classes.length > 0 ? student.classes[0] : null;
+      // O'quvchining bugun darsi bor birinchi sinfini topamiz.
+      // Jadvalga ko'ra darsi bo'lmagan o'quvchi absent belgilanmaydi.
+      const classId = (student.classes || []).find((c) =>
+        lessonDays.has(`${c}|${dayName}`)
+      );
 
       if (!classId) {
-        skipped++;
+        skippedNoLesson++;
         continue;
       }
 
@@ -64,7 +82,7 @@ async function runStudentAbsentMarking() {
   }
 
   logger.info(
-    `[StudentAttendanceCron] Tugadi: ${marked} absent belgilandi, ${skipped} o'tkazib yuborildi, ${errors} xato`
+    `[StudentAttendanceCron] Tugadi: ${marked} absent belgilandi, ${skipped} o'tkazib yuborildi, ${skippedNoLesson} darsi yo'q, ${errors} xato`
   );
 }
 
