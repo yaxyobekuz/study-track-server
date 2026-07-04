@@ -7,6 +7,8 @@ const {
   getTodayNormalized,
   getTodayAllRecords,
 } = require("./attendance.service");
+const { getLessonDayMap } = require("./schedule.service");
+const { DAYS_UZ } = require("../utils/constants");
 
 // Xavfli guruh chegaralari: 3+ kun ketma-ket yoki oyda 5+ kun qoldirish
 const RISK_CONSECUTIVE_DAYS = 3;
@@ -23,17 +25,20 @@ function emptyCounts() {
   return { present: 0, late: 0, absent: 0, excused: 0, total: 0 };
 }
 
-// Berilgan filtr bo'yicha o'quvchi davomatini statuslar kesimida sanaydi
-async function countStudentStatuses(dateFilter) {
-  const rows = await StudentAttendance.aggregate([
-    { $match: { date: dateFilter } },
-    { $group: { _id: "$status", count: { $sum: 1 } } },
-  ]);
+// Yozuv sinfida o'sha kuni dars bormi? Dars bo'lmagan kun (masalan yakshanba
+// yoki jadvalda darsi yo'q sinf kunlari) davomatsizlik hisobiga kirmaydi.
+// (Yakshanba jadval enum'ida umuman yo'q - avtomatik chiqarib tashlanadi.)
+function isLessonDayRecord(lessonDays, rec) {
+  const dayName = DAYS_UZ[new Date(rec.date).getUTCDay()];
+  return lessonDays.has(`${rec.class}|${dayName}`);
+}
 
+// Yozuvlarni statuslar kesimida sanaydi
+function countStatuses(records) {
   const counts = emptyCounts();
-  for (const row of rows) {
-    if (counts[row._id] !== undefined) counts[row._id] = row.count;
-    counts.total += row.count;
+  for (const rec of records) {
+    if (counts[rec.status] !== undefined) counts[rec.status]++;
+    counts.total++;
   }
   return counts;
 }
@@ -63,50 +68,42 @@ async function getStudentReport(month, year) {
   const mondayOffset = (today.getUTCDay() + 6) % 7;
   const weekStart = new Date(today.getTime() - mondayOffset * 86400000);
 
-  const [
-    totalStudents,
-    dailyCounts,
-    weeklyCounts,
-    byDayRows,
-    byClassRows,
-    excusedByReason,
-    monthRecords,
-  ] = await Promise.all([
-    User.countDocuments({ role: "student", isActive: true }),
-    countStudentStatuses(today),
-    countStudentStatuses({ $gte: weekStart, $lte: today }),
-    // Oy ichida kun + status kesimida
-    StudentAttendance.aggregate([
-      { $match: { date: { $gte: start, $lt: end } } },
-      { $group: { _id: { date: "$date", status: "$status" }, count: { $sum: 1 } } },
-    ]),
-    // Sinf + status kesimida
-    StudentAttendance.aggregate([
-      { $match: { date: { $gte: start, $lt: end } } },
-      { $group: { _id: { class: "$class", status: "$status" }, count: { $sum: 1 } } },
-    ]),
-    // "Sababli" yozuvlar kategoriya kesimida
-    StudentAttendance.aggregate([
-      { $match: { date: { $gte: start, $lt: end }, status: "excused" } },
-      { $group: { _id: "$absenceReason", count: { $sum: 1 } } },
-    ]),
-    // Xavfli guruh va eng yaxshilar uchun xom yozuvlar (sana bo'yicha tartiblangan)
-    StudentAttendance.find(
-      { date: { $gte: start, $lt: end } },
-      "student status date",
-    )
-      .sort({ date: 1 })
-      .lean(),
-  ]);
+  // Sinf+kun bo'yicha dars mavjudligi xaritasi (jadvaldan)
+  const lessonDays = await getLessonDayMap();
+
+  const [totalStudents, todayRecordsRaw, weekRecordsRaw, monthRecordsRaw] =
+    await Promise.all([
+      User.countDocuments({ role: "student", isActive: true }),
+      StudentAttendance.find({ date: today }, "class status date").lean(),
+      StudentAttendance.find(
+        { date: { $gte: weekStart, $lte: today } },
+        "class status date",
+      ).lean(),
+      // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
+      StudentAttendance.find(
+        { date: { $gte: start, $lt: end } },
+        "student class status date absenceReason",
+      )
+        .sort({ date: 1 })
+        .lean(),
+    ]);
+
+  // Dars bo'lmagan kun/sinf yozuvlarini barcha hisob-kitoblardan chiqarib tashlaymiz
+  const todayRecords = todayRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
+  const weekRecords = weekRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
+  const monthRecords = monthRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
+
+  const dailyCounts = countStatuses(todayRecords);
+  const weeklyCounts = countStatuses(weekRecords);
 
   // ── Kun bo'yicha hisob ────────────────────────────────────────────
   const dayMap = new Map();
-  for (const row of byDayRows) {
-    const key = new Date(row._id.date).toISOString().slice(0, 10);
+  for (const rec of monthRecords) {
+    const key = new Date(rec.date).toISOString().slice(0, 10);
     if (!dayMap.has(key)) dayMap.set(key, { date: key, ...emptyCounts() });
     const day = dayMap.get(key);
-    if (day[row._id.status] !== undefined) day[row._id.status] = row.count;
-    day.total += row.count;
+    if (day[rec.status] !== undefined) day[rec.status]++;
+    day.total++;
   }
   const byDay = [...dayMap.values()]
     .sort((a, b) => a.date.localeCompare(b.date))
@@ -149,12 +146,12 @@ async function getStudentReport(month, year) {
 
   // ── Sinf kesimi ───────────────────────────────────────────────────
   const classMap = new Map();
-  for (const row of byClassRows) {
-    const key = String(row._id.class);
+  for (const rec of monthRecords) {
+    const key = String(rec.class);
     if (!classMap.has(key)) classMap.set(key, { classId: key, ...emptyCounts() });
     const cls = classMap.get(key);
-    if (cls[row._id.status] !== undefined) cls[row._id.status] = row.count;
-    cls.total += row.count;
+    if (cls[rec.status] !== undefined) cls[rec.status]++;
+    cls.total++;
   }
   const classDocs = await Class.find(
     { _id: { $in: [...classMap.keys()] } },
@@ -253,7 +250,16 @@ async function getStudentReport(month, year) {
 
   // ── Sabablar tahlili ──────────────────────────────────────────────
   const missedTotal = monthlyCounts.absent + monthlyCounts.excused;
-  const reasonIds = excusedByReason.map((r) => r._id).filter(Boolean);
+
+  // "Sababli" yozuvlar kategoriya kesimida (null -> kategoriyasiz)
+  const reasonCountMap = new Map();
+  for (const rec of monthRecords) {
+    if (rec.status !== "excused") continue;
+    const key = rec.absenceReason ? String(rec.absenceReason) : null;
+    reasonCountMap.set(key, (reasonCountMap.get(key) || 0) + 1);
+  }
+
+  const reasonIds = [...reasonCountMap.keys()].filter(Boolean);
   const reasonDocs = await AbsenceReason.find(
     { _id: { $in: reasonIds } },
     "title",
@@ -261,12 +267,12 @@ async function getStudentReport(month, year) {
   const reasonTitleMap = Object.fromEntries(
     reasonDocs.map((r) => [String(r._id), r.title]),
   );
-  const categories = excusedByReason
-    .map((r) => ({
-      title: r._id ? reasonTitleMap[String(r._id)] || "-" : "Kategoriyasiz",
-      count: r.count,
+  const categories = [...reasonCountMap.entries()]
+    .map(([id, count]) => ({
+      title: id ? reasonTitleMap[id] || "-" : "Kategoriyasiz",
+      count,
       percent: missedTotal
-        ? Math.round((r.count / missedTotal) * 1000) / 10
+        ? Math.round((count / missedTotal) * 1000) / 10
         : null,
     }))
     .sort((a, b) => b.count - a.count);
