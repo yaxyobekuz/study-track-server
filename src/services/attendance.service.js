@@ -499,6 +499,7 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         isLate: rec?.isLate || false,
         lateMinutes: rec?.lateMinutes || 0,
         excuseReason: rec?.excuseReason || null,
+        absenceReason: rec?.absenceReason || null,
         outOfOffice: rec?.outOfOffice || false,
         expectedStart: schedule.workStartTime || null,
         expectedEnd: schedule.workEndTime || null,
@@ -534,10 +535,15 @@ async function markStaffAttendance({ date, records }, markedBy) {
 
   const results = [];
   for (const rec of records) {
-    const { userId, status, excuseReason } = rec;
+    const { userId, status, excuseReason, absenceReason } = rec;
 
     if (!validStatuses.includes(status)) {
       throw new BadRequestError(`Noto'g'ri status: ${status}`);
+    }
+
+    // "Sababli" holatda sabab (kategoriya) majburiy
+    if (status === "excused" && !absenceReason) {
+      throw new BadRequestError("'Sababli' holat uchun sabab tanlanishi shart");
     }
 
     const user = await User.findById(userId, "role").lean();
@@ -548,12 +554,15 @@ async function markStaffAttendance({ date, records }, markedBy) {
       );
     }
 
+    const isExcused = status === "excused";
+
     const updated = await Attendance.findOneAndUpdate(
       { user: userId, date: normalizedDate },
       {
         $set: {
           status,
-          excuseReason: status === "excused" ? excuseReason || null : null,
+          absenceReason: isExcused ? absenceReason : null,
+          excuseReason: isExcused ? excuseReason || null : null,
           autoMarked: false,
           lastModifiedBy: markedBy,
         },
@@ -607,7 +616,7 @@ const EXCUSE_STATUS_LABELS_UZ = {
   rejected: "rad etilgan",
 };
 
-async function createExcuseRequest(userId, date, reason, type) {
+async function createExcuseRequest(userId, { date, reason, type, absenceReason }) {
   const normalizedDate = normalizeDateTashkent(date);
   const today = getTodayNormalized();
 
@@ -642,7 +651,8 @@ async function createExcuseRequest(userId, date, reason, type) {
   return ExcuseRequest.create({
     user: userId,
     date: normalizedDate,
-    reason,
+    absenceReason: absenceReason || null,
+    reason: reason || null,
     type: type || "after",
   });
 }
@@ -682,6 +692,7 @@ async function getRecentExcuses() {
       .sort({ createdAt: -1 })
       .limit(LIMIT)
       .populate("user", userFields)
+      .populate("absenceReason", "title")
       .lean(),
     ExcuseRequest.countDocuments({ status: "pending" }),
   ]);
@@ -694,6 +705,7 @@ async function getRecentExcuses() {
       .limit(LIMIT - items.length)
       .populate("user", userFields)
       .populate("reviewedBy", "firstName lastName")
+      .populate("absenceReason", "title")
       .lean();
     items = items.concat(approved);
   }
@@ -712,6 +724,7 @@ async function getMyExcuses(userId, req) {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
+      .populate("absenceReason", "title")
       .lean(),
     ExcuseRequest.countDocuments(filter),
   ]);
@@ -732,6 +745,7 @@ async function getAllExcuses(req) {
       .limit(limit)
       .populate("user", "firstName lastName username role")
       .populate("reviewedBy", "firstName lastName")
+      .populate("absenceReason", "title")
       .lean(),
     ExcuseRequest.countDocuments(filter),
   ]);
@@ -775,15 +789,21 @@ async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
       });
       record.status = "excused";
       record.penaltyApplied = false;
+      record.absenceReason = excuse.absenceReason || null;
+      record.excuseReason = excuse.reason || null;
       await record.save();
     } else if (record && record.status === "absent") {
       record.status = "excused";
+      record.absenceReason = excuse.absenceReason || null;
+      record.excuseReason = excuse.reason || null;
       await record.save();
     } else if (!record) {
       await Attendance.create({
         user: excuse.user,
         date: excuse.date,
         status: "excused",
+        absenceReason: excuse.absenceReason || null,
+        excuseReason: excuse.reason || null,
         autoMarked: true,
         createdBy: reviewedBy,
       });

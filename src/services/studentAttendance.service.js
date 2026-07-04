@@ -15,11 +15,18 @@ async function markAttendance({ classId, date, records }, markedBy) {
   const results = [];
 
   for (const rec of records) {
-    const { studentId, status, excuseReason } = rec;
+    const { studentId, status, excuseReason, absenceReason } = rec;
 
     if (!["present", "late", "absent", "excused"].includes(status)) {
       throw new BadRequestError(`Noto'g'ri status: ${status}`);
     }
+
+    // "Sababli" holatda sabab (kategoriya) majburiy
+    if (status === "excused" && !absenceReason) {
+      throw new BadRequestError("'Sababli' holat uchun sabab tanlanishi shart");
+    }
+
+    const isExcused = status === "excused";
 
     const updated = await StudentAttendance.findOneAndUpdate(
       { student: studentId, date: normalizedDate },
@@ -30,7 +37,8 @@ async function markAttendance({ classId, date, records }, markedBy) {
           date: normalizedDate,
           status,
           markedAt: now,
-          excuseReason: excuseReason || null,
+          absenceReason: isExcused ? absenceReason : null,
+          excuseReason: isExcused ? excuseReason || null : null,
           autoMarked: false,
           lastModifiedBy: markedBy,
         },

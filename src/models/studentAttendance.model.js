@@ -31,6 +31,12 @@ const studentAttendanceSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    // "Sababli" holat uchun tanlangan kategoriya (Kelmaslik sababi)
+    absenceReason: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AbsenceReason",
+      default: null,
+    },
     autoMarked: {
       type: Boolean,
       default: false,

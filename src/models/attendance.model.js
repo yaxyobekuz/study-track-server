@@ -78,12 +78,18 @@ const attendanceSchema = new mongoose.Schema(
       ref: "Penalty",
       default: null,
     },
-    // "Sababli" (excused) holat uchun sabab (qo'lda belgilashda)
+    // "Sababli" (excused) holat uchun qo'shimcha izoh (qo'lda belgilashda)
     excuseReason: {
       type: String,
       maxlength: [300, "Sabab matni 300 ta belgidan oshmasligi kerak"],
       default: null,
       trim: true,
+    },
+    // "Sababli" holat uchun tanlangan kategoriya (Kelmaslik sababi)
+    absenceReason: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AbsenceReason",
+      default: null,
     },
     // Cron job tomonidan avtomatik yaratilgan
     autoMarked: {

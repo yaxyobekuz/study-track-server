@@ -26,11 +26,18 @@ const excuseRequestSchema = new mongoose.Schema(
       type: Date,
       required: [true, "Sana majburiy"],
     },
+    // Tanlangan sabab kategoriyasi (Kelmaslik sababi)
+    absenceReason: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "AbsenceReason",
+      default: null,
+    },
+    // Qo'shimcha ixtiyoriy izoh
     reason: {
       type: String,
-      required: [true, "Sabab majburiy"],
       trim: true,
       maxlength: [500, "Sabab maksimal 500 ta belgidan iborat bo'lishi kerak"],
+      default: null,
     },
     // advance = oldindan so'rov, after = kelmaganidan keyin so'rov
     type: {

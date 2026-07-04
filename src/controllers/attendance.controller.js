@@ -127,20 +127,20 @@ const getRecord = asyncHandler(async (req, res) => {
 });
 
 const createExcuseRequest = asyncHandler(async (req, res) => {
-  const { date, reason, type } = req.body;
+  const { date, reason, type, absenceReason } = req.body;
 
   if (!date) throw new BadRequestError("Sana majburiy");
-  if (!reason) throw new BadRequestError("Sabab majburiy");
+  if (!absenceReason) throw new BadRequestError("Sabab tanlanishi shart");
   if (!type || !["advance", "after"].includes(type)) {
     throw new BadRequestError("So'rov turi noto'g'ri (advance | after)");
   }
 
-  const excuse = await attendanceService.createExcuseRequest(
-    req.user._id,
+  const excuse = await attendanceService.createExcuseRequest(req.user._id, {
     date,
     reason,
     type,
-  );
+    absenceReason,
+  });
 
   res.status(201).json({ success: true, data: excuse });
 });
@@ -170,6 +170,7 @@ const getExcuse = asyncHandler(async (req, res) => {
   const excuse = await ExcuseRequest.findById(req.params.id)
     .populate("user", "firstName lastName username role")
     .populate("reviewedBy", "firstName lastName")
+    .populate("absenceReason", "title")
     .lean();
 
   if (!excuse) throw new NotFoundError("So'rov topilmadi");
