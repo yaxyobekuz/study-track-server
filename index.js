@@ -21,6 +21,10 @@ const mongoSanitize = require("express-mongo-sanitize");
 // Routes
 const routes = require("./src/routes");
 
+// Swagger UI (o'qituvchi paneli API hujjati)
+const swaggerUi = require("swagger-ui-express");
+const teacherApiSpec = require("./src/docs/teacherSwagger");
+
 // Database connection
 const connectDB = require("./src/config/database");
 
@@ -51,6 +55,17 @@ const app = express();
 
 // Trust proxy
 app.set("trust proxy", 1);
+
+// Swagger UI — helmet'dan OLDIN ulanadi (CSP inline skriptlarni bloklamasligi uchun)
+// O'qituvchi paneli API hujjati: http://localhost:<PORT>/api-docs
+app.use(
+  "/api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(teacherApiSpec, {
+    customSiteTitle: "Study-Track — O'qituvchi API",
+    swaggerOptions: { persistAuthorization: true },
+  }),
+);
 
 // Security middleware
 app.use(helmet());
