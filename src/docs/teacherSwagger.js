@@ -1,10 +1,13 @@
 /**
  * Study-Track — O'qituvchi (Teacher) paneli uchun Swagger/OpenAPI spetsifikatsiyasi.
  *
- * Ushbu fayl faqat o'qituvchi paneli (teacher frontend) foydalanadigan
- * endpointlarni hujjatlashtiradi. Har bir endpoint tavsifida kerakli
- * rol ("Ruxsat") ko'rsatilgan — chunki ba'zi endpointlar owner/student
- * uchun ham qo'shilgan (masalan, umumiy ma'lumotnomalar).
+ * MUHIM: Bu hujjatda FAQAT o'qituvchi (teacher) roli kira oladigan endpointlar bor.
+ * Ya'ni:
+ *   - roli aniq `teacher` ni o'z ichiga oladigan endpointlar, YOKI
+ *   - har qanday tizimga kirgan foydalanuvchi (protect) ucha oladigan endpointlar,
+ *   - hamda `POST /auth/login` (public).
+ * Owner-only va student-only endpointlar bu yerga KIRITILMAGAN (teacher token
+ * ularga 403 qaytaradi).
  *
  * Swagger UI: GET /api-docs
  * Baza URL:   http://localhost:7070/api
@@ -96,7 +99,7 @@ const schemas = {
     },
   },
 
-  // Foydalanuvchi
+  // Foydalanuvchi (auth/me va o'quvchilar ro'yxati uchun)
   User: {
     type: "object",
     properties: {
@@ -106,58 +109,12 @@ const schemas = {
       lastName: { type: "string", example: "Valiyev" },
       fullName: { type: "string", example: "Ali Valiyev" },
       role: { type: "string", example: "teacher" },
-      gender: { type: "string", enum: ["male", "female", null], example: "male" },
       classes: {
         type: "array",
         items: { $ref: "#/components/schemas/ClassRef" },
       },
-      isActive: { type: "boolean", example: true },
-      isArchived: { type: "boolean", example: false },
-      coinBalance: { type: "number", example: 0 },
       penaltyPoints: { type: "number", example: 0 },
-      workStartTime: { type: "string", nullable: true, example: "09:00" },
-      workEndTime: { type: "string", nullable: true, example: "18:00" },
-      workDays: {
-        type: "array",
-        items: { type: "integer" },
-        example: [1, 2, 3, 4, 5],
-      },
-      createdAt: { type: "string", format: "date-time" },
-      updatedAt: { type: "string", format: "date-time" },
-    },
-  },
-  UserCreateRequest: {
-    type: "object",
-    required: ["username", "password", "firstName", "lastName", "role"],
-    properties: {
-      username: { type: "string", example: "student01" },
-      password: { type: "string", format: "password", example: "parol123" },
-      firstName: { type: "string", example: "Vali" },
-      lastName: { type: "string", example: "Aliyev" },
-      role: { type: "string", example: "student" },
-      gender: { type: "string", enum: ["male", "female"], example: "male" },
-      classes: {
-        type: "array",
-        items: { type: "string", description: "Class ObjectId" },
-      },
-      workStartTime: { type: "string", example: "09:00" },
-      workEndTime: { type: "string", example: "18:00" },
-      workDays: { type: "array", items: { type: "integer" }, example: [1, 2, 3, 4, 5] },
-    },
-  },
-
-  // Rol
-  Role: {
-    type: "object",
-    properties: {
-      _id: { type: "string" },
-      name: { type: "string", example: "O'qituvchi" },
-      value: { type: "string", example: "teacher" },
-      isSystem: { type: "boolean", example: true },
-      workStartTime: { type: "string", nullable: true, example: "09:00" },
-      workEndTime: { type: "string", nullable: true, example: "18:00" },
-      workDays: { type: "array", items: { type: "integer" }, example: [1, 2, 3, 4, 5] },
-      usersCount: { type: "integer", example: 12 },
+      coinBalance: { type: "number", example: 0 },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
     },
@@ -227,32 +184,6 @@ const schemas = {
       },
       createdAt: { type: "string", format: "date-time" },
       updatedAt: { type: "string", format: "date-time" },
-    },
-  },
-  ScheduleCreateRequest: {
-    type: "object",
-    required: ["classId", "day", "subjects"],
-    properties: {
-      classId: { type: "string", description: "Class ObjectId" },
-      day: {
-        type: "string",
-        enum: ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"],
-      },
-      subjects: {
-        type: "array",
-        minItems: 1,
-        items: {
-          type: "object",
-          required: ["subject", "teacher", "order"],
-          properties: {
-            subject: { type: "string", description: "Subject ObjectId" },
-            teacher: { type: "string", description: "User (teacher) ObjectId" },
-            order: { type: "integer", minimum: 1, maximum: 100, example: 1 },
-            startTime: { type: "string", example: "09:00" },
-            endTime: { type: "string", example: "09:45" },
-          },
-        },
-      },
     },
   },
 
@@ -744,7 +675,7 @@ const xlsxResponse = {
   },
 };
 
-// Umumiy parametrlar
+// Umumiy path parametr
 const idParam = (name = "id", desc = "ObjectId") => ({
   name,
   in: "path",
@@ -754,7 +685,7 @@ const idParam = (name = "id", desc = "ObjectId") => ({
 });
 
 // ---------------------------------------------------------------------------
-// Yo'llar (paths)
+// Yo'llar (paths) — FAQAT o'qituvchi (teacher) kira oladigan endpointlar
 // ---------------------------------------------------------------------------
 
 const paths = {
@@ -795,301 +726,44 @@ const paths = {
     },
   },
 
-  // ===================== FOYDALANUVCHILAR =====================
-  "/users": {
-    get: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchilar ro'yxati (paginatsiya)",
-      description: "Ruxsat: owner.",
-      parameters: [
-        { name: "role", in: "query", schema: { type: "string" }, description: "Rol bo'yicha filtr" },
-        { name: "class", in: "query", schema: { type: "string" }, description: "Sinf ObjectId" },
-        { name: "search", in: "query", schema: { type: "string" } },
-        { name: "page", in: "query", schema: { type: "integer", default: 1 } },
-        { name: "limit", in: "query", schema: { type: "integer", default: 24 } },
-        { name: "archived", in: "query", schema: { type: "boolean" } },
-      ],
-      responses: {
-        200: {
-          description: "Ro'yxat + paginatsiya",
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: {
-                  success: { type: "boolean", example: true },
-                  data: { type: "array", items: { $ref: "#/components/schemas/User" } },
-                  pagination: { $ref: "#/components/schemas/Pagination" },
-                },
-              },
-            },
-          },
-        },
-        401: responses.Unauthorized,
-        403: responses.Forbidden,
-      },
-    },
-    post: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Yangi foydalanuvchi yaratish",
-      description: "Ruxsat: owner.",
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": { schema: { $ref: "#/components/schemas/UserCreateRequest" } },
-        },
-      },
-      responses: {
-        201: okData("#/components/schemas/User"),
-        400: responses.BadRequest,
-        403: responses.Forbidden,
-      },
-    },
-  },
+  // ===================== FOYDALANUVCHILAR (o'qituvchiga ruxsat berilganlari) =====================
   "/users/all-short": {
     get: {
       tags: ["Foydalanuvchilar"],
       summary: "Barcha foydalanuvchilar (qisqa)",
       description: "Ruxsat: owner, teacher, reception.",
-      responses: { 200: okData("#/components/schemas/UserRef", true), 401: responses.Unauthorized },
+      responses: {
+        200: okData("#/components/schemas/UserRef", true),
+        401: responses.Unauthorized,
+      },
     },
   },
   "/users/students": {
     get: {
       tags: ["Foydalanuvchilar"],
       summary: "O'quvchilar ro'yxati (qisqa)",
-      description: "Ruxsat: owner, teacher.",
+      description: "Ruxsat: owner, teacher. Baho/xabar uchun o'quvchilarni tanlashda ishlatiladi.",
       parameters: [
         { name: "search", in: "query", schema: { type: "string" } },
         { name: "limit", in: "query", schema: { type: "integer", default: 500 } },
       ],
-      responses: { 200: okData("#/components/schemas/User", true), 401: responses.Unauthorized },
-    },
-  },
-  "/users/stats": {
-    get: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchilar statistikasi",
-      description: "Ruxsat: owner.",
       responses: {
-        200: {
-          description: "Statistika",
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: {
-                  success: { type: "boolean" },
-                  data: {
-                    type: "object",
-                    properties: {
-                      telegramUsers: { type: "integer" },
-                      workers: { type: "integer" },
-                      students: { type: "integer" },
-                      premiumUsers: { type: "integer" },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-        403: responses.Forbidden,
-      },
-    },
-  },
-  "/users/export": {
-    get: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchilarni Excelga eksport",
-      description: "Ruxsat: owner.",
-      parameters: [{ name: "role", in: "query", schema: { type: "string" } }],
-      responses: { 200: xlsxResponse, 403: responses.Forbidden },
-    },
-  },
-  "/users/{id}": {
-    get: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Bitta foydalanuvchi",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "User ObjectId")],
-      responses: { 200: okData("#/components/schemas/User"), 404: responses.NotFound },
-    },
-    put: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchini tahrirlash",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "User ObjectId")],
-      requestBody: {
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              properties: {
-                firstName: { type: "string" },
-                lastName: { type: "string" },
-                gender: { type: "string", enum: ["male", "female"] },
-                classes: { type: "array", items: { type: "string" } },
-                isActive: { type: "boolean" },
-                workStartTime: { type: "string" },
-                workEndTime: { type: "string" },
-                workDays: { type: "array", items: { type: "integer" } },
-              },
-            },
-          },
-        },
-      },
-      responses: { 200: okData("#/components/schemas/User"), 404: responses.NotFound },
-    },
-    delete: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchini o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "User ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
-  },
-  "/users/{id}/reset-password": {
-    put: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Parolni tiklash",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "User ObjectId")],
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              required: ["newPassword"],
-              properties: { newPassword: { type: "string", format: "password" } },
-            },
-          },
-        },
-      },
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
-  },
-  "/users/{id}/password": {
-    get: {
-      tags: ["Foydalanuvchilar"],
-      summary: "Foydalanuvchi parolini ko'rish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "User ObjectId")],
-      responses: {
-        200: {
-          description: "Parol",
-          content: {
-            "application/json": {
-              schema: {
-                type: "object",
-                properties: {
-                  success: { type: "boolean" },
-                  data: { type: "object", properties: { password: { type: "string" } } },
-                },
-              },
-            },
-          },
-        },
-        403: responses.Forbidden,
+        200: okData("#/components/schemas/User", true),
+        401: responses.Unauthorized,
       },
     },
   },
 
-  // ===================== ROLLAR =====================
-  "/roles": {
-    get: {
-      tags: ["Rollar"],
-      summary: "Rollar ro'yxati",
-      description: "Ruxsat: owner.",
-      responses: { 200: okData("#/components/schemas/Role", true), 403: responses.Forbidden },
-    },
-    post: {
-      tags: ["Rollar"],
-      summary: "Yangi rol yaratish",
-      description: "Ruxsat: owner.",
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              required: ["name", "value"],
-              properties: {
-                name: { type: "string", example: "Menejer" },
-                value: { type: "string", example: "manager" },
-                workStartTime: { type: "string", example: "09:00" },
-                workEndTime: { type: "string", example: "18:00" },
-                workDays: { type: "array", items: { type: "integer" }, example: [1, 2, 3, 4, 5] },
-              },
-            },
-          },
-        },
-      },
-      responses: { 201: okData("#/components/schemas/Role"), 400: responses.BadRequest },
-    },
-  },
-  "/roles/options": {
-    get: {
-      tags: ["Rollar"],
-      summary: "Rol variantlari (select uchun)",
-      description: "Ruxsat: owner.",
-      responses: { 200: okData("#/components/schemas/Role", true), 403: responses.Forbidden },
-    },
-  },
-  "/roles/{id}": {
-    put: {
-      tags: ["Rollar"],
-      summary: "Rolni tahrirlash",
-      description: "Ruxsat: owner. Tizim rollari (isSystem) nomi/qiymati o'zgartirilmaydi.",
-      parameters: [idParam("id", "Role ObjectId")],
-      requestBody: {
-        content: { "application/json": { schema: { $ref: "#/components/schemas/Role" } } },
-      },
-      responses: { 200: okData("#/components/schemas/Role"), 404: responses.NotFound },
-    },
-    delete: {
-      tags: ["Rollar"],
-      summary: "Rolni o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Role ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
-  },
-
-  // ===================== SINFLAR =====================
+  // ===================== SINFLAR (faqat o'qish) =====================
   "/classes": {
     get: {
       tags: ["Sinflar"],
       summary: "Sinflar ro'yxati",
       description: "Ruxsat: token bilan kirgan har qanday foydalanuvchi.",
-      responses: { 200: okData("#/components/schemas/Class", true), 401: responses.Unauthorized },
-    },
-    post: {
-      tags: ["Sinflar"],
-      summary: "Yangi sinf yaratish",
-      description: "Ruxsat: owner.",
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              required: ["name"],
-              properties: { name: { type: "string", example: "10-A" } },
-            },
-          },
-        },
+      responses: {
+        200: okData("#/components/schemas/Class", true),
+        401: responses.Unauthorized,
       },
-      responses: { 201: okData("#/components/schemas/Class"), 400: responses.BadRequest },
-    },
-  },
-  "/classes/export": {
-    get: {
-      tags: ["Sinflar"],
-      summary: "Barcha sinflarni Excelga eksport",
-      description: "Ruxsat: owner.",
-      responses: { 200: xlsxResponse, 403: responses.Forbidden },
     },
   },
   "/classes/{id}": {
@@ -1100,123 +774,22 @@ const paths = {
       parameters: [idParam("id", "Class ObjectId")],
       responses: { 200: okData("#/components/schemas/Class"), 404: responses.NotFound },
     },
-    put: {
-      tags: ["Sinflar"],
-      summary: "Sinfni tahrirlash",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Class ObjectId")],
-      requestBody: {
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              properties: { name: { type: "string" }, isActive: { type: "boolean" } },
-            },
-          },
-        },
-      },
-      responses: { 200: okData("#/components/schemas/Class"), 404: responses.NotFound },
-    },
-    delete: {
-      tags: ["Sinflar"],
-      summary: "Sinfni o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Class ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
-  },
-  "/classes/{id}/export": {
-    get: {
-      tags: ["Sinflar"],
-      summary: "Sinf o'quvchilarini Excelga eksport",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Class ObjectId")],
-      responses: { 200: xlsxResponse, 403: responses.Forbidden },
-    },
   },
 
-  // ===================== FANLAR =====================
+  // ===================== FANLAR (faqat o'qish) =====================
   "/subjects": {
     get: {
       tags: ["Fanlar"],
       summary: "Fanlar ro'yxati",
       description: "Ruxsat: token bilan kirgan foydalanuvchi.",
-      responses: { 200: okData("#/components/schemas/Subject", true), 401: responses.Unauthorized },
-    },
-    post: {
-      tags: ["Fanlar"],
-      summary: "Yangi fan yaratish",
-      description: "Ruxsat: owner.",
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              required: ["name"],
-              properties: {
-                name: { type: "string", example: "Fizika" },
-                description: { type: "string" },
-              },
-            },
-          },
-        },
+      responses: {
+        200: okData("#/components/schemas/Subject", true),
+        401: responses.Unauthorized,
       },
-      responses: { 201: okData("#/components/schemas/Subject"), 400: responses.BadRequest },
-    },
-  },
-  "/subjects/export": {
-    get: {
-      tags: ["Fanlar"],
-      summary: "Fanlarni Excelga eksport",
-      description: "Ruxsat: owner.",
-      responses: { 200: xlsxResponse, 403: responses.Forbidden },
-    },
-  },
-  "/subjects/{id}": {
-    put: {
-      tags: ["Fanlar"],
-      summary: "Fanni tahrirlash",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Subject ObjectId")],
-      requestBody: {
-        content: { "application/json": { schema: { $ref: "#/components/schemas/Subject" } } },
-      },
-      responses: { 200: okData("#/components/schemas/Subject"), 404: responses.NotFound },
-    },
-    delete: {
-      tags: ["Fanlar"],
-      summary: "Fanni o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Subject ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
     },
   },
 
-  // ===================== MAVZULAR =====================
-  "/topics/upload": {
-    post: {
-      tags: ["Mavzular"],
-      summary: "Mavzularni Excel fayldan yuklash",
-      description: "Ruxsat: owner. `multipart/form-data`.",
-      requestBody: {
-        required: true,
-        content: {
-          "multipart/form-data": {
-            schema: {
-              type: "object",
-              required: ["file"],
-              properties: {
-                file: { type: "string", format: "binary", description: ".xlsx fayl" },
-                subjectId: { type: "string", description: "Fan ObjectId (ixtiyoriy)" },
-              },
-            },
-          },
-        },
-      },
-      responses: { 200: okMessage, 400: responses.BadRequest },
-    },
-  },
+  // ===================== MAVZULAR (faqat o'qish) =====================
   "/topics/subject/{subjectId}": {
     get: {
       tags: ["Mavzular"],
@@ -1225,16 +798,17 @@ const paths = {
       parameters: [idParam("subjectId", "Subject ObjectId")],
       responses: { 200: okData("#/components/schemas/Topic", true), 404: responses.NotFound },
     },
-    delete: {
-      tags: ["Mavzular"],
-      summary: "Fan mavzularini o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("subjectId", "Subject ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
   },
 
   // ===================== DARS JADVALI =====================
+  "/schedules/my-today": {
+    get: {
+      tags: ["Dars jadvali"],
+      summary: "Mening bugungi darslarim",
+      description: "Ruxsat: teacher.",
+      responses: { 200: okData("#/components/schemas/Schedule", true), 403: responses.Forbidden },
+    },
+  },
   "/schedules/class/{classId}": {
     get: {
       tags: ["Dars jadvali"],
@@ -1271,78 +845,6 @@ const paths = {
       description: "Ruxsat: owner, teacher.",
       parameters: [idParam("classId", "Class ObjectId")],
       responses: { 200: xlsxResponse, 403: responses.Forbidden },
-    },
-  },
-  "/schedules/subject/{subjectId}": {
-    get: {
-      tags: ["Dars jadvali"],
-      summary: "Fan bo'yicha jadval (joriy mavzular)",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("subjectId", "Subject ObjectId")],
-      responses: { 200: okData("#/components/schemas/Schedule", true), 403: responses.Forbidden },
-    },
-  },
-  "/schedules/my-today": {
-    get: {
-      tags: ["Dars jadvali"],
-      summary: "Mening bugungi darslarim",
-      description: "Ruxsat: teacher.",
-      responses: { 200: okData("#/components/schemas/Schedule", true), 403: responses.Forbidden },
-    },
-  },
-  "/schedules/all-today": {
-    get: {
-      tags: ["Dars jadvali"],
-      summary: "Bugungi barcha darslar",
-      description: "Ruxsat: owner.",
-      responses: { 200: okData("#/components/schemas/Schedule", true), 403: responses.Forbidden },
-    },
-  },
-  "/schedules": {
-    post: {
-      tags: ["Dars jadvali"],
-      summary: "Jadval yaratish yoki yangilash",
-      description: "Ruxsat: owner. Sinf + kun bo'yicha upsert.",
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": { schema: { $ref: "#/components/schemas/ScheduleCreateRequest" } },
-        },
-      },
-      responses: { 200: okData("#/components/schemas/Schedule"), 400: responses.BadRequest },
-    },
-  },
-  "/schedules/class/{classId}/subject/{subjectId}/topic": {
-    patch: {
-      tags: ["Dars jadvali"],
-      summary: "Joriy mavzu raqamini yangilash",
-      description: "Ruxsat: owner.",
-      parameters: [
-        idParam("classId", "Class ObjectId"),
-        idParam("subjectId", "Subject ObjectId"),
-      ],
-      requestBody: {
-        required: true,
-        content: {
-          "application/json": {
-            schema: {
-              type: "object",
-              required: ["topicNumber"],
-              properties: { topicNumber: { type: "integer", minimum: 1, example: 5 } },
-            },
-          },
-        },
-      },
-      responses: { 200: okMessage, 404: responses.NotFound },
-    },
-  },
-  "/schedules/{id}": {
-    delete: {
-      tags: ["Dars jadvali"],
-      summary: "Jadvalni o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Schedule ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
     },
   },
 
@@ -1522,42 +1024,16 @@ const paths = {
     },
   },
 
-  // ===================== BAYRAMLAR =====================
+  // ===================== BAYRAMLAR (faqat o'qish) =====================
   "/holidays": {
     get: {
       tags: ["Bayramlar"],
       summary: "Bayram / dam olish kunlari ro'yxati",
       description: "Ruxsat: token bilan kirgan foydalanuvchi.",
-      responses: { 200: okData("#/components/schemas/Holiday", true), 401: responses.Unauthorized },
-    },
-    post: {
-      tags: ["Bayramlar"],
-      summary: "Bayram qo'shish",
-      description: "Ruxsat: owner.",
-      requestBody: {
-        required: true,
-        content: { "application/json": { schema: { $ref: "#/components/schemas/Holiday" } } },
+      responses: {
+        200: okData("#/components/schemas/Holiday", true),
+        401: responses.Unauthorized,
       },
-      responses: { 200: okData("#/components/schemas/Holiday"), 400: responses.BadRequest },
-    },
-  },
-  "/holidays/{id}": {
-    put: {
-      tags: ["Bayramlar"],
-      summary: "Bayramni tahrirlash",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Holiday ObjectId")],
-      requestBody: {
-        content: { "application/json": { schema: { $ref: "#/components/schemas/Holiday" } } },
-      },
-      responses: { 200: okData("#/components/schemas/Holiday"), 404: responses.NotFound },
-    },
-    delete: {
-      tags: ["Bayramlar"],
-      summary: "Bayramni o'chirish",
-      description: "Ruxsat: owner.",
-      parameters: [idParam("id", "Holiday ObjectId")],
-      responses: { 200: okMessage, 404: responses.NotFound },
     },
   },
   "/holidays/check/today": {
@@ -1657,7 +1133,7 @@ const paths = {
       tags: ["Jarimalar"],
       summary: "Jarima sozlamalari (jarima summalari)",
       description: "Ruxsat: token bilan kirgan foydalanuvchi.",
-      responses: { 200: okData("#/components/schemas/Error"), 401: responses.Unauthorized },
+      responses: { 200: okMessage, 401: responses.Unauthorized },
     },
   },
   "/penalties/my": {
@@ -2040,7 +1516,7 @@ const paths = {
     },
   },
 
-  // ===================== TEST MAVSUMLARI =====================
+  // ===================== TEST MAVSUMLARI (o'qish + statistika) =====================
   "/test-seasons/active": {
     get: {
       tags: ["Test mavsumlari"],
@@ -2503,16 +1979,17 @@ const teacherApiSpec = {
     title: "Study-Track — O'qituvchi (Teacher) Paneli API",
     version: "1.0.0",
     description: [
-      "Ushbu hujjat **o'qituvchi paneli** foydalanadigan barcha API endpointlarni qamrab oladi.",
+      "Ushbu hujjatda **faqat o'qituvchi (teacher) roli kira oladigan** endpointlar bor.",
+      "Owner-only va student-only endpointlar bu yerga kiritilmagan.",
       "",
       "**Autentifikatsiya:** Avval `POST /auth/login` orqali token oling, so'ng",
       "yuqoridagi **Authorize** tugmasi orqali `Bearer <token>` ni kiriting.",
       "",
       "**Javob formati:** Barcha javoblar `{ success, data }` yoki `{ success, message }` ko'rinishida.",
-      "Ro'yxatlar `pagination` bilan qaytishi mumkin.",
+      "Ba'zi ro'yxatlar `pagination` bilan qaytadi.",
       "",
       "**Rollar:** Har bir endpoint tavsifida kerakli rol (\"Ruxsat\") ko'rsatilgan.",
-      "O'qituvchi tokeni faqat `teacher` (va ba'zi umumiy) endpointlarga kira oladi.",
+      "\"token bilan kirgan foydalanuvchi\" deganda teacher ham kiradi.",
     ].join("\n"),
   },
   servers: [
@@ -2521,17 +1998,16 @@ const teacherApiSpec = {
   ],
   tags: [
     { name: "Autentifikatsiya", description: "Kirish va joriy foydalanuvchi" },
-    { name: "Foydalanuvchilar", description: "Foydalanuvchilar (asosan owner)" },
-    { name: "Rollar", description: "Rollar (owner)" },
-    { name: "Sinflar", description: "Sinflar" },
-    { name: "Fanlar", description: "Fanlar" },
-    { name: "Mavzular", description: "Fan mavzulari" },
-    { name: "Dars jadvali", description: "Haftalik dars jadvali" },
+    { name: "Foydalanuvchilar", description: "Foydalanuvchilar (o'qituvchiga ochiq qismlari)" },
+    { name: "Sinflar", description: "Sinflar (faqat o'qish)" },
+    { name: "Fanlar", description: "Fanlar (faqat o'qish)" },
+    { name: "Mavzular", description: "Fan mavzulari (faqat o'qish)" },
+    { name: "Dars jadvali", description: "Dars jadvali" },
     { name: "Davomat", description: "O'qituvchi davomati (check-in/out, arizalar)" },
-    { name: "Bayramlar", description: "Bayram / dam olish kunlari" },
+    { name: "Bayramlar", description: "Bayram / dam olish kunlari (faqat o'qish)" },
     { name: "Jarimalar", description: "Jarimalar va kategoriyalar" },
     { name: "Baholar", description: "O'quvchilar baholari" },
-    { name: "Topshiriqlar", description: "Xodimga berilgan topshiriqlar" },
+    { name: "Topshiriqlar", description: "O'qituvchiga berilgan topshiriqlar" },
     { name: "Xabarlar", description: "Telegram xabarlari" },
     { name: "O'qituvchi biriktiruvlari", description: "Sinf/fan biriktiruvlari" },
     { name: "Test mavsumlari", description: "Test mavsumlari va statistikasi" },
@@ -2539,7 +2015,7 @@ const teacherApiSpec = {
     { name: "Test savollari", description: "Savollar va AI generatsiya" },
     { name: "Test biriktiruvlari", description: "Testni sinf/mavsumga biriktirish" },
     { name: "Test natijalari", description: "Natijalar va ochiq javoblarni baholash" },
-    { name: "Test sessiyalari", description: "O'quvchi test sessiyalari" },
+    { name: "Test sessiyalari", description: "O'quvchi test sessiyalari (ko'rish)" },
   ],
   components: {
     securitySchemes: {
