@@ -1,7 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const penaltyService = require("../services/penalty.service");
-const Role = require("../models/role.model");
+const prisma = require("../config/prisma");
 const { ROLES } = require("../utils/constants");
 
 // ─── KATEGORIYA ────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ exports.createPenaltyCategory = asyncHandler(async (req, res) => {
     throw new BadRequestError("Owner uchun kategoriya yaratib bo'lmaydi");
   }
 
-  const roleExists = await Role.findOne({ value: targetRole });
+  const roleExists = await prisma.role.findUnique({ where: { value: targetRole } });
   if (!roleExists) {
     throw new BadRequestError("Maqsadli rol topilmadi");
   }

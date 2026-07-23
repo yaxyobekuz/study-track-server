@@ -1,3 +1,4 @@
+const prisma = require("../config/prisma");
 const asyncHandler = require("../middleware/async.middleware");
 const attendanceService = require("../services/attendance.service");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
@@ -11,9 +12,11 @@ const checkIn = asyncHandler(async (req, res) => {
   const { lat, lng, accuracy } = req.body;
 
   // Admin (owner) userId ni topish - jarima "givenBy" uchun
-  const User = require("../models/user.model");
-  const adminUser = await User.findOne({ role: "owner" }, "_id").lean();
-  const adminUserId = adminUser?._id || req.user._id;
+  const adminUser = await prisma.user.findFirst({
+    where: { role: "owner" },
+    select: { id: true },
+  });
+  const adminUserId = adminUser?.id || req.user._id;
 
   const record = await attendanceService.checkIn(
     req.user._id,
@@ -29,9 +32,11 @@ const checkIn = asyncHandler(async (req, res) => {
 const checkOut = asyncHandler(async (req, res) => {
   const { lat, lng, accuracy } = req.body;
 
-  const User = require("../models/user.model");
-  const adminUser = await User.findOne({ role: "owner" }, "_id").lean();
-  const adminUserId = adminUser?._id || req.user._id;
+  const adminUser = await prisma.user.findFirst({
+    where: { role: "owner" },
+    select: { id: true },
+  });
+  const adminUserId = adminUser?.id || req.user._id;
 
   const record = await attendanceService.checkOut(
     req.user._id,
@@ -116,14 +121,32 @@ const getUserMonthRecords = asyncHandler(async (req, res) => {
 });
 
 const getRecord = asyncHandler(async (req, res) => {
-  const Attendance = require("../models/attendance.model");
-  const record = await Attendance.findById(req.params.id)
-    .populate("user", "firstName lastName username role")
-    .populate("penaltyRef", "title points status")
-    .lean();
+  const record = await prisma.attendance.findUnique({
+    where: { id: req.params.id },
+  });
 
   if (!record) throw new NotFoundError("Davomat yozuvi topilmadi");
-  res.json({ success: true, data: record });
+
+  // user va penaltyRef — soft ref (relation YO'Q), qo'lda yuklaymiz
+  const [user, penaltyRef] = await Promise.all([
+    record.userId
+      ? prisma.user.findUnique({
+          where: { id: record.userId },
+          select: { id: true, firstName: true, lastName: true, username: true, role: true },
+        })
+      : null,
+    record.penaltyRef
+      ? prisma.penalty.findUnique({
+          where: { id: record.penaltyRef },
+          select: { id: true, title: true, points: true, status: true },
+        })
+      : null,
+  ]);
+
+  res.json({
+    success: true,
+    data: { ...record, user, penaltyRef },
+  });
 });
 
 const createExcuseRequest = asyncHandler(async (req, res) => {
@@ -166,15 +189,38 @@ const getAllExcuses = asyncHandler(async (req, res) => {
 });
 
 const getExcuse = asyncHandler(async (req, res) => {
-  const ExcuseRequest = require("../models/excuseRequest.model");
-  const excuse = await ExcuseRequest.findById(req.params.id)
-    .populate("user", "firstName lastName username role")
-    .populate("reviewedBy", "firstName lastName")
-    .populate("absenceReason", "title")
-    .lean();
+  const excuse = await prisma.excuseRequest.findUnique({
+    where: { id: req.params.id },
+  });
 
   if (!excuse) throw new NotFoundError("So'rov topilmadi");
-  res.json({ success: true, data: excuse });
+
+  // user, reviewedBy, absenceReason — soft ref (relation YO'Q), qo'lda yuklaymiz
+  const [user, reviewedBy, absenceReason] = await Promise.all([
+    excuse.userId
+      ? prisma.user.findUnique({
+          where: { id: excuse.userId },
+          select: { id: true, firstName: true, lastName: true, username: true, role: true },
+        })
+      : null,
+    excuse.reviewedBy
+      ? prisma.user.findUnique({
+          where: { id: excuse.reviewedBy },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : null,
+    excuse.absenceReason
+      ? prisma.absenceReason.findUnique({
+          where: { id: excuse.absenceReason },
+          select: { id: true, title: true },
+        })
+      : null,
+  ]);
+
+  res.json({
+    success: true,
+    data: { ...excuse, user, reviewedBy, absenceReason },
+  });
 });
 
 const reviewExcuse = asyncHandler(async (req, res) => {

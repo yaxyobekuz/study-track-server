@@ -2,23 +2,14 @@ const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
-// Mongoose
-const mongoose = require("mongoose");
-
-// Models
-const User = require("../models/user.model");
-const Grade = require("../models/grade.model");
-const Class = require("../models/class.model");
-const Subject = require("../models/subject.model");
-const Holiday = require("../models/holiday.model");
-const Schedule = require("../models/schedule.model");
-const Topic = require("../models/topic.model");
-const ClassSubjectProgress = require("../models/classSubjectProgress.model");
+// Prisma
+const prisma = require("../config/prisma");
 
 // Services
 const {
   updateWeeklyStatsForGrade,
 } = require("../services/weeklystats.service");
+const { isHoliday } = require("../services/holiday.service");
 const ExcelService = require("../services/excel.service");
 
 const {
@@ -60,7 +51,7 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
   }
 
   // 2. Bayram kuni tekshirish
-  const holidayCheck = await Holiday.isHoliday(nowInUzbekistan);
+  const holidayCheck = await isHoliday(nowInUzbekistan);
   if (holidayCheck.isHoliday) {
     return res.json({
       success: true,
@@ -87,36 +78,85 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
   const { startDate, endDate } = getDateRangeForDay(nowInUzbekistan);
 
   // 5. Bugungi barcha jadvallarni olish
-  const todaySchedules = await Schedule.find({ day: todayDayName })
-    .populate("class", "name isActive")
-    .populate("subjects.subject", "name")
-    .populate("subjects.teacher", "firstName lastName");
+  const todaySchedules = await prisma.schedule.findMany({
+    where: { day: todayDayName },
+    include: {
+      lessons: { orderBy: { position: "asc" } },
+    },
+  });
+
+  // Jadvaldagi sinf/fan/o'qituvchi ref'lari scalar — qo'lda yuklaymiz
+  const scheduleClassIds = [
+    ...new Set(todaySchedules.map((s) => s.classId).filter(Boolean)),
+  ];
+  const lessonSubjectIds = [
+    ...new Set(
+      todaySchedules.flatMap((s) => s.lessons.map((l) => l.subjectId)).filter(Boolean),
+    ),
+  ];
+  const lessonTeacherIds = [
+    ...new Set(
+      todaySchedules.flatMap((s) => s.lessons.map((l) => l.teacherId)).filter(Boolean),
+    ),
+  ];
+
+  const [classes, subjects, teachers] = await Promise.all([
+    scheduleClassIds.length
+      ? prisma.class.findMany({
+          where: { id: { in: scheduleClassIds } },
+          select: { id: true, name: true, isActive: true },
+        })
+      : [],
+    lessonSubjectIds.length
+      ? prisma.subject.findMany({
+          where: { id: { in: lessonSubjectIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+    lessonTeacherIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: lessonTeacherIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+  ]);
+
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, s]));
+  const teacherMap = new Map(teachers.map((t) => [t.id, t]));
 
   // 6. O'qituvchilar bo'yicha guruhlash uchun map
   const teacherDataMap = {};
 
   for (const schedule of todaySchedules) {
+    const scheduleClass = classMap.get(schedule.classId);
+
     // Faol bo'lmagan sinflarni o'tkazib yuborish
-    if (!schedule.class || !schedule.class.isActive) continue;
+    if (!scheduleClass || !scheduleClass.isActive) continue;
 
     // Sinfdagi barcha faol o'quvchilarni olish
-    const studentsInClass = await User.find({
-      role: "student",
-      classes: schedule.class._id,
-      isActive: true,
-    }).select("_id firstName lastName");
+    const studentsInClass = await prisma.user.findMany({
+      where: {
+        role: "student",
+        classes: { some: { classId: schedule.classId } },
+        isActive: true,
+      },
+      select: { id: true, firstName: true, lastName: true },
+    });
 
     if (studentsInClass.length === 0) continue;
 
     // Bugungi baholarni olish
-    const todayGrades = await Grade.find({
-      class: schedule.class._id,
-      date: { $gte: startDate, $lte: endDate },
+    const todayGrades = await prisma.grade.findMany({
+      where: {
+        classId: schedule.classId,
+        date: { gte: startDate, lte: endDate },
+      },
     });
 
     // Har bir darsni tekshirish
-    for (const lesson of schedule.subjects) {
-      if (!lesson.teacher) continue;
+    for (const lesson of schedule.lessons) {
+      if (!lesson.teacherId) continue;
 
       // Vaqt tekshiruvi: endTime mavjud va o'tib ketgan yoki endTime yo'q
       const endMinutes = timeToMinutes(lesson.endTime);
@@ -131,28 +171,32 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
         todayGrades
           .filter(
             (g) =>
-              g.subject.toString() === lesson.subject._id.toString() &&
+              g.subjectId === lesson.subjectId &&
               g.lessonOrder === lesson.order,
           )
-          .map((g) => g.student.toString()),
+          .map((g) => g.studentId),
       );
 
       // Baho olmagan o'quvchilar
       const missingStudents = studentsInClass.filter(
-        (s) => !gradedStudentIds.has(s._id.toString()),
+        (s) => !gradedStudentIds.has(s.id),
       );
 
       // Agar baho olmagan o'quvchilar bo'lsa
       if (missingStudents.length > 0) {
-        const teacherId = lesson.teacher._id.toString();
+        const lessonSubject = subjectMap.get(lesson.subjectId);
+        const lessonTeacher = teacherMap.get(lesson.teacherId);
+        if (!lessonTeacher) continue;
+
+        const teacherId = lessonTeacher.id;
 
         // O'qituvchi uchun data yaratish
         if (!teacherDataMap[teacherId]) {
           teacherDataMap[teacherId] = {
             teacher: {
-              _id: lesson.teacher._id,
-              firstName: lesson.teacher.firstName,
-              lastName: lesson.teacher.lastName,
+              _id: lessonTeacher.id,
+              firstName: lessonTeacher.firstName,
+              lastName: lessonTeacher.lastName,
             },
             lessons: [],
           };
@@ -161,19 +205,19 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
         // Dars ma'lumotlarini qo'shish
         teacherDataMap[teacherId].lessons.push({
           class: {
-            _id: schedule.class._id,
-            name: schedule.class.name,
+            _id: scheduleClass.id,
+            name: scheduleClass.name,
           },
           subject: {
-            _id: lesson.subject._id,
-            name: lesson.subject.name,
+            _id: lesson.subjectId,
+            name: lessonSubject ? lessonSubject.name : undefined,
           },
           lessonOrder: lesson.order,
           startTime: lesson.startTime,
           endTime: lesson.endTime,
           totalStudents: studentsInClass.length,
           missingStudents: missingStudents.map((s) => ({
-            _id: s._id,
+            _id: s.id,
             firstName: s.firstName,
             lastName: s.lastName,
           })),
@@ -213,34 +257,87 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
   });
 });
 
+// Grade ref'larni (student/subject/teacher/class) scalar bo'lgani uchun qo'lda yuklab biriktiradi
+async function attachGradeRefs(grades, { student = true, subject = true, teacher = true, class: withClass = true } = {}) {
+  const arr = Array.isArray(grades) ? grades : [grades];
+  if (arr.length === 0) return grades;
+
+  const userIds = new Set();
+  const subjectIds = new Set();
+  const classIds = new Set();
+
+  arr.forEach((g) => {
+    if (student && g.studentId) userIds.add(g.studentId);
+    if (teacher && g.teacherId) userIds.add(g.teacherId);
+    if (subject && g.subjectId) subjectIds.add(g.subjectId);
+    if (withClass && g.classId) classIds.add(g.classId);
+  });
+
+  const [users, subjects, classes] = await Promise.all([
+    userIds.size
+      ? prisma.user.findMany({
+          where: { id: { in: [...userIds] } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+    subjectIds.size
+      ? prisma.subject.findMany({
+          where: { id: { in: [...subjectIds] } },
+          select: { id: true, name: true },
+        })
+      : [],
+    classIds.size
+      ? prisma.class.findMany({
+          where: { id: { in: [...classIds] } },
+          select: { id: true, name: true },
+        })
+      : [],
+  ]);
+
+  const userMap = new Map(users.map((u) => [u.id, { ...u, _id: u.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
+  const classMap = new Map(classes.map((c) => [c.id, { ...c, _id: c.id }]));
+
+  const mapped = arr.map((g) => {
+    const out = { ...g, _id: g.id };
+    if (student) out.student = g.studentId ? userMap.get(g.studentId) || null : null;
+    if (teacher) out.teacher = g.teacherId ? userMap.get(g.teacherId) || null : null;
+    if (subject) out.subject = g.subjectId ? subjectMap.get(g.subjectId) || null : null;
+    if (withClass) out.class = g.classId ? classMap.get(g.classId) || null : null;
+    return out;
+  });
+
+  return Array.isArray(grades) ? mapped : mapped[0];
+}
+
 // Get grades (with filters)
 const getGrades = asyncHandler(async (req, res) => {
   const { studentId, subjectId, classId, startDate, endDate } = req.query;
 
-  let query = {};
+  let where = {};
 
-  if (studentId) query.student = studentId;
-  if (subjectId) query.subject = subjectId;
-  if (classId) query.class = classId;
+  if (studentId) where.studentId = studentId;
+  if (subjectId) where.subjectId = subjectId;
+  if (classId) where.classId = classId;
 
   // If teacher, can only see their own grades
   if (req.user.role === "teacher") {
-    query.teacher = req.user._id;
+    where.teacherId = req.user.id;
   }
 
   // Date range
   if (startDate || endDate) {
-    query.date = {};
-    if (startDate) query.date.$gte = new Date(startDate);
-    if (endDate) query.date.$lte = new Date(endDate);
+    where.date = {};
+    if (startDate) where.date.gte = new Date(startDate);
+    if (endDate) where.date.lte = new Date(endDate);
   }
 
-  const grades = await Grade.find(query)
-    .populate("student", "firstName lastName")
-    .populate("subject", "name")
-    .populate("teacher", "firstName lastName")
-    .populate("class", "name")
-    .sort({ date: -1, createdAt: -1 });
+  const gradeRows = await prisma.grade.findMany({
+    where,
+    orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+  });
+
+  const grades = await attachGradeRefs(gradeRows);
 
   res.json({
     success: true,
@@ -259,28 +356,18 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
   const endDate = new Date(date);
   endDate.setHours(23, 59, 59, 999);
 
-  // Convert classId to ObjectId if it's a string
-  let classObjectId;
-  try {
-    classObjectId = mongoose.Types.ObjectId.isValid(classId)
-      ? new mongoose.Types.ObjectId(classId)
-      : classId;
-  } catch (error) {
-    classObjectId = classId;
-  }
-
   const todayDayName = getDayNameUz(date);
 
-  const todaySchedule = await Schedule.findOne({
-    class: classObjectId,
-    day: todayDayName,
+  const todaySchedule = await prisma.schedule.findFirst({
+    where: { classId, day: todayDayName },
+    include: { lessons: { orderBy: { position: "asc" } } },
   });
 
   // Create a map of subject ID to order
   const subjectOrderMap = {};
-  if (todaySchedule && todaySchedule.subjects) {
-    todaySchedule.subjects.forEach((s) => {
-      const subjectId = s.subject.toString();
+  if (todaySchedule && todaySchedule.lessons) {
+    todaySchedule.lessons.forEach((s) => {
+      const subjectId = s.subjectId;
       if (!subjectOrderMap[subjectId]) {
         subjectOrderMap[subjectId] = s.order;
       }
@@ -288,73 +375,38 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
   }
 
   // Get all students in the class
-  const allStudents = await User.find({
-    role: "student",
-    classes: classObjectId,
-  })
-    .select("_id firstName lastName")
-    .sort({ lastName: 1, firstName: 1 });
+  const allStudents = await prisma.user.findMany({
+    where: { role: "student", classes: { some: { classId } } },
+    select: { id: true, firstName: true, lastName: true },
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+  });
 
-  // Use aggregation pipeline to get grades
-  const grades = await Grade.aggregate([
-    {
-      $match: {
-        class: classObjectId,
-        date: { $gte: startDate, $lte: endDate },
-      },
+  // Grade ref'lari scalar — baholarni olib qo'lda student/subject/teacher biriktiramiz
+  const gradeRows = await prisma.grade.findMany({
+    where: {
+      classId,
+      date: { gte: startDate, lte: endDate },
     },
-    {
-      $lookup: {
-        from: "users",
-        localField: "student",
-        foreignField: "_id",
-        as: "student",
-      },
+    select: {
+      id: true,
+      grade: true,
+      comment: true,
+      date: true,
+      lessonOrder: true,
+      isEdited: true,
+      createdAt: true,
+      studentId: true,
+      subjectId: true,
+      teacherId: true,
     },
-    { $unwind: "$student" },
-    {
-      $lookup: {
-        from: "subjects",
-        localField: "subject",
-        foreignField: "_id",
-        as: "subject",
-      },
-    },
-    { $unwind: "$subject" },
-    {
-      $lookup: {
-        from: "users",
-        localField: "teacher",
-        foreignField: "_id",
-        as: "teacher",
-      },
-    },
-    { $unwind: "$teacher" },
-    {
-      $project: {
-        _id: 1,
-        grade: 1,
-        comment: 1,
-        date: 1,
-        lessonOrder: 1,
-        isEdited: 1,
-        createdAt: 1,
-        "student._id": 1,
-        "student.firstName": 1,
-        "student.lastName": 1,
-        "subject._id": 1,
-        "subject.name": 1,
-        "teacher._id": 1,
-        "teacher.firstName": 1,
-        "teacher.lastName": 1,
-      },
-    },
-  ]);
+  });
+
+  const grades = await attachGradeRefs(gradeRows, { class: false });
 
   // Group grades by student
   const gradesByStudent = {};
   grades.forEach((grade) => {
-    const studentId = grade.student._id.toString();
+    const studentId = grade.student._id;
     if (!gradesByStudent[studentId]) {
       gradesByStudent[studentId] = {
         student: grade.student,
@@ -366,11 +418,11 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
 
   // Add students without grades
   allStudents.forEach((student) => {
-    const studentId = student._id.toString();
+    const studentId = student.id;
     if (!gradesByStudent[studentId]) {
       gradesByStudent[studentId] = {
         student: {
-          _id: student._id,
+          _id: student.id,
           firstName: student.firstName,
           lastName: student.lastName,
         },
@@ -403,7 +455,7 @@ const createGrade = asyncHandler(async (req, res) => {
   }
 
   // Holiday check
-  const holidayCheck = await Holiday.isHoliday(new Date());
+  const holidayCheck = await isHoliday(new Date());
   if (holidayCheck.isHoliday) {
     throw new ForbiddenError(
       `Bugun dam olish kuni: ${holidayCheck.holiday.name}. Baho qo'yish mumkin emas.`,
@@ -421,21 +473,23 @@ const createGrade = asyncHandler(async (req, res) => {
   }
 
   // Validate student, subject and class exist
-  const student = await User.findOne({
-    _id: studentId,
-    role: "student",
-    classes: classId,
+  const student = await prisma.user.findFirst({
+    where: {
+      id: studentId,
+      role: "student",
+      classes: { some: { classId } },
+    },
   });
   if (!student) {
     throw new NotFoundError("O'quvchi ushbu sinfda topilmadi");
   }
 
-  const subject = await Subject.findById(subjectId);
+  const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
-  const classExists = await Class.findById(classId);
+  const classExists = await prisma.class.findUnique({ where: { id: classId } });
   if (!classExists) {
     throw new NotFoundError("Sinf topilmadi");
   }
@@ -449,9 +503,9 @@ const createGrade = asyncHandler(async (req, res) => {
   }
 
   // Find today's schedule for this class
-  const todaySchedule = await Schedule.findOne({
-    class: classId,
-    day: todayDayName,
+  const todaySchedule = await prisma.schedule.findFirst({
+    where: { classId, day: todayDayName },
+    include: { lessons: { orderBy: { position: "asc" } } },
   });
 
   if (!todaySchedule) {
@@ -461,10 +515,8 @@ const createGrade = asyncHandler(async (req, res) => {
   }
 
   // Check if teacher has this subject in today's schedule and validate lessonOrder
-  const teacherLessons = todaySchedule.subjects.filter(
-    (s) =>
-      s.subject.toString() === subjectId &&
-      s.teacher.toString() === req.user._id.toString(),
+  const teacherLessons = todaySchedule.lessons.filter(
+    (s) => s.subjectId === subjectId && s.teacherId === req.user.id,
   );
 
   if (teacherLessons.length === 0) {
@@ -495,7 +547,7 @@ const createGrade = asyncHandler(async (req, res) => {
   if (ENABLE_SCHEDULE_TIME_VALIDATION) {
     const { checkGradingTimeWindow } = require("../helpers/date.helpers");
 
-    const lessonSchedule = todaySchedule.subjects.find(
+    const lessonSchedule = todaySchedule.lessons.find(
       (s) => s.order === finalLessonOrder,
     );
 
@@ -528,13 +580,16 @@ const createGrade = asyncHandler(async (req, res) => {
 
   // Find existing grades for this student/subject/class in teacher's all today lesson orders
   const teacherLessonOrders = teacherLessons.map((l) => l.order);
-  const existingGrades = await Grade.find({
-    student: studentId,
-    subject: subjectId,
-    class: classId,
-    lessonOrder: { $in: teacherLessonOrders },
-    date: { $gte: todayDate, $lt: tomorrow },
-  }).select("_id lessonOrder");
+  const existingGrades = await prisma.grade.findMany({
+    where: {
+      studentId,
+      subjectId,
+      classId,
+      lessonOrder: { in: teacherLessonOrders },
+      date: { gte: todayDate, lt: tomorrow },
+    },
+    select: { id: true, lessonOrder: true },
+  });
 
   const existingLessonOrders = new Set(
     existingGrades.map((g) => g.lessonOrder),
@@ -552,23 +607,31 @@ const createGrade = asyncHandler(async (req, res) => {
   // Create grade records for all missing lesson orders of today
   const now = new Date();
   const gradesToCreate = missingLessonOrders.map((order) => ({
-    student: studentId,
-    subject: subjectId,
-    class: classId,
-    teacher: req.user._id,
+    studentId,
+    subjectId,
+    classId,
+    teacherId: req.user.id,
     grade,
     date: now,
     lessonOrder: order,
     comment,
   }));
 
-  const createdGrades = await Grade.insertMany(gradesToCreate);
+  await prisma.grade.createMany({ data: gradesToCreate });
 
-  const populatedGrade = await Grade.findById(createdGrades[0]._id)
-    .populate("student", "firstName lastName")
-    .populate("subject", "name")
-    .populate("teacher", "firstName lastName")
-    .populate("class", "name");
+  // createMany id qaytarmaydi — yaratilgan baholarni qayta o'qib olamiz
+  const createdGrades = await prisma.grade.findMany({
+    where: {
+      studentId,
+      subjectId,
+      classId,
+      teacherId: req.user.id,
+      lessonOrder: { in: missingLessonOrders },
+      date: { gte: todayDate, lt: tomorrow },
+    },
+  });
+
+  const populatedGrade = await attachGradeRefs(createdGrades[0]);
 
   // Update WeeklyStats after creating grades
   try {
@@ -595,7 +658,7 @@ const updateGrade = asyncHandler(async (req, res) => {
   const { grade: newGrade, comment } = req.body;
   const gradeId = req.params.id;
 
-  const gradeDoc = await Grade.findById(gradeId);
+  const gradeDoc = await prisma.grade.findUnique({ where: { id: gradeId } });
 
   if (!gradeDoc) {
     throw new NotFoundError("Baho topilmadi");
@@ -607,7 +670,7 @@ const updateGrade = asyncHandler(async (req, res) => {
   }
 
   // Can only edit own grades
-  if (gradeDoc.teacher.toString() !== req.user._id.toString()) {
+  if (gradeDoc.teacherId !== req.user.id) {
     throw new ForbiddenError("Bu bahoni tahrirlash uchun ruxsatingiz yo'q");
   }
 
@@ -627,21 +690,20 @@ const updateGrade = asyncHandler(async (req, res) => {
 
   if (ENABLE_SCHEDULE_TIME_VALIDATION) {
     const { getCurrentDayUz } = require("../helpers/date.helpers");
-    const Schedule = require("../models/schedule.model");
 
     const dayName = getCurrentDayUz();
-    const todaySchedule = await Schedule.findOne({
-      class: gradeDoc.class,
-      day: dayName,
+    const todaySchedule = await prisma.schedule.findFirst({
+      where: { classId: gradeDoc.classId, day: dayName },
+      include: { lessons: { orderBy: { position: "asc" } } },
     });
 
     if (!todaySchedule) {
       throw new ForbiddenError("Bugun uchun dars jadvali topilmadi");
     }
 
-    const lessonSchedule = todaySchedule.subjects.find(
+    const lessonSchedule = todaySchedule.lessons.find(
       (s) =>
-        s.subject.toString() === gradeDoc.subject.toString() &&
+        s.subjectId === gradeDoc.subjectId &&
         s.order === gradeDoc.lessonOrder,
     );
 
@@ -669,33 +731,57 @@ const updateGrade = asyncHandler(async (req, res) => {
     }
   }
 
+  const update = {};
+  const editHistory = Array.isArray(gradeDoc.editHistory)
+    ? [...gradeDoc.editHistory]
+    : [];
+
   // Add to history
   if (newGrade && newGrade !== gradeDoc.grade) {
-    gradeDoc.editHistory.push({
+    editHistory.push({
       previousGrade: gradeDoc.grade,
       editedAt: new Date(),
-      editedBy: req.user._id,
+      editedBy: req.user.id,
     });
-    gradeDoc.grade = newGrade;
-    gradeDoc.isEdited = true;
+    update.grade = newGrade;
+    update.isEdited = true;
+    update.editHistory = editHistory;
   }
 
   if (comment !== undefined) {
-    gradeDoc.comment = comment;
+    update.comment = comment;
   }
 
-  await gradeDoc.save();
+  const savedGrade = await prisma.grade.update({
+    where: { id: gradeDoc.id },
+    data: update,
+  });
 
-  const updatedGrade = await Grade.findById(gradeDoc._id)
-    .populate("student", "firstName lastName")
-    .populate("subject", "name")
-    .populate("teacher", "firstName lastName")
-    .populate("class", "name")
-    .populate("editHistory.editedBy", "firstName lastName");
+  const updatedGrade = await attachGradeRefs(savedGrade);
+
+  // editHistory.editedBy — scalar user ref'larni qo'lda yuklab biriktiramiz
+  const historyEditorIds = [
+    ...new Set(
+      (updatedGrade.editHistory || [])
+        .map((h) => h.editedBy)
+        .filter(Boolean),
+    ),
+  ];
+  if (historyEditorIds.length > 0) {
+    const editors = await prisma.user.findMany({
+      where: { id: { in: historyEditorIds } },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    const editorMap = new Map(editors.map((e) => [e.id, { ...e, _id: e.id }]));
+    updatedGrade.editHistory = (updatedGrade.editHistory || []).map((h) => ({
+      ...h,
+      editedBy: h.editedBy ? editorMap.get(h.editedBy) || null : null,
+    }));
+  }
 
   // Update WeeklyStats after updating grade
   try {
-    await updateWeeklyStatsForGrade(gradeDoc);
+    await updateWeeklyStatsForGrade(savedGrade);
   } catch (statsError) {
     logger.error("Error updating WeeklyStats:", statsError);
     // Don't fail the request if stats update fails
@@ -710,7 +796,7 @@ const updateGrade = asyncHandler(async (req, res) => {
 
 // Delete grade (Teacher can delete own today's grades, Owner can delete any)
 const deleteGrade = asyncHandler(async (req, res) => {
-  const grade = await Grade.findById(req.params.id);
+  const grade = await prisma.grade.findUnique({ where: { id: req.params.id } });
 
   if (!grade) {
     throw new NotFoundError("Baho topilmadi");
@@ -719,7 +805,7 @@ const deleteGrade = asyncHandler(async (req, res) => {
   // If teacher role, apply restrictions
   if (req.user.role === "teacher") {
     // Can only delete own grades
-    if (grade.teacher.toString() !== req.user._id.toString()) {
+    if (grade.teacherId !== req.user.id) {
       throw new ForbiddenError("Bu bahoni o'chirish uchun ruxsatingiz yo'q");
     }
 
@@ -737,17 +823,17 @@ const deleteGrade = asyncHandler(async (req, res) => {
 
   // Save grade data before deleting (for WeeklyStats update)
   const gradeData = {
-    student: grade.student,
-    subject: grade.subject,
-    class: grade.class,
-    teacher: grade.teacher,
+    studentId: grade.studentId,
+    subjectId: grade.subjectId,
+    classId: grade.classId,
+    teacherId: grade.teacherId,
     grade: grade.grade,
     date: grade.date,
     lessonOrder: grade.lessonOrder,
   };
 
   // Delete the grade
-  await Grade.findByIdAndDelete(req.params.id);
+  await prisma.grade.delete({ where: { id: req.params.id } });
 
   // Update WeeklyStats after deleting grade
   try {
@@ -766,12 +852,12 @@ const deleteGrade = asyncHandler(async (req, res) => {
 // Get student grades
 const getStudentGrades = asyncHandler(async (req, res) => {
   const studentId =
-    req.user.role === "student" ? req.user._id : req.params.studentId;
+    req.user.role === "student" ? req.user.id : req.params.studentId;
 
   // Get date from query parameter (for student) or use all dates
   const { date } = req.query;
 
-  let query = { student: studentId };
+  let where = { studentId };
 
   // If date is provided, filter by that specific date
   if (date) {
@@ -781,14 +867,16 @@ const getStudentGrades = asyncHandler(async (req, res) => {
     const endDate = new Date(date);
     endDate.setHours(23, 59, 59, 999);
 
-    query.date = { $gte: startDate, $lte: endDate };
+    where.date = { gte: startDate, lte: endDate };
   }
 
-  const grades = await Grade.find(query)
-    .populate("subject", "name")
-    .populate("teacher", "firstName lastName")
-    .populate("class", "name")
-    .sort({ date: -1 });
+  const gradeRows = await prisma.grade.findMany({
+    where,
+    orderBy: { date: "desc" },
+  });
+
+  // student baholari — subject/teacher/class ref'larni qo'lda biriktiramiz
+  const grades = await attachGradeRefs(gradeRows, { student: false });
 
   // Statistics by subject
   const statsBySubject = {};
@@ -831,8 +919,6 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Faqat o'qituvchilar uchun");
   }
 
-  const Schedule = require("../models/schedule.model");
-
   // Get today's day name in Uzbek
   const daysUz = [
     "yakshanba",
@@ -856,10 +942,10 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   }
 
   // Find today's schedule for this class
-  const todaySchedule = await Schedule.findOne({
-    class: classId,
-    day: todayDayName,
-  }).populate("subjects.subject", "name");
+  const todaySchedule = await prisma.schedule.findFirst({
+    where: { classId, day: todayDayName },
+    include: { lessons: { orderBy: { position: "asc" } } },
+  });
 
   if (!todaySchedule) {
     return res.json({
@@ -876,27 +962,39 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
 
   // Get unique subject IDs for progress lookup
   const teacherSubjectIds = new Set();
-  todaySchedule.subjects.forEach((item) => {
-    if (item.teacher.toString() === req.user._id.toString()) {
-      teacherSubjectIds.add(item.subject._id.toString());
+  todaySchedule.lessons.forEach((item) => {
+    if (item.teacherId === req.user.id) {
+      teacherSubjectIds.add(item.subjectId);
     }
   });
 
+  // Fan nomlari scalar ref — qo'lda yuklaymiz
+  const teacherSubjectIdList = Array.from(teacherSubjectIds);
+  const subjectDocs = teacherSubjectIdList.length
+    ? await prisma.subject.findMany({
+        where: { id: { in: teacherSubjectIdList } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const subjectMap = new Map(subjectDocs.map((s) => [s.id, s]));
+
   // Get progress for all teacher's subjects in this class
-  const progressList = await ClassSubjectProgress.find({
-    class: classId,
-    subject: { $in: Array.from(teacherSubjectIds) },
-  }).lean();
+  const progressList = await prisma.classSubjectProgress.findMany({
+    where: {
+      classId,
+      subjectId: { in: teacherSubjectIdList },
+    },
+  });
 
   // Create progress map
   const progressMap = new Map();
   for (const p of progressList) {
-    progressMap.set(p.subject.toString(), p.currentTopicNumber);
+    progressMap.set(p.subjectId, p.currentTopicNumber);
   }
 
-  todaySchedule.subjects.forEach((item) => {
-    if (item.teacher.toString() === req.user._id.toString()) {
-      const subjectId = item.subject._id.toString();
+  todaySchedule.lessons.forEach((item) => {
+    if (item.teacherId === req.user.id) {
+      const subjectId = item.subjectId;
 
       // Increment count for this subject
       if (!subjectCountMap[subjectId]) {
@@ -904,10 +1002,12 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
       }
       subjectCountMap[subjectId]++;
 
+      const subjectDoc = subjectMap.get(subjectId);
+
       // Add subject with lesson number
       teacherSubjects.push({
-        _id: item.subject._id,
-        name: item.subject.name,
+        _id: subjectId,
+        name: subjectDoc ? subjectDoc.name : undefined,
         order: item.order,
         lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
         currentTopicNumber: progressMap.get(subjectId) || 1,
@@ -936,9 +1036,11 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
   const finalLessonOrder = lessonOrder ? parseInt(lessonOrder) : null;
 
   // Get all students in the class
-  const students = await User.find({ role: "student", classes: classId })
-    .select("firstName lastName")
-    .sort({ lastName: 1, firstName: 1 });
+  const students = await prisma.user.findMany({
+    where: { role: "student", classes: { some: { classId } } },
+    select: { id: true, firstName: true, lastName: true },
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+  });
 
   // Parse date range
   const startDate = new Date(date);
@@ -948,35 +1050,38 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
   endDate.setHours(23, 59, 59, 999);
 
   // Get grades for this class, subject and date
-  const gradeQuery = {
-    class: classId,
-    subject: subjectId,
-    date: { $gte: startDate, $lte: endDate },
+  const gradeWhere = {
+    classId,
+    subjectId,
+    date: { gte: startDate, lte: endDate },
   };
 
   // If lessonOrder is specified, filter by it
   if (finalLessonOrder) {
-    gradeQuery.lessonOrder = finalLessonOrder;
+    gradeWhere.lessonOrder = finalLessonOrder;
   }
 
-  const grades = await Grade.find(gradeQuery).populate(
-    "teacher",
-    "firstName lastName",
-  );
+  const gradeRows = await prisma.grade.findMany({ where: gradeWhere });
+
+  // teacher ref scalar — qo'lda biriktiramiz
+  const grades = await attachGradeRefs(gradeRows, {
+    student: false,
+    subject: false,
+    class: false,
+  });
 
   // Get current topic for this class and subject from ClassSubjectProgress
   let currentTopic = null;
-  const progress = await ClassSubjectProgress.findOne({
-    class: classId,
-    subject: subjectId,
+  const progress = await prisma.classSubjectProgress.findUnique({
+    where: { classId_subjectId: { classId, subjectId } },
   });
 
   const currentTopicNumber = progress?.currentTopicNumber || 1;
 
-  const topic = await Topic.findOne({
-    subject: subjectId,
-    order: currentTopicNumber,
-  }).select("order name description");
+  const topic = await prisma.topic.findUnique({
+    where: { subjectId_order: { subjectId, order: currentTopicNumber } },
+    select: { order: true, name: true, description: true },
+  });
 
   if (topic) {
     currentTopic = {
@@ -988,11 +1093,9 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
 
   // Map grades to students
   const studentsWithGrades = students.map((student) => {
-    const grade = grades.find(
-      (g) => g.student.toString() === student._id.toString(),
-    );
+    const grade = grades.find((g) => g.studentId === student.id);
     return {
-      _id: student._id,
+      _id: student.id,
       firstName: student.firstName,
       lastName: student.lastName,
       grade: grade || null,
@@ -1015,7 +1118,7 @@ const exportGrades = asyncHandler(async (req, res) => {
   }
 
   // Get class info
-  const classData = await Class.findById(classId);
+  const classData = await prisma.class.findUnique({ where: { id: classId } });
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
@@ -1027,46 +1130,51 @@ const exportGrades = asyncHandler(async (req, res) => {
   const endDate = new Date(date);
   endDate.setHours(23, 59, 59, 999);
 
-  const classObjectId = mongoose.Types.ObjectId.isValid(classId)
-    ? new mongoose.Types.ObjectId(classId)
-    : classId;
-
   const todayDayName = getDayNameUz(date);
 
   // Get schedule for the day
-  const todaySchedule = await Schedule.findOne({
-    class: classObjectId,
-    day: todayDayName,
-  }).populate("subjects.subject", "name");
+  const todaySchedule = await prisma.schedule.findFirst({
+    where: { classId, day: todayDayName },
+    include: { lessons: { orderBy: { position: "asc" } } },
+  });
+
+  // Jadvaldagi fan ref'lari scalar — nomlarni qo'lda yuklaymiz
+  const scheduleSubjectIds = todaySchedule
+    ? [...new Set(todaySchedule.lessons.map((l) => l.subjectId).filter(Boolean))]
+    : [];
+  const scheduleSubjects = scheduleSubjectIds.length
+    ? await prisma.subject.findMany({
+        where: { id: { in: scheduleSubjectIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const scheduleSubjectMap = new Map(scheduleSubjects.map((s) => [s.id, s]));
 
   // Get all students in the class
-  const allStudents = await User.find({
-    role: "student",
-    classes: classObjectId,
-  })
-    .select("_id firstName lastName")
-    .sort({ firstName: 1, lastName: 1 });
+  const allStudents = await prisma.user.findMany({
+    where: { role: "student", classes: { some: { classId } } },
+    select: { id: true, firstName: true, lastName: true },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
 
   // Get grades with all necessary fields
-  const grades = await Grade.find({
-    class: classObjectId,
-    date: { $gte: startDate, $lte: endDate },
-  })
-    .populate("student", "firstName lastName")
-    .populate("subject", "name")
-    .populate("teacher", "firstName lastName")
-    .lean();
+  const gradeRows = await prisma.grade.findMany({
+    where: {
+      classId,
+      date: { gte: startDate, lte: endDate },
+    },
+  });
+
+  // student/subject/teacher ref'larini qo'lda biriktiramiz
+  const grades = await attachGradeRefs(gradeRows, { class: false });
 
   // Create map of student grades
   const studentGradesMap = {};
   allStudents.forEach((student) => {
-    studentGradesMap[student._id.toString()] = {
-      student,
+    studentGradesMap[student.id] = {
+      student: { ...student, _id: student.id },
       grades: grades.filter(
-        (g) =>
-          g.student &&
-          g.student._id &&
-          g.student._id.toString() === student._id.toString(),
+        (g) => g.student && g.student._id && g.student._id === student.id,
       ),
     };
   });
@@ -1077,7 +1185,7 @@ const exportGrades = asyncHandler(async (req, res) => {
 
   // If specific subject selected
   if (subjectId && subjectId !== "all") {
-    const subject = await Subject.findById(subjectId);
+    const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
     sheetName = `${classData.name} - ${subject?.name || "Fan"}`;
 
     columns = [
@@ -1088,10 +1196,7 @@ const exportGrades = asyncHandler(async (req, res) => {
 
     data = studentsWithGrades.map((item) => {
       const gradeData = item.grades.find(
-        (g) =>
-          g.subject &&
-          g.subject._id &&
-          g.subject._id.toString() === subjectId,
+        (g) => g.subject && g.subject._id && g.subject._id === subjectId,
       );
 
       return {
@@ -1107,17 +1212,18 @@ const exportGrades = asyncHandler(async (req, res) => {
     // All subjects
     sheetName = `${classData.name} - Barcha fanlar`;
 
-    const todaySubjects = todaySchedule?.subjects || [];
+    const todaySubjects = todaySchedule?.lessons || [];
     const sortedSubjects = todaySubjects
-      .filter((s) => s.subject)
+      .filter((s) => s.subjectId)
       .sort((a, b) => a.order - b.order);
 
     columns = [{ header: "O'quvchi", key: "student", width: 30 }];
 
     // Add columns for each subject
     sortedSubjects.forEach((s, idx) => {
+      const subjectDoc = scheduleSubjectMap.get(s.subjectId);
       columns.push({
-        header: `${idx + 1}. ${s.subject.name}`,
+        header: `${idx + 1}. ${subjectDoc ? subjectDoc.name : ""}`,
         key: `subject_${s.order}`,
         width: 15,
       });
@@ -1146,7 +1252,7 @@ const exportGrades = asyncHandler(async (req, res) => {
       const gradesBySubject = {};
       sortedGrades.forEach((g) => {
         if (g.subject && g.subject._id) {
-          const subjectId = g.subject._id.toString();
+          const subjectId = g.subject._id;
           if (!gradesBySubject[subjectId]) {
             gradesBySubject[subjectId] = [];
           }
@@ -1155,7 +1261,7 @@ const exportGrades = asyncHandler(async (req, res) => {
       });
 
       sortedSubjects.forEach((s) => {
-        const subjectId = s.subject._id.toString();
+        const subjectId = s.subjectId;
 
         // Bu fanning nechanchi marta takrorlanishini hisoblash
         if (!subjectOccurrences[subjectId]) {

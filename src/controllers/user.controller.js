@@ -1,4 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
+const prisma = require("../config/prisma");
+const { NotFoundError } = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 
@@ -29,14 +31,23 @@ const createUser = asyncHandler(async (req, res) => {
 
 // Get single user (Owner only)
 const getUser = asyncHandler(async (req, res) => {
-  const User = require("../models/user.model");
-  const { NotFoundError } = require("../utils/errors");
-  const user = await User.findById(req.params.id)
-    .populate("classes", "name")
-    .select("-password")
-    .lean();
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+    omit: { password: true },
+    include: {
+      classes: { include: { class: { select: { id: true, name: true } } } },
+    },
+  });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  res.json({ success: true, data: user });
+
+  // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaymiz
+  const data = { ...user, _id: user.id };
+  data.classes = (user.classes || []).map((uc) => ({
+    ...uc.class,
+    _id: uc.class.id,
+  }));
+
+  res.json({ success: true, data });
 });
 
 // Update user (Owner only)

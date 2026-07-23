@@ -2,19 +2,130 @@ const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
-const Monitor = require("../models/monitor.model");
-const Class = require("../models/class.model");
-const User = require("../models/user.model");
-const Schedule = require("../models/schedule.model");
-const WeeklyStats = require("../models/weeklystats.model");
-const SocialNetwork = require("../models/socialNetwork.model");
+const prisma = require("../config/prisma");
 
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const {
+  createWeeklyStatsForStudent,
   calculateStudentRankInClass,
   calculateStudentRankInSchool,
 } = require("../services/weeklystats.service");
+
+/**
+ * ScheduleLesson child yozuvlaridagi subject/teacher soft ref'larni (relation YO'Q)
+ * bitta so'rovdan yuklab, eski `subjects[]` embedded shakliga xaritalaydi.
+ * @param {Array} schedules - lessons bilan yuklangan schedule'lar
+ * @returns {Promise<{subjectMap: Map, teacherMap: Map}>}
+ */
+async function loadLessonRefs(schedules) {
+  const subjectIds = new Set();
+  const teacherIds = new Set();
+  for (const schedule of schedules) {
+    for (const lesson of schedule.lessons || []) {
+      if (lesson.subjectId) subjectIds.add(lesson.subjectId);
+      if (lesson.teacherId) teacherIds.add(lesson.teacherId);
+    }
+  }
+
+  const [subjects, teachers] = await Promise.all([
+    prisma.subject.findMany({
+      where: { id: { in: [...subjectIds] } },
+      select: { id: true, name: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: [...teacherIds] } },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+  ]);
+
+  const subjectMap = new Map(
+    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+  );
+  const teacherMap = new Map(
+    teachers.map((t) => [
+      t.id,
+      { _id: t.id, firstName: t.firstName, lastName: t.lastName },
+    ]),
+  );
+
+  return { subjectMap, teacherMap };
+}
+
+// lessons[] → eski subjects[] shakliga xaritalaydi (subject/teacher biriktirilgan)
+function mapLessons(lessons, subjectMap, teacherMap) {
+  return (lessons || []).map((lesson) => ({
+    _id: lesson.id,
+    subject: subjectMap.get(lesson.subjectId) || null,
+    teacher: teacherMap.get(lesson.teacherId) || null,
+    order: lesson.order,
+    startTime: lesson.startTime,
+    endTime: lesson.endTime,
+  }));
+}
+
+/**
+ * WeeklyStats.simpleStats — JSONB (populate ishlamaydi). subjects[].subject
+ * ObjectId'larni JSONB ichidan olib, alohida prisma.subject.findMany bilan yuklab biriktiradi.
+ */
+async function attachSimpleStatsSubjects(simpleStats) {
+  if (!simpleStats || !Array.isArray(simpleStats.subjects)) {
+    return simpleStats;
+  }
+
+  const subjectIds = [
+    ...new Set(
+      simpleStats.subjects.map((s) => s.subject).filter((v) => typeof v === "string"),
+    ),
+  ];
+
+  if (subjectIds.length === 0) {
+    return simpleStats;
+  }
+
+  const subjects = await prisma.subject.findMany({
+    where: { id: { in: subjectIds } },
+  });
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
+
+  return {
+    ...simpleStats,
+    subjects: simpleStats.subjects.map((s) => ({
+      ...s,
+      subject:
+        typeof s.subject === "string"
+          ? subjectMap.get(s.subject) || s.subject
+          : s.subject,
+    })),
+  };
+}
+
+// WeeklyStats hujjatini student/classes/simpleStats.subjects.subject bilan yuklaydi
+async function loadWeeklyStats(studentId, weekNumber, year) {
+  const weeklyStats = await prisma.weeklyStats.findUnique({
+    where: {
+      student_year_weekNumber: { student: studentId, year, weekNumber },
+    },
+    include: { classes: { include: { class: true } } },
+  });
+
+  if (!weeklyStats) return null;
+
+  const [student, simpleStats] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: weeklyStats.student },
+      select: { id: true, firstName: true, lastName: true, fullName: true },
+    }),
+    attachSimpleStatsSubjects(weeklyStats.simpleStats),
+  ]);
+
+  const classes = (weeklyStats.classes || []).map((wc) => ({
+    ...wc.class,
+    _id: wc.class.id,
+  }));
+
+  return { ...weeklyStats, student, classes, simpleStats };
+}
 
 // ============================================================
 // Public monitor endpoints (monitor code bilan himoyalangan)
@@ -33,7 +144,9 @@ const verifyCode = asyncHandler(async (req, res) => {
     throw new BadRequestError("Monitor kodi 6 xonali raqam bo'lishi kerak");
   }
 
-  const monitor = await Monitor.findOne({ code, isActive: true });
+  const monitor = await prisma.monitor.findFirst({
+    where: { code, isActive: true },
+  });
 
   if (!monitor) {
     const { UnauthorizedError } = require("../utils/errors");
@@ -45,7 +158,7 @@ const verifyCode = asyncHandler(async (req, res) => {
     data: {
       verified: true,
       monitor: {
-        _id: monitor._id,
+        _id: monitor.id,
         name: monitor.name,
         code: monitor.code,
       },
@@ -59,10 +172,11 @@ const verifyCode = asyncHandler(async (req, res) => {
  * @returns {{ success: boolean, data: Array }}
  */
 const getClasses = asyncHandler(async (req, res) => {
-  const classes = await Class.find({ isActive: true })
-    .select("name")
-    .sort({ name: 1 })
-    .lean();
+  const classes = await prisma.class.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
 
   return res.json({ success: true, data: classes });
 });
@@ -76,19 +190,20 @@ const getClasses = asyncHandler(async (req, res) => {
 const getClassStudents = asyncHandler(async (req, res) => {
   const { classId } = req.params;
 
-  const classExists = await Class.findById(classId);
+  const classExists = await prisma.class.findUnique({ where: { id: classId } });
   if (!classExists) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const students = await User.find({
-    classes: classId,
-    role: "student",
-    isActive: true,
-  })
-    .select("firstName lastName")
-    .sort({ firstName: 1 })
-    .lean();
+  const students = await prisma.user.findMany({
+    where: {
+      classes: { some: { classId } },
+      role: "student",
+      isActive: true,
+    },
+    select: { id: true, firstName: true, lastName: true },
+    orderBy: { firstName: "asc" },
+  });
 
   return res.json({ success: true, data: students });
 });
@@ -105,16 +220,34 @@ const getAllTodaySchedules = asyncHandler(async (req, res) => {
     return res.json({ success: true, data: [] });
   }
 
-  const schedules = await Schedule.find({ day: dayName })
-    .populate("class", "name")
-    .populate("subjects.subject", "name")
-    .populate("subjects.teacher", "firstName lastName")
-    .sort({ "class.name": 1 });
+  const schedules = await prisma.schedule.findMany({
+    where: { day: dayName },
+    include: { lessons: true },
+  });
+
+  const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
+
+  // class scalar ref (relation YO'Q) — nom uchun qo'lda yuklaymiz
+  const classIds = [...new Set(schedules.map((s) => s.classId).filter(Boolean))];
+  const classes = await prisma.class.findMany({
+    where: { id: { in: classIds } },
+    select: { id: true, name: true },
+  });
+  const classMap = new Map(
+    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+  );
 
   const formattedSchedules = schedules.map((schedule) => ({
-    class: schedule.class,
-    subjects: schedule.subjects.sort((a, b) => a.order - b.order),
+    class: classMap.get(schedule.classId) || null,
+    subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort(
+      (a, b) => a.order - b.order,
+    ),
   }));
+
+  // Sort by class name (eski .sort({ "class.name": 1 }) ekvivalenti)
+  formattedSchedules.sort((a, b) =>
+    (a.class?.name || "").localeCompare(b.class?.name || ""),
+  );
 
   return res.json({ success: true, data: formattedSchedules });
 });
@@ -128,21 +261,25 @@ const getAllTodaySchedules = asyncHandler(async (req, res) => {
 const getClassSchedule = asyncHandler(async (req, res) => {
   const { classId } = req.params;
 
-  const classExists = await Class.findById(classId);
+  const classExists = await prisma.class.findUnique({ where: { id: classId } });
   if (!classExists) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const schedules = await Schedule.find({ class: classId })
-    .populate("subjects.subject", "name")
-    .populate("subjects.teacher", "firstName lastName")
-    .sort({ day: 1 })
-    .lean();
+  const schedules = await prisma.schedule.findMany({
+    where: { classId },
+    include: { lessons: true },
+    orderBy: { day: "asc" },
+  });
+
+  const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
 
   // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
   const sortedSchedules = schedules.map((schedule) => ({
     ...schedule,
-    subjects: [...(schedule.subjects || [])].sort(
+    _id: schedule.id,
+    class: schedule.classId,
+    subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort(
       (a, b) => (a.order || 0) - (b.order || 0),
     ),
   }));
@@ -160,26 +297,12 @@ const getStudentWeeklyStats = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
   const { weekNumber, year } = getCurrentWeekRange();
 
-  let weeklyStats = await WeeklyStats.findOne({
-    student: studentId,
-    year,
-    weekNumber,
-  }).populate("student classes simpleStats.subjects.subject");
+  let weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
 
   if (!weeklyStats) {
-    const {
-      createWeeklyStatsForStudent,
-    } = require("../services/weeklystats.service");
-
     try {
-      weeklyStats = await createWeeklyStatsForStudent(
-        studentId,
-        weekNumber,
-        year,
-      );
-      await weeklyStats.populate(
-        "student classes simpleStats.subjects.subject",
-      );
+      await createWeeklyStatsForStudent(studentId, weekNumber, year);
+      weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
     } catch (error) {
       throw new NotFoundError("O'quvchi topilmadi yoki sinfga biriktirilmagan");
     }
@@ -196,7 +319,7 @@ const getStudentWeeklyStats = asyncHandler(async (req, res) => {
     for (const cls of weeklyStats.classes) {
       const classRanking = await calculateStudentRankInClass(
         studentId,
-        cls._id,
+        cls.id,
         weekNumber,
         year,
       );
@@ -214,7 +337,7 @@ const getStudentWeeklyStats = asyncHandler(async (req, res) => {
     success: true,
     data: {
       student: {
-        _id: weeklyStats.student._id,
+        _id: weeklyStats.student.id,
         firstName: weeklyStats.student.firstName,
         lastName: weeklyStats.student.lastName,
         fullName: weeklyStats.student.fullName,
@@ -247,7 +370,10 @@ const getStudentWeeklyStats = asyncHandler(async (req, res) => {
 const getStudentCoinBalance = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
-  const user = await User.findById(studentId).select("coinBalance").lean();
+  const user = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: { coinBalance: true },
+  });
 
   if (!user) {
     throw new NotFoundError("O'quvchi topilmadi");
@@ -265,10 +391,11 @@ const getStudentCoinBalance = asyncHandler(async (req, res) => {
  * @returns {{ success: boolean, data: Array }}
  */
 const getSocialNetworks = asyncHandler(async (req, res) => {
-  const networks = await SocialNetwork.find({ isActive: true })
-    .select("platform name username")
-    .sort({ createdAt: -1 })
-    .lean();
+  const networks = await prisma.socialNetwork.findMany({
+    where: { isActive: true },
+    select: { id: true, platform: true, name: true, username: true },
+    orderBy: { createdAt: "desc" },
+  });
 
   return res.json({ success: true, data: networks });
 });
@@ -283,7 +410,7 @@ const getSocialNetworks = asyncHandler(async (req, res) => {
  * @returns {{ success: boolean, data: Object | null }}
  */
 const getMonitorSettings = asyncHandler(async (req, res) => {
-  const monitor = await Monitor.findOne().lean();
+  const monitor = await prisma.monitor.findFirst();
   return res.json({ success: true, data: monitor || null });
 });
 
@@ -300,11 +427,17 @@ const updateMonitorSettings = asyncHandler(async (req, res) => {
     throw new BadRequestError("Monitor kodi 6 xonali raqam bo'lishi kerak");
   }
 
-  const monitor = await Monitor.findOneAndUpdate(
-    {},
-    { code, name, isActive: true },
-    { upsert: true, new: true, runValidators: true },
-  );
+  // Bitta monitor hujjati bo'ladi (Mongoose findOneAndUpdate({}, ..., {upsert}))
+  const existing = await prisma.monitor.findFirst();
+
+  const monitor = existing
+    ? await prisma.monitor.update({
+        where: { id: existing.id },
+        data: { code, name, isActive: true },
+      })
+    : await prisma.monitor.create({
+        data: { code, name, isActive: true },
+      });
 
   return res.json({ success: true, data: monitor });
 });

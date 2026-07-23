@@ -2,17 +2,102 @@ const asyncHandler = require("../middleware/async.middleware");
 const { NotFoundError, ForbiddenError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
-// Models
-const Class = require("../models/class.model");
-const WeeklyStats = require("../models/weeklystats.model");
+const prisma = require("../config/prisma");
 
 // Services
 const ExcelService = require("../services/excel.service");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const {
+  createWeeklyStatsForStudent,
   calculateStudentRankInClass,
   calculateStudentRankInSchool,
 } = require("../services/weeklystats.service");
+
+/**
+ * WeeklyStats.simpleStats — JSONB (populate ishlamaydi). subjects[].subject
+ * ObjectId'larni JSONB ichidan olib, alohida prisma.subject.findMany bilan
+ * yuklab, JS'da biriktiradi (Mongoose'ning simpleStats.subjects.subject populate ekvivalenti).
+ */
+async function attachSimpleStatsSubjects(simpleStats) {
+  if (!simpleStats || !Array.isArray(simpleStats.subjects)) {
+    return simpleStats;
+  }
+
+  const subjectIds = [
+    ...new Set(
+      simpleStats.subjects.map((s) => s.subject).filter((v) => typeof v === "string"),
+    ),
+  ];
+
+  if (subjectIds.length === 0) {
+    return simpleStats;
+  }
+
+  const subjects = await prisma.subject.findMany({
+    where: { id: { in: subjectIds } },
+  });
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
+
+  return {
+    ...simpleStats,
+    subjects: simpleStats.subjects.map((s) => ({
+      ...s,
+      subject:
+        typeof s.subject === "string"
+          ? subjectMap.get(s.subject) || s.subject
+          : s.subject,
+    })),
+  };
+}
+
+// Student scalar ref'ni User hujjatiga aylantiradi (profilePicture bilan)
+async function loadWeeklyStatsStudent(studentId) {
+  const student = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      fullName: true,
+      displayName: true,
+      nameColor: true,
+      premiumIsActive: true,
+      premiumExpiresAt: true,
+      emojiBadgeId: true,
+      profileImage: { select: { variants: true } },
+    },
+  });
+  return student;
+}
+
+// WeeklyStats hujjatini student/classes/simpleStats.subjects.subject bilan yuklaydi
+async function loadWeeklyStats(studentId, weekNumber, year) {
+  const weeklyStats = await prisma.weeklyStats.findUnique({
+    where: {
+      student_year_weekNumber: { student: studentId, year, weekNumber },
+    },
+    include: { classes: { include: { class: true } } },
+  });
+
+  if (!weeklyStats) return null;
+
+  return hydrateWeeklyStats(weeklyStats);
+}
+
+// Yuklangan weeklyStats qatorini API shakliga hydrate qiladi
+async function hydrateWeeklyStats(weeklyStats) {
+  const [student, simpleStats] = await Promise.all([
+    loadWeeklyStatsStudent(weeklyStats.student),
+    attachSimpleStatsSubjects(weeklyStats.simpleStats),
+  ]);
+
+  const classes = (weeklyStats.classes || []).map((wc) => ({
+    ...wc.class,
+    _id: wc.class.id,
+  }));
+
+  return { ...weeklyStats, student, classes, simpleStats };
+}
 
 /**
  * Bitta o'quvchining haftalik statistikasini olish (FROM WEEKLYSTATS)
@@ -24,41 +109,25 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
   const { weekNumber, year } = getCurrentWeekRange();
 
   // Student faqat o'z statistikasini ko'rishi mumkin
-  if (req.user.role === "student" && req.user._id.toString() !== studentId) {
+  if (req.user.role === "student" && req.user.id !== studentId) {
     throw new ForbiddenError("Siz faqat o'z statistikangizni ko'rishingiz mumkin");
   }
 
   // Find WeeklyStats
-  let weeklyStats = await WeeklyStats.findOne({
-    student: studentId,
-    year,
-    weekNumber,
-  }).populate([
-    { path: "student", populate: { path: "profilePicture" } },
-    { path: "classes" },
-    { path: "simpleStats.subjects.subject" },
-  ]);
+  let weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
 
   // If doesn't exist, create it now (fallback)
   if (!weeklyStats) {
-    const {
-      createWeeklyStatsForStudent,
-    } = require("../services/weeklystats.service");
-
     try {
-      weeklyStats = await createWeeklyStatsForStudent(
-        studentId,
-        weekNumber,
-        year,
-      );
-      await weeklyStats.populate(
-        "student classes simpleStats.subjects.subject",
-      );
+      await createWeeklyStatsForStudent(studentId, weekNumber, year);
+      weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
     } catch (error) {
       // If student doesn't exist or has no class
       throw new NotFoundError("O'quvchi topilmadi yoki sinfga biriktirilmagan");
     }
   }
+
+  const student = weeklyStats.student;
 
   // Calculate rankings on-demand (lazy calculation)
   const schoolRanking = await calculateStudentRankInSchool(
@@ -73,7 +142,7 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
     for (const cls of weeklyStats.classes) {
       const classRanking = await calculateStudentRankInClass(
         studentId,
-        cls._id,
+        cls.id,
         weekNumber,
         year,
       );
@@ -92,15 +161,18 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
     success: true,
     data: {
       student: {
-        _id: weeklyStats.student._id,
-        firstName: weeklyStats.student.firstName,
-        lastName: weeklyStats.student.lastName,
-        fullName: weeklyStats.student.fullName,
-        displayName: weeklyStats.student.displayName || null,
-        nameColor: weeklyStats.student.nameColor || null,
-        premium: weeklyStats.student.premium || { isActive: false },
-        emojiBadgeId: weeklyStats.student.emojiBadgeId || null,
-        profilePictureUrl: weeklyStats.student.profilePicture?.variants?.sm?.url || null,
+        _id: student.id,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        fullName: student.fullName,
+        displayName: student.displayName || null,
+        nameColor: student.nameColor || null,
+        premium: {
+          isActive: student.premiumIsActive || false,
+          expiresAt: student.premiumExpiresAt || null,
+        },
+        emojiBadgeId: student.emojiBadgeId || null,
+        profilePictureUrl: student.profileImage?.variants?.sm?.url || null,
       },
       class:
         weeklyStats.classes && weeklyStats.classes[0]
@@ -137,32 +209,57 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
   const skip = (pageNum - 1) * limitNum;
 
   // Sinfni tekshirish
-  const classDoc = await Class.findById(classId);
+  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
   // Find all WeeklyStats for this class and week
-  let allStats = await WeeklyStats.find({
-    classes: classId,
-    year,
-    weekNumber,
-  })
-    .populate({
-      path: "student",
-      populate: { path: "profilePicture" },
-      select: "firstName lastName premium emojiBadgeId displayName nameColor profilePicture classes",
-    })
-    .select("student simpleStats.totalSum simpleStats.totalGrades");
+  const rows = await prisma.weeklyStats.findMany({
+    where: {
+      classes: { some: { classId } },
+      year,
+      weekNumber,
+    },
+    select: {
+      student: true,
+      totalSum: true,
+      totalGrades: true,
+      simpleStats: true,
+    },
+  });
 
-  // Convert to plain objects to include virtuals like fullName
-  allStats = allStats.map((stat) => stat.toJSON());
+  // student scalar ref (relation YO'Q) — qo'lda yuklaymiz (profilePicture bilan)
+  const studentIds = [...new Set(rows.map((r) => r.student).filter(Boolean))];
+  const students = await prisma.user.findMany({
+    where: { id: { in: studentIds } },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      fullName: true,
+      displayName: true,
+      nameColor: true,
+      premiumIsActive: true,
+      premiumExpiresAt: true,
+      emojiBadgeId: true,
+      profileImage: { select: { variants: true } },
+      classes: { include: { class: true } },
+    },
+  });
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+
+  // Har bir stat uchun student hujjatini biriktiramiz (populate ekvivalenti)
+  const allStats = rows.map((stat) => ({
+    student: studentMap.get(stat.student) || null,
+    simpleStats: stat.simpleStats,
+  }));
 
   if (allStats.length === 0) {
     return res.json({
       success: true,
       data: {
-        class: classDoc,
+        class: { ...classDoc, _id: classDoc.id },
         weekStart,
         weekEnd,
         weekNumber,
@@ -190,15 +287,18 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
     .map((stat, index) => ({
       rank: index + 1, // Rank based on sorted position
       student: {
-        _id: stat.student._id,
+        _id: stat.student.id,
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,
         displayName: stat.student.displayName || null,
         nameColor: stat.student.nameColor || null,
-        premium: stat.student.premium || { isActive: false },
+        premium: {
+          isActive: stat.student.premiumIsActive || false,
+          expiresAt: stat.student.premiumExpiresAt || null,
+        },
         emojiBadgeId: stat.student.emojiBadgeId || null,
-        profilePictureUrl: stat.student.profilePicture?.variants?.sm?.url || null,
+        profilePictureUrl: stat.student.profileImage?.variants?.sm?.url || null,
       },
       totalSum: stat.simpleStats.totalSum,
       totalGrades: stat.simpleStats.totalGrades,
@@ -212,7 +312,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     data: {
-      class: classDoc,
+      class: { ...classDoc, _id: classDoc.id },
       weekStart,
       weekEnd,
       weekNumber,
@@ -246,22 +346,51 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
   const skip = (pageNum - 1) * limitNum;
 
   // Find all WeeklyStats for this week
-  let allStats = await WeeklyStats.find({
-    year,
-    weekNumber,
-  })
-    .populate({
-      path: "student",
-      populate: [
-        { path: "classes" },
-        { path: "profilePicture" },
-      ],
-      select: "firstName lastName premium emojiBadgeId displayName nameColor profilePicture classes",
-    })
-    .select("student simpleStats.totalSum simpleStats.totalGrades");
+  const rows = await prisma.weeklyStats.findMany({
+    where: {
+      year,
+      weekNumber,
+    },
+    select: {
+      student: true,
+      totalSum: true,
+      totalGrades: true,
+      simpleStats: true,
+    },
+  });
 
-  // Convert to plain objects to include virtuals like fullName
-  allStats = allStats.map((stat) => stat.toJSON());
+  // student scalar ref (relation YO'Q) — qo'lda yuklaymiz (classes + profilePicture bilan)
+  const studentIds = [...new Set(rows.map((r) => r.student).filter(Boolean))];
+  const students = await prisma.user.findMany({
+    where: { id: { in: studentIds } },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      fullName: true,
+      displayName: true,
+      nameColor: true,
+      premiumIsActive: true,
+      premiumExpiresAt: true,
+      emojiBadgeId: true,
+      profileImage: { select: { variants: true } },
+      classes: { include: { class: true } },
+    },
+  });
+  const studentMap = new Map(
+    students.map((s) => [
+      s.id,
+      {
+        ...s,
+        classes: (s.classes || []).map((uc) => ({ ...uc.class, _id: uc.class.id })),
+      },
+    ]),
+  );
+
+  const allStats = rows.map((stat) => ({
+    student: studentMap.get(stat.student) || null,
+    simpleStats: stat.simpleStats,
+  }));
 
   if (allStats.length === 0) {
     return res.json({
@@ -294,15 +423,18 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
     .map((stat, index) => ({
       rank: index + 1,
       student: {
-        _id: stat.student._id,
+        _id: stat.student.id,
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,
         displayName: stat.student.displayName || null,
         nameColor: stat.student.nameColor || null,
-        premium: stat.student.premium || { isActive: false },
+        premium: {
+          isActive: stat.student.premiumIsActive || false,
+          expiresAt: stat.student.premiumExpiresAt || null,
+        },
         emojiBadgeId: stat.student.emojiBadgeId || null,
-        profilePictureUrl: stat.student.profilePicture?.variants?.sm?.url || null,
+        profilePictureUrl: stat.student.profileImage?.variants?.sm?.url || null,
       },
       classes: stat.student.classes || [],
       totalSum: stat.simpleStats.totalSum,
@@ -344,14 +476,22 @@ exports.getAllStudentWeeklyStats = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
 
   // Student faqat o'z statistikasini ko'rishi mumkin
-  if (req.user.role === "student" && req.user._id.toString() !== studentId) {
+  if (req.user.role === "student" && req.user.id !== studentId) {
     throw new ForbiddenError("Siz faqat o'z statistikangizni ko'rishingiz mumkin");
   }
 
-  const allStats = await WeeklyStats.find({ student: studentId })
-    .populate("simpleStats.subjects.subject", "name")
-    .sort({ year: 1, weekNumber: 1 })
-    .lean();
+  const rows = await prisma.weeklyStats.findMany({
+    where: { student: studentId },
+    orderBy: [{ year: "asc" }, { weekNumber: "asc" }],
+  });
+
+  // simpleStats.subjects.subject — JSONB ichidagi ObjectId'lar; qo'lda name bilan yuklaymiz
+  const allStats = await Promise.all(
+    rows.map(async (stat) => ({
+      ...stat,
+      simpleStats: await attachSimpleStatsSubjects(stat.simpleStats),
+    })),
+  );
 
   return res.json({ success: true, data: allStats });
 });
@@ -370,20 +510,32 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
   let classDoc = null;
 
   if (type === "class" && classId) {
-    classDoc = await Class.findById(classId);
+    classDoc = await prisma.class.findUnique({ where: { id: classId } });
     if (!classDoc) {
       throw new NotFoundError("Sinf topilmadi");
     }
 
-    let allStats = await WeeklyStats.find({
-      classes: classId,
-      year,
-      weekNumber,
-    })
-      .populate("student")
-      .select("student simpleStats.totalSum simpleStats.totalGrades");
+    const rows = await prisma.weeklyStats.findMany({
+      where: {
+        classes: { some: { classId } },
+        year,
+        weekNumber,
+      },
+      select: { student: true, totalSum: true, totalGrades: true, simpleStats: true },
+    });
 
-    allStats = allStats.map((stat) => stat.toJSON());
+    // student scalar ref — qo'lda yuklaymiz (fullName uchun)
+    const studentIds = [...new Set(rows.map((r) => r.student).filter(Boolean))];
+    const students = await prisma.user.findMany({
+      where: { id: { in: studentIds } },
+      select: { id: true, firstName: true, lastName: true, fullName: true },
+    });
+    const studentMap = new Map(students.map((s) => [s.id, s]));
+
+    const allStats = rows.map((stat) => ({
+      student: studentMap.get(stat.student) || null,
+      simpleStats: stat.simpleStats,
+    }));
     allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
     rankings = allStats
@@ -397,19 +549,37 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
 
     sheetName = `${classDoc.name} reytingi`;
   } else {
-    let allStats = await WeeklyStats.find({
-      year,
-      weekNumber,
-    })
-      .populate({
-        path: "student",
-        populate: {
-          path: "classes",
-        },
-      })
-      .select("student simpleStats.totalSum simpleStats.totalGrades");
+    const rows = await prisma.weeklyStats.findMany({
+      where: {
+        year,
+        weekNumber,
+      },
+      select: { student: true, totalSum: true, totalGrades: true, simpleStats: true },
+    });
 
-    allStats = allStats.map((stat) => stat.toJSON());
+    // student scalar ref — qo'lda yuklaymiz (fullName + classes uchun)
+    const studentIds = [...new Set(rows.map((r) => r.student).filter(Boolean))];
+    const students = await prisma.user.findMany({
+      where: { id: { in: studentIds } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        fullName: true,
+        classes: { include: { class: { select: { id: true, name: true } } } },
+      },
+    });
+    const studentMap = new Map(
+      students.map((s) => [
+        s.id,
+        { ...s, classes: (s.classes || []).map((uc) => uc.class) },
+      ]),
+    );
+
+    const allStats = rows.map((stat) => ({
+      student: studentMap.get(stat.student) || null,
+      simpleStats: stat.simpleStats,
+    }));
     allStats.sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
 
     rankings = allStats

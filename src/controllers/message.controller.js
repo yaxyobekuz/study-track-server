@@ -1,7 +1,4 @@
-// Models
-const Message = require("../models/message.model");
-const User = require("../models/user.model");
-const Class = require("../models/class.model");
+const prisma = require("../config/prisma");
 
 // Services
 const messageQueueService = require("../services/messageQueue.service");
@@ -12,6 +9,52 @@ const path = require("path");
 
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
+
+/**
+ * sentBy / classId / studentId — soft ref (relation YO'Q), qo'lda yuklab biriktiradi.
+ * Populate ekvivalenti: sentBy(firstName lastName username role), classId(name), studentId(firstName lastName username).
+ */
+async function attachMessageRefs(messages) {
+  const arr = Array.isArray(messages) ? messages : [messages];
+
+  const sentByIds = [...new Set(arr.map((m) => m.sentBy).filter(Boolean))];
+  const classIds = [...new Set(arr.map((m) => m.classId).filter(Boolean))];
+  const studentIds = [...new Set(arr.map((m) => m.studentId).filter(Boolean))];
+
+  const [senders, classes, students] = await Promise.all([
+    sentByIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: sentByIds } },
+          select: { id: true, firstName: true, lastName: true, username: true, role: true },
+        })
+      : [],
+    classIds.length
+      ? prisma.class.findMany({
+          where: { id: { in: classIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+    studentIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: { id: true, firstName: true, lastName: true, username: true },
+        })
+      : [],
+  ]);
+
+  const senderMap = new Map(senders.map((s) => [s.id, s]));
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+
+  const mapped = arr.map((m) => ({
+    ...m,
+    sentBy: m.sentBy ? senderMap.get(m.sentBy) || null : null,
+    classId: m.classId ? classMap.get(m.classId) || null : null,
+    studentId: m.studentId ? studentMap.get(m.studentId) || null : null,
+  }));
+
+  return Array.isArray(messages) ? mapped : mapped[0];
+}
 
 /**
  * Send message to recipients
@@ -48,12 +91,15 @@ const sendMessage = asyncHandler(async (req, res) => {
   // Guard against accidental duplicate submits: reject an identical message
   // (same sender + same text) created within the last few seconds.
   const duplicateWindowMs = 5000;
-  const recentDuplicate = await Message.findOne({
-    sentBy: req.user._id,
-    messageText: messageText.trim(),
-    recipientType,
-    createdAt: { $gte: new Date(Date.now() - duplicateWindowMs) },
-  }).select("_id");
+  const recentDuplicate = await prisma.message.findFirst({
+    where: {
+      sentBy: req.user._id,
+      messageText: messageText.trim(),
+      recipientType,
+      createdAt: { gte: new Date(Date.now() - duplicateWindowMs) },
+    },
+    select: { id: true },
+  });
 
   if (recentDuplicate) {
     throw new BadRequestError("Bu xabar hozirgina yuborildi. Iltimos, biroz kuting.");
@@ -67,10 +113,13 @@ const sendMessage = asyncHandler(async (req, res) => {
   // Get recipients based on type
   if (recipientType === "all") {
     // Get all users with telegram IDs
-    recipients = await User.find({
-      telegramIds: { $exists: true, $ne: [] },
-      role: { $in: ["teacher", "student"] },
-    }).select("_id telegramIds firstName lastName");
+    recipients = await prisma.user.findMany({
+      where: {
+        telegramIds: { isEmpty: false },
+        role: { in: ["teacher", "student"] },
+      },
+      select: { id: true, telegramIds: true, firstName: true, lastName: true },
+    });
 
     recipientIds = recipients.reduce((acc, user) => {
       return [...acc, ...user.telegramIds];
@@ -81,17 +130,20 @@ const sendMessage = asyncHandler(async (req, res) => {
     }
 
     // Check if class exists
-    const classDoc = await Class.findById(classId);
+    const classDoc = await prisma.class.findUnique({ where: { id: classId } });
     if (!classDoc) {
       throw new NotFoundError("Sinf topilmadi");
     }
 
     // Get all students in the class
-    recipients = await User.find({
-      classes: classId,
-      role: "student",
-      telegramIds: { $exists: true, $ne: [] },
-    }).select("_id telegramIds firstName lastName");
+    recipients = await prisma.user.findMany({
+      where: {
+        classes: { some: { classId } },
+        role: "student",
+        telegramIds: { isEmpty: false },
+      },
+      select: { id: true, telegramIds: true, firstName: true, lastName: true },
+    });
 
     recipientIds = recipients.reduce((acc, user) => {
       return [...acc, ...user.telegramIds];
@@ -104,7 +156,10 @@ const sendMessage = asyncHandler(async (req, res) => {
     }
 
     // Check if student exists
-    const student = await User.findById(studentId).select("_id telegramIds firstName lastName");
+    const student = await prisma.user.findUnique({
+      where: { id: studentId },
+      select: { id: true, telegramIds: true, firstName: true, lastName: true },
+    });
     if (!student) {
       throw new NotFoundError("O'quvchi topilmadi");
     }
@@ -122,28 +177,31 @@ const sendMessage = asyncHandler(async (req, res) => {
     throw new BadRequestError("Qabul qiluvchilar topilmadi yoki ularning telegram ID lari mavjud emas");
   }
 
-  // Prepare delivery status
+  // Prepare delivery status (child jadval — position massiv indeksidan)
   const deliveryStatus = [];
   recipients.forEach((user) => {
     user.telegramIds.forEach((telegramId) => {
       deliveryStatus.push({
         telegramId,
-        userId: user._id,
+        userId: user.id,
         status: "pending",
+        position: deliveryStatus.length,
       });
     });
   });
 
   // Create message record
-  const message = await Message.create({
-    messageText: messageText.trim(),
-    sentBy: req.user._id,
-    recipientType,
-    recipientIds,
-    classId: messageClassId,
-    studentId: messageStudentId,
-    totalRecipients: recipientIds.length,
-    deliveryStatus,
+  const message = await prisma.message.create({
+    data: {
+      messageText: messageText.trim(),
+      sentBy: req.user._id,
+      recipientType,
+      recipientIds,
+      classId: messageClassId,
+      studentId: messageStudentId,
+      totalRecipients: recipientIds.length,
+      deliveryStatus: { create: deliveryStatus },
+    },
   });
 
   // Upload file to DO Spaces and determine file type
@@ -161,9 +219,9 @@ const sendMessage = asyncHandler(async (req, res) => {
   // Add messages to queue
   const queueItems = recipientIds.map((telegramId) => {
     const queueItem = {
-      messageId: message._id,
+      messageId: message.id,
       telegramId,
-      userId: recipients.find((r) => r.telegramIds.includes(telegramId))?._id,
+      userId: recipients.find((r) => r.telegramIds.includes(telegramId))?.id,
       messageText: messageText.trim(),
     };
 
@@ -195,7 +253,7 @@ const getMessages = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20, sentBy, classId, recipientType, startDate, endDate } = req.query;
 
   // Build query
-  let query = {};
+  const query = {};
 
   // If teacher, only show their own messages
   if (req.user.role === "teacher") {
@@ -218,12 +276,12 @@ const getMessages = asyncHandler(async (req, res) => {
   if (startDate || endDate) {
     query.createdAt = {};
     if (startDate) {
-      query.createdAt.$gte = new Date(startDate);
+      query.createdAt.gte = new Date(startDate);
     }
     if (endDate) {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      query.createdAt.$lte = end;
+      query.createdAt.lte = end;
     }
   }
 
@@ -233,17 +291,19 @@ const getMessages = asyncHandler(async (req, res) => {
   const skip = (pageNum - 1) * pageLimit;
 
   // Get messages
-  const [messages, total] = await Promise.all([
-    Message.find(query)
-      .populate("sentBy", "firstName lastName username role")
-      .populate("classId", "name")
-      .populate("studentId", "firstName lastName username")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(pageLimit)
-      .lean(),
-    Message.countDocuments(query),
+  const [rawMessages, total] = await Promise.all([
+    prisma.message.findMany({
+      where: query,
+      include: { deliveryStatus: { orderBy: { position: "asc" } } },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: pageLimit,
+    }),
+    prisma.message.count({ where: query }),
   ]);
+
+  // sentBy, classId, studentId — soft ref (relation YO'Q), qo'lda yuklaymiz
+  const messages = await attachMessageRefs(rawMessages);
 
   // Calculate statistics for each message
   const messagesWithStats = messages.map((message) => {
@@ -284,21 +344,41 @@ const getMessages = asyncHandler(async (req, res) => {
 const getMessageById = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  const message = await Message.findById(id)
-    .populate("sentBy", "firstName lastName username role")
-    .populate("classId", "name")
-    .populate("studentId", "firstName lastName username")
-    .populate("deliveryStatus.userId", "firstName lastName username")
-    .lean();
+  const rawMessage = await prisma.message.findUnique({
+    where: { id },
+    include: { deliveryStatus: { orderBy: { position: "asc" } } },
+  });
 
-  if (!message) {
+  if (!rawMessage) {
     throw new NotFoundError("Xabar topilmadi");
   }
 
-  // Check permissions
-  if (req.user.role === "teacher" && message.sentBy._id.toString() !== req.user._id.toString()) {
+  // Check permissions (sentBy hali scalar id)
+  if (
+    req.user.role === "teacher" &&
+    rawMessage.sentBy.toString() !== req.user._id.toString()
+  ) {
     throw new ForbiddenError("Ruxsat berilmagan");
   }
+
+  // sentBy, classId, studentId — soft ref, qo'lda yuklaymiz
+  const message = await attachMessageRefs(rawMessage);
+
+  // deliveryStatus.userId — soft ref, har bir yozuvga user obyektini biriktiramiz
+  const dsUserIds = [
+    ...new Set(message.deliveryStatus.map((d) => d.userId).filter(Boolean)),
+  ];
+  const dsUsers = dsUserIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: dsUserIds } },
+        select: { id: true, firstName: true, lastName: true, username: true },
+      })
+    : [];
+  const dsUserMap = new Map(dsUsers.map((u) => [u.id, u]));
+  message.deliveryStatus = message.deliveryStatus.map((d) => ({
+    ...d,
+    userId: d.userId ? dsUserMap.get(d.userId) || null : null,
+  }));
 
   // Calculate statistics
   const totalSent = message.deliveryStatus.filter((d) => d.status === "sent").length;
@@ -325,7 +405,10 @@ const getMessageById = asyncHandler(async (req, res) => {
 const cancelMessage = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
-  const message = await Message.findById(id).select("sentBy");
+  const message = await prisma.message.findUnique({
+    where: { id },
+    select: { sentBy: true },
+  });
   if (!message) {
     throw new NotFoundError("Xabar topilmadi");
   }
