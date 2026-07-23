@@ -16,7 +16,6 @@ const cors = require("cors");
 const helmet = require("helmet");
 const xss = require("xss-clean");
 const rateLimit = require("express-rate-limit");
-const mongoSanitize = require("express-mongo-sanitize");
 
 // Routes
 const routes = require("./src/routes");
@@ -76,7 +75,6 @@ app.use(
       : undefined,
   ),
 );
-app.use(mongoSanitize());
 app.use(xss());
 
 // Rate limiting
@@ -120,14 +118,6 @@ const bootstrap = async () => {
   await initOwner();
   await initRoles();
 
-  // Eski/yetim indekslarni tozalash (masalan, EmojiConfig.emojiId_1 UNIQUE)
-  try {
-    const EmojiConfig = require("./src/models/emojiConfig.model");
-    await EmojiConfig.dropLegacyIndexes();
-  } catch (err) {
-    logger.warn(`EmojiConfig indekslarini tozalashda xato: ${err.message}`);
-  }
-
   // Cron job'larni faqat DB ulanganidan keyin ishga tushirish
   startWeeklyStatsCron();
   startTopicIncrementCron();
@@ -160,6 +150,18 @@ const bootstrap = async () => {
     }
     process.exit(1);
   });
+
+  // Graceful shutdown — Prisma ulanishini yopish
+  const prisma = require("./src/config/prisma");
+  const shutdown = async (signal) => {
+    logger.info(`${signal} qabul qilindi, server yopilmoqda...`);
+    server.close(async () => {
+      await prisma.$disconnect();
+      process.exit(0);
+    });
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 };
 
 bootstrap().catch((err) => {

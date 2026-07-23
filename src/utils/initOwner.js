@@ -1,5 +1,6 @@
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { config } = require("../config/env.config");
+const { hashPassword } = require("./password");
 const logger = require("./logger");
 
 /**
@@ -7,20 +8,22 @@ const logger = require("./logger");
  */
 const initOwner = async () => {
   try {
-    const ownerExists = await User.findOne({ role: "owner" });
+    const ownerExists = await prisma.user.findFirst({ where: { role: "owner" } });
 
     if (!ownerExists) {
       logger.info("Owner topilmadi. Yangi owner yaratilmoqda...");
-      const ownerData = {
-        username: config.defaultOwnerUsername,
-        password: config.defaultOwnerPassword,
-        firstName: config.defaultOwnerFirstname,
-        lastName: config.defaultOwnerLastname,
-        role: "owner",
-        isActive: true,
-      };
-
-      await User.create(ownerData);
+      const password = await hashPassword(config.defaultOwnerPassword);
+      await prisma.user.create({
+        data: {
+          username: config.defaultOwnerUsername.toLowerCase().trim(),
+          password,
+          plainPassword: config.defaultOwnerPassword,
+          firstName: config.defaultOwnerFirstname,
+          lastName: config.defaultOwnerLastname,
+          role: "owner",
+          isActive: true,
+        },
+      });
       logger.info("Default owner muvaffaqiyatli yaratildi");
     }
   } catch (error) {
