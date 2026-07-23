@@ -46,6 +46,34 @@ const getCurrentWeekRange = () => {
 };
 
 /**
+ * Berilgan sana tegishli haftaning chegaralarini qaytaradi (dushanba - shanba).
+ * Tarix (o'tgan haftalar) uchun ishlatiladi — getCurrentWeekRange bilan bir xil
+ * dushanba-asosli mantiq, faqat weekEnd bu yerda shanba (to'liq hafta).
+ * @param {Date|string} date
+ * @returns {{weekStart: Date, weekEnd: Date, weekNumber: number, year: number}}
+ */
+const getWeekRangeForDate = (date) => {
+  const d = new Date(date);
+  const dayOfWeek = d.getDay(); // 0=yakshanba ... 6=shanba
+  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - daysFromMonday);
+  monday.setHours(0, 0, 0, 0);
+
+  const saturday = new Date(monday);
+  saturday.setDate(monday.getDate() + 5);
+  saturday.setHours(23, 59, 59, 999);
+
+  return {
+    weekStart: monday,
+    weekEnd: saturday,
+    weekNumber: getWeekNumber(monday),
+    year: monday.getFullYear(),
+  };
+};
+
+/**
  * Baholar yig'indisini hisoblaydi
  * @param {Array} grades - Baholar array (har bir grade da .grade field bor)
  * @returns {number} Barcha baholar yig'indisi
@@ -58,5 +86,6 @@ const calculateTotalSum = (grades) => {
 module.exports = {
   getWeekNumber,
   getCurrentWeekRange,
+  getWeekRangeForDate,
   calculateTotalSum,
 };
