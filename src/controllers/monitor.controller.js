@@ -86,7 +86,7 @@ async function attachSimpleStatsSubjects(simpleStats) {
   const subjects = await prisma.subject.findMany({
     where: { id: { in: subjectIds } },
   });
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s }]));
 
   return {
     ...simpleStats,
@@ -121,7 +121,6 @@ async function loadWeeklyStats(studentId, weekNumber, year) {
 
   const classes = (weeklyStats.classes || []).map((wc) => ({
     ...wc.class,
-    id: wc.class.id,
   }));
 
   return { ...weeklyStats, student, classes, simpleStats };
@@ -277,7 +276,6 @@ const getClassSchedule = asyncHandler(async (req, res) => {
   // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
   const sortedSchedules = schedules.map((schedule) => ({
     ...schedule,
-    id: schedule.id,
     class: schedule.classId,
     subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort(
       (a, b) => (a.order || 0) - (b.order || 0),

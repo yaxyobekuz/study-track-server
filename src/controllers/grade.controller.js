@@ -294,12 +294,12 @@ async function attachGradeRefs(grades, { student = true, subject = true, teacher
       : [],
   ]);
 
-  const userMap = new Map(users.map((u) => [u.id, { ...u, id: u.id }]));
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
-  const classMap = new Map(classes.map((c) => [c.id, { ...c, id: c.id }]));
+  const userMap = new Map(users.map((u) => [u.id, { ...u }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s }]));
+  const classMap = new Map(classes.map((c) => [c.id, { ...c }]));
 
   const mapped = arr.map((g) => {
-    const out = { ...g, id: g.id };
+    const out = { ...g };
     if (student) out.student = g.studentId ? userMap.get(g.studentId) || null : null;
     if (teacher) out.teacher = g.teacherId ? userMap.get(g.teacherId) || null : null;
     if (subject) out.subject = g.subjectId ? subjectMap.get(g.subjectId) || null : null;
@@ -772,7 +772,7 @@ const updateGrade = asyncHandler(async (req, res) => {
       where: { id: { in: historyEditorIds } },
       select: { id: true, firstName: true, lastName: true },
     });
-    const editorMap = new Map(editors.map((e) => [e.id, { ...e, id: e.id }]));
+    const editorMap = new Map(editors.map((e) => [e.id, { ...e }]));
     updatedGrade.editHistory = (updatedGrade.editHistory || []).map((h) => ({
       ...h,
       editedBy: h.editedBy ? editorMap.get(h.editedBy) || null : null,
@@ -1172,7 +1172,7 @@ const exportGrades = asyncHandler(async (req, res) => {
   const studentGradesMap = {};
   allStudents.forEach((student) => {
     studentGradesMap[student.id] = {
-      student: { ...student, id: student.id },
+      student: { ...student },
       grades: grades.filter(
         (g) => g.student && g.student.id && g.student.id === student.id,
       ),

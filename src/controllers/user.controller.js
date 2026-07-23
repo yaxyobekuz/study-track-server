@@ -41,10 +41,9 @@ const getUser = asyncHandler(async (req, res) => {
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaymiz
-  const data = { ...user, id: user.id };
+  const data = { ...user };
   data.classes = (user.classes || []).map((uc) => ({
     ...uc.class,
-    id: uc.class.id,
   }));
 
   res.json({ success: true, data });

@@ -36,7 +36,7 @@ async function attachSimpleStatsSubjects(simpleStats) {
   const subjects = await prisma.subject.findMany({
     where: { id: { in: subjectIds } },
   });
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s }]));
 
   return {
     ...simpleStats,
@@ -93,7 +93,6 @@ async function hydrateWeeklyStats(weeklyStats) {
 
   const classes = (weeklyStats.classes || []).map((wc) => ({
     ...wc.class,
-    id: wc.class.id,
   }));
 
   return { ...weeklyStats, student, classes, simpleStats };
@@ -259,7 +258,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
     return res.json({
       success: true,
       data: {
-        class: { ...classDoc, id: classDoc.id },
+        class: { ...classDoc },
         weekStart,
         weekEnd,
         weekNumber,
@@ -312,7 +311,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     data: {
-      class: { ...classDoc, id: classDoc.id },
+      class: { ...classDoc },
       weekStart,
       weekEnd,
       weekNumber,
@@ -382,7 +381,7 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
       s.id,
       {
         ...s,
-        classes: (s.classes || []).map((uc) => ({ ...uc.class, id: uc.class.id })),
+        classes: (s.classes || []).map((uc) => ({ ...uc.class })),
       },
     ]),
   );
