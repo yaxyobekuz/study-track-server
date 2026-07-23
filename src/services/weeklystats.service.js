@@ -1,6 +1,4 @@
-const WeeklyStats = require("../models/weeklystats.model");
-const User = require("../models/user.model");
-const Grade = require("../models/grade.model");
+const prisma = require("../config/prisma");
 const {
   getCurrentWeekRange,
   calculateTotalSum,
@@ -20,16 +18,20 @@ async function updateWeeklyStatsForGrade(gradeDoc) {
   }
 
   // Find or create WeeklyStats for this student
-  let weeklyStats = await WeeklyStats.findOne({
-    student: gradeDoc.student,
-    year,
-    weekNumber,
+  let weeklyStats = await prisma.weeklyStats.findUnique({
+    where: {
+      student_year_weekNumber: {
+        student: gradeDoc.studentId,
+        year,
+        weekNumber,
+      },
+    },
   });
 
   if (!weeklyStats) {
     // Create new stats if doesn't exist
     weeklyStats = await createWeeklyStatsForStudent(
-      gradeDoc.student,
+      gradeDoc.studentId,
       weekNumber,
       year,
     );
@@ -51,10 +53,14 @@ async function updateWeeklyStatsForGrade(gradeDoc) {
 async function recalculateCurrentWeekForStudent(studentId) {
   const { weekNumber, year } = getCurrentWeekRange();
 
-  const weeklyStats = await WeeklyStats.findOne({
-    student: studentId,
-    year,
-    weekNumber,
+  const weeklyStats = await prisma.weeklyStats.findUnique({
+    where: {
+      student_year_weekNumber: {
+        student: studentId,
+        year,
+        weekNumber,
+      },
+    },
   });
 
   if (weeklyStats) {
@@ -68,7 +74,10 @@ async function recalculateCurrentWeekForStudent(studentId) {
  * Create WeeklyStats for a student
  */
 async function createWeeklyStatsForStudent(studentId, weekNumber, year) {
-  const student = await User.findById(studentId).populate("classes");
+  const student = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { classes: true },
+  });
 
   if (
     !student ||
@@ -79,31 +88,37 @@ async function createWeeklyStatsForStudent(studentId, weekNumber, year) {
     throw new Error("Invalid student or no class assigned");
   }
 
-  const classIds = student.classes.map((c) => c._id);
+  const classIds = student.classes.map((c) => c.classId);
 
   // Get week range
   const { weekStart, weekEnd } = getWeekRangeByNumber(weekNumber, year);
 
-  // Create empty stats
-  const weeklyStats = new WeeklyStats({
-    student: studentId,
-    classes: classIds,
-    weekStart,
-    weekEnd,
-    weekNumber,
-    year,
-    simpleStats: {
-      subjects: [],
+  // Create empty stats (persist row + classes junction)
+  const weeklyStats = await prisma.weeklyStats.create({
+    data: {
+      student: studentId,
+      classes: {
+        create: classIds.map((classId) => ({ classId })),
+      },
+      weekStart,
+      weekEnd,
+      weekNumber,
+      year,
+      simpleStats: {
+        subjects: [],
+        totalSum: 0,
+        totalGrades: 0,
+      },
       totalSum: 0,
       totalGrades: 0,
+      classRanks: [],
+      schoolRank: null,
+      schoolTotalStudents: null,
     },
-    rankings: {},
   });
 
   // Calculate initial stats
-  await recalculateWeeklyStats(weeklyStats);
-
-  return weeklyStats;
+  return recalculateWeeklyStats(weeklyStats);
 }
 
 /**
@@ -115,43 +130,85 @@ async function recalculateWeeklyStats(weeklyStats) {
   // Keep the class snapshot in sync with the student's CURRENT classes.
   // Stats are per-student per-week; a mid-week class change must not drop
   // the student from their new class's rankings.
-  const student = await User.findById(weeklyStats.student).select("classes");
+  const student = await prisma.user.findUnique({
+    where: { id: weeklyStats.student },
+    include: { classes: true },
+  });
   if (student && student.classes && student.classes.length > 0) {
-    weeklyStats.classes = student.classes;
+    const classIds = student.classes.map((c) => c.classId);
+    await prisma.weeklyStatsClass.deleteMany({
+      where: { weeklyStatsId: weeklyStats.id },
+    });
+    await prisma.weeklyStatsClass.createMany({
+      data: classIds.map((classId) => ({
+        weeklyStatsId: weeklyStats.id,
+        classId,
+      })),
+    });
   }
 
   // 1. Get all grades for this week (regardless of class).
   // Weekly stats reflect every grade the student earned during the week;
   // the class is just a label and must not filter the calculation.
-  const grades = await Grade.find({
-    student: weeklyStats.student,
-    date: { $gte: weekStart, $lte: weekEnd },
-  }).populate("subject teacher");
+  const grades = await prisma.grade.findMany({
+    where: {
+      studentId: weeklyStats.student,
+      date: { gte: weekStart, lte: weekEnd },
+    },
+  });
 
   if (grades.length === 0) {
     // No grades this week - save empty stats
-    weeklyStats.simpleStats.subjects = [];
-    weeklyStats.simpleStats.totalSum = 0;
-    weeklyStats.simpleStats.totalGrades = 0;
-    weeklyStats.lastUpdated = new Date();
-    await weeklyStats.save();
-    return weeklyStats;
+    return prisma.weeklyStats.update({
+      where: { id: weeklyStats.id },
+      data: {
+        simpleStats: {
+          subjects: [],
+          totalSum: 0,
+          totalGrades: 0,
+        },
+        totalSum: 0,
+        totalGrades: 0,
+        lastUpdated: new Date(),
+      },
+    });
   }
+
+  // subject/teacher — scalar ref (relation YO'Q), qo'lda yuklaymiz
+  const subjectIds = [...new Set(grades.map((g) => g.subjectId).filter(Boolean))];
+  const teacherIds = [...new Set(grades.map((g) => g.teacherId).filter(Boolean))];
+  const [subjects, teachers] = await Promise.all([
+    subjectIds.length
+      ? prisma.subject.findMany({ where: { id: { in: subjectIds } } })
+      : [],
+    teacherIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: teacherIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+  ]);
+  const subjectMapById = new Map(subjects.map((s) => [s.id, s]));
+  const teacherMapById = new Map(teachers.map((t) => [t.id, t]));
 
   // 2. Group by subject
   const subjectMap = new Map();
   grades.forEach((g) => {
-    const subjectId = g.subject._id.toString();
+    const subject = subjectMapById.get(g.subjectId);
+    const teacher = teacherMapById.get(g.teacherId);
+    const subjectId = String(g.subjectId);
     if (!subjectMap.has(subjectId)) {
       subjectMap.set(subjectId, {
-        subject: g.subject,
+        subject,
         grades: [],
         teachers: new Set(),
       });
     }
     const stats = subjectMap.get(subjectId);
     stats.grades.push(g.grade);
-    stats.teachers.add(g.teacher.firstName + " " + g.teacher.lastName);
+    stats.teachers.add(
+      `${teacher?.firstName || ""} ${teacher?.lastName || ""}`,
+    );
   });
 
   // 3. Calculate sum-based stats
@@ -159,7 +216,7 @@ async function recalculateWeeklyStats(weeklyStats) {
   subjectMap.forEach((stats, subjectId) => {
     const sum = calculateTotalSum(stats.grades.map((g) => ({ grade: g })));
     simpleSubjects.push({
-      subject: stats.subject._id,
+      subject: stats.subject?.id ?? subjectId,
       grades: stats.grades,
       sum: sum,
       count: stats.grades.length,
@@ -170,17 +227,19 @@ async function recalculateWeeklyStats(weeklyStats) {
   const totalSum = calculateTotalSum(grades);
 
   // 4. Update WeeklyStats document
-  weeklyStats.simpleStats = {
-    subjects: simpleSubjects,
-    totalSum: totalSum,
-    totalGrades: grades.length,
-  };
-
-  weeklyStats.lastUpdated = new Date();
-
-  await weeklyStats.save();
-
-  return weeklyStats;
+  return prisma.weeklyStats.update({
+    where: { id: weeklyStats.id },
+    data: {
+      simpleStats: {
+        subjects: simpleSubjects,
+        totalSum: totalSum,
+        totalGrades: grades.length,
+      },
+      totalSum: totalSum,
+      totalGrades: grades.length,
+      lastUpdated: new Date(),
+    },
+  });
 }
 
 /**
@@ -191,10 +250,13 @@ async function generateWeeklyStatsForAllStudents(weekNumber, year) {
     `Starting weekly stats generation for week ${weekNumber}, year ${year}`,
   );
 
-  const students = await User.find({
-    role: "student",
-    isActive: true,
-  }).populate("classes");
+  const students = await prisma.user.findMany({
+    where: {
+      role: "student",
+      isActive: true,
+    },
+    include: { classes: true },
+  });
 
   let successCount = 0;
   let errorCount = 0;
@@ -205,10 +267,10 @@ async function generateWeeklyStatsForAllStudents(weekNumber, year) {
         continue; // Skip students without class
       }
 
-      await createWeeklyStatsForStudent(student._id, weekNumber, year);
+      await createWeeklyStatsForStudent(student.id, weekNumber, year);
       successCount++;
     } catch (error) {
-      logger.error(`Error generating stats for student ${student._id}:`, error);
+      logger.error(`Error generating stats for student ${student.id}:`, error);
       errorCount++;
     }
   }
@@ -231,42 +293,48 @@ async function calculateStudentRankInClass(
   year,
 ) {
   // 1. Get student's totalSum
-  const studentStats = await WeeklyStats.findOne({
-    student: studentId,
-    classes: classId,
-    weekNumber,
-    year,
-  }).lean();
+  const studentStats = await prisma.weeklyStats.findFirst({
+    where: {
+      student: studentId,
+      classes: { some: { classId } },
+      weekNumber,
+      year,
+    },
+  });
 
   if (!studentStats) {
     return null;
   }
 
-  const studentTotalSum = studentStats.simpleStats.totalSum;
+  const studentTotalSum = studentStats.totalSum;
 
   // 2. Count students with higher totalSum
-  const higherCount = await WeeklyStats.countDocuments({
-    classes: classId,
-    weekNumber,
-    year,
-    "simpleStats.totalSum": { $gt: studentTotalSum },
+  const higherCount = await prisma.weeklyStats.count({
+    where: {
+      classes: { some: { classId } },
+      weekNumber,
+      year,
+      totalSum: { gt: studentTotalSum },
+    },
   });
 
   // 3. Rank = higher count + 1
   const rank = higherCount + 1;
 
   // 4. Total students in class
-  const totalStudents = await WeeklyStats.countDocuments({
-    classes: classId,
-    weekNumber,
-    year,
+  const totalStudents = await prisma.weeklyStats.count({
+    where: {
+      classes: { some: { classId } },
+      weekNumber,
+      year,
+    },
   });
 
   return {
     rank,
     totalStudents,
     totalSum: studentTotalSum,
-    totalGrades: studentStats.simpleStats.totalGrades,
+    totalGrades: studentStats.totalGrades,
   };
 }
 
@@ -275,39 +343,45 @@ async function calculateStudentRankInClass(
  */
 async function calculateStudentRankInSchool(studentId, weekNumber, year) {
   // 1. Get student's totalSum
-  const studentStats = await WeeklyStats.findOne({
-    student: studentId,
-    weekNumber,
-    year,
-  }).lean();
+  const studentStats = await prisma.weeklyStats.findFirst({
+    where: {
+      student: studentId,
+      weekNumber,
+      year,
+    },
+  });
 
   if (!studentStats) {
     return null;
   }
 
-  const studentTotalSum = studentStats.simpleStats.totalSum;
+  const studentTotalSum = studentStats.totalSum;
 
   // 2. Count students with higher totalSum
-  const higherCount = await WeeklyStats.countDocuments({
-    weekNumber,
-    year,
-    "simpleStats.totalSum": { $gt: studentTotalSum },
+  const higherCount = await prisma.weeklyStats.count({
+    where: {
+      weekNumber,
+      year,
+      totalSum: { gt: studentTotalSum },
+    },
   });
 
   // 3. Rank = higher count + 1
   const rank = higherCount + 1;
 
   // 4. Total students in school
-  const totalStudents = await WeeklyStats.countDocuments({
-    weekNumber,
-    year,
+  const totalStudents = await prisma.weeklyStats.count({
+    where: {
+      weekNumber,
+      year,
+    },
   });
 
   return {
     rank,
     totalStudents,
     totalSum: studentTotalSum,
-    totalGrades: studentStats.simpleStats.totalGrades,
+    totalGrades: studentStats.totalGrades,
   };
 }
 
@@ -318,20 +392,34 @@ async function calculateStudentRankInSchool(studentId, weekNumber, year) {
 async function recalculateRankings(weekNumber, year) {
   logger.info(`Recalculating rankings for week ${weekNumber}, year ${year}`);
 
-  // Get all stats for this week
-  const allStats = await WeeklyStats.find({
-    year,
-    weekNumber,
-  }).populate("student classes");
+  // Get all stats for this week (classes junction bilan)
+  const allStats = await prisma.weeklyStats.findMany({
+    where: {
+      year,
+      weekNumber,
+    },
+    include: { classes: true },
+  });
+
+  // Ranking maydonlarini xotirada tayyorlaymiz (schoolRank/schoolTotalStudents/classRanks)
+  const updates = new Map();
+  allStats.forEach((stat) => {
+    updates.set(stat.id, {
+      schoolRank: null,
+      schoolTotalStudents: null,
+      classRanks: [],
+    });
+  });
 
   // 1. Calculate school rankings (by totalSum - higher is better)
   const sortedSchool = [...allStats].sort((a, b) => {
-    return b.simpleStats.totalSum - a.simpleStats.totalSum;
+    return b.totalSum - a.totalSum;
   });
 
   sortedSchool.forEach((stat, index) => {
-    stat.rankings.schoolRank = index + 1;
-    stat.rankings.schoolTotalStudents = allStats.length;
+    const u = updates.get(stat.id);
+    u.schoolRank = index + 1;
+    u.schoolTotalStudents = allStats.length;
   });
 
   // 2. Calculate class rankings for each class
@@ -340,7 +428,7 @@ async function recalculateRankings(weekNumber, year) {
   allStats.forEach((stat) => {
     if (stat.classes && stat.classes.length > 0) {
       stat.classes.forEach((cls) => {
-        const classId = cls._id.toString();
+        const classId = String(cls.classId);
         if (!classBuckets.has(classId)) {
           classBuckets.set(classId, []);
         }
@@ -353,7 +441,7 @@ async function recalculateRankings(weekNumber, year) {
   classBuckets.forEach((statsInClass, classId) => {
     // Sort by totalSum
     const sorted = [...statsInClass].sort((a, b) => {
-      return b.simpleStats.totalSum - a.simpleStats.totalSum;
+      return b.totalSum - a.totalSum;
     });
 
     // Assign ranks
@@ -361,24 +449,20 @@ async function recalculateRankings(weekNumber, year) {
       const rank = index + 1;
       const totalStudents = statsInClass.length;
 
-      // Find if this student already has classRanks array
-      if (!stat.rankings.classRanks) {
-        stat.rankings.classRanks = [];
-      }
+      const u = updates.get(stat.id);
 
       // Find or create classRank entry for this class
-      const existingRankIndex = stat.rankings.classRanks.findIndex(
-        (cr) => cr.class.toString() === classId,
+      const existingRankIndex = u.classRanks.findIndex(
+        (cr) => String(cr.class) === classId,
       );
 
       if (existingRankIndex >= 0) {
         // Update existing
-        stat.rankings.classRanks[existingRankIndex].rank = rank;
-        stat.rankings.classRanks[existingRankIndex].totalStudents =
-          totalStudents;
+        u.classRanks[existingRankIndex].rank = rank;
+        u.classRanks[existingRankIndex].totalStudents = totalStudents;
       } else {
         // Add new
-        stat.rankings.classRanks.push({
+        u.classRanks.push({
           class: classId,
           rank: rank,
           totalStudents: totalStudents,
@@ -388,7 +472,19 @@ async function recalculateRankings(weekNumber, year) {
   });
 
   // Save all stats
-  await Promise.all(allStats.map((stat) => stat.save()));
+  await Promise.all(
+    allStats.map((stat) => {
+      const u = updates.get(stat.id);
+      return prisma.weeklyStats.update({
+        where: { id: stat.id },
+        data: {
+          schoolRank: u.schoolRank,
+          schoolTotalStudents: u.schoolTotalStudents,
+          classRanks: u.classRanks,
+        },
+      });
+    }),
+  );
 
   logger.info(`Rankings recalculated for ${allStats.length} students`);
 }

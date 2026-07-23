@@ -1,4 +1,5 @@
-const ScheduleSettings = require("../models/scheduleSettings.model");
+const prisma = require("../config/prisma");
+const { getScheduleSettings } = require("./settings.service");
 const { BadRequestError } = require("../utils/errors");
 
 const TIME_REGEX = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
@@ -8,7 +9,7 @@ const TIME_REGEX = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
  * @returns {Promise<object>}
  */
 async function getSettings() {
-  return ScheduleSettings.getSettings();
+  return getScheduleSettings();
 }
 
 /**
@@ -60,12 +61,14 @@ async function updateSettings(data, userId) {
   // Tartib raqami bo'yicha saralab saqlaymiz
   normalized.sort((a, b) => a.order - b.order);
 
-  const settings = await ScheduleSettings.getSettings();
-  settings.periods = normalized;
-  settings.updatedBy = userId;
-  await settings.save();
+  const settings = await getScheduleSettings();
 
-  return settings;
+  const updated = await prisma.scheduleSettings.update({
+    where: { id: settings.id },
+    data: { periods: normalized, updatedBy: userId },
+  });
+
+  return updated;
 }
 
 module.exports = { getSettings, updateSettings };

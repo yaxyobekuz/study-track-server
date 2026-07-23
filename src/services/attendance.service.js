@@ -1,9 +1,5 @@
-const Attendance = require("../models/attendance.model");
-const AttendanceSettings = require("../models/attendanceSettings.model");
-const ExcuseRequest = require("../models/excuseRequest.model");
-const Penalty = require("../models/penalty.model");
-const User = require("../models/user.model");
-const Role = require("../models/role.model");
+const prisma = require("../config/prisma");
+const { getAttendanceSettings } = require("./settings.service");
 const { checkOfficeLocation } = require("../helpers/geolocation.helpers");
 const {
   getPaginationParams,
@@ -88,7 +84,7 @@ async function getEffectiveSchedule(user, forDate) {
   }
 
   // Roldan olish
-  const role = await Role.findOne({ value: user.role }).lean();
+  const role = await prisma.role.findFirst({ where: { value: user.role } });
 
   let startTime = role?.workStartTime ?? null;
   let endTime = role?.workEndTime ?? null;
@@ -116,7 +112,7 @@ async function getEffectiveSchedule(user, forDate) {
  * @returns {Promise<{workStartTime, workEndTime, workDays, isWorkDayToday}>}
  */
 async function getScheduleForUser(userId) {
-  const user = await User.findById(userId).lean();
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   const schedule = await getEffectiveSchedule(user);
@@ -141,23 +137,28 @@ function isPenaltyPaused(settings, userId, userRole) {
 }
 
 async function createAttendancePenalty(userId, givenByUserId, title, points) {
-  const penalty = await Penalty.create({
-    user: userId,
-    givenBy: givenByUserId,
-    title,
-    description: "Avtomatik davomat jarimasi",
-    points,
-    status: "approved",
-    isCustom: true,
-    reviewedBy: givenByUserId,
-    reviewedAt: new Date(),
+  const penalty = await prisma.penalty.create({
+    data: {
+      userId,
+      givenBy: givenByUserId,
+      title,
+      description: "Avtomatik davomat jarimasi",
+      points,
+      status: "approved",
+      isCustom: true,
+      reviewedBy: givenByUserId,
+      reviewedAt: new Date(),
+    },
   });
-  await User.findByIdAndUpdate(userId, { $inc: { penaltyPoints: points } });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { penaltyPoints: { increment: points } },
+  });
   return penalty;
 }
 
 async function checkIn(userId, lat, lng, accuracy, adminUserId) {
-  const user = await User.findById(userId).lean();
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   // Student va owner uchun davomat tizimi yo'q
@@ -168,12 +169,14 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   const today = getTodayNormalized();
 
   // Bugun allaqachon check-in qilganmi?
-  const existing = await Attendance.findOne({ user: userId, date: today });
+  const existing = await prisma.attendance.findFirst({
+    where: { userId, date: today },
+  });
   if (existing && existing.checkIn) {
     throw new BadRequestError("Bugun allaqachon kelganlik qayd etilgan");
   }
 
-  const settings = await AttendanceSettings.getSettings();
+  const settings = await getAttendanceSettings();
 
   // Geolokatsiya tekshiruvi
   let outOfOffice = false;
@@ -224,26 +227,32 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   // Yozuv yaratish yoki yangilash
   let record;
   if (existing) {
-    existing.checkIn = now;
-    existing.status = status;
-    existing.isLate = isLate;
-    existing.lateMinutes = lateMinutes;
-    existing.checkInLocation = checkInLocation;
-    existing.outOfOffice = outOfOffice;
-    existing.locationWarning = locationWarning;
-    record = await existing.save();
+    record = await prisma.attendance.update({
+      where: { id: existing.id },
+      data: {
+        checkIn: now,
+        status,
+        isLate,
+        lateMinutes,
+        checkInLocation,
+        outOfOffice,
+        locationWarning,
+      },
+    });
   } else {
-    record = await Attendance.create({
-      user: userId,
-      date: today,
-      checkIn: now,
-      status,
-      isLate,
-      lateMinutes,
-      checkInLocation,
-      outOfOffice,
-      locationWarning,
-      createdBy: userId,
+    record = await prisma.attendance.create({
+      data: {
+        userId,
+        date: today,
+        checkIn: now,
+        status,
+        isLate,
+        lateMinutes,
+        checkInLocation,
+        outOfOffice,
+        locationWarning,
+        createdBy: userId,
+      },
     });
   }
 
@@ -258,9 +267,10 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
         `Kech kelish: ${dateStr} (${lateMinutes} daqiqa)`,
         settings.lateArrivalPenaltyPoints,
       );
-      record.penaltyApplied = true;
-      record.penaltyRef = penalty._id;
-      await record.save();
+      record = await prisma.attendance.update({
+        where: { id: record.id },
+        data: { penaltyApplied: true, penaltyRef: penalty.id },
+      });
     }
   }
 
@@ -268,7 +278,7 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
 }
 
 async function checkOut(userId, lat, lng, accuracy, adminUserId) {
-  const user = await User.findById(userId).lean();
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   if (user.role === "student" || user.role === "owner") {
@@ -277,7 +287,9 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
 
   const today = getTodayNormalized();
 
-  const record = await Attendance.findOne({ user: userId, date: today });
+  const record = await prisma.attendance.findFirst({
+    where: { userId, date: today },
+  });
   if (!record || !record.checkIn) {
     throw new BadRequestError("Avval kelganlikni qayd etish kerak");
   }
@@ -285,7 +297,7 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
     throw new BadRequestError("Bugun allaqachon ketganlik qayd etilgan");
   }
 
-  const settings = await AttendanceSettings.getSettings();
+  const settings = await getAttendanceSettings();
 
   // Geolokatsiya tekshiruvi
   let checkOutLocation = null;
@@ -331,16 +343,18 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
     }
   }
 
-  // Yozuvni yangilash
-  record.checkOut = now;
-  record.isEarlyOut = isEarlyOut;
-  record.earlyOutMinutes = earlyOutMinutes;
-  record.checkOutLocation = checkOutLocation;
+  // Yozuvni yangilash uchun ma'lumot
+  const updateData = {
+    checkOut: now,
+    isEarlyOut,
+    earlyOutMinutes,
+    checkOutLocation,
+  };
 
   // Agar check-out ham ofisdan tashqarida bo'lsa, locationWarning ni yangilash
   if (checkOutOutOfOffice && !record.locationWarning) {
-    record.locationWarning = true;
-    record.outOfOffice = true;
+    updateData.locationWarning = true;
+    updateData.outOfOffice = true;
   }
 
   // Erta ketish jarimasi (avval penaltyApplied bo'lmagan bo'lsa)
@@ -358,20 +372,33 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
         `Erta ketish: ${dateStr} (${earlyOutMinutes} daqiqa)`,
         settings.earlyDeparturePenaltyPoints,
       );
-      record.penaltyApplied = true;
-      record.penaltyRef = penalty._id;
+      updateData.penaltyApplied = true;
+      updateData.penaltyRef = penalty.id;
     }
   }
 
-  await record.save();
-  return record;
+  return prisma.attendance.update({
+    where: { id: record.id },
+    data: updateData,
+  });
 }
 
 async function getTodayRecord(userId) {
   const today = getTodayNormalized();
-  return Attendance.findOne({ user: userId, date: today })
-    .populate("penaltyRef", "title points status")
-    .lean();
+  const record = await prisma.attendance.findFirst({
+    where: { userId, date: today },
+  });
+  if (!record) return null;
+
+  // penaltyRef — soft ref (FK emas), qo'lda yuklaymiz
+  let penaltyRef = null;
+  if (record.penaltyRef) {
+    penaltyRef = await prisma.penalty.findUnique({
+      where: { id: record.penaltyRef },
+      select: { id: true, title: true, points: true, status: true },
+    });
+  }
+  return { ...record, penaltyRef };
 }
 
 async function getMyHistory(userId, month, year) {
@@ -381,23 +408,39 @@ async function getMyHistory(userId, month, year) {
   const startDate = new Date(Date.UTC(y, m - 1, 1));
   const endDate = new Date(Date.UTC(y, m, 1));
 
-  const records = await Attendance.find({
-    user: userId,
-    date: { $gte: startDate, $lt: endDate },
-  })
-    .sort({ date: 1 })
-    .populate("penaltyRef", "title points status")
-    .lean();
+  const records = await prisma.attendance.findMany({
+    where: {
+      userId,
+      date: { gte: startDate, lt: endDate },
+    },
+    orderBy: { date: "asc" },
+  });
+
+  // penaltyRef — soft ref, qo'lda yuklaymiz
+  const penaltyIds = [
+    ...new Set(records.map((r) => r.penaltyRef).filter(Boolean)),
+  ];
+  const penalties = penaltyIds.length
+    ? await prisma.penalty.findMany({
+        where: { id: { in: penaltyIds } },
+        select: { id: true, title: true, points: true, status: true },
+      })
+    : [];
+  const penaltyMap = new Map(penalties.map((p) => [p.id, p]));
+  const recordsWithPenalty = records.map((r) => ({
+    ...r,
+    penaltyRef: r.penaltyRef ? penaltyMap.get(r.penaltyRef) || null : null,
+  }));
 
   const summary = {
-    present: records.filter((r) => r.status === "present").length,
-    late: records.filter((r) => r.status === "late").length,
-    absent: records.filter((r) => r.status === "absent").length,
-    excused: records.filter((r) => r.status === "excused").length,
-    total: records.length,
+    present: recordsWithPenalty.filter((r) => r.status === "present").length,
+    late: recordsWithPenalty.filter((r) => r.status === "late").length,
+    absent: recordsWithPenalty.filter((r) => r.status === "absent").length,
+    excused: recordsWithPenalty.filter((r) => r.status === "excused").length,
+    total: recordsWithPenalty.length,
   };
 
-  return { records, summary };
+  return { records: recordsWithPenalty, summary };
 }
 
 async function getAllRecords(query) {
@@ -409,50 +452,80 @@ async function getAllRecords(query) {
 
   const filter = {};
 
-  if (userId) filter.user = userId;
+  if (userId) filter.userId = userId;
   if (month && year) {
     const m = parseInt(month, 10);
     const y = parseInt(year, 10);
     filter.date = {
-      $gte: new Date(Date.UTC(y, m - 1, 1)),
-      $lt: new Date(Date.UTC(y, m, 1)),
+      gte: new Date(Date.UTC(y, m - 1, 1)),
+      lt: new Date(Date.UTC(y, m, 1)),
     };
   }
 
   // Role bo'yicha filtrlash uchun avval userlarni topamiz
   if (role && !userId) {
-    const users = await User.find({ role, isActive: true }, "_id").lean();
-    filter.user = { $in: users.map((u) => u._id) };
+    const users = await prisma.user.findMany({
+      where: { role, isActive: true },
+      select: { id: true },
+    });
+    filter.userId = { in: users.map((u) => u.id) };
   }
 
+  // user va penaltyRef — soft ref'lar, qo'lda yuklaymiz
+  const attachRefs = async (records) => {
+    const uIds = [...new Set(records.map((r) => r.userId).filter(Boolean))];
+    const pIds = [...new Set(records.map((r) => r.penaltyRef).filter(Boolean))];
+    const [users, penalties] = await Promise.all([
+      uIds.length
+        ? prisma.user.findMany({
+            where: { id: { in: uIds } },
+            select: { id: true, firstName: true, lastName: true, username: true, role: true },
+          })
+        : [],
+      pIds.length
+        ? prisma.penalty.findMany({
+            where: { id: { in: pIds } },
+            select: { id: true, title: true, points: true, status: true },
+          })
+        : [],
+    ]);
+    const userMap = new Map(users.map((u) => [u.id, u]));
+    const penaltyMap = new Map(penalties.map((p) => [p.id, p]));
+    return records.map((r) => ({
+      ...r,
+      user: r.userId ? userMap.get(r.userId) || null : null,
+      penaltyRef: r.penaltyRef ? penaltyMap.get(r.penaltyRef) || null : null,
+    }));
+  };
+
   if (noPagination) {
-    const records = await Attendance.find(filter)
-      .sort({ date: -1, createdAt: -1 })
-      .populate("user", "firstName lastName username role")
-      .populate("penaltyRef", "title points status")
-      .lean();
+    const rows = await prisma.attendance.findMany({
+      where: filter,
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+    });
+    const records = await attachRefs(rows);
     return { success: true, data: records };
   }
 
-  const [records, total] = await Promise.all([
-    Attendance.find(filter)
-      .sort({ date: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate("user", "firstName lastName username role")
-      .populate("penaltyRef", "title points status")
-      .lean(),
-    Attendance.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.attendance.findMany({
+      where: filter,
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.attendance.count({ where: filter }),
   ]);
 
+  const records = await attachRefs(rows);
   return formatPaginationResponse(records, total, page, limit);
 }
 
 async function getUserMonthRecords(userId, month, year) {
-  const user = await User.findById(
-    userId,
-    "firstName lastName username role",
-  ).lean();
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, firstName: true, lastName: true, username: true, role: true },
+  });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   const { records, summary } = await getMyHistory(userId, month, year);
@@ -463,32 +536,40 @@ async function getTodayAllRecords(roleFilter, dateInput) {
   // Sana berilsa o'sha kun, aks holda bugun (default)
   const day = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
 
-  const userFilter = { isActive: true, role: { $nin: ["owner", "student"] } };
+  const userFilter = { isActive: true, role: { notIn: ["owner", "student"] } };
   if (roleFilter) userFilter.role = roleFilter;
 
-  const allUsers = await User.find(
-    userFilter,
-    "_id firstName lastName role workStartTime workEndTime workDays weeklySchedule",
-  ).lean();
-  const userIds = allUsers.map((u) => u._id);
+  const allUsers = await prisma.user.findMany({
+    where: userFilter,
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      role: true,
+      workStartTime: true,
+      workEndTime: true,
+      workDays: true,
+      weeklySchedule: true,
+    },
+  });
+  const userIds = allUsers.map((u) => u.id);
 
-  const records = await Attendance.find({ user: { $in: userIds }, date: day })
-    .populate("user", "firstName lastName role")
-    .lean();
+  const records = await prisma.attendance.findMany({
+    where: { userId: { in: userIds }, date: day },
+  });
 
   const recordByUser = {};
   records.forEach((r) => {
-    const uid = r.user?._id?.toString() || r.user?.toString();
-    recordByUser[uid] = r;
+    recordByUser[r.userId] = r;
   });
 
   const rows = await Promise.all(
     allUsers.map(async (u) => {
-      const rec = recordByUser[u._id.toString()];
+      const rec = recordByUser[u.id];
       const schedule = await getEffectiveSchedule(u);
       return {
         user: {
-          _id: u._id,
+          _id: u.id,
           firstName: u.firstName,
           lastName: u.lastName,
           role: u.role,
@@ -546,7 +627,10 @@ async function markStaffAttendance({ date, records }, markedBy) {
       throw new BadRequestError("'Sababli' holat uchun sabab tanlanishi shart");
     }
 
-    const user = await User.findById(userId, "role").lean();
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
     if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
     if (user.role === "student" || user.role === "owner") {
       throw new BadRequestError(
@@ -556,24 +640,26 @@ async function markStaffAttendance({ date, records }, markedBy) {
 
     const isExcused = status === "excused";
 
-    const updated = await Attendance.findOneAndUpdate(
-      { user: userId, date: normalizedDate },
-      {
-        $set: {
-          status,
-          absenceReason: isExcused ? absenceReason : null,
-          excuseReason: isExcused ? excuseReason || null : null,
-          autoMarked: false,
-          lastModifiedBy: markedBy,
-        },
-        $setOnInsert: {
-          user: userId,
-          date: normalizedDate,
-          createdBy: markedBy,
-        },
+    const updated = await prisma.attendance.upsert({
+      where: { userId_date: { userId, date: normalizedDate } },
+      update: {
+        status,
+        absenceReason: isExcused ? absenceReason : null,
+        excuseReason: isExcused ? excuseReason || null : null,
+        autoMarked: false,
+        lastModifiedBy: markedBy,
       },
-      { upsert: true, new: true, runValidators: true },
-    );
+      create: {
+        userId,
+        date: normalizedDate,
+        status,
+        absenceReason: isExcused ? absenceReason : null,
+        excuseReason: isExcused ? excuseReason || null : null,
+        autoMarked: false,
+        lastModifiedBy: markedBy,
+        createdBy: markedBy,
+      },
+    });
 
     results.push(updated);
   }
@@ -582,11 +668,11 @@ async function markStaffAttendance({ date, records }, markedBy) {
 }
 
 async function getSettings() {
-  return AttendanceSettings.getSettings();
+  return getAttendanceSettings();
 }
 
 async function updateSettings(data, updatedBy) {
-  const settings = await AttendanceSettings.getSettings();
+  const settings = await getAttendanceSettings();
 
   const allowed = [
     "officeLocation",
@@ -601,13 +687,17 @@ async function updateSettings(data, updatedBy) {
     "pausedUsers",
   ];
 
+  const update = {};
   allowed.forEach((key) => {
-    if (data[key] !== undefined) settings[key] = data[key];
+    if (data[key] !== undefined) update[key] = data[key];
   });
 
-  settings.updatedBy = updatedBy;
-  await settings.save();
-  return settings;
+  update.updatedBy = updatedBy;
+
+  return prisma.attendanceSettings.update({
+    where: { id: settings.id },
+    data: update,
+  });
 }
 
 const EXCUSE_STATUS_LABELS_UZ = {
@@ -635,10 +725,12 @@ async function createExcuseRequest(userId, { date, reason, type, absenceReason }
   }
 
   // Bir kun uchun bir so'rov
-  const existing = await ExcuseRequest.findOne({
-    user: userId,
-    date: normalizedDate,
-    status: { $ne: "rejected" },
+  const existing = await prisma.excuseRequest.findFirst({
+    where: {
+      userId,
+      date: normalizedDate,
+      status: { not: "rejected" },
+    },
   });
   if (existing) {
     const statusLabel =
@@ -648,12 +740,14 @@ async function createExcuseRequest(userId, { date, reason, type, absenceReason }
     );
   }
 
-  return ExcuseRequest.create({
-    user: userId,
-    date: normalizedDate,
-    absenceReason: absenceReason || null,
-    reason: reason || null,
-    type: type || "after",
+  return prisma.excuseRequest.create({
+    data: {
+      userId,
+      date: normalizedDate,
+      absenceReason: absenceReason || null,
+      reason: reason || null,
+      type: type || "after",
+    },
   });
 }
 
@@ -663,10 +757,12 @@ async function createExcuseRequest(userId, { date, reason, type, absenceReason }
  * @param {string} userId
  */
 async function cancelExcuseRequest(excuseId, userId) {
-  const excuse = await ExcuseRequest.findById(excuseId);
+  const excuse = await prisma.excuseRequest.findUnique({
+    where: { id: excuseId },
+  });
   if (!excuse) throw new NotFoundError("So'rov topilmadi");
 
-  if (excuse.user.toString() !== userId.toString()) {
+  if (excuse.userId.toString() !== userId.toString()) {
     throw new ForbiddenError("Bu so'rov sizga tegishli emas");
   }
   if (excuse.status !== "pending") {
@@ -675,7 +771,7 @@ async function cancelExcuseRequest(excuseId, userId) {
     );
   }
 
-  await excuse.deleteOne();
+  await prisma.excuseRequest.delete({ where: { id: excuseId } });
 }
 
 /**
@@ -685,49 +781,109 @@ async function cancelExcuseRequest(excuseId, userId) {
  */
 async function getRecentExcuses() {
   const LIMIT = 10;
-  const userFields = "firstName lastName username role";
 
   const [pending, pendingCount] = await Promise.all([
-    ExcuseRequest.find({ status: "pending" })
-      .sort({ createdAt: -1 })
-      .limit(LIMIT)
-      .populate("user", userFields)
-      .populate("absenceReason", "title")
-      .lean(),
-    ExcuseRequest.countDocuments({ status: "pending" }),
+    prisma.excuseRequest.findMany({
+      where: { status: "pending" },
+      orderBy: { createdAt: "desc" },
+      take: LIMIT,
+    }),
+    prisma.excuseRequest.count({ where: { status: "pending" } }),
   ]);
 
   let items = pending;
 
   if (items.length < LIMIT) {
-    const approved = await ExcuseRequest.find({ status: "approved" })
-      .sort({ reviewedAt: -1 })
-      .limit(LIMIT - items.length)
-      .populate("user", userFields)
-      .populate("reviewedBy", "firstName lastName")
-      .populate("absenceReason", "title")
-      .lean();
+    const approved = await prisma.excuseRequest.findMany({
+      where: { status: "approved" },
+      orderBy: { reviewedAt: "desc" },
+      take: LIMIT - items.length,
+    });
     items = items.concat(approved);
   }
 
-  return { items, pendingCount };
+  // user, reviewedBy, absenceReason — soft ref'lar, qo'lda yuklaymiz
+  const items2 = await attachExcuseRefs(items);
+
+  return { items: items2, pendingCount };
+}
+
+// user/reviewedBy/absenceReason soft ref'larni qo'lda yuklab xaritalaydi
+async function attachExcuseRefs(records) {
+  const userIds = [...new Set(records.map((r) => r.userId).filter(Boolean))];
+  const reviewerIds = [
+    ...new Set(records.map((r) => r.reviewedBy).filter(Boolean)),
+  ];
+  const reasonIds = [
+    ...new Set(records.map((r) => r.absenceReason).filter(Boolean)),
+  ];
+
+  const [users, reviewers, reasons] = await Promise.all([
+    userIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, firstName: true, lastName: true, username: true, role: true },
+        })
+      : [],
+    reviewerIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: reviewerIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+    reasonIds.length
+      ? prisma.absenceReason.findMany({
+          where: { id: { in: reasonIds } },
+          select: { id: true, title: true },
+        })
+      : [],
+  ]);
+
+  const userMap = new Map(users.map((u) => [u.id, u]));
+  const reviewerMap = new Map(reviewers.map((u) => [u.id, u]));
+  const reasonMap = new Map(reasons.map((r) => [r.id, r]));
+
+  return records.map((r) => ({
+    ...r,
+    user: r.userId ? userMap.get(r.userId) || null : null,
+    reviewedBy: r.reviewedBy ? reviewerMap.get(r.reviewedBy) || null : null,
+    absenceReason: r.absenceReason
+      ? reasonMap.get(r.absenceReason) || null
+      : null,
+  }));
 }
 
 async function getMyExcuses(userId, req) {
   const { page, limit, skip } = getPaginationParams(req);
 
-  const filter = { user: userId };
+  const filter = { userId };
   if (req.query.status) filter.status = req.query.status;
 
-  const [data, total] = await Promise.all([
-    ExcuseRequest.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate("absenceReason", "title")
-      .lean(),
-    ExcuseRequest.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.excuseRequest.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.excuseRequest.count({ where: filter }),
   ]);
+
+  // absenceReason — soft ref, qo'lda yuklaymiz
+  const reasonIds = [...new Set(rows.map((r) => r.absenceReason).filter(Boolean))];
+  const reasons = reasonIds.length
+    ? await prisma.absenceReason.findMany({
+        where: { id: { in: reasonIds } },
+        select: { id: true, title: true },
+      })
+    : [];
+  const reasonMap = new Map(reasons.map((r) => [r.id, r]));
+  const data = rows.map((r) => ({
+    ...r,
+    absenceReason: r.absenceReason
+      ? reasonMap.get(r.absenceReason) || null
+      : null,
+  }));
 
   return formatPaginationResponse(data, total, page, limit);
 }
@@ -738,40 +894,49 @@ async function getAllExcuses(req) {
   const filter = {};
   if (req.query.status) filter.status = req.query.status;
 
-  const [data, total] = await Promise.all([
-    ExcuseRequest.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .populate("user", "firstName lastName username role")
-      .populate("reviewedBy", "firstName lastName")
-      .populate("absenceReason", "title")
-      .lean(),
-    ExcuseRequest.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.excuseRequest.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.excuseRequest.count({ where: filter }),
   ]);
+
+  const data = await attachExcuseRefs(rows);
 
   return formatPaginationResponse(data, total, page, limit);
 }
 
 async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
-  const excuse = await ExcuseRequest.findById(excuseId);
+  const excuse = await prisma.excuseRequest.findUnique({
+    where: { id: excuseId },
+  });
   if (!excuse) throw new NotFoundError("So'rov topilmadi");
   if (excuse.status !== "pending")
     throw new BadRequestError("So'rov allaqachon ko'rib chiqilgan");
 
-  excuse.status = status;
-  excuse.reviewedBy = reviewedBy;
-  excuse.reviewedAt = new Date();
+  const excuseUpdate = {
+    status,
+    reviewedBy,
+    reviewedAt: new Date(),
+  };
   if (status === "rejected" && rejectionReason) {
-    excuse.rejectionReason = rejectionReason;
+    excuseUpdate.rejectionReason = rejectionReason;
   }
-  await excuse.save();
+  const updatedExcuse = await prisma.excuseRequest.update({
+    where: { id: excuseId },
+    data: excuseUpdate,
+  });
 
   if (status === "approved") {
-    const settings = await AttendanceSettings.getSettings();
-    let record = await Attendance.findOne({
-      user: excuse.user,
-      date: excuse.date,
+    const settings = await getAttendanceSettings();
+    const record = await prisma.attendance.findFirst({
+      where: {
+        userId: excuse.userId,
+        date: excuse.date,
+      },
     });
 
     if (
@@ -781,36 +946,48 @@ async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
       record.penaltyRef
     ) {
       // Yozilgan jarimani bekor qilish
-      await Penalty.findByIdAndUpdate(record.penaltyRef, {
-        status: "rejected",
+      await prisma.penalty.update({
+        where: { id: record.penaltyRef },
+        data: { status: "rejected" },
       });
-      await User.findByIdAndUpdate(excuse.user, {
-        $inc: { penaltyPoints: -settings.absentPenaltyPoints },
+      await prisma.user.update({
+        where: { id: excuse.userId },
+        data: { penaltyPoints: { increment: -settings.absentPenaltyPoints } },
       });
-      record.status = "excused";
-      record.penaltyApplied = false;
-      record.absenceReason = excuse.absenceReason || null;
-      record.excuseReason = excuse.reason || null;
-      await record.save();
+      await prisma.attendance.update({
+        where: { id: record.id },
+        data: {
+          status: "excused",
+          penaltyApplied: false,
+          absenceReason: excuse.absenceReason || null,
+          excuseReason: excuse.reason || null,
+        },
+      });
     } else if (record && record.status === "absent") {
-      record.status = "excused";
-      record.absenceReason = excuse.absenceReason || null;
-      record.excuseReason = excuse.reason || null;
-      await record.save();
+      await prisma.attendance.update({
+        where: { id: record.id },
+        data: {
+          status: "excused",
+          absenceReason: excuse.absenceReason || null,
+          excuseReason: excuse.reason || null,
+        },
+      });
     } else if (!record) {
-      await Attendance.create({
-        user: excuse.user,
-        date: excuse.date,
-        status: "excused",
-        absenceReason: excuse.absenceReason || null,
-        excuseReason: excuse.reason || null,
-        autoMarked: true,
-        createdBy: reviewedBy,
+      await prisma.attendance.create({
+        data: {
+          userId: excuse.userId,
+          date: excuse.date,
+          status: "excused",
+          absenceReason: excuse.absenceReason || null,
+          excuseReason: excuse.reason || null,
+          autoMarked: true,
+          createdBy: reviewedBy,
+        },
       });
     }
   }
 
-  return excuse;
+  return updatedExcuse;
 }
 
 module.exports = {

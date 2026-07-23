@@ -1,5 +1,6 @@
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { generateToken } = require("../utils/jwt");
+const { matchPassword } = require("../utils/password");
 const { BadRequestError, ForbiddenError } = require("../utils/errors");
 
 /**
@@ -13,11 +14,12 @@ async function login(username, password) {
     throw new BadRequestError("Username va parol majburiy");
   }
 
-  const user = await User.findOne({
-    username: username.toLowerCase(),
-  }).populate("classes", "name");
+  const user = await prisma.user.findUnique({
+    where: { username: username.toLowerCase() },
+    include: { classes: { include: { class: { select: { id: true, name: true } } } } },
+  });
 
-  if (!user || !(await user.matchPassword(password))) {
+  if (!user || !(await matchPassword(password, user.password))) {
     throw new BadRequestError("Username yoki parol noto'g'ri");
   }
 
@@ -29,17 +31,17 @@ async function login(username, password) {
     throw new ForbiddenError("Sizning hisobingiz arxivlangan");
   }
 
-  const token = generateToken(user._id);
+  const token = generateToken(user.id);
 
   return {
     user: {
-      id: user._id,
+      id: user.id,
       username: user.username,
       firstName: user.firstName,
       lastName: user.lastName,
       fullName: user.fullName,
       role: user.role,
-      classes: user.classes,
+      classes: user.classes.map((uc) => uc.class),
     },
     token,
   };
@@ -51,10 +53,21 @@ async function login(username, password) {
  * @returns {Promise<object>} foydalanuvchi ma'lumotlari
  */
 async function getMe(userId) {
-  const user = await User.findById(userId)
-    .populate("classes", "name")
-    .populate("profilePicture");
-  return user;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      classes: { include: { class: { select: { id: true, name: true } } } },
+      profileImage: true,
+    },
+  });
+
+  if (!user) return null;
+
+  return {
+    ...user,
+    classes: user.classes.map((uc) => uc.class),
+    profilePicture: user.profileImage || null,
+  };
 }
 
 module.exports = { login, getMe };

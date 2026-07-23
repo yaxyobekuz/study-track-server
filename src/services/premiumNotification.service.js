@@ -1,4 +1,4 @@
-const TgUser = require("../models/tguser.model");
+const prisma = require("../config/prisma");
 const telegramService = require("./telegram.service");
 const logger = require("../utils/logger");
 const { config } = require("../config/env.config");
@@ -65,10 +65,12 @@ const buildMessage = (eventType, { studentName, durationDays, expiresAt } = {}) 
  * @param {string} text
  */
 const sendToStudent = async (studentId, text) => {
-  const tgUsers = await TgUser.find({
-    student: studentId,
-    isActive: true,
-    notificationsEnabled: true,
+  const tgUsers = await prisma.tgUser.findMany({
+    where: {
+      student: studentId,
+      isActive: true,
+      notificationsEnabled: true,
+    },
   });
 
   for (const tgUser of tgUsers) {
@@ -85,14 +87,14 @@ const sendToStudent = async (studentId, text) => {
 /**
  * Premium hodisasi yuz berganda o'quvchiga bot orqali xabar yuboradi.
  * Hech qachon xato tashlamaydi (asosiy oqimni to'xtatmaydi).
- * @param {object} user - O'quvchi hujjati (_id, firstName, lastName)
+ * @param {object} user - O'quvchi hujjati (id, firstName, lastName)
  * @param {string} eventType - purchased | granted | revoked | expired
  * @param {object} [data] - { durationDays, expiresAt }
  * @returns {Promise<void>}
  */
 const notifyPremiumEvent = async (user, eventType, data = {}) => {
   try {
-    if (!user || !user._id) return;
+    if (!user || !user.id) return;
 
     const studentName = user.lastName
       ? `${user.firstName} ${user.lastName}`
@@ -101,7 +103,7 @@ const notifyPremiumEvent = async (user, eventType, data = {}) => {
     const text = buildMessage(eventType, { studentName, ...data });
     if (!text) return;
 
-    await sendToStudent(user._id, text);
+    await sendToStudent(user.id, text);
   } catch (error) {
     logger.error(`Premium xabarnoma xatosi (${eventType}): ${error.message}`);
   }

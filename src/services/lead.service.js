@@ -1,9 +1,87 @@
-const Lead = require("../models/lead.model");
-const LeadSource = require("../models/leadSource.model");
-const LeadDirection = require("../models/leadDirection.model");
-const LeadCategory = require("../models/leadCategory.model");
-const LeadActivity = require("../models/leadActivity.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+
+// Lead status'lari — Mongoose modelidagi ro'yxat bilan bir xil (validatsiya uchun).
+const LEAD_STATUSES = [
+  "new",
+  "contacted",
+  "interested",
+  "visited",
+  "trial",
+  "negotiation",
+  "enrolled",
+  "rejected",
+  "lost",
+  "postponed",
+];
+
+/**
+ * source/direction/category/createdBy — Lead'da scalar ref (FK emas, populate yo'q).
+ * Ularni qo'lda yuklab, populate shaklida ({ id, name } yoki { firstName, lastName })
+ * lead(lar)ga biriktiradi. Bitta lead yoki lead massivi qabul qiladi.
+ */
+async function attachLeadRefs(leadsInput) {
+  const isArray = Array.isArray(leadsInput);
+  const leads = isArray ? leadsInput : [leadsInput];
+
+  const sourceIds = [...new Set(leads.map((l) => l.source).filter(Boolean))];
+  const directionIds = [...new Set(leads.map((l) => l.direction).filter(Boolean))];
+  const categoryIds = [...new Set(leads.map((l) => l.category).filter(Boolean))];
+  const creatorIds = [...new Set(leads.map((l) => l.createdBy).filter(Boolean))];
+
+  const [sources, directions, categories, creators] = await Promise.all([
+    prisma.leadSource.findMany({ where: { id: { in: sourceIds } }, select: { id: true, name: true } }),
+    prisma.leadDirection.findMany({ where: { id: { in: directionIds } }, select: { id: true, name: true } }),
+    prisma.leadCategory.findMany({ where: { id: { in: categoryIds } }, select: { id: true, name: true } }),
+    prisma.user.findMany({
+      where: { id: { in: creatorIds } },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+  ]);
+
+  const sourceMap = new Map(sources.map((s) => [s.id, s]));
+  const directionMap = new Map(directions.map((d) => [d.id, d]));
+  const categoryMap = new Map(categories.map((c) => [c.id, c]));
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
+
+  const mapped = leads.map((lead) => ({
+    ...lead,
+    source: sourceMap.get(lead.source) || null,
+    direction: directionMap.get(lead.direction) || null,
+    category: categoryMap.get(lead.category) || null,
+    createdBy: creatorMap.get(lead.createdBy) || null,
+  }));
+
+  return isArray ? mapped : mapped[0];
+}
+
+/**
+ * createdBy'ni ({ firstName, lastName }) aktivliklarga biriktiradi (scalar ref).
+ */
+async function attachActivityCreators(activities) {
+  const creatorIds = [...new Set(activities.map((a) => a.createdBy).filter(Boolean))];
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
+
+  return activities.map((a) => ({ ...a, createdBy: creatorMap.get(a.createdBy) || null }));
+}
+
+/**
+ * Sana oralig'i filtri qurish (createdAt gte/lte).
+ */
+function buildDateFilter(startDate, endDate) {
+  const createdAt = {};
+  if (startDate) createdAt.gte = new Date(startDate);
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    createdAt.lte = end;
+  }
+  return Object.keys(createdAt).length ? { createdAt } : {};
+}
 
 /**
  * Barcha leadlarni sahifalangan holda olish.
@@ -21,21 +99,21 @@ async function getAllLeads(query) {
 
   if (startDate || endDate) {
     filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (startDate) filter.createdAt.gte = new Date(startDate);
     if (endDate) {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      filter.createdAt.$lte = end;
+      filter.createdAt.lte = end;
     }
   }
 
   if (search && search.trim()) {
-    const searchRegex = new RegExp(search.trim(), "i");
-    filter.$or = [
-      { firstName: searchRegex },
-      { lastName: searchRegex },
-      { phone: searchRegex },
-      { parentName: searchRegex },
+    const term = search.trim();
+    filter.OR = [
+      { firstName: { contains: term, mode: "insensitive" } },
+      { lastName: { contains: term, mode: "insensitive" } },
+      { phone: { contains: term, mode: "insensitive" } },
+      { parentName: { contains: term, mode: "insensitive" } },
     ];
   }
 
@@ -43,17 +121,17 @@ async function getAllLeads(query) {
   const limitNum = parseInt(limit, 10);
   const skip = (pageNum - 1) * limitNum;
 
-  const [total, leads] = await Promise.all([
-    Lead.countDocuments(filter),
-    Lead.find(filter)
-      .populate("source", "name")
-      .populate("direction", "name")
-      .populate("category", "name")
-      .populate("createdBy", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum),
+  const [total, rawLeads] = await Promise.all([
+    prisma.lead.count({ where: filter }),
+    prisma.lead.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNum,
+    }),
   ]);
+
+  const leads = await attachLeadRefs(rawLeads);
 
   const totalPages = Math.ceil(total / limitNum);
 
@@ -76,20 +154,21 @@ async function getAllLeads(query) {
  * @returns {Promise<object>}
  */
 async function getLeadById(id) {
-  const lead = await Lead.findById(id)
-    .populate("source", "name")
-    .populate("direction", "name")
-    .populate("category", "name")
-    .populate("createdBy", "firstName lastName");
+  const rawLead = await prisma.lead.findUnique({ where: { id } });
 
-  if (!lead) {
+  if (!rawLead) {
     throw new NotFoundError("Lead topilmadi");
   }
 
-  const recentActivities = await LeadActivity.find({ lead: id })
-    .populate("createdBy", "firstName lastName")
-    .sort({ createdAt: -1 })
-    .limit(20);
+  const lead = await attachLeadRefs(rawLead);
+
+  const rawActivities = await prisma.leadActivity.findMany({
+    where: { leadId: id },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+  });
+
+  const recentActivities = await attachActivityCreators(rawActivities);
 
   return { lead, activities: recentActivities };
 }
@@ -107,17 +186,17 @@ async function createLead(data, userId) {
     throw new BadRequestError("Ism, familiya, telefon, manba, yo'nalish va toifa majburiy");
   }
 
-  const sourceExists = await LeadSource.findById(source);
+  const sourceExists = await prisma.leadSource.findUnique({ where: { id: source } });
   if (!sourceExists) {
     throw new NotFoundError("Manba topilmadi");
   }
 
-  const directionExists = await LeadDirection.findById(direction);
+  const directionExists = await prisma.leadDirection.findUnique({ where: { id: direction } });
   if (!directionExists) {
     throw new NotFoundError("Yo'nalish topilmadi");
   }
 
-  const categoryExists = await LeadCategory.findById(category);
+  const categoryExists = await prisma.leadCategory.findUnique({ where: { id: category } });
   if (!categoryExists) {
     throw new NotFoundError("Toifa topilmadi");
   }
@@ -125,21 +204,20 @@ async function createLead(data, userId) {
   const leadData = { ...data, createdBy: userId };
   if (createdAt) leadData.createdAt = new Date(createdAt);
 
-  const lead = await Lead.create(leadData);
+  const lead = await prisma.lead.create({ data: leadData });
 
   // Auto-create first activity
-  await LeadActivity.create({
-    lead: lead._id,
-    type: "note",
-    description: "Yangi lead yaratildi",
-    createdBy: userId,
+  await prisma.leadActivity.create({
+    data: {
+      leadId: lead.id,
+      type: "note",
+      description: "Yangi lead yaratildi",
+      createdBy: userId,
+    },
   });
 
-  return Lead.findById(lead._id)
-    .populate("source", "name")
-    .populate("direction", "name")
-    .populate("category", "name")
-    .populate("createdBy", "firstName lastName");
+  const created = await prisma.lead.findUnique({ where: { id: lead.id } });
+  return attachLeadRefs(created);
 }
 
 /**
@@ -149,7 +227,7 @@ async function createLead(data, userId) {
  * @returns {Promise<object>}
  */
 async function updateLead(id, data) {
-  const lead = await Lead.findById(id);
+  const lead = await prisma.lead.findUnique({ where: { id } });
   if (!lead) {
     throw new NotFoundError("Lead topilmadi");
   }
@@ -161,34 +239,30 @@ async function updateLead(id, data) {
   if (data.createdAt) data.createdAt = new Date(data.createdAt);
 
   if (data.source) {
-    const sourceExists = await LeadSource.findById(data.source);
+    const sourceExists = await prisma.leadSource.findUnique({ where: { id: data.source } });
     if (!sourceExists) {
       throw new NotFoundError("Manba topilmadi");
     }
   }
 
   if (data.direction) {
-    const directionExists = await LeadDirection.findById(data.direction);
+    const directionExists = await prisma.leadDirection.findUnique({ where: { id: data.direction } });
     if (!directionExists) {
       throw new NotFoundError("Yo'nalish topilmadi");
     }
   }
 
   if (data.category) {
-    const categoryExists = await LeadCategory.findById(data.category);
+    const categoryExists = await prisma.leadCategory.findUnique({ where: { id: data.category } });
     if (!categoryExists) {
       throw new NotFoundError("Toifa topilmadi");
     }
   }
 
-  Object.assign(lead, data);
-  await lead.save();
+  await prisma.lead.update({ where: { id }, data });
 
-  return Lead.findById(lead._id)
-    .populate("source", "name")
-    .populate("direction", "name")
-    .populate("category", "name")
-    .populate("createdBy", "firstName lastName");
+  const updated = await prisma.lead.findUnique({ where: { id } });
+  return attachLeadRefs(updated);
 }
 
 /**
@@ -201,7 +275,7 @@ async function updateLead(id, data) {
  * @returns {Promise<object>}
  */
 async function updateLeadStatus(id, status, description, lostReason, userId) {
-  const lead = await Lead.findById(id);
+  const lead = await prisma.lead.findUnique({ where: { id } });
   if (!lead) {
     throw new NotFoundError("Lead topilmadi");
   }
@@ -210,35 +284,34 @@ async function updateLeadStatus(id, status, description, lostReason, userId) {
     throw new BadRequestError("Yangi status majburiy");
   }
 
-  const { LEAD_STATUSES } = require("../models/lead.model");
   if (!LEAD_STATUSES.includes(status)) {
     throw new BadRequestError("Noto'g'ri status");
   }
 
   const previousStatus = lead.status;
-  lead.status = status;
+
+  const update = { status };
 
   if ((status === "rejected" || status === "lost") && lostReason) {
-    lead.lostReason = lostReason;
+    update.lostReason = lostReason;
   }
 
-  await lead.save();
+  await prisma.lead.update({ where: { id }, data: update });
 
   // Log status change activity
-  await LeadActivity.create({
-    lead: lead._id,
-    type: "status_change",
-    description: description || `Status "${previousStatus}" dan "${status}" ga o'zgartirildi`,
-    previousStatus,
-    newStatus: status,
-    createdBy: userId,
+  await prisma.leadActivity.create({
+    data: {
+      leadId: lead.id,
+      type: "status_change",
+      description: description || `Status "${previousStatus}" dan "${status}" ga o'zgartirildi`,
+      previousStatus,
+      newStatus: status,
+      createdBy: userId,
+    },
   });
 
-  return Lead.findById(lead._id)
-    .populate("source", "name")
-    .populate("direction", "name")
-    .populate("category", "name")
-    .populate("createdBy", "firstName lastName");
+  const updated = await prisma.lead.findUnique({ where: { id } });
+  return attachLeadRefs(updated);
 }
 
 /**
@@ -247,12 +320,15 @@ async function updateLeadStatus(id, status, description, lostReason, userId) {
  * @returns {Promise<void>}
  */
 async function deleteLead(id) {
-  const lead = await Lead.findById(id);
+  const lead = await prisma.lead.findUnique({ where: { id } });
   if (!lead) {
     throw new NotFoundError("Lead topilmadi");
   }
 
-  await Promise.all([lead.deleteOne(), LeadActivity.deleteMany({ lead: id })]);
+  await Promise.all([
+    prisma.lead.delete({ where: { id } }),
+    prisma.leadActivity.deleteMany({ where: { leadId: id } }),
+  ]);
 }
 
 /**
@@ -263,16 +339,7 @@ async function deleteLead(id) {
 async function getAnalyticsOverview(query) {
   const { startDate, endDate } = query;
 
-  const dateFilter = {};
-  if (startDate || endDate) {
-    dateFilter.createdAt = {};
-    if (startDate) dateFilter.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      dateFilter.createdAt.$lte = end;
-    }
-  }
+  const dateFilter = buildDateFilter(startDate, endDate);
 
   const [
     totalLeads,
@@ -287,17 +354,17 @@ async function getAnalyticsOverview(query) {
     negotiationLeads,
     postponedLeads,
   ] = await Promise.all([
-    Lead.countDocuments(dateFilter),
-    Lead.countDocuments({ ...dateFilter, status: "new" }),
-    Lead.countDocuments({ ...dateFilter, status: "enrolled" }),
-    Lead.countDocuments({ ...dateFilter, status: "rejected" }),
-    Lead.countDocuments({ ...dateFilter, status: "lost" }),
-    Lead.countDocuments({ ...dateFilter, status: "contacted" }),
-    Lead.countDocuments({ ...dateFilter, status: "interested" }),
-    Lead.countDocuments({ ...dateFilter, status: "visited" }),
-    Lead.countDocuments({ ...dateFilter, status: "trial" }),
-    Lead.countDocuments({ ...dateFilter, status: "negotiation" }),
-    Lead.countDocuments({ ...dateFilter, status: "postponed" }),
+    prisma.lead.count({ where: dateFilter }),
+    prisma.lead.count({ where: { ...dateFilter, status: "new" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "enrolled" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "rejected" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "lost" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "contacted" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "interested" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "visited" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "trial" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "negotiation" } }),
+    prisma.lead.count({ where: { ...dateFilter, status: "postponed" } }),
   ]);
 
   const conversionRate = totalLeads > 0 ? ((enrolledLeads / totalLeads) * 100).toFixed(1) : 0;
@@ -340,77 +407,43 @@ async function getAnalyticsOverview(query) {
 async function getSourceAnalytics(query) {
   const { startDate, endDate } = query;
 
-  const matchStage = {};
-  if (startDate || endDate) {
-    matchStage.createdAt = {};
-    if (startDate) matchStage.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      matchStage.createdAt.$lte = end;
-    }
+  const conditions = [];
+  const params = [];
+  if (startDate) {
+    params.push(new Date(startDate));
+    conditions.push(`l.created_at >= $${params.length}`);
   }
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    params.push(end);
+    conditions.push(`l.created_at <= $${params.length}`);
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  return Lead.aggregate([
-    { $match: matchStage },
-    {
-      $group: {
-        _id: "$source",
-        total: { $sum: 1 },
-        enrolled: {
-          $sum: { $cond: [{ $eq: ["$status", "enrolled"] }, 1, 0] },
-        },
-        rejected: {
-          $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] },
-        },
-        lost: {
-          $sum: { $cond: [{ $eq: ["$status", "lost"] }, 1, 0] },
-        },
-        active: {
-          $sum: {
-            $cond: [
-              {
-                $in: [
-                  "$status",
-                  ["new", "contacted", "interested", "visited", "trial", "negotiation", "postponed"],
-                ],
-              },
-              1,
-              0,
-            ],
-          },
-        },
-      },
-    },
-    {
-      $lookup: {
-        from: "leadsources",
-        localField: "_id",
-        foreignField: "_id",
-        as: "source",
-      },
-    },
-    { $unwind: "$source" },
-    {
-      $project: {
-        _id: 1,
-        sourceName: "$source.name",
-        total: 1,
-        enrolled: 1,
-        rejected: 1,
-        lost: 1,
-        active: 1,
-        conversionRate: {
-          $cond: [
-            { $gt: ["$total", 0] },
-            { $round: [{ $multiply: [{ $divide: ["$enrolled", "$total"] }, 100] }, 1] },
-            0,
-          ],
-        },
-      },
-    },
-    { $sort: { total: -1 } },
-  ]);
+  const rows = await prisma.$queryRawUnsafe(
+    `
+    SELECT
+      l.source AS id,
+      s.name AS "sourceName",
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE l.status = 'enrolled')::int AS enrolled,
+      COUNT(*) FILTER (WHERE l.status = 'rejected')::int AS rejected,
+      COUNT(*) FILTER (WHERE l.status = 'lost')::int AS lost,
+      COUNT(*) FILTER (WHERE l.status IN ('new','contacted','interested','visited','trial','negotiation','postponed'))::int AS active,
+      CASE WHEN COUNT(*) > 0
+        THEN ROUND(COUNT(*) FILTER (WHERE l.status = 'enrolled')::numeric / COUNT(*) * 100, 1)
+        ELSE 0 END AS "conversionRate"
+    FROM leads l
+    JOIN lead_sources s ON s.id = l.source
+    ${whereClause}
+    GROUP BY l.source, s.name
+    ORDER BY total DESC
+    `,
+    ...params,
+  );
+
+  return rows.map((r) => ({ ...r, conversionRate: Number(r.conversionRate) }));
 }
 
 /**
@@ -423,26 +456,18 @@ async function getSourceAnalytics(query) {
 async function getConversionFunnel(query) {
   const { startDate, endDate } = query;
 
-  const dateFilter = {};
-  if (startDate || endDate) {
-    dateFilter.createdAt = {};
-    if (startDate) dateFilter.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      dateFilter.createdAt.$lte = end;
-    }
-  }
+  const dateFilter = buildDateFilter(startDate, endDate);
 
   // Get exact count per status
-  const statusCounts = await Lead.aggregate([
-    { $match: dateFilter },
-    { $group: { _id: "$status", count: { $sum: 1 } } },
-  ]);
+  const statusCounts = await prisma.lead.groupBy({
+    by: ["status"],
+    where: dateFilter,
+    _count: { _all: true },
+  });
 
   const countMap = {};
   statusCounts.forEach((s) => {
-    countMap[s._id] = s.count;
+    countMap[s.status] = s._count._all;
   });
 
   const totalLeads = Object.values(countMap).reduce((sum, c) => sum + c, 0);
@@ -520,49 +545,27 @@ async function getTrendAnalytics(query) {
   }
 
   let dateFormat;
-  if (group === "month") dateFormat = "%Y-%m";
-  else if (group === "week") dateFormat = "%G-W%V"; // ISO week
-  else dateFormat = "%Y-%m-%d";
+  if (group === "month") dateFormat = "YYYY-MM";
+  else if (group === "week") dateFormat = 'IYYY-"W"IW'; // ISO week (e.g. 2026-W03)
+  else dateFormat = "YYYY-MM-DD";
 
-  const trends = await Lead.aggregate([
-    { $match: { createdAt: { $gte: rangeStart, $lte: rangeEnd } } },
-    {
-      $group: {
-        _id: {
-          $dateToString: { format: dateFormat, date: "$createdAt" },
-        },
-        total: { $sum: 1 },
-        enrolled: {
-          $sum: { $cond: [{ $eq: ["$status", "enrolled"] }, 1, 0] },
-        },
-        lost: {
-          $sum: {
-            $cond: [{ $in: ["$status", ["rejected", "lost"]] }, 1, 0],
-          },
-        },
-        active: {
-          $sum: {
-            $cond: [
-              { $in: ["$status", ["new", "contacted", "interested", "visited", "trial", "negotiation", "postponed"]] },
-              1,
-              0,
-            ],
-          },
-        },
-      },
-    },
-    { $sort: { _id: 1 } },
-    {
-      $project: {
-        _id: 0,
-        date: "$_id",
-        total: 1,
-        enrolled: 1,
-        lost: 1,
-        active: 1,
-      },
-    },
-  ]);
+  const trends = await prisma.$queryRawUnsafe(
+    `
+    SELECT
+      TO_CHAR(l.created_at, $1) AS date,
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE l.status = 'enrolled')::int AS enrolled,
+      COUNT(*) FILTER (WHERE l.status IN ('rejected','lost'))::int AS lost,
+      COUNT(*) FILTER (WHERE l.status IN ('new','contacted','interested','visited','trial','negotiation','postponed'))::int AS active
+    FROM leads l
+    WHERE l.created_at >= $2 AND l.created_at <= $3
+    GROUP BY date
+    ORDER BY date ASC
+    `,
+    dateFormat,
+    rangeStart,
+    rangeEnd,
+  );
 
   return { trends, groupBy: group, diffDays };
 }
@@ -575,66 +578,42 @@ async function getTrendAnalytics(query) {
 async function getDirectionAnalytics(query) {
   const { startDate, endDate } = query;
 
-  const matchStage = {};
-  if (startDate || endDate) {
-    matchStage.createdAt = {};
-    if (startDate) matchStage.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      matchStage.createdAt.$lte = end;
-    }
+  const conditions = [];
+  const params = [];
+  if (startDate) {
+    params.push(new Date(startDate));
+    conditions.push(`l.created_at >= $${params.length}`);
   }
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    params.push(end);
+    conditions.push(`l.created_at <= $${params.length}`);
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  return Lead.aggregate([
-    { $match: matchStage },
-    {
-      $group: {
-        _id: "$direction",
-        total: { $sum: 1 },
-        enrolled: { $sum: { $cond: [{ $eq: ["$status", "enrolled"] }, 1, 0] } },
-        active: {
-          $sum: {
-            $cond: [
-              { $in: ["$status", ["new", "contacted", "interested", "visited", "trial", "negotiation", "postponed"]] },
-              1,
-              0,
-            ],
-          },
-        },
-        lost: {
-          $sum: { $cond: [{ $in: ["$status", ["rejected", "lost"]] }, 1, 0] },
-        },
-      },
-    },
-    {
-      $lookup: {
-        from: "leaddirections",
-        localField: "_id",
-        foreignField: "_id",
-        as: "direction",
-      },
-    },
-    { $unwind: "$direction" },
-    {
-      $project: {
-        _id: 1,
-        directionName: "$direction.name",
-        total: 1,
-        enrolled: 1,
-        active: 1,
-        lost: 1,
-        conversionRate: {
-          $cond: [
-            { $gt: ["$total", 0] },
-            { $round: [{ $multiply: [{ $divide: ["$enrolled", "$total"] }, 100] }, 1] },
-            0,
-          ],
-        },
-      },
-    },
-    { $sort: { total: -1 } },
-  ]);
+  const rows = await prisma.$queryRawUnsafe(
+    `
+    SELECT
+      l.direction AS id,
+      d.name AS "directionName",
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE l.status = 'enrolled')::int AS enrolled,
+      COUNT(*) FILTER (WHERE l.status IN ('new','contacted','interested','visited','trial','negotiation','postponed'))::int AS active,
+      COUNT(*) FILTER (WHERE l.status IN ('rejected','lost'))::int AS lost,
+      CASE WHEN COUNT(*) > 0
+        THEN ROUND(COUNT(*) FILTER (WHERE l.status = 'enrolled')::numeric / COUNT(*) * 100, 1)
+        ELSE 0 END AS "conversionRate"
+    FROM leads l
+    JOIN lead_directions d ON d.id = l.direction
+    ${whereClause}
+    GROUP BY l.direction, d.name
+    ORDER BY total DESC
+    `,
+    ...params,
+  );
+
+  return rows.map((r) => ({ ...r, conversionRate: Number(r.conversionRate) }));
 }
 
 /**
@@ -645,66 +624,42 @@ async function getDirectionAnalytics(query) {
 async function getCategoryAnalytics(query) {
   const { startDate, endDate } = query;
 
-  const matchStage = {};
-  if (startDate || endDate) {
-    matchStage.createdAt = {};
-    if (startDate) matchStage.createdAt.$gte = new Date(startDate);
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      matchStage.createdAt.$lte = end;
-    }
+  const conditions = [];
+  const params = [];
+  if (startDate) {
+    params.push(new Date(startDate));
+    conditions.push(`l.created_at >= $${params.length}`);
   }
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    params.push(end);
+    conditions.push(`l.created_at <= $${params.length}`);
+  }
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  return Lead.aggregate([
-    { $match: matchStage },
-    {
-      $group: {
-        _id: "$category",
-        total: { $sum: 1 },
-        enrolled: { $sum: { $cond: [{ $eq: ["$status", "enrolled"] }, 1, 0] } },
-        active: {
-          $sum: {
-            $cond: [
-              { $in: ["$status", ["new", "contacted", "interested", "visited", "trial", "negotiation", "postponed"]] },
-              1,
-              0,
-            ],
-          },
-        },
-        lost: {
-          $sum: { $cond: [{ $in: ["$status", ["rejected", "lost"]] }, 1, 0] },
-        },
-      },
-    },
-    {
-      $lookup: {
-        from: "leadcategories",
-        localField: "_id",
-        foreignField: "_id",
-        as: "category",
-      },
-    },
-    { $unwind: "$category" },
-    {
-      $project: {
-        _id: 1,
-        categoryName: "$category.name",
-        total: 1,
-        enrolled: 1,
-        active: 1,
-        lost: 1,
-        conversionRate: {
-          $cond: [
-            { $gt: ["$total", 0] },
-            { $round: [{ $multiply: [{ $divide: ["$enrolled", "$total"] }, 100] }, 1] },
-            0,
-          ],
-        },
-      },
-    },
-    { $sort: { total: -1 } },
-  ]);
+  const rows = await prisma.$queryRawUnsafe(
+    `
+    SELECT
+      l.category AS id,
+      c.name AS "categoryName",
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE l.status = 'enrolled')::int AS enrolled,
+      COUNT(*) FILTER (WHERE l.status IN ('new','contacted','interested','visited','trial','negotiation','postponed'))::int AS active,
+      COUNT(*) FILTER (WHERE l.status IN ('rejected','lost'))::int AS lost,
+      CASE WHEN COUNT(*) > 0
+        THEN ROUND(COUNT(*) FILTER (WHERE l.status = 'enrolled')::numeric / COUNT(*) * 100, 1)
+        ELSE 0 END AS "conversionRate"
+    FROM leads l
+    JOIN lead_categories c ON c.id = l.category
+    ${whereClause}
+    GROUP BY l.category, c.name
+    ORDER BY total DESC
+    `,
+    ...params,
+  );
+
+  return rows.map((r) => ({ ...r, conversionRate: Number(r.conversionRate) }));
 }
 
 module.exports = {

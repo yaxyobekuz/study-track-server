@@ -1,115 +1,91 @@
-const Class = require("../models/class.model");
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+
+// createdBy soft ref (FK emas) larni bir so'rovda yuklab, xaritalash uchun
+async function attachCreators(rows) {
+  const ids = [...new Set(rows.map((r) => r.createdBy).filter(Boolean))];
+  if (ids.length === 0) return rows.map((r) => ({ ...r, createdBy: null }));
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const map = new Map(users.map((u) => [u.id, u]));
+  return rows.map((r) => ({ ...r, createdBy: map.get(r.createdBy) || null }));
+}
 
 /**
  * Barcha sinflarni olish.
- * @returns {Promise<Array>} sinflar ro'yxati
  */
 async function getAllClasses() {
-  const classes = await Class.find()
-    .populate("createdBy", "firstName lastName")
-    .sort({ name: 1 })
-    .lean();
-
-  return classes;
+  const classes = await prisma.class.findMany({ orderBy: { name: "asc" } });
+  return attachCreators(classes);
 }
 
 /**
  * ID bo'yicha sinfni o'quvchilari bilan olish.
- * @param {string} id - sinf ID
- * @returns {Promise<object>} sinf ma'lumotlari va o'quvchilar
  */
 async function getClassById(id) {
-  const classData = await Class.findById(id).populate(
-    "createdBy",
-    "firstName lastName",
-  );
+  const classData = await prisma.class.findUnique({ where: { id } });
 
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const students = await User.find({
-    classes: id,
-    role: "student",
-  })
-    .select("-password")
-    .sort({ lastName: 1, firstName: 1 });
+  const [withCreator] = await attachCreators([classData]);
 
-  return {
-    ...classData.toObject(),
-    students,
-  };
+  const students = await prisma.user.findMany({
+    where: { role: "student", classes: { some: { classId: id } } },
+    omit: { password: true },
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+  });
+
+  return { ...withCreator, students };
 }
 
 /**
  * Yangi sinf yaratish.
- * @param {string} name - sinf nomi
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<object>} yaratilgan sinf
  */
 async function createClass(name, createdBy) {
   if (!name) {
     throw new BadRequestError("Sinf nomi majburiy");
   }
 
-  const classData = await Class.create({
-    name,
-    createdBy,
-  });
-
-  const populatedClass = await Class.findById(classData._id).populate(
-    "createdBy",
-    "firstName lastName",
-  );
-
-  return populatedClass;
+  const classData = await prisma.class.create({ data: { name, createdBy } });
+  const [populated] = await attachCreators([classData]);
+  return populated;
 }
 
 /**
  * Sinfni yangilash.
- * @param {string} id - sinf ID
- * @param {object} data - yangilash ma'lumotlari
- * @param {string} [data.name] - sinf nomi
- * @param {boolean} [data.isActive] - faollik holati
- * @returns {Promise<object>} yangilangan sinf
  */
 async function updateClass(id, data) {
-  const classData = await Class.findById(id);
+  const classData = await prisma.class.findUnique({ where: { id } });
 
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  if (data.name) classData.name = data.name;
-  if (data.isActive !== undefined) classData.isActive = data.isActive;
+  const update = {};
+  if (data.name) update.name = data.name;
+  if (data.isActive !== undefined) update.isActive = data.isActive;
 
-  await classData.save();
-
-  const updatedClass = await Class.findById(classData._id).populate(
-    "createdBy",
-    "firstName lastName",
-  );
-
-  return updatedClass;
+  const updated = await prisma.class.update({ where: { id }, data: update });
+  const [populated] = await attachCreators([updated]);
+  return populated;
 }
 
 /**
  * Sinfni o'chirish.
- * @param {string} id - sinf ID
- * @returns {Promise<void>}
  */
 async function deleteClass(id) {
-  const classData = await Class.findById(id);
+  const classData = await prisma.class.findUnique({ where: { id } });
 
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const studentsCount = await User.countDocuments({
-    classes: id,
-    role: "student",
+  const studentsCount = await prisma.user.count({
+    where: { role: "student", classes: { some: { classId: id } } },
   });
 
   if (studentsCount > 0) {
@@ -118,17 +94,14 @@ async function deleteClass(id) {
     );
   }
 
-  await classData.deleteOne();
+  await prisma.class.delete({ where: { id } });
 }
 
 /**
  * Mavjud o'quvchilarni sinfga qo'shish.
- * @param {string} classId - sinf ID
- * @param {string[]} studentIds - o'quvchilar ID lari
- * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
  */
 async function addStudentsToClass(classId, studentIds) {
-  const classData = await Class.findById(classId);
+  const classData = await prisma.class.findUnique({ where: { id: classId } });
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
@@ -138,10 +111,8 @@ async function addStudentsToClass(classId, studentIds) {
   }
 
   // Arxivlangan o'quvchilarga sinf biriktirib bo'lmaydi
-  const archivedCount = await User.countDocuments({
-    _id: { $in: studentIds },
-    role: "student",
-    isArchived: true,
+  const archivedCount = await prisma.user.count({
+    where: { id: { in: studentIds }, role: "student", isArchived: true },
   });
   if (archivedCount > 0) {
     throw new BadRequestError(
@@ -149,51 +120,43 @@ async function addStudentsToClass(classId, studentIds) {
     );
   }
 
-  const result = await User.updateMany(
-    { _id: { $in: studentIds }, role: "student", isArchived: { $ne: true } },
-    { $addToSet: { classes: classId } },
-  );
+  // Faol (arxivlanmagan) student'larni topib, junction'ga qo'shamiz (skipDuplicates = $addToSet)
+  const eligible = await prisma.user.findMany({
+    where: { id: { in: studentIds }, role: "student", isArchived: false },
+    select: { id: true },
+  });
+  const { count } = await prisma.userClass.createMany({
+    data: eligible.map((s) => ({ userId: s.id, classId })),
+    skipDuplicates: true,
+  });
 
-  return { modified: result.modifiedCount };
+  return { modified: count };
 }
 
 /**
  * O'quvchilarni sinfdan chiqarish (tanlangan yoki barchasini).
- * @param {string} classId - sinf ID
- * @param {object} options - { studentIds, all }
- * @param {string[]} [options.studentIds] - tanlangan o'quvchilar ID lari
- * @param {boolean} [options.all] - sinfdagi barcha o'quvchilarni chiqarish
- * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
  */
 async function removeStudentsFromClass(classId, { studentIds, all } = {}) {
-  const classData = await Class.findById(classId);
+  const classData = await prisma.class.findUnique({ where: { id: classId } });
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const filter = { role: "student", classes: classId };
+  const where = { classId };
 
   if (!all) {
     if (!Array.isArray(studentIds) || studentIds.length === 0) {
       throw new BadRequestError("O'quvchilar tanlanmagan");
     }
-    filter._id = { $in: studentIds };
+    where.userId = { in: studentIds };
   }
 
-  const result = await User.updateMany(filter, {
-    $pull: { classes: classId },
-  });
-
-  return { modified: result.modifiedCount };
+  const result = await prisma.userClass.deleteMany({ where });
+  return { modified: result.count };
 }
 
 /**
  * Tanlangan o'quvchilarni boshqa sinfga ko'chirish.
- * Joriy sinfdan chiqarib, maqsadli sinfga qo'shadi.
- * @param {string} classId - joriy sinf ID
- * @param {string[]} studentIds - o'quvchilar ID lari
- * @param {string} targetClassId - maqsadli sinf ID
- * @returns {Promise<{modified: number}>} yangilangan o'quvchilar soni
  */
 async function moveStudentsToClass(classId, studentIds, targetClassId) {
   if (!targetClassId) {
@@ -209,8 +172,8 @@ async function moveStudentsToClass(classId, studentIds, targetClassId) {
   }
 
   const [source, target] = await Promise.all([
-    Class.findById(classId),
-    Class.findById(targetClassId),
+    prisma.class.findUnique({ where: { id: classId } }),
+    prisma.class.findUnique({ where: { id: targetClassId } }),
   ]);
 
   if (!source) {
@@ -221,10 +184,8 @@ async function moveStudentsToClass(classId, studentIds, targetClassId) {
   }
 
   // Arxivlangan o'quvchilarni boshqa sinfga ko'chirib bo'lmaydi
-  const archivedCount = await User.countDocuments({
-    _id: { $in: studentIds },
-    role: "student",
-    isArchived: true,
+  const archivedCount = await prisma.user.count({
+    where: { id: { in: studentIds }, role: "student", isArchived: true },
   });
   if (archivedCount > 0) {
     throw new BadRequestError(
@@ -232,40 +193,41 @@ async function moveStudentsToClass(classId, studentIds, targetClassId) {
     );
   }
 
-  const matchFilter = {
-    _id: { $in: studentIds },
-    role: "student",
-    isArchived: { $ne: true },
-  };
-
-  // $pull va $addToSet bir xil maydonga bitta amalda kelisha olmaydi - ikki bosqich
-  await User.updateMany(matchFilter, { $pull: { classes: classId } });
-  const result = await User.updateMany(matchFilter, {
-    $addToSet: { classes: targetClassId },
+  const eligible = await prisma.user.findMany({
+    where: { id: { in: studentIds }, role: "student", isArchived: false },
+    select: { id: true },
   });
+  const eligibleIds = eligible.map((s) => s.id);
 
-  return { modified: result.modifiedCount };
+  // $pull + $addToSet → transaction ichida atomik
+  const [, added] = await prisma.$transaction([
+    prisma.userClass.deleteMany({
+      where: { classId, userId: { in: eligibleIds } },
+    }),
+    prisma.userClass.createMany({
+      data: eligibleIds.map((id) => ({ userId: id, classId: targetClassId })),
+      skipDuplicates: true,
+    }),
+  ]);
+
+  return { modified: added.count };
 }
 
 /**
  * Sinf o'quvchilarini Excel eksport uchun olish.
- * @param {string} classId - sinf ID
- * @returns {Promise<{classData: object, data: Array}>} sinf va formatlangan o'quvchilar
  */
 async function getClassStudentsForExport(classId) {
-  const classData = await Class.findById(classId);
+  const classData = await prisma.class.findUnique({ where: { id: classId } });
 
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const students = await User.find({
-    classes: classId,
-    role: "student",
-  })
-    .populate("classes", "name")
-    .select("+plainPassword")
-    .sort({ firstName: 1, lastName: 1 });
+  const students = await prisma.user.findMany({
+    where: { role: "student", classes: { some: { classId } } },
+    include: { classes: { include: { class: { select: { name: true } } } } },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
 
   const data = students.map((student) => ({
     fullName: `${student.firstName} ${student.lastName || ""}`.trim(),
@@ -274,7 +236,7 @@ async function getClassStudentsForExport(classId) {
     role: "O'quvchi",
     classes:
       student.classes && student.classes.length > 0
-        ? student.classes.map((c) => c.name).join(", ")
+        ? student.classes.map((c) => c.class.name).join(", ")
         : "-",
   }));
 
@@ -283,15 +245,12 @@ async function getClassStudentsForExport(classId) {
 
 /**
  * Barcha sinflarni Excel eksport uchun olish.
- * @returns {Promise<Array>} formatlangan sinflar ro'yxati
  */
 async function getAllClassesForExport() {
-  const classes = await Class.find()
-    .populate("createdBy", "firstName lastName")
-    .sort({ name: 1 })
-    .lean();
+  const classes = await prisma.class.findMany({ orderBy: { name: "asc" } });
+  const withCreators = await attachCreators(classes);
 
-  const data = classes.map((classItem) => ({
+  return withCreators.map((classItem) => ({
     name: classItem.name,
     status: classItem.isActive ? "Faol" : "Faol emas",
     createdBy: classItem.createdBy
@@ -299,8 +258,6 @@ async function getAllClassesForExport() {
       : "-",
     createdAt: new Date(classItem.createdAt).toLocaleDateString("uz-UZ"),
   }));
-
-  return data;
 }
 
 module.exports = {

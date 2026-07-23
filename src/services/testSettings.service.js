@@ -1,4 +1,5 @@
-const TestSettings = require("../models/testSettings.model");
+const prisma = require("../config/prisma");
+const { getTestSettings } = require("./settings.service");
 const { BadRequestError } = require("../utils/errors");
 
 /**
@@ -6,7 +7,7 @@ const { BadRequestError } = require("../utils/errors");
  * @returns {Promise<object>}
  */
 async function getSettings() {
-  return TestSettings.getSettings();
+  return getTestSettings();
 }
 
 /**
@@ -16,7 +17,7 @@ async function getSettings() {
  * @returns {Promise<object>}
  */
 async function updateSettings(data, userId) {
-  const settings = await TestSettings.getSettings();
+  const settings = await getTestSettings();
 
   const min =
     data.minScore !== undefined ? Number(data.minScore) : settings.minScore;
@@ -35,12 +36,12 @@ async function updateSettings(data, userId) {
     );
   }
 
-  settings.minScore = min;
-  settings.maxScore = max;
-  settings.updatedBy = userId;
-  await settings.save();
+  const updated = await prisma.testSettings.update({
+    where: { id: settings.id },
+    data: { minScore: min, maxScore: max, updatedBy: userId },
+  });
 
-  return settings;
+  return updated;
 }
 
 module.exports = { getSettings, updateSettings };

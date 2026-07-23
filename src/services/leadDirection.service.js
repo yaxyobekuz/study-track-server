@@ -1,5 +1,4 @@
-const LeadDirection = require("../models/leadDirection.model");
-const Lead = require("../models/lead.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 /**
@@ -13,7 +12,10 @@ async function getAllDirections(query = {}) {
     filter.isActive = query.active === "true";
   }
 
-  return LeadDirection.find(filter).sort({ createdAt: -1 }).lean();
+  return prisma.leadDirection.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+  });
 }
 
 /**
@@ -28,12 +30,12 @@ async function createDirection(data) {
     throw new BadRequestError("Yo'nalish nomi majburiy");
   }
 
-  const exists = await LeadDirection.findOne({ name: name.trim() });
+  const exists = await prisma.leadDirection.findFirst({ where: { name: name.trim() } });
   if (exists) {
     throw new BadRequestError("Bu nomdagi yo'nalish allaqachon mavjud");
   }
 
-  return LeadDirection.create({ name: name.trim(), description });
+  return prisma.leadDirection.create({ data: { name: name.trim(), description } });
 }
 
 /**
@@ -43,25 +45,28 @@ async function createDirection(data) {
  * @returns {Promise<object>}
  */
 async function updateDirection(id, data) {
-  const direction = await LeadDirection.findById(id);
+  const direction = await prisma.leadDirection.findUnique({ where: { id } });
   if (!direction) {
     throw new NotFoundError("Yo'nalish topilmadi");
   }
 
   const { name, description, isActive } = data;
 
+  const update = {};
+
   if (name !== undefined) {
-    const duplicate = await LeadDirection.findOne({ name: name.trim(), _id: { $ne: id } });
+    const duplicate = await prisma.leadDirection.findFirst({
+      where: { name: name.trim(), id: { not: id } },
+    });
     if (duplicate) {
       throw new BadRequestError("Bu nomdagi yo'nalish allaqachon mavjud");
     }
-    direction.name = name.trim();
+    update.name = name.trim();
   }
-  if (description !== undefined) direction.description = description;
-  if (isActive !== undefined) direction.isActive = isActive;
+  if (description !== undefined) update.description = description;
+  if (isActive !== undefined) update.isActive = isActive;
 
-  await direction.save();
-  return direction;
+  return prisma.leadDirection.update({ where: { id }, data: update });
 }
 
 /**
@@ -70,19 +75,19 @@ async function updateDirection(id, data) {
  * @returns {Promise<void>}
  */
 async function deleteDirection(id) {
-  const direction = await LeadDirection.findById(id);
+  const direction = await prisma.leadDirection.findUnique({ where: { id } });
   if (!direction) {
     throw new NotFoundError("Yo'nalish topilmadi");
   }
 
-  const leadsCount = await Lead.countDocuments({ direction: id });
+  const leadsCount = await prisma.lead.count({ where: { direction: id } });
   if (leadsCount > 0) {
     throw new BadRequestError(
       `Bu yo'nalishga ${leadsCount} ta lead biriktirilgan. Avval ularni boshqa yo'nalishga o'tkazing`,
     );
   }
 
-  await direction.deleteOne();
+  await prisma.leadDirection.delete({ where: { id } });
 }
 
 module.exports = {

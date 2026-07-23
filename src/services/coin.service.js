@@ -1,8 +1,5 @@
-const User = require("../models/user.model");
-const Grade = require("../models/grade.model");
-const WeeklyStats = require("../models/weeklystats.model");
-const CoinSettings = require("../models/coinSettings.model");
-const CoinTransaction = require("../models/coinTransaction.model");
+const prisma = require("../config/prisma");
+const { getCoinSettings } = require("../services/settings.service");
 const logger = require("../utils/logger");
 
 // ─────────────────────────────────────────────
@@ -10,21 +7,25 @@ const logger = require("../utils/logger");
 // ─────────────────────────────────────────────
 
 async function getSettings() {
-  return CoinSettings.getSettings();
+  return getCoinSettings();
 }
 
 async function updateSettings(updates, updatedBy) {
-  const settings = await CoinSettings.getSettings();
+  const data = {};
   if (updates.dailyCoinPercentage !== undefined)
-    settings.dailyCoinPercentage = updates.dailyCoinPercentage;
+    data.dailyCoinPercentage = updates.dailyCoinPercentage;
   if (updates.schoolRankBonus !== undefined)
-    settings.schoolRankBonus = updates.schoolRankBonus;
+    data.schoolRankBonus = updates.schoolRankBonus;
   if (updates.classRankBonus !== undefined)
-    settings.classRankBonus = updates.classRankBonus;
+    data.classRankBonus = updates.classRankBonus;
   if (updates.minDailyGradeForCoin !== undefined)
-    settings.minDailyGradeForCoin = updates.minDailyGradeForCoin;
-  settings.updatedBy = updatedBy;
-  return settings.save();
+    data.minDailyGradeForCoin = updates.minDailyGradeForCoin;
+  data.updatedBy = updatedBy;
+
+  return prisma.coinSettings.update({
+    where: { id: "singleton" },
+    data,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -32,7 +33,7 @@ async function updateSettings(updates, updatedBy) {
 // ─────────────────────────────────────────────
 
 async function distributeDailyCoins(targetDate) {
-  const settings = await CoinSettings.getSettings();
+  const settings = await getCoinSettings();
   const { dailyCoinPercentage, minDailyGradeForCoin } = settings;
 
   const date = targetDate || new Date();
@@ -43,59 +44,58 @@ async function distributeDailyCoins(targetDate) {
   endOfDay.setHours(23, 59, 59, 999);
 
   // 1. Get all active students
-  const students = await User.find({ role: "student", isActive: true })
-    .select("_id coinBalance")
-    .lean();
+  const students = await prisma.user.findMany({
+    where: { role: "student", isActive: true },
+    select: { id: true, coinBalance: true },
+  });
 
   if (students.length === 0) {
     return { successCount: 0, skippedCount: 0, errorCount: 0 };
   }
 
-  const studentIds = students.map((s) => s._id);
+  const studentIds = students.map((s) => s.id);
 
   // 2. Batch: find students who already received daily coins today
-  const alreadyDistributed = await CoinTransaction.distinct("student", {
-    student: { $in: studentIds },
-    type: "daily",
-    date: { $gte: startOfDay, $lte: endOfDay },
+  const alreadyRows = await prisma.coinTransaction.findMany({
+    where: {
+      studentId: { in: studentIds },
+      type: "daily",
+      date: { gte: startOfDay, lte: endOfDay },
+    },
+    distinct: ["studentId"],
+    select: { studentId: true },
   });
 
-  const alreadySet = new Set(alreadyDistributed.map((id) => id.toString()));
+  const alreadySet = new Set(alreadyRows.map((r) => r.studentId));
 
   // 3. Batch: aggregate daily grade sums for all students
-  const gradeAgg = await Grade.aggregate([
-    {
-      $match: {
-        student: { $in: studentIds },
-        date: { $gte: startOfDay, $lte: endOfDay },
-      },
+  const gradeAgg = await prisma.grade.groupBy({
+    by: ["studentId"],
+    where: {
+      studentId: { in: studentIds },
+      date: { gte: startOfDay, lte: endOfDay },
     },
-    {
-      $group: {
-        _id: "$student",
-        totalGrade: { $sum: "$grade" },
-      },
-    },
-  ]);
+    _sum: { grade: true },
+  });
 
   const gradeMap = new Map();
   for (const item of gradeAgg) {
-    gradeMap.set(item._id.toString(), item.totalGrade);
+    gradeMap.set(item.studentId, item._sum.grade);
   }
 
   // 4. Calculate eligible students and coin amounts
   const balanceMap = new Map(
-    students.map((s) => [s._id.toString(), s.coinBalance || 0]),
+    students.map((s) => [s.id, s.coinBalance || 0]),
   );
 
-  const bulkOps = [];
+  const balanceUpdates = [];
   const transactions = [];
   let successCount = 0;
   let skippedCount = 0;
   let totalCoins = 0;
 
   for (const student of students) {
-    const sid = student._id.toString();
+    const sid = student.id;
 
     if (alreadySet.has(sid)) {
       skippedCount++;
@@ -118,15 +118,10 @@ async function distributeDailyCoins(targetDate) {
 
     const newBalance = (balanceMap.get(sid) || 0) + coinAmount;
 
-    bulkOps.push({
-      updateOne: {
-        filter: { _id: student._id },
-        update: { $inc: { coinBalance: coinAmount } },
-      },
-    });
+    balanceUpdates.push({ studentId: student.id, coinAmount });
 
     transactions.push({
-      student: student._id,
+      studentId: student.id,
       amount: coinAmount,
       type: "daily",
       description: `Kunlik baho uchun: ${dailyGradeSum} ball × ${dailyCoinPercentage}% = ${coinAmount} coin`,
@@ -145,10 +140,17 @@ async function distributeDailyCoins(targetDate) {
   // 5. Batch write: update balances and insert transactions
   let errorCount = 0;
 
-  if (bulkOps.length > 0) {
+  if (balanceUpdates.length > 0) {
     try {
-      await User.bulkWrite(bulkOps);
-      await CoinTransaction.insertMany(transactions);
+      await prisma.$transaction([
+        ...balanceUpdates.map((op) =>
+          prisma.user.update({
+            where: { id: op.studentId },
+            data: { coinBalance: { increment: op.coinAmount } },
+          }),
+        ),
+        prisma.coinTransaction.createMany({ data: transactions }),
+      ]);
       await _updateDailyCoinStat(totalCoins, startOfDay);
     } catch (err) {
       logger.error(`[CoinService] Daily batch write error: ${err.message}`);
@@ -168,12 +170,15 @@ async function distributeDailyCoins(targetDate) {
 // ─────────────────────────────────────────────
 
 async function distributeWeeklyBonusCoins(weekNumber, year) {
-  const settings = await CoinSettings.getSettings();
+  const settings = await getCoinSettings();
   const { schoolRankBonus, classRankBonus } = settings;
 
-  const allStats = await WeeklyStats.find({ weekNumber, year }).populate(
-    "student classes",
-  );
+  const allStats = await prisma.weeklyStats.findMany({
+    where: { weekNumber, year },
+    include: {
+      classes: { include: { class: { select: { id: true, name: true } } } },
+    },
+  });
 
   if (!allStats.length) {
     logger.info(
@@ -182,15 +187,22 @@ async function distributeWeeklyBonusCoins(weekNumber, year) {
     return;
   }
 
+  // `student` — scalar String (user ID), `classes` — junction → cls.class
+  const normalized = allStats.map((stat) => ({
+    ...stat,
+    studentId: stat.student,
+    classList: (stat.classes || []).map((uc) => uc.class),
+  }));
+
   // ── Maktab #1 bonusi ──
-  const sortedBySchool = [...allStats].sort(
-    (a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum,
+  const sortedBySchool = [...normalized].sort(
+    (a, b) => b.totalSum - a.totalSum,
   );
 
   const schoolTop = sortedBySchool[0];
-  if (schoolTop && schoolTop.simpleStats.totalSum > 0) {
+  if (schoolTop && schoolTop.totalSum > 0) {
     await _awardBonus({
-      studentId: schoolTop.student._id,
+      studentId: schoolTop.studentId,
       amount: schoolRankBonus,
       type: "weekly_school_bonus",
       description: "Haftalik maktab reytingida 1-o'rin bonusi",
@@ -201,37 +213,34 @@ async function distributeWeeklyBonusCoins(weekNumber, year) {
 
   // ── Sinf #1 bonusi (faqat bitta, nechta sinfda bo'lsa ham) ──
   const allClassIds = new Set();
-  allStats.forEach((stat) => {
-    (stat.classes || []).forEach((cls) => allClassIds.add(cls._id.toString()));
+  normalized.forEach((stat) => {
+    (stat.classList || []).forEach((cls) => allClassIds.add(cls.id));
   });
 
   const awardedForClassBonus = new Set();
 
   for (const classId of allClassIds) {
-    const classStats = allStats
+    const classStats = normalized
       .filter((stat) =>
-        (stat.classes || []).some((c) => c._id.toString() === classId),
+        (stat.classList || []).some((c) => c.id === classId),
       )
-      .sort((a, b) => b.simpleStats.totalSum - a.simpleStats.totalSum);
+      .sort((a, b) => b.totalSum - a.totalSum);
 
     if (!classStats.length) continue;
 
     const classTop = classStats[0];
-    const studentIdStr = classTop.student._id.toString();
+    const studentIdStr = classTop.studentId;
 
-    if (
-      classTop.simpleStats.totalSum > 0 &&
-      !awardedForClassBonus.has(studentIdStr)
-    ) {
+    if (classTop.totalSum > 0 && !awardedForClassBonus.has(studentIdStr)) {
       awardedForClassBonus.add(studentIdStr);
 
-      const classObj = (classTop.classes || []).find(
-        (c) => c._id.toString() === classId,
+      const classObj = (classTop.classList || []).find(
+        (c) => c.id === classId,
       );
       const className = classObj?.name || "Noma'lum sinf";
 
       await _awardBonus({
-        studentId: classTop.student._id,
+        studentId: classTop.studentId,
         amount: classRankBonus,
         type: "weekly_class_bonus",
         description: `Haftalik sinf reytingida 1-o'rin bonusi (${className} sinfi)`,
@@ -258,15 +267,21 @@ async function _awardBonus({
   classId,
   className,
 }) {
-  const query = {
-    student: studentId,
-    type,
-    "meta.weekNumber": weekNumber,
-    "meta.year": year,
-  };
-  if (classId) query["meta.classId"] = classId;
+  const metaFilters = [
+    { meta: { path: ["weekNumber"], equals: weekNumber } },
+    { meta: { path: ["year"], equals: year } },
+  ];
+  if (classId) {
+    metaFilters.push({ meta: { path: ["classId"], equals: classId } });
+  }
 
-  const alreadyAwarded = await CoinTransaction.findOne(query);
+  const alreadyAwarded = await prisma.coinTransaction.findFirst({
+    where: {
+      studentId,
+      type,
+      AND: metaFilters,
+    },
+  });
 
   if (alreadyAwarded) {
     logger.info(
@@ -275,24 +290,25 @@ async function _awardBonus({
     return;
   }
 
-  const updatedUser = await User.findByIdAndUpdate(
-    studentId,
-    { $inc: { coinBalance: amount } },
-    { new: true },
-  );
+  const updatedUser = await prisma.user.update({
+    where: { id: studentId },
+    data: { coinBalance: { increment: amount } },
+  });
 
-  await CoinTransaction.create({
-    student: studentId,
-    amount,
-    type,
-    description,
-    balanceAfter: updatedUser.coinBalance,
-    meta: {
-      weekNumber,
-      year,
-      ...(classId && { classId, className }),
+  await prisma.coinTransaction.create({
+    data: {
+      studentId,
+      amount,
+      type,
+      description,
+      balanceAfter: updatedUser.coinBalance,
+      meta: {
+        weekNumber,
+        year,
+        ...(classId && { classId, className }),
+      },
+      date: new Date(),
     },
-    date: new Date(),
   });
 
   await _updateDailyCoinStat(amount, new Date());
@@ -303,36 +319,46 @@ async function _awardBonus({
 // ─────────────────────────────────────────────
 
 async function getCoinStats() {
-  const DailyCoinStat = require("../models/dailyCoinStat.model");
-
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
   thirtyDaysAgo.setHours(0, 0, 0, 0);
 
   const [
-    totalDistributed,
+    totalDistributedAgg,
     availableCoinsAgg,
     totalStudents,
     topEarners,
     dailyStats,
   ] = await Promise.all([
-    CoinTransaction.aggregate([
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]),
-    User.aggregate([
-      { $match: { isActive: true } },
-      { $group: { _id: null, total: { $sum: "$coinBalance" } } },
-    ]),
-    User.countDocuments({ role: "student", isActive: true }),
-    User.find({ role: "student", isActive: true })
-      .sort({ coinBalance: -1 })
-      .limit(10)
-      .select("firstName lastName coinBalance classes")
-      .populate("classes", "name"),
-    DailyCoinStat.find({ date: { $gte: thirtyDaysAgo } })
-      .sort({ date: 1 })
-      .lean(),
+    prisma.coinTransaction.aggregate({ _sum: { amount: true } }),
+    prisma.user.aggregate({
+      where: { isActive: true },
+      _sum: { coinBalance: true },
+    }),
+    prisma.user.count({ where: { role: "student", isActive: true } }),
+    prisma.user.findMany({
+      where: { role: "student", isActive: true },
+      orderBy: { coinBalance: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        coinBalance: true,
+        classes: { include: { class: { select: { id: true, name: true } } } },
+      },
+    }),
+    prisma.dailyCoinStat.findMany({
+      where: { date: { gte: thirtyDaysAgo } },
+      orderBy: { date: "asc" },
+    }),
   ]);
+
+  // classes junction'ni eski `classes: [{ name }]` shakliga tekislaymiz
+  const topEarnersFlat = topEarners.map((u) => ({
+    ...u,
+    classes: (u.classes || []).map((uc) => uc.class),
+  }));
 
   const mapStats = new Map(
     dailyStats.map((stat) => [
@@ -355,38 +381,38 @@ async function getCoinStats() {
   }
 
   return {
-    totalCoinsDistributed: totalDistributed[0]?.total || 0,
-    availableCoins: availableCoinsAgg[0]?.total || 0,
+    totalCoinsDistributed: totalDistributedAgg._sum.amount || 0,
+    availableCoins: availableCoinsAgg._sum.coinBalance || 0,
     totalStudents,
-    topEarners,
+    topEarners: topEarnersFlat,
     dailyDistribution: dailyDistributionFormatted,
   };
 }
 
 async function _updateDailyCoinStat(amount, date = new Date()) {
   if (amount <= 0) return;
-  const DailyCoinStat = require("../models/dailyCoinStat.model");
 
   const targetDate = new Date(date);
   targetDate.setHours(0, 0, 0, 0);
 
-  await DailyCoinStat.findOneAndUpdate(
-    { date: targetDate },
-    { $inc: { totalDistributed: amount } },
-    { upsert: true, new: true },
-  );
+  await prisma.dailyCoinStat.upsert({
+    where: { date: targetDate },
+    create: { date: targetDate, totalDistributed: amount },
+    update: { totalDistributed: { increment: amount } },
+  });
 }
 
 async function getStudentTransactions(studentId, page = 1, limit = 20) {
   const skip = (page - 1) * limit;
 
   const [transactions, total] = await Promise.all([
-    CoinTransaction.find({ student: studentId })
-      .sort({ date: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    CoinTransaction.countDocuments({ student: studentId }),
+    prisma.coinTransaction.findMany({
+      where: { studentId },
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.coinTransaction.count({ where: { studentId } }),
   ]);
 
   return {
@@ -407,32 +433,32 @@ async function getStudentTransactions(studentId, page = 1, limit = 20) {
 // ─────────────────────────────────────────────
 
 /**
- * filterType va filterValue asosida MongoDB query quradi.
+ * filterType va filterValue asosida Prisma where quradi.
  * @param {string} filterType - "role" | "class" | "gender" | "individual"
  * @param {string} filterValue - filter qiymati
- * @returns {object} MongoDB query
+ * @returns {object} Prisma where
  */
 function _buildFilterQuery(filterType, filterValue) {
-  const query = { isActive: true };
+  const where = { isActive: true };
 
   switch (filterType) {
     case "role":
-      query.role = filterValue;
+      where.role = filterValue;
       break;
     case "class":
-      query.classes = filterValue;
+      where.classes = { some: { classId: filterValue } };
       break;
     case "gender":
-      query.gender = filterValue;
+      where.gender = filterValue;
       break;
     case "individual":
-      query._id = filterValue;
+      where.id = filterValue;
       break;
     default:
       throw new Error("Noto'g'ri filter turi");
   }
 
-  return query;
+  return where;
 }
 
 /**
@@ -442,19 +468,33 @@ function _buildFilterQuery(filterType, filterValue) {
  * @returns {Promise<{users: Array, totalCount: number}>}
  */
 async function getFilteredUsersPreview(filterType, filterValue) {
-  const query = _buildFilterQuery(filterType, filterValue);
+  const where = _buildFilterQuery(filterType, filterValue);
 
   const [users, totalCount] = await Promise.all([
-    User.find(query)
-      .select("firstName lastName username coinBalance role gender classes")
-      .populate("classes", "name")
-      .sort({ firstName: 1 })
-      .limit(100)
-      .lean(),
-    User.countDocuments(query),
+    prisma.user.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        username: true,
+        coinBalance: true,
+        role: true,
+        gender: true,
+        classes: { include: { class: { select: { id: true, name: true } } } },
+      },
+      orderBy: { firstName: "asc" },
+      take: 100,
+    }),
+    prisma.user.count({ where }),
   ]);
 
-  return { users, totalCount };
+  const usersFlat = users.map((u) => ({
+    ...u,
+    classes: (u.classes || []).map((uc) => uc.class),
+  }));
+
+  return { users: usersFlat, totalCount };
 }
 
 /**
@@ -476,8 +516,11 @@ async function distributeManualCoins({
   filterValue,
   givenBy,
 }) {
-  const query = _buildFilterQuery(filterType, filterValue);
-  const users = await User.find(query).select("_id coinBalance").lean();
+  const where = _buildFilterQuery(filterType, filterValue);
+  const users = await prisma.user.findMany({
+    where,
+    select: { id: true, coinBalance: true },
+  });
 
   const totalFound = users.length;
   const type = action === "give" ? "manual_give" : "manual_take";
@@ -487,7 +530,7 @@ async function distributeManualCoins({
     return { successCount: 0, skippedCount: 0, errorCount: 0, totalFound: 0 };
   }
 
-  let bulkOps = [];
+  let balanceUpdates = [];
   let transactions = [];
   let skippedCount = 0;
 
@@ -502,18 +545,17 @@ async function distributeManualCoins({
     const delta = action === "give" ? amount : -amount;
     const newBalance = currentBalance + delta;
 
-    bulkOps.push({
-      updateOne: {
-        filter:
-          action === "take"
-            ? { _id: user._id, coinBalance: { $gte: amount } }
-            : { _id: user._id },
-        update: { $inc: { coinBalance: delta } },
-      },
+    balanceUpdates.push({
+      // take'da atomik shart: balans yetarli bo'lgandagina yangilanadi
+      where:
+        action === "take"
+          ? { id: user.id, coinBalance: { gte: amount } }
+          : { id: user.id },
+      delta,
     });
 
     transactions.push({
-      student: user._id,
+      studentId: user.id,
       amount,
       type,
       description: reason,
@@ -531,12 +573,24 @@ async function distributeManualCoins({
   let successCount = 0;
   let errorCount = 0;
 
-  if (bulkOps.length > 0) {
+  if (balanceUpdates.length > 0) {
     try {
-      const bulkResult = await User.bulkWrite(bulkOps);
-      await CoinTransaction.insertMany(transactions);
+      const results = await prisma.$transaction([
+        ...balanceUpdates.map((op) =>
+          prisma.user.updateMany({
+            where: op.where,
+            data: { coinBalance: { increment: op.delta } },
+          }),
+        ),
+        prisma.coinTransaction.createMany({ data: transactions }),
+      ]);
 
-      successCount = bulkResult.modifiedCount || bulkOps.length;
+      // updateMany natijalaridan haqiqiy modifiedCount (createMany oxirgi element)
+      const modifiedCount = results
+        .slice(0, balanceUpdates.length)
+        .reduce((sum, r) => sum + (r.count || 0), 0);
+
+      successCount = modifiedCount || balanceUpdates.length;
 
       if (action === "give") {
         await _updateDailyCoinStat(amount * successCount, now);
@@ -545,7 +599,7 @@ async function distributeManualCoins({
       logger.error(
         `[CoinService] Manual ${action} batch error: ${err.message}`,
       );
-      errorCount = bulkOps.length;
+      errorCount = balanceUpdates.length;
     }
   }
 
@@ -560,24 +614,40 @@ async function getCoinLeaderboard(page = 1, limit = 50) {
   const skip = (page - 1) * limit;
 
   const [students, total] = await Promise.all([
-    User.find({ role: "student", isActive: true })
-      .sort({ coinBalance: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select("firstName lastName coinBalance premium displayName nameColor emojiBadgeId classes")
-      .populate("classes", "name")
-      .populate("profilePicture")
-      .lean(),
-    User.countDocuments({ role: "student", isActive: true }),
+    prisma.user.findMany({
+      where: { role: "student", isActive: true },
+      orderBy: { coinBalance: "desc" },
+      skip,
+      take: limit,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        coinBalance: true,
+        premiumIsActive: true,
+        premiumExpiresAt: true,
+        displayName: true,
+        nameColor: true,
+        emojiBadgeId: true,
+        classes: { include: { class: { select: { id: true, name: true } } } },
+        profileImage: { select: { variants: true } },
+      },
+    }),
+    prisma.user.count({ where: { role: "student", isActive: true } }),
   ]);
 
-  const ranked = students.map((student, i) => ({
-    rank: skip + i + 1,
-    student: {
-      ...student,
-      profilePictureUrl: student.profilePicture?.variants?.sm?.url || null,
-    },
-  }));
+  const ranked = students.map((student, i) => {
+    const classes = (student.classes || []).map((uc) => uc.class);
+    const variants = student.profileImage?.variants;
+    return {
+      rank: skip + i + 1,
+      student: {
+        ...student,
+        classes,
+        profilePictureUrl: variants?.sm?.url || null,
+      },
+    };
+  });
 
   return {
     rankings: ranked,

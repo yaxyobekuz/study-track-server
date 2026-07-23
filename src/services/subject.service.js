@@ -1,24 +1,28 @@
-const Grade = require("../models/grade.model");
-const Subject = require("../models/subject.model");
-const Schedule = require("../models/schedule.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+
+// createdBy soft ref larni yuklab, xaritalash
+async function attachCreators(rows) {
+  const ids = [...new Set(rows.map((r) => r.createdBy).filter(Boolean))];
+  if (ids.length === 0) return rows.map((r) => ({ ...r, createdBy: null }));
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const map = new Map(users.map((u) => [u.id, u]));
+  return rows.map((r) => ({ ...r, createdBy: map.get(r.createdBy) || null }));
+}
 
 /**
  * Barcha fanlarni olish.
- * @returns {Promise<Array>} fanlar ro'yxati
  */
 async function getAllSubjects() {
-  return Subject.find()
-    .populate("createdBy", "firstName lastName")
-    .sort({ name: 1 })
-    .lean();
+  const subjects = await prisma.subject.findMany({ orderBy: { name: "asc" } });
+  return attachCreators(subjects);
 }
 
 /**
  * Yangi fan yaratish.
- * @param {object} data - { name, description }
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<object>} yaratilgan fan
  */
 async function createSubject(data, createdBy) {
   const { name, description } = data;
@@ -27,49 +31,42 @@ async function createSubject(data, createdBy) {
     throw new BadRequestError("Fan nomi majburiy");
   }
 
-  return Subject.create({
-    name,
-    description,
-    createdBy,
+  return prisma.subject.create({
+    data: { name, description: description ?? null, createdBy },
   });
 }
 
 /**
  * Fanni yangilash.
- * @param {string} id - fan ID
- * @param {object} data - { name, description, isActive }
- * @returns {Promise<object>} yangilangan fan
  */
 async function updateSubject(id, data) {
   const { name, description, isActive } = data;
 
-  const subject = await Subject.findById(id);
+  const subject = await prisma.subject.findUnique({ where: { id } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
-  if (name) subject.name = name;
-  if (description !== undefined) subject.description = description;
-  if (isActive !== undefined) subject.isActive = isActive;
+  const update = {};
+  if (name) update.name = name;
+  if (description !== undefined) update.description = description;
+  if (isActive !== undefined) update.isActive = isActive;
 
-  await subject.save();
-  return subject;
+  return prisma.subject.update({ where: { id }, data: update });
 }
 
 /**
  * Fanni o'chirish. Baholar yoki jadvallarda ishlatilsa xato qaytaradi.
- * @param {string} id - fan ID
- * @returns {Promise<void>}
  */
 async function deleteSubject(id) {
-  const subject = await Subject.findById(id);
+  const subject = await prisma.subject.findUnique({ where: { id } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
   const [gradesCount, schedulesCount] = await Promise.all([
-    Grade.countDocuments({ subject: subject._id }),
-    Schedule.countDocuments({ "subjects.subject": subject._id }),
+    prisma.grade.count({ where: { subjectId: id } }),
+    prisma.scheduleLesson.count({ where: { subjectId: id } }),
   ]);
 
   if (gradesCount > 0 || schedulesCount > 0) {
@@ -78,20 +75,17 @@ async function deleteSubject(id) {
     );
   }
 
-  await subject.deleteOne();
+  await prisma.subject.delete({ where: { id } });
 }
 
 /**
  * Excel eksport uchun fanlar ma'lumotlarini tayyorlash.
- * @returns {Promise<Array>} formatlangan fanlar ro'yxati
  */
 async function getSubjectsForExport() {
-  const subjects = await Subject.find()
-    .populate("createdBy", "firstName lastName")
-    .sort({ name: 1 })
-    .lean();
+  const subjects = await prisma.subject.findMany({ orderBy: { name: "asc" } });
+  const withCreators = await attachCreators(subjects);
 
-  return subjects.map((subject) => ({
+  return withCreators.map((subject) => ({
     name: subject.name,
     description: subject.description || "-",
     status: subject.isActive ? "Faol" : "Faol emas",

@@ -1,8 +1,4 @@
-const StudentAttendance = require("../models/studentAttendance.model");
-const Attendance = require("../models/attendance.model");
-const AbsenceReason = require("../models/absenceReason.model");
-const User = require("../models/user.model");
-const Class = require("../models/class.model");
+const prisma = require("../config/prisma");
 const {
   getTodayNormalized,
   getTodayAllRecords,
@@ -30,7 +26,7 @@ function emptyCounts() {
 // (Yakshanba jadval enum'ida umuman yo'q - avtomatik chiqarib tashlanadi.)
 function isLessonDayRecord(lessonDays, rec) {
   const dayName = DAYS_UZ[new Date(rec.date).getUTCDay()];
-  return lessonDays.has(`${rec.class}|${dayName}`);
+  return lessonDays.has(`${rec.classId}|${dayName}`);
 }
 
 // Yozuvlarni statuslar kesimida sanaydi
@@ -73,19 +69,27 @@ async function getStudentReport(month, year) {
 
   const [totalStudents, todayRecordsRaw, weekRecordsRaw, monthRecordsRaw] =
     await Promise.all([
-      User.countDocuments({ role: "student", isActive: true }),
-      StudentAttendance.find({ date: today }, "class status date").lean(),
-      StudentAttendance.find(
-        { date: { $gte: weekStart, $lte: today } },
-        "class status date",
-      ).lean(),
+      prisma.user.count({ where: { role: "student", isActive: true } }),
+      prisma.studentAttendance.findMany({
+        where: { date: today },
+        select: { classId: true, status: true, date: true },
+      }),
+      prisma.studentAttendance.findMany({
+        where: { date: { gte: weekStart, lte: today } },
+        select: { classId: true, status: true, date: true },
+      }),
       // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
-      StudentAttendance.find(
-        { date: { $gte: start, $lt: end } },
-        "student class status date absenceReason",
-      )
-        .sort({ date: 1 })
-        .lean(),
+      prisma.studentAttendance.findMany({
+        where: { date: { gte: start, lt: end } },
+        select: {
+          studentId: true,
+          classId: true,
+          status: true,
+          date: true,
+          absenceReason: true,
+        },
+        orderBy: { date: "asc" },
+      }),
     ]);
 
   // Dars bo'lmagan kun/sinf yozuvlarini barcha hisob-kitoblardan chiqarib tashlaymiz
@@ -147,18 +151,18 @@ async function getStudentReport(month, year) {
   // ── Sinf kesimi ───────────────────────────────────────────────────
   const classMap = new Map();
   for (const rec of monthRecords) {
-    const key = String(rec.class);
+    const key = String(rec.classId);
     if (!classMap.has(key)) classMap.set(key, { classId: key, ...emptyCounts() });
     const cls = classMap.get(key);
     if (cls[rec.status] !== undefined) cls[rec.status]++;
     cls.total++;
   }
-  const classDocs = await Class.find(
-    { _id: { $in: [...classMap.keys()] } },
-    "name",
-  ).lean();
+  const classDocs = await prisma.class.findMany({
+    where: { id: { in: [...classMap.keys()] } },
+    select: { id: true, name: true },
+  });
   const classNameMap = Object.fromEntries(
-    classDocs.map((c) => [String(c._id), c.name]),
+    classDocs.map((c) => [String(c.id), c.name]),
   );
   const byClass = [...classMap.values()]
     .map((c) => ({
@@ -172,7 +176,7 @@ async function getStudentReport(month, year) {
   // Eslatma: ketma-ketlik faqat belgilangan (yozuvi bor) kunlar bo'yicha hisoblanadi
   const perStudent = new Map();
   for (const rec of monthRecords) {
-    const key = String(rec.student);
+    const key = String(rec.studentId);
     if (!perStudent.has(key)) {
       perStudent.set(key, {
         studentId: key,
@@ -228,15 +232,22 @@ async function getStudentReport(month, year) {
       ...topStudents.map((s) => s.studentId),
     ]),
   ];
-  const students = await User.find(
-    { _id: { $in: studentIds } },
-    "firstName lastName classes",
-  )
-    .populate("classes", "name")
-    .lean();
+  const studentsRaw = await prisma.user.findMany({
+    where: { id: { in: studentIds } },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      classes: { select: { class: { select: { id: true, name: true } } } },
+    },
+  });
+  const students = studentsRaw.map((u) => ({
+    ...u,
+    classes: (u.classes || []).map((c) => c.class),
+  }));
   const studentInfoMap = Object.fromEntries(
     students.map((u) => [
-      String(u._id),
+      String(u.id),
       {
         name: `${u.lastName || ""} ${u.firstName || ""}`.trim(),
         className: (u.classes || []).map((c) => c?.name).filter(Boolean).join(", ") || "-",
@@ -260,12 +271,12 @@ async function getStudentReport(month, year) {
   }
 
   const reasonIds = [...reasonCountMap.keys()].filter(Boolean);
-  const reasonDocs = await AbsenceReason.find(
-    { _id: { $in: reasonIds } },
-    "title",
-  ).lean();
+  const reasonDocs = await prisma.absenceReason.findMany({
+    where: { id: { in: reasonIds } },
+    select: { id: true, title: true },
+  });
   const reasonTitleMap = Object.fromEntries(
-    reasonDocs.map((r) => [String(r._id), r.title]),
+    reasonDocs.map((r) => [String(r.id), r.title]),
   );
   const categories = [...reasonCountMap.entries()]
     .map(([id, count]) => ({
@@ -318,56 +329,60 @@ async function getStudentReport(month, year) {
 async function getStaffReport(month, year) {
   const { m, y, start, end } = monthRange(month, year);
   const today = getTodayNormalized();
-  const range = { $gte: start, $lt: end };
 
-  const [todayAll, monthRows, lateRows, timeRows, distinctDates, todayExcusedDocs] =
+  const [todayAll, monthRows, lateRows, timeRows, distinctDatesRaw, todayExcusedDocs] =
     await Promise.all([
       // Bugungi balans (mavjud xizmatdan qayta foydalanamiz)
       getTodayAllRecords(null, null),
       // Oy bo'yicha foydalanuvchi + status kesimida
-      Attendance.aggregate([
-        { $match: { date: range } },
-        { $group: { _id: { user: "$user", status: "$status" }, count: { $sum: 1 } } },
-      ]),
+      prisma.attendance.groupBy({
+        by: ["userId", "status"],
+        where: { date: { gte: start, lt: end } },
+        _count: { _all: true },
+      }),
       // Kechikishlar kesimi
-      Attendance.aggregate([
-        { $match: { date: range, isLate: true } },
-        {
-          $group: {
-            _id: "$user",
-            lateCount: { $sum: 1 },
-            totalLateMinutes: { $sum: "$lateMinutes" },
-            avgLateMinutes: { $avg: "$lateMinutes" },
-          },
-        },
-        { $sort: { lateCount: -1, totalLateMinutes: -1 } },
-        { $limit: 20 },
-      ]),
-      // Ish vaqti (check-in/check-out to'liq kunlar)
-      Attendance.aggregate([
-        { $match: { date: range, checkIn: { $ne: null }, checkOut: { $ne: null } } },
-        {
-          $project: {
-            user: 1,
-            ms: { $max: [{ $subtract: ["$checkOut", "$checkIn"] }, 0] },
-          },
-        },
-        { $group: { _id: "$user", totalMs: { $sum: "$ms" }, days: { $sum: 1 } } },
-        { $sort: { totalMs: -1 } },
-        { $limit: 100 },
-      ]),
-      Attendance.distinct("date", { date: range }),
+      prisma.attendance.groupBy({
+        by: ["userId"],
+        where: { date: { gte: start, lt: end }, isLate: true },
+        _count: { userId: true },
+        _sum: { lateMinutes: true },
+        _avg: { lateMinutes: true },
+        orderBy: [
+          { _count: { userId: "desc" } },
+          { _sum: { lateMinutes: "desc" } },
+        ],
+        take: 20,
+      }),
+      // Ish vaqti (check-in/check-out to'liq kunlar) — hisoblanuvchi ayirma, raw SQL
+      prisma.$queryRaw`
+        SELECT user_id AS "userId",
+               SUM(GREATEST(EXTRACT(EPOCH FROM (check_out - check_in)) * 1000, 0)) AS "totalMs",
+               COUNT(*) AS "days"
+        FROM attendances
+        WHERE date >= ${start} AND date < ${end}
+          AND check_in IS NOT NULL AND check_out IS NOT NULL
+        GROUP BY user_id
+        ORDER BY "totalMs" DESC
+        LIMIT 100
+      `,
+      // Oy oralig'idagi noyob sanalar
+      prisma.attendance.findMany({
+        where: { date: { gte: start, lt: end } },
+        distinct: ["date"],
+        select: { date: true },
+      }),
       // Bugun sababli kelmaganlar (sabab kategoriyasi bilan)
-      Attendance.find({ date: today, status: "excused" })
-        .populate("user", "firstName lastName role")
-        .populate("absenceReason", "title")
-        .lean(),
+      prisma.attendance.findMany({
+        where: { date: today, status: "excused" },
+      }),
     ]);
+
+  const distinctDates = distinctDatesRaw.map((r) => r.date);
 
   // Oy bo'yicha foydalanuvchi kesimida yig'ish
   const perUser = new Map();
   for (const row of monthRows) {
-    const key = String(row._id.user);
+    const key = String(row.userId);
     if (!perUser.has(key)) {
       perUser.set(key, {
         userId: key,
@@ -379,8 +394,9 @@ async function getStaffReport(month, year) {
       });
     }
     const u = perUser.get(key);
-    if (u[row._id.status] !== undefined) u[row._id.status] = row.count;
-    u.total += row.count;
+    const count = row._count._all;
+    if (u[row.status] !== undefined) u[row.status] = count;
+    u.total += count;
   }
 
   const minRecords = Math.max(1, Math.ceil(distinctDates.length / 2));
@@ -395,21 +411,28 @@ async function getStaffReport(month, year) {
     )
     .slice(0, 10);
 
+  // raw SQL natijalarini normalizatsiya (bigint -> number)
+  const timeRowsNorm = timeRows.map((r) => ({
+    userId: String(r.userId),
+    totalMs: Number(r.totalMs) || 0,
+    days: Number(r.days) || 0,
+  }));
+
   // Ism/rol ma'lumotlari - barcha kerakli foydalanuvchilar uchun bitta so'rov
   const userIds = [
     ...new Set([
-      ...lateRows.map((r) => String(r._id)),
-      ...timeRows.map((r) => String(r._id)),
+      ...lateRows.map((r) => String(r.userId)),
+      ...timeRowsNorm.map((r) => r.userId),
       ...topStaffRaw.map((r) => r.userId),
     ]),
   ];
-  const users = await User.find(
-    { _id: { $in: userIds } },
-    "firstName lastName role",
-  ).lean();
+  const users = await prisma.user.findMany({
+    where: { id: { in: userIds } },
+    select: { id: true, firstName: true, lastName: true, role: true },
+  });
   const userInfoMap = Object.fromEntries(
     users.map((u) => [
-      String(u._id),
+      String(u.id),
       {
         name: `${u.firstName || ""} ${u.lastName || ""}`.trim(),
         role: u.role,
@@ -423,20 +446,20 @@ async function getStaffReport(month, year) {
   };
 
   const punctuality = lateRows
-    .filter((r) => isStaff(String(r._id)))
+    .filter((r) => isStaff(String(r.userId)))
     .map((r) => ({
-      userId: String(r._id),
-      ...userInfoMap[String(r._id)],
-      lateCount: r.lateCount,
-      totalLateMinutes: r.totalLateMinutes,
-      avgLateMinutes: Math.round(r.avgLateMinutes || 0),
+      userId: String(r.userId),
+      ...userInfoMap[String(r.userId)],
+      lateCount: r._count.userId,
+      totalLateMinutes: r._sum.lateMinutes || 0,
+      avgLateMinutes: Math.round(r._avg.lateMinutes || 0),
     }));
 
-  const timesheet = timeRows
-    .filter((r) => isStaff(String(r._id)))
+  const timesheet = timeRowsNorm
+    .filter((r) => isStaff(r.userId))
     .map((r) => ({
-      userId: String(r._id),
-      ...userInfoMap[String(r._id)],
+      userId: r.userId,
+      ...userInfoMap[r.userId],
       days: r.days,
       totalMinutes: Math.round(r.totalMs / 60000),
       avgMinutesPerDay: r.days ? Math.round(r.totalMs / r.days / 60000) : 0,
@@ -446,13 +469,40 @@ async function getStaffReport(month, year) {
     .filter((r) => isStaff(r.userId))
     .map((r) => ({ ...r, ...userInfoMap[r.userId] }));
 
+  // absenceReason — soft ref, qo'lda yuklaymiz
+  const excusedUserIds = [
+    ...new Set(todayExcusedDocs.map((d) => d.userId).filter(Boolean)),
+  ];
+  const excusedReasonIds = [
+    ...new Set(todayExcusedDocs.map((d) => d.absenceReason).filter(Boolean)),
+  ];
+  const [excusedUsers, excusedReasons] = await Promise.all([
+    excusedUserIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: excusedUserIds } },
+          select: { id: true, firstName: true, lastName: true, role: true },
+        })
+      : [],
+    excusedReasonIds.length
+      ? prisma.absenceReason.findMany({
+          where: { id: { in: excusedReasonIds } },
+          select: { id: true, title: true },
+        })
+      : [],
+  ]);
+  const excusedUserMap = new Map(excusedUsers.map((u) => [u.id, u]));
+  const excusedReasonMap = new Map(excusedReasons.map((r) => [r.id, r]));
+
   const todayExcused = todayExcusedDocs
+    .map((d) => ({ ...d, user: excusedUserMap.get(d.userId) || null }))
     .filter((d) => d.user)
     .map((d) => ({
-      userId: String(d.user._id),
+      userId: String(d.user.id),
       name: `${d.user.firstName || ""} ${d.user.lastName || ""}`.trim(),
       role: d.user.role,
-      reasonTitle: d.absenceReason?.title || null,
+      reasonTitle: d.absenceReason
+        ? excusedReasonMap.get(d.absenceReason)?.title || null
+        : null,
       note: d.excuseReason || null,
     }));
 

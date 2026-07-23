@@ -1,6 +1,4 @@
-const StudentAttendance = require("../models/studentAttendance.model");
-const User = require("../models/user.model");
-const Class = require("../models/class.model");
+const prisma = require("../config/prisma");
 const { getTodayNormalized, normalizeDateTashkent } = require("./attendance.service");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
@@ -9,7 +7,7 @@ async function markAttendance({ classId, date, records }, markedBy) {
   const normalizedDate = date ? normalizeDateTashkent(date) : getTodayNormalized();
   const now = new Date();
 
-  const classDoc = await Class.findById(classId).lean();
+  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
   const results = [];
@@ -28,24 +26,32 @@ async function markAttendance({ classId, date, records }, markedBy) {
 
     const isExcused = status === "excused";
 
-    const updated = await StudentAttendance.findOneAndUpdate(
-      { student: studentId, date: normalizedDate },
-      {
-        $set: {
-          student: studentId,
-          class: classId,
-          date: normalizedDate,
-          status,
-          markedAt: now,
-          absenceReason: isExcused ? absenceReason : null,
-          excuseReason: isExcused ? excuseReason || null : null,
-          autoMarked: false,
-          lastModifiedBy: markedBy,
-        },
-        $setOnInsert: { createdBy: markedBy },
+    const updated = await prisma.studentAttendance.upsert({
+      where: { studentId_date: { studentId, date: normalizedDate } },
+      update: {
+        studentId,
+        classId,
+        date: normalizedDate,
+        status,
+        markedAt: now,
+        absenceReason: isExcused ? absenceReason : null,
+        excuseReason: isExcused ? excuseReason || null : null,
+        autoMarked: false,
+        lastModifiedBy: markedBy,
       },
-      { upsert: true, new: true, runValidators: true }
-    );
+      create: {
+        studentId,
+        classId,
+        date: normalizedDate,
+        status,
+        markedAt: now,
+        absenceReason: isExcused ? absenceReason : null,
+        excuseReason: isExcused ? excuseReason || null : null,
+        autoMarked: false,
+        lastModifiedBy: markedBy,
+        createdBy: markedBy,
+      },
+    });
 
     results.push(updated);
   }
@@ -54,48 +60,59 @@ async function markAttendance({ classId, date, records }, markedBy) {
 }
 
 async function updateRecord(recordId, { status, excuseReason }, modifiedBy) {
-  const record = await StudentAttendance.findById(recordId);
+  const record = await prisma.studentAttendance.findUnique({
+    where: { id: recordId },
+  });
   if (!record) throw new NotFoundError("Davomat yozuvi topilmadi");
 
   if (!["present", "late", "absent", "excused"].includes(status)) {
     throw new BadRequestError("Noto'g'ri status");
   }
 
-  record.status = status;
-  record.excuseReason = excuseReason !== undefined ? excuseReason : record.excuseReason;
-  record.lastModifiedBy = modifiedBy;
-  record.markedAt = new Date();
-  record.autoMarked = false;
-
-  await record.save();
-  return record;
+  return prisma.studentAttendance.update({
+    where: { id: recordId },
+    data: {
+      status,
+      excuseReason:
+        excuseReason !== undefined ? excuseReason : record.excuseReason,
+      lastModifiedBy: modifiedBy,
+      markedAt: new Date(),
+      autoMarked: false,
+    },
+  });
 }
 
 async function getTodayClassAttendance(classId, dateInput) {
-  const classDoc = await Class.findById(classId).lean();
+  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
   // Sana berilsa o'sha kun, aks holda bugun (default)
   const today = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
 
-  const students = await User.find(
-    { classes: classId, role: "student", isActive: true },
-    "firstName lastName _id"
-  ).lean();
+  const students = await prisma.user.findMany({
+    where: {
+      classes: { some: { classId } },
+      role: "student",
+      isActive: true,
+    },
+    select: { id: true, firstName: true, lastName: true },
+  });
 
-  const attendanceRecords = await StudentAttendance.find({
-    class: classId,
-    date: today,
-  }).lean();
+  const attendanceRecords = await prisma.studentAttendance.findMany({
+    where: {
+      classId,
+      date: today,
+    },
+  });
 
   const recordMap = {};
   for (const rec of attendanceRecords) {
-    recordMap[String(rec.student)] = rec;
+    recordMap[String(rec.studentId)] = rec;
   }
 
   const data = students.map((student) => ({
     student,
-    attendance: recordMap[String(student._id)] || null,
+    attendance: recordMap[String(student.id)] || null,
   }));
 
   const summary = { present: 0, late: 0, absent: 0, excused: 0, unmarked: 0 };
@@ -125,19 +142,27 @@ async function getTodayAllStudents(req) {
   const day = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
 
   // Shu kunning barcha o'quvchi davomat yozuvlari (xarita va yig'indi uchun)
-  const dayRecords = await StudentAttendance.find({ date: day })
-    .select("student status markedAt excuseReason")
-    .lean();
+  const dayRecords = await prisma.studentAttendance.findMany({
+    where: { date: day },
+    select: {
+      studentId: true,
+      status: true,
+      markedAt: true,
+      excuseReason: true,
+    },
+  });
 
   const recordMap = {};
   for (const rec of dayRecords) {
-    recordMap[String(rec.student)] = rec;
+    recordMap[String(rec.studentId)] = rec;
   }
 
   // Yig'indi - barcha faol o'quvchilar bo'yicha
-  const totalStudents = await User.countDocuments({
-    role: "student",
-    isActive: true,
+  const totalStudents = await prisma.user.count({
+    where: {
+      role: "student",
+      isActive: true,
+    },
   });
 
   const summary = { present: 0, late: 0, absent: 0, excused: 0, unmarked: 0 };
@@ -154,28 +179,40 @@ async function getTodayAllStudents(req) {
   const userFilter = { role: "student", isActive: true };
   if (status) {
     if (status === "unmarked") {
-      userFilter._id = { $nin: dayRecords.map((r) => r.student) };
+      userFilter.id = { notIn: dayRecords.map((r) => r.studentId) };
     } else {
       const matchedIds = dayRecords
         .filter((r) => r.status === status)
-        .map((r) => r.student);
-      userFilter._id = { $in: matchedIds };
+        .map((r) => r.studentId);
+      userFilter.id = { in: matchedIds };
     }
   }
 
-  const [students, total] = await Promise.all([
-    User.find(userFilter, "firstName lastName classes")
-      .populate("classes", "name")
-      .sort({ lastName: 1, firstName: 1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    User.countDocuments(userFilter),
+  const [studentsRaw, total] = await Promise.all([
+    prisma.user.findMany({
+      where: userFilter,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        classes: { select: { class: { select: { id: true, name: true } } } },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.user.count({ where: userFilter }),
   ]);
+
+  // classes junctionni tekis massivga aylantiramiz (populate shakli saqlanadi)
+  const students = studentsRaw.map((s) => ({
+    ...s,
+    classes: (s.classes || []).map((c) => c.class),
+  }));
 
   const data = students.map((student) => ({
     student,
-    attendance: recordMap[String(student._id)] || null,
+    attendance: recordMap[String(student.id)] || null,
   }));
 
   const totalPages = Math.ceil(total / limit) || 1;
@@ -198,19 +235,23 @@ async function getTodayAllStudents(req) {
 async function getClassList() {
   const today = getTodayNormalized();
 
-  const classes = await Class.find({ isActive: true }).lean();
+  const classes = await prisma.class.findMany({ where: { isActive: true } });
 
   const result = [];
   for (const cls of classes) {
-    const totalStudents = await User.countDocuments({
-      classes: cls._id,
-      role: "student",
-      isActive: true,
+    const totalStudents = await prisma.user.count({
+      where: {
+        classes: { some: { classId: cls.id } },
+        role: "student",
+        isActive: true,
+      },
     });
 
-    const markedToday = await StudentAttendance.countDocuments({
-      class: cls._id,
-      date: today,
+    const markedToday = await prisma.studentAttendance.count({
+      where: {
+        classId: cls.id,
+        date: today,
+      },
     });
 
     result.push({ ...cls, totalStudents, markedToday });
@@ -220,7 +261,7 @@ async function getClassList() {
 }
 
 async function getClassMonthRecords(classId, month, year) {
-  const classDoc = await Class.findById(classId).lean();
+  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
   const m = parseInt(month, 10);
@@ -228,12 +269,26 @@ async function getClassMonthRecords(classId, month, year) {
   const startDate = new Date(Date.UTC(y, m - 1, 1));
   const endDate = new Date(Date.UTC(y, m, 1));
 
-  const records = await StudentAttendance.find({
-    class: classId,
-    date: { $gte: startDate, $lt: endDate },
-  })
-    .populate("student", "firstName lastName")
-    .lean();
+  const rows = await prisma.studentAttendance.findMany({
+    where: {
+      classId,
+      date: { gte: startDate, lt: endDate },
+    },
+  });
+
+  // student — soft ref, qo'lda yuklaymiz
+  const studentIds = [...new Set(rows.map((r) => r.studentId).filter(Boolean))];
+  const students = studentIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: studentIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+  const records = rows.map((r) => ({
+    ...r,
+    student: r.studentId ? studentMap.get(r.studentId) || null : null,
+  }));
 
   const summary = { present: 0, late: 0, absent: 0, excused: 0 };
   for (const rec of records) {
@@ -244,7 +299,10 @@ async function getClassMonthRecords(classId, month, year) {
 }
 
 async function getStudentMonthRecords(studentId, month, year) {
-  const student = await User.findById(studentId, "firstName lastName role").lean();
+  const student = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: { id: true, firstName: true, lastName: true, role: true },
+  });
   if (!student || student.role !== "student") throw new NotFoundError("O'quvchi topilmadi");
 
   const m = parseInt(month, 10);
@@ -252,13 +310,27 @@ async function getStudentMonthRecords(studentId, month, year) {
   const startDate = new Date(Date.UTC(y, m - 1, 1));
   const endDate = new Date(Date.UTC(y, m, 1));
 
-  const records = await StudentAttendance.find({
-    student: studentId,
-    date: { $gte: startDate, $lt: endDate },
-  })
-    .populate("class", "name")
-    .sort({ date: 1 })
-    .lean();
+  const rows = await prisma.studentAttendance.findMany({
+    where: {
+      studentId,
+      date: { gte: startDate, lt: endDate },
+    },
+    orderBy: { date: "asc" },
+  });
+
+  // class — soft ref, qo'lda yuklaymiz
+  const classIds = [...new Set(rows.map((r) => r.classId).filter(Boolean))];
+  const classes = classIds.length
+    ? await prisma.class.findMany({
+        where: { id: { in: classIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const records = rows.map((r) => ({
+    ...r,
+    class: r.classId ? classMap.get(r.classId) || null : null,
+  }));
 
   const summary = { present: 0, late: 0, absent: 0, excused: 0 };
   for (const rec of records) {
@@ -273,28 +345,52 @@ async function getAllRecords(req) {
   const { page, limit, skip } = getPaginationParams(req);
 
   const filter = {};
-  if (classId) filter.class = classId;
+  if (classId) filter.classId = classId;
   if (status) filter.status = status;
 
   if (month && year) {
     const m = parseInt(month, 10);
     const y = parseInt(year, 10);
     filter.date = {
-      $gte: new Date(Date.UTC(y, m - 1, 1)),
-      $lt: new Date(Date.UTC(y, m, 1)),
+      gte: new Date(Date.UTC(y, m - 1, 1)),
+      lt: new Date(Date.UTC(y, m, 1)),
     };
   }
 
-  const [records, total] = await Promise.all([
-    StudentAttendance.find(filter)
-      .populate("student", "firstName lastName")
-      .populate("class", "name")
-      .sort({ date: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    StudentAttendance.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.studentAttendance.findMany({
+      where: filter,
+      orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.studentAttendance.count({ where: filter }),
   ]);
+
+  // student va class — soft ref'lar, qo'lda yuklaymiz
+  const studentIds = [...new Set(rows.map((r) => r.studentId).filter(Boolean))];
+  const classIds = [...new Set(rows.map((r) => r.classId).filter(Boolean))];
+  const [students, classes] = await Promise.all([
+    studentIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+    classIds.length
+      ? prisma.class.findMany({
+          where: { id: { in: classIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+  ]);
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const records = rows.map((r) => ({
+    ...r,
+    student: r.studentId ? studentMap.get(r.studentId) || null : null,
+    class: r.classId ? classMap.get(r.classId) || null : null,
+  }));
 
   return formatPaginationResponse(records, total, page, limit);
 }

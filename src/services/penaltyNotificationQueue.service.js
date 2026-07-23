@@ -1,4 +1,4 @@
-const PenaltyNotificationQueue = require("../models/penaltyNotificationQueue.model");
+const prisma = require("../config/prisma");
 const telegramService = require("./telegram.service");
 const logger = require("../utils/logger");
 
@@ -15,13 +15,13 @@ class PenaltyNotificationQueueService {
    */
   async recoverStuckItems() {
     try {
-      const result = await PenaltyNotificationQueue.updateMany(
-        { status: "processing" },
-        { $set: { status: "pending" } },
-      );
-      if (result.modifiedCount > 0) {
+      const result = await prisma.penaltyNotificationQueue.updateMany({
+        where: { status: "processing" },
+        data: { status: "pending" },
+      });
+      if (result.count > 0) {
         logger.info(
-          `${result.modifiedCount} ta jarima xabarnoma queue itemi qayta tiklandi`,
+          `${result.count} ta jarima xabarnoma queue itemi qayta tiklandi`,
         );
       }
     } catch (error) {
@@ -38,16 +38,18 @@ class PenaltyNotificationQueueService {
    */
   async addBulkToQueue(items) {
     try {
-      const queueItems = await PenaltyNotificationQueue.insertMany(items);
+      const created = await prisma.penaltyNotificationQueue.createMany({
+        data: items,
+      });
       logger.info(
-        `${queueItems.length} ta jarima xabarnoma navbatga qo'shildi`,
+        `${created.count} ta jarima xabarnoma navbatga qo'shildi`,
       );
 
       if (!this.isProcessing) {
         this.processQueue();
       }
 
-      return queueItems;
+      return created;
     } catch (error) {
       logger.error(
         `Jarima xabarnomani navbatga qo'shishda xato: ${error.message}`,
@@ -69,16 +71,20 @@ class PenaltyNotificationQueueService {
 
     try {
       while (true) {
-        const queueItem = await PenaltyNotificationQueue.findOne({
-          status: "pending",
-        }).sort({ priority: -1, createdAt: 1 });
+        const queueItem = await prisma.penaltyNotificationQueue.findFirst({
+          where: { status: "pending" },
+          orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+        });
 
         if (!queueItem) {
           break;
         }
 
+        await prisma.penaltyNotificationQueue.update({
+          where: { id: queueItem.id },
+          data: { status: "processing" },
+        });
         queueItem.status = "processing";
-        await queueItem.save();
 
         await this.processQueueItem(queueItem);
 
@@ -122,7 +128,15 @@ class PenaltyNotificationQueueService {
           );
         }
 
-        await queueItem.save();
+        await prisma.penaltyNotificationQueue.update({
+          where: { id: queueItem.id },
+          data: {
+            attempts: queueItem.attempts,
+            errorMessage: queueItem.errorMessage,
+            status: queueItem.status,
+            processedAt: queueItem.processedAt,
+          },
+        });
         return;
       }
 
@@ -156,7 +170,10 @@ class PenaltyNotificationQueueService {
 
       queueItem.status = "completed";
       queueItem.processedAt = new Date();
-      await queueItem.save();
+      await prisma.penaltyNotificationQueue.update({
+        where: { id: queueItem.id },
+        data: { status: queueItem.status, processedAt: queueItem.processedAt },
+      });
 
       logger.info(`Jarima xabarnoma yuborildi: ${queueItem.telegramId}`);
     } catch (error) {
@@ -166,7 +183,14 @@ class PenaltyNotificationQueueService {
       queueItem.status = "failed";
       queueItem.errorMessage = error.message;
       queueItem.processedAt = new Date();
-      await queueItem.save();
+      await prisma.penaltyNotificationQueue.update({
+        where: { id: queueItem.id },
+        data: {
+          status: queueItem.status,
+          errorMessage: queueItem.errorMessage,
+          processedAt: queueItem.processedAt,
+        },
+      });
     }
   }
 
@@ -180,15 +204,17 @@ class PenaltyNotificationQueueService {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - days);
 
-      const result = await PenaltyNotificationQueue.deleteMany({
-        status: { $in: ["completed", "failed"] },
-        processedAt: { $lt: cutoffDate },
+      const result = await prisma.penaltyNotificationQueue.deleteMany({
+        where: {
+          status: { in: ["completed", "failed"] },
+          processedAt: { lt: cutoffDate },
+        },
       });
 
       logger.info(
-        `${result.deletedCount} ta eski jarima xabarnoma queue item o'chirildi`,
+        `${result.count} ta eski jarima xabarnoma queue item o'chirildi`,
       );
-      return result.deletedCount;
+      return result.count;
     } catch (error) {
       logger.error(
         `Eski jarima queue itemlarni o'chirishda xato: ${error.message}`,

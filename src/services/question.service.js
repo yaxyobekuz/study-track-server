@@ -1,5 +1,4 @@
-const Question = require("../models/question.model");
-const Test = require("../models/test.model");
+const prisma = require("../config/prisma");
 const { uploadFile } = require("./file.service");
 const { deleteObject } = require("./fileStorage.service");
 const { DIFFICULTY_VALUES } = require("../helpers/scoring.helper");
@@ -12,6 +11,29 @@ const {
 /** Qiyinlik darajasini tekshiradi (noto'g'ri/bo'sh bo'lsa - "medium"). */
 function _normalizeDifficulty(difficulty) {
   return DIFFICULTY_VALUES.includes(difficulty) ? difficulty : "medium";
+}
+
+/**
+ * QuestionOption yozuvlarini Mongoose embedded shakliga xaritalaydi
+ * ({ _id, text, image, isCorrect }) - frontend shakli saqlanishi uchun.
+ */
+function _mapOptions(options) {
+  return (options || [])
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((opt) => ({
+      _id: opt.id,
+      text: opt.text,
+      image: opt.image,
+      isCorrect: opt.isCorrect,
+    }));
+}
+
+/**
+ * Question yozuvini options bilan Mongoose shakliga xaritalaydi.
+ */
+function _shapeQuestion(question) {
+  return { ...question, options: _mapOptions(question.options) };
 }
 
 /**
@@ -85,11 +107,11 @@ function _applyImageMap(imageMap, uploaded) {
  * Test muallifligini tekshirib testni qaytaradi.
  */
 async function _loadTestOwned(testId, teacherId) {
-  const test = await Test.findById(testId);
+  const test = await prisma.test.findUnique({ where: { id: testId } });
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId.toString() !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
   return test;
@@ -101,10 +123,12 @@ async function _loadTestOwned(testId, teacherId) {
  */
 async function listQuestionsForTest(testId, teacherId) {
   await _loadTestOwned(testId, teacherId);
-  return Question.find({ test: testId, isActive: true }).sort({
-    order: 1,
-    createdAt: 1,
+  const questions = await prisma.question.findMany({
+    where: { testId, isActive: true },
+    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+    include: { options: { orderBy: { position: "asc" } } },
   });
+  return questions.map(_shapeQuestion);
 }
 
 /**
@@ -134,31 +158,33 @@ async function createQuestion(testId, data, files, teacherId) {
     );
 
     // order = mavjud savollar soni + 1
-    const existingCount = await Question.countDocuments({
-      test: test._id,
-      isActive: true,
+    const existingCount = await prisma.question.count({
+      where: { testId: test.id, isActive: true },
     });
 
-    const questionDoc = {
-      test: test._id,
-      type,
-      text: text || undefined,
-      image: questionImage,
-      difficulty: _normalizeDifficulty(difficulty),
-      options: [],
-      order: existingCount + 1,
-    };
+    const optionRows =
+      type === "standard"
+        ? options.map((opt, index) => ({
+            text: opt.text || null,
+            image: optionImages[index] || null,
+            isCorrect: Boolean(opt.isCorrect),
+            position: index,
+          }))
+        : [];
 
-    if (type === "standard") {
-      questionDoc.options = options.map((opt, index) => ({
-        text: opt.text || undefined,
-        image: optionImages[index] || null,
-        isCorrect: Boolean(opt.isCorrect),
-      }));
-    }
-
-    const question = await Question.create(questionDoc);
-    return question;
+    const question = await prisma.question.create({
+      data: {
+        testId: test.id,
+        type,
+        text: text || null,
+        image: questionImage,
+        difficulty: _normalizeDifficulty(difficulty),
+        order: existingCount + 1,
+        options: { create: optionRows },
+      },
+      include: { options: { orderBy: { position: "asc" } } },
+    });
+    return _shapeQuestion(question);
   } catch (error) {
     await _deleteImages(uploaded);
     throw error;
@@ -169,12 +195,15 @@ async function createQuestion(testId, data, files, teacherId) {
  * Savolni tahrirlaydi. Tur o'zgartirilgan bo'lsa variantlar tozalanadi/yangilanadi.
  */
 async function updateQuestion(id, data, files, teacherId) {
-  const question = await Question.findById(id);
+  const question = await prisma.question.findUnique({
+    where: { id },
+    include: { options: { orderBy: { position: "asc" } } },
+  });
   if (!question || !question.isActive) {
     throw new NotFoundError("Savol topilmadi");
   }
   // Test orqali muallifligini tekshirish
-  await _loadTestOwned(question.test, teacherId);
+  await _loadTestOwned(question.testId, teacherId);
 
   const { type, text, difficulty } = data;
 
@@ -196,45 +225,66 @@ async function updateQuestion(id, data, files, teacherId) {
       uploaded,
     );
 
-    if (text !== undefined) question.text = text || undefined;
+    const update = {};
+
+    if (text !== undefined) update.text = text || null;
     if (difficulty !== undefined) {
-      question.difficulty = _normalizeDifficulty(difficulty);
+      update.difficulty = _normalizeDifficulty(difficulty);
     }
-    if (type !== undefined) question.type = type;
+    // type: yangilangan qiymatni hisoblaymiz (options logikasi unga bog'liq)
+    const nextType = type !== undefined ? type : question.type;
+    if (type !== undefined) update.type = type;
 
     if (questionImage) {
       if (question.image) oldImages.push(question.image);
-      question.image = questionImage;
+      update.image = questionImage;
     } else if (data.removeQuestionImage === "true") {
       if (question.image) oldImages.push(question.image);
-      question.image = null;
+      update.image = null;
     }
 
     // Variantlar - faqat standard turida; turni open ga o'zgartirilsa tozalanadi
-    if (question.type === "open") {
+    let newOptionRows;
+    let replaceOptions = false;
+    if (nextType === "open") {
       // Eski variantlardagi rasmlarni belgilash
       (question.options || []).forEach((opt) => {
         if (opt.image) oldImages.push(opt.image);
       });
-      question.options = [];
+      newOptionRows = [];
+      replaceOptions = true;
     } else if (options !== undefined) {
       // Eski variant rasmlari (yangilari almashtiriladi)
       (question.options || []).forEach((opt) => {
         if (opt.image) oldImages.push(opt.image);
       });
-      question.options = options.map((opt, index) => ({
-        text: opt.text || undefined,
+      newOptionRows = options.map((opt, index) => ({
+        text: opt.text || null,
         image:
           optionImages[index] ||
           (opt.image && opt.image.key ? opt.image : null),
         isCorrect: Boolean(opt.isCorrect),
+        position: index,
       }));
+      replaceOptions = true;
     }
 
-    await question.save();
+    if (replaceOptions) {
+      update.options = {
+        deleteMany: {},
+        create: newOptionRows,
+      };
+    }
+
+    const updated = await prisma.question.update({
+      where: { id },
+      data: update,
+      include: { options: { orderBy: { position: "asc" } } },
+    });
+
     await _deleteImages(oldImages);
 
-    return question;
+    return _shapeQuestion(updated);
   } catch (error) {
     await _deleteImages(uploaded);
     throw error;
@@ -262,9 +312,8 @@ async function bulkCreateQuestions(
     throw new BadRequestError("Qo'shish uchun savollar yo'q");
   }
 
-  let order = await Question.countDocuments({
-    test: test._id,
-    isActive: true,
+  let order = await prisma.question.count({
+    where: { testId: test.id, isActive: true },
   });
 
   const created = [];
@@ -273,23 +322,29 @@ async function bulkCreateQuestions(
   for (const q of questionsArray) {
     order += 1;
     try {
-      const question = await Question.create({
-        test: test._id,
-        type: q.type,
-        text: q.text || undefined,
-        image: null,
-        difficulty: _normalizeDifficulty(q.difficulty || batchDifficulty),
-        options:
-          q.type === "standard"
-            ? (q.options || []).map((opt) => ({
-                text: opt.text || undefined,
-                image: null,
-                isCorrect: Boolean(opt.isCorrect),
-              }))
-            : [],
-        order,
+      const optionRows =
+        q.type === "standard"
+          ? (q.options || []).map((opt, index) => ({
+              text: opt.text || null,
+              image: null,
+              isCorrect: Boolean(opt.isCorrect),
+              position: index,
+            }))
+          : [];
+
+      const question = await prisma.question.create({
+        data: {
+          testId: test.id,
+          type: q.type,
+          text: q.text || null,
+          image: null,
+          difficulty: _normalizeDifficulty(q.difficulty || batchDifficulty),
+          order,
+          options: { create: optionRows },
+        },
+        include: { options: { orderBy: { position: "asc" } } },
       });
-      created.push(question);
+      created.push(_shapeQuestion(question));
     } catch (error) {
       // Yaroqsiz savolni o'tkazib yuboramiz, lekin order ortmaydi
       order -= 1;
@@ -304,23 +359,28 @@ async function bulkCreateQuestions(
  * Sessiya snapshot'idagi nusxa tegmaydi.
  */
 async function deactivateQuestion(id, teacherId) {
-  const question = await Question.findById(id);
+  const question = await prisma.question.findUnique({ where: { id } });
   if (!question || !question.isActive) {
     throw new NotFoundError("Savol topilmadi");
   }
-  await _loadTestOwned(question.test, teacherId);
+  await _loadTestOwned(question.testId, teacherId);
 
-  question.isActive = false;
-  await question.save();
+  await prisma.question.update({
+    where: { id },
+    data: { isActive: false },
+  });
 
   // Qolgan faol savollar tartibini 1..N qilib qayta normallashtirish (bo'shliqsiz)
-  const remaining = await Question.find({
-    test: question.test,
-    isActive: true,
-  }).sort({ order: 1, createdAt: 1 });
+  const remaining = await prisma.question.findMany({
+    where: { testId: question.testId, isActive: true },
+    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+  });
   await Promise.all(
     remaining.map((q, index) =>
-      Question.updateOne({ _id: q._id }, { $set: { order: index + 1 } }),
+      prisma.question.update({
+        where: { id: q.id },
+        data: { order: index + 1 },
+      }),
     ),
   );
 }
@@ -334,12 +394,12 @@ async function deactivateQuestion(id, teacherId) {
 async function deactivateAllQuestions(testId, teacherId) {
   await _loadTestOwned(testId, teacherId);
 
-  const res = await Question.updateMany(
-    { test: testId, isActive: true },
-    { $set: { isActive: false } },
-  );
+  const res = await prisma.question.updateMany({
+    where: { testId, isActive: true },
+    data: { isActive: false },
+  });
 
-  return { deleted: res.modifiedCount };
+  return { deleted: res.count };
 }
 
 /**
@@ -354,10 +414,8 @@ async function reorderQuestions(testId, orderedIds, teacherId) {
   }
 
   // Berilgan ID'lar shu testga tegishli ekanligini tekshirish
-  const questions = await Question.find({
-    _id: { $in: orderedIds },
-    test: testId,
-    isActive: true,
+  const questions = await prisma.question.findMany({
+    where: { id: { in: orderedIds }, testId, isActive: true },
   });
 
   if (questions.length !== orderedIds.length) {
@@ -369,7 +427,10 @@ async function reorderQuestions(testId, orderedIds, teacherId) {
   // Batch update - har savolga yangi order
   await Promise.all(
     orderedIds.map((qid, index) =>
-      Question.updateOne({ _id: qid }, { $set: { order: index + 1 } }),
+      prisma.question.update({
+        where: { id: qid },
+        data: { order: index + 1 },
+      }),
     ),
   );
 }

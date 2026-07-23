@@ -1,8 +1,4 @@
-const TeacherAssignment = require("../models/teacherAssignment.model");
-const TestSeason = require("../models/testSeason.model");
-const Class = require("../models/class.model");
-const Subject = require("../models/subject.model");
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { ROLES } = require("../utils/constants");
 const {
   BadRequestError,
@@ -10,6 +6,89 @@ const {
   ForbiddenError,
 } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
+
+/**
+ * Biriktiruvlarning soft ref maydonlarini (season/class/subject/teacher — FK emas)
+ * qo'lda yuklab, eski populate shakliga xaritalaydi.
+ * @param {Array} assignments - TeacherAssignment yozuvlari
+ * @param {object} [options] - { seasonSelect } — season uchun qo'shimcha maydonlar
+ * @returns {Promise<Array>} refs to'ldirilgan biriktiruvlar
+ */
+async function attachRefs(assignments, options = {}) {
+  const { seasonExtra = false } = options;
+
+  const seasonIds = [
+    ...new Set(assignments.map((a) => a.seasonId).filter(Boolean)),
+  ];
+  const classIds = [
+    ...new Set(assignments.map((a) => a.classId).filter(Boolean)),
+  ];
+  const subjectIds = [
+    ...new Set(assignments.map((a) => a.subjectId).filter(Boolean)),
+  ];
+  const teacherIds = [
+    ...new Set(assignments.map((a) => a.teacherId).filter(Boolean)),
+  ];
+
+  const seasonSelect = seasonExtra
+    ? { id: true, name: true, status: true, startDate: true, endDate: true }
+    : { id: true, name: true, status: true };
+
+  const [seasons, classes, subjects, teachers] = await Promise.all([
+    prisma.testSeason.findMany({
+      where: { id: { in: seasonIds } },
+      select: seasonSelect,
+    }),
+    prisma.class.findMany({
+      where: { id: { in: classIds } },
+      select: { id: true, name: true },
+    }),
+    prisma.subject.findMany({
+      where: { id: { in: subjectIds } },
+      select: { id: true, name: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: teacherIds } },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+  ]);
+
+  const seasonMap = new Map(
+    seasons.map((s) => [
+      s.id,
+      seasonExtra
+        ? {
+            _id: s.id,
+            name: s.name,
+            status: s.status,
+            startDate: s.startDate,
+            endDate: s.endDate,
+          }
+        : { _id: s.id, name: s.name, status: s.status },
+    ]),
+  );
+  const classMap = new Map(
+    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+  );
+  const subjectMap = new Map(
+    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+  );
+  const teacherMap = new Map(
+    teachers.map((t) => [
+      t.id,
+      { _id: t.id, firstName: t.firstName, lastName: t.lastName },
+    ]),
+  );
+
+  return assignments.map((a) => ({
+    ...a,
+    _id: a.id,
+    season: seasonMap.get(a.seasonId) || null,
+    class: classMap.get(a.classId) || null,
+    subject: subjectMap.get(a.subjectId) || null,
+    teacher: teacherMap.get(a.teacherId) || null,
+  }));
+}
 
 /**
  * O'qituvchi berilgan mavsum+sinf+fan uchun biriktirilganligini tekshiradi.
@@ -21,12 +100,14 @@ const { getPaginationParams, formatPaginationResponse } = require("../utils/pagi
  * @returns {Promise<object>} biriktiruv yozuvi
  */
 async function assertTeacherAssigned(teacherId, seasonId, classId, subjectId) {
-  const assignment = await TeacherAssignment.findOne({
-    season: seasonId,
-    class: classId,
-    subject: subjectId,
-    teacher: teacherId,
-    isActive: true,
+  const assignment = await prisma.teacherAssignment.findFirst({
+    where: {
+      seasonId,
+      classId,
+      subjectId,
+      teacherId,
+      isActive: true,
+    },
   });
 
   if (!assignment) {
@@ -48,24 +129,24 @@ async function listAssignments(req) {
   const { season, class: classId, subject, teacher } = req.query;
 
   const filter = {};
-  if (season) filter.season = season;
-  if (classId) filter.class = classId;
-  if (subject) filter.subject = subject;
-  if (teacher) filter.teacher = teacher;
+  if (season) filter.seasonId = season;
+  if (classId) filter.classId = classId;
+  if (subject) filter.subjectId = subject;
+  if (teacher) filter.teacherId = teacher;
 
   const [assignments, total] = await Promise.all([
-    TeacherAssignment.find(filter)
-      .populate("season", "name status")
-      .populate("class", "name")
-      .populate("subject", "name")
-      .populate("teacher", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    TeacherAssignment.countDocuments(filter),
+    prisma.teacherAssignment.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.teacherAssignment.count({ where: filter }),
   ]);
 
-  return formatPaginationResponse(assignments, total, page, limit);
+  const withRefs = await attachRefs(assignments);
+
+  return formatPaginationResponse(withRefs, total, page, limit);
 }
 
 /**
@@ -75,14 +156,19 @@ async function listAssignments(req) {
  * @returns {Promise<Array>} biriktiruvlar
  */
 async function getAssignmentsForTeacher(teacherId, seasonId) {
-  const filter = { teacher: teacherId, isActive: true };
-  if (seasonId) filter.season = seasonId;
+  const filter = { teacherId, isActive: true };
+  if (seasonId) filter.seasonId = seasonId;
 
-  return TeacherAssignment.find(filter)
-    .populate("season", "name status startDate endDate")
-    .populate("class", "name")
-    .populate("subject", "name")
-    .sort({ createdAt: -1 });
+  const assignments = await prisma.teacherAssignment.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+  });
+
+  // season uchun startDate/endDate ham kerak; class/subject faqat name.
+  const withRefs = await attachRefs(assignments, { seasonExtra: true });
+
+  // Bu yerda teacher populate qilinmaydi (eski kod ham qilmagan), olib tashlaymiz.
+  return withRefs.map(({ teacher, ...rest }) => rest);
 }
 
 /**
@@ -99,10 +185,10 @@ async function createAssignment(data, createdBy) {
   }
 
   const [seasonDoc, classDoc, subjectDoc, teacherDoc] = await Promise.all([
-    TestSeason.findById(season),
-    Class.findById(classId),
-    Subject.findById(subject),
-    User.findById(teacher),
+    prisma.testSeason.findUnique({ where: { id: season } }),
+    prisma.class.findUnique({ where: { id: classId } }),
+    prisma.subject.findUnique({ where: { id: subject } }),
+    prisma.user.findUnique({ where: { id: teacher } }),
   ]);
 
   if (!seasonDoc) throw new NotFoundError("Mavsum topilmadi");
@@ -113,22 +199,26 @@ async function createAssignment(data, createdBy) {
     throw new BadRequestError("Tanlangan foydalanuvchi o'qituvchi emas");
   }
 
-  const existing = await TeacherAssignment.findOne({
-    season,
-    class: classId,
-    subject,
-    teacher,
+  const existing = await prisma.teacherAssignment.findFirst({
+    where: {
+      seasonId: season,
+      classId,
+      subjectId: subject,
+      teacherId: teacher,
+    },
   });
   if (existing) {
     throw new BadRequestError("Bu biriktiruv allaqachon mavjud");
   }
 
-  const assignment = await TeacherAssignment.create({
-    season,
-    class: classId,
-    subject,
-    teacher,
-    createdBy,
+  const assignment = await prisma.teacherAssignment.create({
+    data: {
+      seasonId: season,
+      classId,
+      subjectId: subject,
+      teacherId: teacher,
+      createdBy,
+    },
   });
 
   return assignment;
@@ -151,7 +241,9 @@ async function bulkCreateAssignments(data, createdBy) {
     throw new BadRequestError("Kamida bitta biriktiruv kerak");
   }
 
-  const seasonDoc = await TestSeason.findById(season);
+  const seasonDoc = await prisma.testSeason.findUnique({
+    where: { id: season },
+  });
   if (!seasonDoc) throw new NotFoundError("Mavsum topilmadi");
 
   // Shaklni tekshirib, batch ichidagi dublikatlarni olib tashlash
@@ -178,17 +270,29 @@ async function bulkCreateAssignments(data, createdBy) {
   const teacherIds = [...new Set(normalized.map((n) => n.teacher))];
 
   const [classes, subjects, teachers, existing] = await Promise.all([
-    Class.find({ _id: { $in: classIds } }).select("_id"),
-    Subject.find({ _id: { $in: subjectIds } }).select("_id"),
-    User.find({ _id: { $in: teacherIds } }).select("_id role"),
-    TeacherAssignment.find({ season }).select("class subject teacher"),
+    prisma.class.findMany({
+      where: { id: { in: classIds } },
+      select: { id: true },
+    }),
+    prisma.subject.findMany({
+      where: { id: { in: subjectIds } },
+      select: { id: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: teacherIds } },
+      select: { id: true, role: true },
+    }),
+    prisma.teacherAssignment.findMany({
+      where: { seasonId: season },
+      select: { classId: true, subjectId: true, teacherId: true },
+    }),
   ]);
 
-  const classSet = new Set(classes.map((c) => String(c._id)));
-  const subjectSet = new Set(subjects.map((s) => String(s._id)));
-  const teacherRole = new Map(teachers.map((t) => [String(t._id), t.role]));
+  const classSet = new Set(classes.map((c) => String(c.id)));
+  const subjectSet = new Set(subjects.map((s) => String(s.id)));
+  const teacherRole = new Map(teachers.map((t) => [String(t.id), t.role]));
   const existingSet = new Set(
-    existing.map((e) => `${e.class}|${e.subject}|${e.teacher}`),
+    existing.map((e) => `${e.classId}|${e.subjectId}|${e.teacherId}`),
   );
 
   const toCreate = [];
@@ -207,10 +311,10 @@ async function bulkCreateAssignments(data, createdBy) {
       skipped.push({ ...n, reason: "Allaqachon mavjud" });
     } else {
       toCreate.push({
-        season,
-        class: n.class,
-        subject: n.subject,
-        teacher: n.teacher,
+        seasonId: season,
+        classId: n.class,
+        subjectId: n.subject,
+        teacherId: n.teacher,
         createdBy,
       });
     }
@@ -218,7 +322,26 @@ async function bulkCreateAssignments(data, createdBy) {
 
   let created = [];
   if (toCreate.length > 0) {
-    created = await TeacherAssignment.insertMany(toCreate, { ordered: false });
+    // createMany count qaytaradi; eski insertMany yaratilgan yozuvlarni
+    // qaytargani uchun yaratilgach qayta o'qib beramiz (createdCount saqlanadi).
+    await prisma.teacherAssignment.createMany({
+      data: toCreate,
+      skipDuplicates: true,
+    });
+    const keys = new Set(
+      toCreate.map((t) => `${t.classId}|${t.subjectId}|${t.teacherId}`),
+    );
+    const fetched = await prisma.teacherAssignment.findMany({
+      where: {
+        seasonId: season,
+        classId: { in: [...new Set(toCreate.map((t) => t.classId))] },
+        subjectId: { in: [...new Set(toCreate.map((t) => t.subjectId))] },
+        teacherId: { in: [...new Set(toCreate.map((t) => t.teacherId))] },
+      },
+    });
+    created = fetched.filter((f) =>
+      keys.has(`${f.classId}|${f.subjectId}|${f.teacherId}`),
+    );
   }
 
   return {
@@ -236,39 +359,54 @@ async function bulkCreateAssignments(data, createdBy) {
  * @returns {Promise<object>} yangilangan biriktiruv
  */
 async function updateAssignment(id, data) {
-  const assignment = await TeacherAssignment.findById(id);
+  const assignment = await prisma.teacherAssignment.findUnique({
+    where: { id },
+  });
   if (!assignment) {
     throw new NotFoundError("Biriktiruv topilmadi");
   }
 
   const { class: classId, subject, teacher, isActive } = data;
 
+  const update = {};
+  let nextClassId = assignment.classId;
+  let nextSubjectId = assignment.subjectId;
+  let nextTeacherId = assignment.teacherId;
+
   if (teacher !== undefined) {
-    const teacherDoc = await User.findById(teacher);
+    const teacherDoc = await prisma.user.findUnique({ where: { id: teacher } });
     if (!teacherDoc) throw new NotFoundError("O'qituvchi topilmadi");
     if (teacherDoc.role !== ROLES.TEACHER) {
       throw new BadRequestError("Tanlangan foydalanuvchi o'qituvchi emas");
     }
-    assignment.teacher = teacher;
+    update.teacherId = teacher;
+    nextTeacherId = teacher;
   }
-  if (classId !== undefined) assignment.class = classId;
-  if (subject !== undefined) assignment.subject = subject;
-  if (isActive !== undefined) assignment.isActive = isActive;
+  if (classId !== undefined) {
+    update.classId = classId;
+    nextClassId = classId;
+  }
+  if (subject !== undefined) {
+    update.subjectId = subject;
+    nextSubjectId = subject;
+  }
+  if (isActive !== undefined) update.isActive = isActive;
 
   // Yangilangan juftlik takrorlanmasligini tekshirish
-  const duplicate = await TeacherAssignment.findOne({
-    _id: { $ne: id },
-    season: assignment.season,
-    class: assignment.class,
-    subject: assignment.subject,
-    teacher: assignment.teacher,
+  const duplicate = await prisma.teacherAssignment.findFirst({
+    where: {
+      id: { not: id },
+      seasonId: assignment.seasonId,
+      classId: nextClassId,
+      subjectId: nextSubjectId,
+      teacherId: nextTeacherId,
+    },
   });
   if (duplicate) {
     throw new BadRequestError("Bu biriktiruv allaqachon mavjud");
   }
 
-  await assignment.save();
-  return assignment;
+  return prisma.teacherAssignment.update({ where: { id }, data: update });
 }
 
 /**
@@ -277,13 +415,17 @@ async function updateAssignment(id, data) {
  * @returns {Promise<void>}
  */
 async function deleteAssignment(id) {
-  const assignment = await TeacherAssignment.findById(id);
+  const assignment = await prisma.teacherAssignment.findUnique({
+    where: { id },
+  });
   if (!assignment) {
     throw new NotFoundError("Biriktiruv topilmadi");
   }
 
-  assignment.isActive = false;
-  await assignment.save();
+  await prisma.teacherAssignment.update({
+    where: { id },
+    data: { isActive: false },
+  });
 }
 
 module.exports = {

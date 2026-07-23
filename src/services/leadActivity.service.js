@@ -1,6 +1,20 @@
-const LeadActivity = require("../models/leadActivity.model");
-const Lead = require("../models/lead.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+
+/**
+ * createdBy — soft ref (FK emas), qo'lda yuklaymiz.
+ * Berilgan aktivliklarga createdBy foydalanuvchisini { firstName, lastName } shaklida biriktiradi.
+ */
+async function attachCreators(activities) {
+  const creatorIds = [...new Set(activities.map((a) => a.createdBy).filter(Boolean))];
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
+
+  return activities.map((a) => ({ ...a, createdBy: creatorMap.get(a.createdBy) || null }));
+}
 
 /**
  * Lead bo'yicha barcha harakatlarni olish.
@@ -11,7 +25,7 @@ const { BadRequestError, NotFoundError } = require("../utils/errors");
 async function getActivitiesByLead(leadId, query) {
   const { page = 1, limit = 30 } = query;
 
-  const lead = await Lead.findById(leadId);
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) {
     throw new NotFoundError("Lead topilmadi");
   }
@@ -20,14 +34,17 @@ async function getActivitiesByLead(leadId, query) {
   const limitNum = parseInt(limit, 10);
   const skip = (pageNum - 1) * limitNum;
 
-  const [total, activities] = await Promise.all([
-    LeadActivity.countDocuments({ lead: leadId }),
-    LeadActivity.find({ lead: leadId })
-      .populate("createdBy", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum),
+  const [total, rawActivities] = await Promise.all([
+    prisma.leadActivity.count({ where: { leadId } }),
+    prisma.leadActivity.findMany({
+      where: { leadId },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNum,
+    }),
   ]);
+
+  const activities = await attachCreators(rawActivities);
 
   const totalPages = Math.ceil(total / limitNum);
 
@@ -58,19 +75,22 @@ async function createActivity(leadId, data, userId) {
     throw new BadRequestError("Harakat turi va izoh majburiy");
   }
 
-  const lead = await Lead.findById(leadId);
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) {
     throw new NotFoundError("Lead topilmadi");
   }
 
-  const activity = await LeadActivity.create({
-    lead: leadId,
-    type,
-    description,
-    createdBy: userId,
+  const activity = await prisma.leadActivity.create({
+    data: {
+      leadId,
+      type,
+      description,
+      createdBy: userId,
+    },
   });
 
-  return LeadActivity.findById(activity._id).populate("createdBy", "firstName lastName");
+  const [withCreator] = await attachCreators([activity]);
+  return withCreator;
 }
 
 module.exports = {

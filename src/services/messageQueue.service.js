@@ -1,6 +1,5 @@
-// Models
-const MessageQueue = require("../models/messageQueue.model");
-const Message = require("../models/message.model");
+// Prisma
+const prisma = require("../config/prisma");
 
 // Services
 const telegramService = require("./telegram.service");
@@ -22,8 +21,8 @@ class MessageQueueService {
    */
   async addToQueue(params) {
     try {
-      const queueItem = await MessageQueue.create(params);
-      logger.info(`Xabar navbatga qo'shildi: ${queueItem._id}`);
+      const queueItem = await prisma.messageQueue.create({ data: params });
+      logger.info(`Xabar navbatga qo'shildi: ${queueItem.id}`);
 
       // Start processing queue if not already processing
       if (!this.isProcessing) {
@@ -44,7 +43,9 @@ class MessageQueueService {
    */
   async addBulkToQueue(items) {
     try {
-      const queueItems = await MessageQueue.insertMany(items);
+      const queueItems = await prisma.$transaction(
+        items.map((item) => prisma.messageQueue.create({ data: item })),
+      );
       logger.info(`${queueItems.length} ta xabar navbatga qo'shildi`);
 
       // Start processing queue if not already processing
@@ -73,9 +74,10 @@ class MessageQueueService {
     try {
       while (true) {
         // Get next pending item from queue (sorted by priority and creation time)
-        const queueItem = await MessageQueue.findOne({
-          status: "pending",
-        }).sort({ priority: -1, createdAt: 1 });
+        const queueItem = await prisma.messageQueue.findFirst({
+          where: { status: "pending" },
+          orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
+        });
 
         if (!queueItem) {
           // No more items to process
@@ -83,8 +85,11 @@ class MessageQueueService {
         }
 
         // Mark as processing
+        await prisma.messageQueue.update({
+          where: { id: queueItem.id },
+          data: { status: "processing" },
+        });
         queueItem.status = "processing";
-        await queueItem.save();
 
         // Process the item
         await this.processQueueItem(queueItem);
@@ -117,69 +122,74 @@ class MessageQueueService {
         queueItem.replyMarkup,
       );
 
+      const update = {};
+
       if (result.success) {
         // Mark as completed
-        queueItem.status = "completed";
-        queueItem.processedAt = new Date();
+        update.status = "completed";
+        update.processedAt = new Date();
 
         // Update delivery status in Message model
-        await Message.findByIdAndUpdate(
-          queueItem.messageId,
-          {
-            $set: {
-              "deliveryStatus.$[elem].status": "sent",
-              "deliveryStatus.$[elem].sentAt": new Date(),
-            },
+        await prisma.messageDeliveryStatus.updateMany({
+          where: {
+            messageId: queueItem.messageId,
+            telegramId: queueItem.telegramId,
           },
-          {
-            arrayFilters: [{ "elem.telegramId": queueItem.telegramId }],
+          data: {
+            status: "sent",
+            sentAt: new Date(),
           },
-        );
+        });
 
         logger.info(`Xabar yuborildi: ${queueItem.telegramId}`);
       } else {
         // Handle failure
-        queueItem.attempts += 1;
-        queueItem.errorMessage = result.error;
+        update.attempts = queueItem.attempts + 1;
+        update.errorMessage = result.error;
 
-        if (queueItem.attempts >= queueItem.maxAttempts) {
+        if (update.attempts >= queueItem.maxAttempts) {
           // Max attempts reached, mark as failed
-          queueItem.status = "failed";
-          queueItem.processedAt = new Date();
+          update.status = "failed";
+          update.processedAt = new Date();
 
           // Update delivery status in Message model
-          await Message.findByIdAndUpdate(
-            queueItem.messageId,
-            {
-              $set: {
-                "deliveryStatus.$[elem].status": "failed",
-                "deliveryStatus.$[elem].errorMessage": result.error,
-              },
+          await prisma.messageDeliveryStatus.updateMany({
+            where: {
+              messageId: queueItem.messageId,
+              telegramId: queueItem.telegramId,
             },
-            {
-              arrayFilters: [{ "elem.telegramId": queueItem.telegramId }],
+            data: {
+              status: "failed",
+              errorMessage: result.error,
             },
-          );
+          });
 
           logger.error(
             `Xabar yuborishda xato (max attempts): ${queueItem.telegramId} - ${result.error}`,
           );
         } else {
           // Retry
-          queueItem.status = "pending";
+          update.status = "pending";
           logger.warn(
-            `Xabar yuborishda xato, qayta uriniladi (${queueItem.attempts}/${queueItem.maxAttempts}): ${queueItem.telegramId}`,
+            `Xabar yuborishda xato, qayta uriniladi (${update.attempts}/${queueItem.maxAttempts}): ${queueItem.telegramId}`,
           );
         }
       }
 
-      await queueItem.save();
+      await prisma.messageQueue.update({
+        where: { id: queueItem.id },
+        data: update,
+      });
     } catch (error) {
       logger.error(`Queue item qayta ishlashda xato: ${error.message}`);
-      queueItem.status = "failed";
-      queueItem.errorMessage = error.message;
-      queueItem.processedAt = new Date();
-      await queueItem.save();
+      await prisma.messageQueue.update({
+        where: { id: queueItem.id },
+        data: {
+          status: "failed",
+          errorMessage: error.message,
+          processedAt: new Date(),
+        },
+      });
     }
   }
 
@@ -193,28 +203,25 @@ class MessageQueueService {
    */
   async cancelMessage(messageId) {
     try {
-      const queueResult = await MessageQueue.updateMany(
-        { messageId, status: "pending" },
-        {
-          $set: {
-            status: "cancelled",
-            errorMessage: "Bekor qilindi",
-            processedAt: new Date(),
-          },
+      const queueResult = await prisma.messageQueue.updateMany({
+        where: { messageId, status: "pending" },
+        data: {
+          status: "cancelled",
+          errorMessage: "Bekor qilindi",
+          processedAt: new Date(),
         },
-      );
+      });
 
-      await Message.updateOne(
-        { _id: messageId },
-        { $set: { "deliveryStatus.$[elem].status": "cancelled" } },
-        { arrayFilters: [{ "elem.status": "pending" }] },
-      );
+      await prisma.messageDeliveryStatus.updateMany({
+        where: { messageId, status: "pending" },
+        data: { status: "cancelled" },
+      });
 
       logger.info(
-        `Xabar bekor qilindi: ${messageId} (${queueResult.modifiedCount} ta navbatdagi xabar to'xtatildi)`,
+        `Xabar bekor qilindi: ${messageId} (${queueResult.count} ta navbatdagi xabar to'xtatildi)`,
       );
 
-      return queueResult.modifiedCount;
+      return queueResult.count;
     } catch (error) {
       logger.error(`Xabarni bekor qilishda xato: ${error.message}`);
       throw error;
@@ -227,17 +234,13 @@ class MessageQueueService {
    */
   async getQueueStats() {
     try {
-      const stats = await MessageQueue.aggregate([
-        {
-          $group: {
-            _id: "$status",
-            count: { $sum: 1 },
-          },
-        },
-      ]);
+      const stats = await prisma.messageQueue.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      });
 
       return stats.reduce((acc, stat) => {
-        acc[stat._id] = stat.count;
+        acc[stat.status] = stat._count._all;
         return acc;
       }, {});
     } catch (error) {
@@ -256,13 +259,15 @@ class MessageQueueService {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - days);
 
-      const result = await MessageQueue.deleteMany({
-        status: { $in: ["completed", "failed"] },
-        processedAt: { $lt: cutoffDate },
+      const result = await prisma.messageQueue.deleteMany({
+        where: {
+          status: { in: ["completed", "failed"] },
+          processedAt: { lt: cutoffDate },
+        },
       });
 
-      logger.info(`${result.deletedCount} ta eski queue item o'chirildi`);
-      return result.deletedCount;
+      logger.info(`${result.count} ta eski queue item o'chirildi`);
+      return result.count;
     } catch (error) {
       logger.error(`Eski queue itemlarni o'chirishda xato: ${error.message}`);
       throw error;

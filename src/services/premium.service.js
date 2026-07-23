@@ -1,14 +1,9 @@
 const crypto = require("crypto");
-const mongoose = require("mongoose");
-const User = require("../models/user.model");
-const Image = require("../models/image.model");
-const Premium = require("../models/premium.model");
-const EmojiConfig = require("../models/emojiConfig.model");
-const PremiumSettings = require("../models/premiumSettings.model");
-const CoinTransaction = require("../models/coinTransaction.model");
+const prisma = require("../config/prisma");
 const { uploadImageWithVariants, deleteImageVariants } = require("./image.service");
 const fileStorageService = require("./fileStorage.service");
 const { notifyPremiumEvent } = require("./premiumNotification.service");
+const { getPremiumSettings } = require("./settings.service");
 const { ValidationError, NotFoundError, BadRequestError } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const logger = require("../utils/logger");
@@ -20,7 +15,7 @@ const logger = require("../utils/logger");
  * @returns {Promise<object>} Updated user
  */
 const purchasePremium = async (studentId) => {
-  const settings = await PremiumSettings.getSettings();
+  const settings = await getPremiumSettings();
 
   if (!settings.isEnabled) {
     throw new BadRequestError("MBSI Premium hozircha mavjud emas");
@@ -29,55 +24,67 @@ const purchasePremium = async (studentId) => {
   const cost = settings.coinCost;
   const durationDays = settings.durationDays;
 
-  const user = await User.findOneAndUpdate(
-    { _id: studentId, coinBalance: { $gte: cost } },
-    { $inc: { coinBalance: -cost } },
-    { new: true }
-  );
+  // Atomik: faqat balans yetarli bo'lsa yechamiz
+  const decremented = await prisma.user.updateMany({
+    where: { id: studentId, coinBalance: { gte: cost } },
+    data: { coinBalance: { decrement: cost } },
+  });
 
-  if (!user) {
-    const exists = await User.exists({ _id: studentId });
+  if (decremented.count === 0) {
+    const exists = await prisma.user.findUnique({ where: { id: studentId }, select: { id: true } });
     if (!exists) throw new NotFoundError("Foydalanuvchi topilmadi");
     throw new BadRequestError(`Tangalar yetarli emas. Premium uchun kamida ${cost} tanga kerak`);
   }
 
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
+
   const now = new Date();
-  const baseDate = user.premium?.isActive && user.premium?.expiresAt > now
-    ? new Date(user.premium.expiresAt)
+  const baseDate = user.premiumIsActive && user.premiumExpiresAt > now
+    ? new Date(user.premiumExpiresAt)
     : now;
 
   const endDate = new Date(baseDate);
   endDate.setDate(endDate.getDate() + durationDays);
 
-  const premium = await Premium.create({
-    student: studentId,
-    durationDays,
-    coinCost: cost,
-    startDate: now,
-    endDate,
-    status: "active",
-    coinBalanceAfter: user.coinBalance,
-    source: "purchase",
+  const premium = await prisma.premium.create({
+    data: {
+      student: studentId,
+      durationDays,
+      coinCost: cost,
+      startDate: now,
+      endDate,
+      status: "active",
+      coinBalanceAfter: user.coinBalance,
+      source: "purchase",
+    },
   });
 
-  await User.findByIdAndUpdate(studentId, {
-    "premium.isActive": true,
-    "premium.expiresAt": endDate,
+  await prisma.user.update({
+    where: { id: studentId },
+    data: {
+      premiumIsActive: true,
+      premiumExpiresAt: endDate,
+    },
   });
 
-  await CoinTransaction.create({
-    student: studentId,
-    amount: cost,
-    type: "premium_purchase",
-    description: `MBSI Premium - ${durationDays} kunlik obuna`,
-    balanceAfter: user.coinBalance,
-    date: now,
-    meta: { premiumId: premium._id },
+  await prisma.coinTransaction.create({
+    data: {
+      student: studentId,
+      amount: cost,
+      type: "premium_purchase",
+      description: `MBSI Premium - ${durationDays} kunlik obuna`,
+      balanceAfter: user.coinBalance,
+      date: now,
+      meta: { premiumId: premium.id },
+    },
   });
 
   logger.info(`Premium sotib olindi: student=${studentId}, endDate=${endDate}`);
 
-  const updatedUser = await User.findById(studentId).populate("profilePicture");
+  const updatedUser = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 
   // Bot orqali xabar (asosiy oqimni bloklamaydi)
   notifyPremiumEvent(updatedUser, "purchased", {
@@ -94,12 +101,24 @@ const purchasePremium = async (studentId) => {
  * @returns {Promise<object>}
  */
 const getPremiumStatus = async (studentId) => {
-  const user = await User.findById(studentId).populate("profilePicture").select(
-    "premium emojiBadgeId displayName nameColor profilePicture coinBalance"
-  );
+  const user = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: {
+      premiumIsActive: true,
+      premiumExpiresAt: true,
+      emojiBadgeId: true,
+      displayName: true,
+      nameColor: true,
+      profileImage: true,
+      coinBalance: true,
+    },
+  });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
-  const latestPremium = await Premium.findOne({ student: studentId }).sort({ createdAt: -1 });
+  const latestPremium = await prisma.premium.findFirst({
+    where: { student: studentId },
+    orderBy: { createdAt: "desc" },
+  });
 
   return { user, latestPremium };
 };
@@ -109,7 +128,7 @@ const getPremiumStatus = async (studentId) => {
  * @returns {Promise<object[]>}
  */
 const getAvailableEmojis = async () => {
-  return EmojiConfig.find().sort({ createdAt: -1 });
+  return prisma.emojiConfig.findMany({ orderBy: { createdAt: "desc" } });
 };
 
 /**
@@ -120,9 +139,12 @@ const getAvailableEmojis = async () => {
  * @returns {Promise<object>} Updated user
  */
 const uploadProfilePicture = async (studentId, file) => {
-  const user = await User.findById(studentId).populate("profilePicture");
+  const user = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Bu funksiya faqat MBSI Premium foydalanuvchilar uchun mavjud");
   }
 
@@ -134,27 +156,32 @@ const uploadProfilePicture = async (studentId, file) => {
   });
 
   // Delete old profile picture from S3 and DB
-  if (user.profilePicture) {
+  if (user.profileImage) {
     try {
-      await deleteImageVariants(user.profilePicture.variants);
-      await Image.findByIdAndDelete(user.profilePicture._id);
+      await deleteImageVariants(user.profileImage.variants);
+      await prisma.image.delete({ where: { id: user.profileImage.id } });
     } catch (err) {
       logger.warn(`Eski profil rasm o'chirishda xato: ${err.message}`);
     }
   }
 
-  const image = await Image.create({
-    originalName: file.originalname || `profile.${extension}`,
-    mimeType,
-    extension,
-    originalSizeBytes: file.size || file.buffer.length,
-    variants,
-    uploadedBy: studentId,
+  const image = await prisma.image.create({
+    data: {
+      originalName: file.originalname || `profile.${extension}`,
+      mimeType,
+      extension,
+      originalSizeBytes: file.size || file.buffer.length,
+      variants,
+      uploadedBy: studentId,
+    },
   });
 
-  await User.findByIdAndUpdate(studentId, { profilePicture: image._id });
+  await prisma.user.update({
+    where: { id: studentId },
+    data: { profilePicture: image.id },
+  });
 
-  logger.info(`Profil rasm yuklandi: student=${studentId}, image=${image._id}`);
+  logger.info(`Profil rasm yuklandi: student=${studentId}, image=${image.id}`);
 
   return image;
 };
@@ -165,16 +192,22 @@ const uploadProfilePicture = async (studentId, file) => {
  * @returns {Promise<void>}
  */
 const deleteProfilePicture = async (studentId) => {
-  const user = await User.findById(studentId).populate("profilePicture");
+  const user = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Bu funksiya faqat MBSI Premium foydalanuvchilar uchun mavjud");
   }
-  if (!user.profilePicture) throw new NotFoundError("Profil rasm mavjud emas");
+  if (!user.profileImage) throw new NotFoundError("Profil rasm mavjud emas");
 
-  await deleteImageVariants(user.profilePicture.variants);
-  await Image.findByIdAndDelete(user.profilePicture._id);
-  await User.findByIdAndUpdate(studentId, { profilePicture: null });
+  await deleteImageVariants(user.profileImage.variants);
+  await prisma.image.delete({ where: { id: user.profileImage.id } });
+  await prisma.user.update({
+    where: { id: studentId },
+    data: { profilePicture: null },
+  });
 
   logger.info(`Profil rasm o'chirildi: student=${studentId}`);
 };
@@ -182,26 +215,30 @@ const deleteProfilePicture = async (studentId) => {
 /**
  * Sets the emoji badge for a premium student.
  * @param {string} studentId
- * @param {string} emojiId - EmojiConfig _id
+ * @param {string} emojiId - EmojiConfig id
  * @returns {Promise<object>} Updated user
  */
 const setEmojiBadge = async (studentId, emojiId) => {
-  const user = await User.findById(studentId);
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Bu funksiya faqat MBSI Premium foydalanuvchilar uchun mavjud");
   }
 
-  if (!mongoose.isValidObjectId(emojiId)) {
-    throw new ValidationError("Noto'g'ri emoji tanlandi");
-  }
-
-  const emoji = await EmojiConfig.findById(emojiId);
+  const emoji = emojiId
+    ? await prisma.emojiConfig.findUnique({ where: { id: emojiId } })
+    : null;
   if (!emoji) throw new NotFoundError("Emoji topilmadi");
 
-  await User.findByIdAndUpdate(studentId, { emojiBadgeId: String(emoji._id) });
+  await prisma.user.update({
+    where: { id: studentId },
+    data: { emojiBadgeId: String(emoji.id) },
+  });
 
-  return User.findById(studentId).populate("profilePicture");
+  return prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 };
 
 /**
@@ -211,18 +248,24 @@ const setEmojiBadge = async (studentId, emojiId) => {
  * @returns {Promise<object>} Updated user
  */
 const setDisplayName = async (studentId, displayName) => {
-  const user = await User.findById(studentId);
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Bu funksiya faqat MBSI Premium foydalanuvchilar uchun mavjud");
   }
 
   const trimmed = (displayName || "").trim();
   if (trimmed.length > 48) throw new ValidationError("Ko'rsatma ismi maksimal 48 ta belgidan iborat bo'lishi kerak");
 
-  await User.findByIdAndUpdate(studentId, { displayName: trimmed || null });
+  await prisma.user.update({
+    where: { id: studentId },
+    data: { displayName: trimmed || null },
+  });
 
-  return User.findById(studentId).populate("profilePicture");
+  return prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 };
 
 /**
@@ -232,14 +275,14 @@ const setDisplayName = async (studentId, displayName) => {
  * @returns {Promise<object>} Updated user
  */
 const setNameColor = async (studentId, nameColor) => {
-  const user = await User.findById(studentId);
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Bu funksiya faqat MBSI Premium foydalanuvchilar uchun mavjud");
   }
 
   if (nameColor !== null && nameColor !== undefined && nameColor !== "") {
-    const settings = await PremiumSettings.getSettings();
+    const settings = await getPremiumSettings();
     const allowedKeys = settings.allowedNameColors
       .filter((c) => c.isActive)
       .map((c) => c.key);
@@ -248,9 +291,15 @@ const setNameColor = async (studentId, nameColor) => {
     }
   }
 
-  await User.findByIdAndUpdate(studentId, { nameColor: nameColor || null });
+  await prisma.user.update({
+    where: { id: studentId },
+    data: { nameColor: nameColor || null },
+  });
 
-  return User.findById(studentId).populate("profilePicture");
+  return prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -263,7 +312,7 @@ const setNameColor = async (studentId, nameColor) => {
  * @returns {Promise<object>}
  */
 const getPremiumConfig = async () => {
-  const settings = await PremiumSettings.getSettings();
+  const settings = await getPremiumSettings();
   return {
     isEnabled: settings.isEnabled,
     coinCost: settings.coinCost,
@@ -278,27 +327,29 @@ const getPremiumConfig = async () => {
 
 /**
  * Returns the full premium settings (admin).
- * @returns {Promise<Document>}
+ * @returns {Promise<object>}
  */
 const getSettings = async () => {
-  return PremiumSettings.getSettings();
+  return getPremiumSettings();
 };
 
 /**
  * Updates premium settings (admin).
  * @param {object} data - { isEnabled, coinCost, durationDays, allowedNameColors }
  * @param {string} updatedBy - admin user id
- * @returns {Promise<Document>}
+ * @returns {Promise<object>}
  */
 const updateSettings = async (data, updatedBy) => {
-  const settings = await PremiumSettings.getSettings();
+  const current = await getPremiumSettings();
 
-  if (data.isEnabled !== undefined) settings.isEnabled = !!data.isEnabled;
-  if (data.coinCost !== undefined) settings.coinCost = data.coinCost;
-  if (data.durationDays !== undefined) settings.durationDays = data.durationDays;
+  const update = {};
+
+  if (data.isEnabled !== undefined) update.isEnabled = !!data.isEnabled;
+  if (data.coinCost !== undefined) update.coinCost = data.coinCost;
+  if (data.durationDays !== undefined) update.durationDays = data.durationDays;
 
   if (Array.isArray(data.allowedNameColors)) {
-    settings.allowedNameColors = data.allowedNameColors.map((c) => ({
+    update.allowedNameColors = data.allowedNameColors.map((c) => ({
       key: String(c.key || "").trim(),
       label: String(c.label || "").trim(),
       hex: String(c.hex || "").trim(),
@@ -306,8 +357,12 @@ const updateSettings = async (data, updatedBy) => {
     }));
   }
 
-  settings.updatedBy = updatedBy;
-  await settings.save();
+  update.updatedBy = updatedBy;
+
+  const settings = await prisma.premiumSettings.update({
+    where: { id: current.id },
+    data: update,
+  });
 
   logger.info(`Premium sozlamalari yangilandi: by=${updatedBy}`);
   return settings;
@@ -318,7 +373,7 @@ const updateSettings = async (data, updatedBy) => {
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * Builds a Mongo filter for premium subscriptions from request query.
+ * Builds a Prisma filter for premium subscriptions from request query.
  * @param {object} query - { status, source, studentId }
  * @returns {object}
  */
@@ -331,11 +386,52 @@ const buildSubscriptionFilter = (query = {}) => {
     // Eski hujjatlarda source maydoni yo'q - ularni "purchase" deb hisoblaymiz
     filter.source =
       query.source === "purchase"
-        ? { $in: ["purchase", null] }
+        ? { in: ["purchase", null] }
         : "admin_grant";
   }
   if (query.studentId) filter.student = query.studentId;
   return filter;
+};
+
+/**
+ * scalar student/grantedBy ref'larni qo'lda yuklab, hujjatlarga biriktiradi.
+ * @param {object[]} items
+ * @returns {Promise<object[]>}
+ */
+const attachRefs = async (items) => {
+  const studentIds = [...new Set(items.map((p) => p.student).filter(Boolean))];
+  const granterIds = [...new Set(items.map((p) => p.grantedBy).filter(Boolean))];
+
+  const [students, granters] = await Promise.all([
+    studentIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            premiumIsActive: true,
+            premiumExpiresAt: true,
+          },
+        })
+      : [],
+    granterIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: granterIds } },
+          select: { id: true, firstName: true, lastName: true, username: true },
+        })
+      : [],
+  ]);
+
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+  const granterMap = new Map(granters.map((g) => [g.id, g]));
+
+  return items.map((p) => ({
+    ...p,
+    student: p.student ? studentMap.get(p.student) || null : null,
+    grantedBy: p.grantedBy ? granterMap.get(p.grantedBy) || null : null,
+  }));
 };
 
 /**
@@ -347,15 +443,17 @@ const getSubscriptions = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const filter = buildSubscriptionFilter(req.query);
 
-  const [items, total] = await Promise.all([
-    Premium.find(filter)
-      .populate("student", "firstName lastName username premium")
-      .populate("grantedBy", "firstName lastName username")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Premium.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.premium.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.premium.count({ where: filter }),
   ]);
+
+  const items = await attachRefs(rows);
 
   return formatPaginationResponse(items, total, page, limit);
 };
@@ -381,43 +479,39 @@ const getStats = async () => {
     bySource,
     dailyRaw,
   ] = await Promise.all([
-    User.countDocuments({
-      "premium.isActive": true,
-      "premium.expiresAt": { $gt: now },
+    prisma.user.count({
+      where: {
+        premiumIsActive: true,
+        premiumExpiresAt: { gt: now },
+      },
     }),
-    User.countDocuments({
-      "premium.isActive": true,
-      "premium.expiresAt": { $gt: now, $lte: sevenDaysLater },
+    prisma.user.count({
+      where: {
+        premiumIsActive: true,
+        premiumExpiresAt: { gt: now, lte: sevenDaysLater },
+      },
     }),
-    Premium.countDocuments({}),
+    prisma.premium.count(),
     // Admin grantlar coinCost=0 bo'lgani uchun barcha coinCost yig'indisi =
     // o'quvchilar sotib olishga sarflagan jami tanga (eski hujjatlarga ham mos)
-    Premium.aggregate([
-      { $group: { _id: null, total: { $sum: "$coinCost" } } },
-    ]),
-    Premium.aggregate([
-      {
-        $group: {
-          _id: { $ifNull: ["$source", "purchase"] },
-          count: { $sum: 1 },
-        },
-      },
-    ]),
-    Premium.aggregate([
-      { $match: { createdAt: { $gte: thirtyDaysAgo } } },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
-          },
-          count: { $sum: 1 },
-          revenue: { $sum: "$coinCost" },
-        },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
-    ]),
+    prisma.premium.aggregate({ _sum: { coinCost: true } }),
+    prisma.premium.groupBy({
+      by: ["source"],
+      _count: { _all: true },
+    }),
+    // Kunlik trend (time-series) — raw SQL bilan sana bo'yicha guruhlash
+    prisma.$queryRaw`
+      SELECT
+        EXTRACT(YEAR FROM created_at)::int  AS year,
+        EXTRACT(MONTH FROM created_at)::int AS month,
+        EXTRACT(DAY FROM created_at)::int   AS day,
+        COUNT(*)::int                       AS count,
+        COALESCE(SUM(coin_cost), 0)::int    AS revenue
+      FROM premiums
+      WHERE created_at >= ${thirtyDaysAgo}
+      GROUP BY year, month, day
+      ORDER BY year, month, day
+    `,
   ]);
 
   // So'nggi 30 kun uchun to'liq kunlik massiv
@@ -427,9 +521,9 @@ const getStats = async () => {
     d.setDate(d.getDate() + i);
     const entry = dailyRaw.find(
       (e) =>
-        e._id.year === d.getFullYear() &&
-        e._id.month === d.getMonth() + 1 &&
-        e._id.day === d.getDate(),
+        e.year === d.getFullYear() &&
+        e.month === d.getMonth() + 1 &&
+        e.day === d.getDate(),
     );
     dailyTrend.push({
       date: d.toISOString().split("T")[0],
@@ -438,14 +532,18 @@ const getStats = async () => {
     });
   }
 
-  const purchaseCount = bySource.find((s) => s._id === "purchase")?.count || 0;
-  const grantCount = bySource.find((s) => s._id === "admin_grant")?.count || 0;
+  // source NULL bo'lgan eski hujjatlarni "purchase" deb hisoblaymiz
+  const purchaseCount = bySource
+    .filter((s) => s.source === "purchase" || s.source == null)
+    .reduce((sum, s) => sum + s._count._all, 0);
+  const grantCount =
+    bySource.find((s) => s.source === "admin_grant")?._count._all || 0;
 
   return {
     activeCount,
     expiringSoon,
     totalSubscriptions,
-    totalRevenue: revenueAgg[0]?.total || 0,
+    totalRevenue: revenueAgg._sum.coinCost || 0,
     purchaseCount,
     grantCount,
     dailyTrend,
@@ -459,11 +557,13 @@ const getStats = async () => {
  */
 const getSubscriptionsForExport = async (req) => {
   const filter = buildSubscriptionFilter(req.query);
-  const items = await Premium.find(filter)
-    .populate("student", "firstName lastName username")
-    .populate("grantedBy", "firstName lastName username")
-    .sort({ createdAt: -1 })
-    .limit(5000);
+  const rows = await prisma.premium.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+    take: 5000,
+  });
+
+  const items = await attachRefs(rows);
 
   return items.map((p) => {
     const student = p.student;
@@ -502,41 +602,49 @@ const getSubscriptionsForExport = async (req) => {
  * @returns {Promise<object>} updated user
  */
 const grantPremium = async (studentId, durationDays, adminId) => {
-  const settings = await PremiumSettings.getSettings();
+  const settings = await getPremiumSettings();
   const days = Number(durationDays) > 0 ? Number(durationDays) : settings.durationDays;
 
-  const user = await User.findById(studentId);
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   const now = new Date();
   const baseDate =
-    user.premium?.isActive && user.premium?.expiresAt > now
-      ? new Date(user.premium.expiresAt)
+    user.premiumIsActive && user.premiumExpiresAt > now
+      ? new Date(user.premiumExpiresAt)
       : now;
 
   const endDate = new Date(baseDate);
   endDate.setDate(endDate.getDate() + days);
 
-  await Premium.create({
-    student: studentId,
-    durationDays: days,
-    coinCost: 0,
-    startDate: now,
-    endDate,
-    status: "active",
-    coinBalanceAfter: user.coinBalance ?? 0,
-    source: "admin_grant",
-    grantedBy: adminId,
+  await prisma.premium.create({
+    data: {
+      student: studentId,
+      durationDays: days,
+      coinCost: 0,
+      startDate: now,
+      endDate,
+      status: "active",
+      coinBalanceAfter: user.coinBalance ?? 0,
+      source: "admin_grant",
+      grantedBy: adminId,
+    },
   });
 
-  await User.findByIdAndUpdate(studentId, {
-    "premium.isActive": true,
-    "premium.expiresAt": endDate,
+  await prisma.user.update({
+    where: { id: studentId },
+    data: {
+      premiumIsActive: true,
+      premiumExpiresAt: endDate,
+    },
   });
 
   logger.info(`Premium qo'lda berildi: student=${studentId}, by=${adminId}, endDate=${endDate}`);
 
-  const updatedUser = await User.findById(studentId).populate("profilePicture");
+  const updatedUser = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 
   // Bot orqali xabar
   notifyPremiumEvent(updatedUser, "granted", { durationDays: days, expiresAt: endDate });
@@ -551,25 +659,31 @@ const grantPremium = async (studentId, durationDays, adminId) => {
  * @returns {Promise<object>} updated user
  */
 const revokePremium = async (studentId, adminId) => {
-  const user = await User.findById(studentId);
+  const user = await prisma.user.findUnique({ where: { id: studentId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-  if (!user.premium?.isActive) {
+  if (!user.premiumIsActive) {
     throw new BadRequestError("Foydalanuvchida faol premium mavjud emas");
   }
 
-  await User.findByIdAndUpdate(studentId, {
-    "premium.isActive": false,
-    "premium.expiresAt": null,
+  await prisma.user.update({
+    where: { id: studentId },
+    data: {
+      premiumIsActive: false,
+      premiumExpiresAt: null,
+    },
   });
 
-  await Premium.updateMany(
-    { student: studentId, status: "active" },
-    { status: "revoked", grantedBy: adminId },
-  );
+  await prisma.premium.updateMany({
+    where: { student: studentId, status: "active" },
+    data: { status: "revoked", grantedBy: adminId },
+  });
 
   logger.info(`Premium bekor qilindi: student=${studentId}, by=${adminId}`);
 
-  const updatedUser = await User.findById(studentId).populate("profilePicture");
+  const updatedUser = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { profileImage: true },
+  });
 
   // Bot orqali xabar
   notifyPremiumEvent(updatedUser, "revoked");
@@ -586,7 +700,7 @@ const revokePremium = async (studentId, adminId) => {
  * @returns {Promise<object[]>}
  */
 const getAllEmojis = async () => {
-  return EmojiConfig.find().sort({ createdAt: -1 });
+  return prisma.emojiConfig.findMany({ orderBy: { createdAt: "desc" } });
 };
 
 /**
@@ -625,7 +739,7 @@ const uploadEmojiFile = async (file) => {
  * Creates an emoji config from an uploaded lottie file (admin).
  * @param {object} data - { name }
  * @param {object} file - Multer file (lottie .json)
- * @returns {Promise<Document>}
+ * @returns {Promise<object>}
  */
 const createEmoji = async (data, file) => {
   const name = String(data.name || "").trim();
@@ -633,7 +747,9 @@ const createEmoji = async (data, file) => {
 
   const { url, key } = await uploadEmojiFile(file);
 
-  return EmojiConfig.create({ name, animationUrl: url, fileKey: key });
+  return prisma.emojiConfig.create({
+    data: { name, animationUrl: url, fileKey: key },
+  });
 };
 
 /**
@@ -641,23 +757,25 @@ const createEmoji = async (data, file) => {
  * @param {string} id
  * @param {object} data - { name }
  * @param {object} [file] - New lottie .json file (optional)
- * @returns {Promise<Document>}
+ * @returns {Promise<object>}
  */
 const updateEmoji = async (id, data, file) => {
-  const emoji = await EmojiConfig.findById(id);
+  const emoji = await prisma.emojiConfig.findUnique({ where: { id } });
   if (!emoji) throw new NotFoundError("Emoji topilmadi");
+
+  const update = {};
 
   if (data.name !== undefined) {
     const name = String(data.name).trim();
     if (!name) throw new ValidationError("Emoji nomi bo'sh bo'lishi mumkin emas");
-    emoji.name = name;
+    update.name = name;
   }
 
   if (file && file.buffer) {
     const oldKey = emoji.fileKey;
     const { url, key } = await uploadEmojiFile(file);
-    emoji.animationUrl = url;
-    emoji.fileKey = key;
+    update.animationUrl = url;
+    update.fileKey = key;
     // Eski faylni o'chirish (xatosi jarayonni to'xtatmaydi)
     try {
       await fileStorageService.deleteObject(oldKey);
@@ -666,8 +784,7 @@ const updateEmoji = async (id, data, file) => {
     }
   }
 
-  await emoji.save();
-  return emoji;
+  return prisma.emojiConfig.update({ where: { id }, data: update });
 };
 
 /**
@@ -676,7 +793,7 @@ const updateEmoji = async (id, data, file) => {
  * @returns {Promise<void>}
  */
 const deleteEmoji = async (id) => {
-  const emoji = await EmojiConfig.findById(id);
+  const emoji = await prisma.emojiConfig.findUnique({ where: { id } });
   if (!emoji) throw new NotFoundError("Emoji topilmadi");
 
   try {
@@ -685,7 +802,7 @@ const deleteEmoji = async (id) => {
     logger.warn(`Emoji fayl o'chirishda xato: ${err.message}`);
   }
 
-  await EmojiConfig.findByIdAndDelete(id);
+  await prisma.emojiConfig.delete({ where: { id } });
 };
 
 module.exports = {

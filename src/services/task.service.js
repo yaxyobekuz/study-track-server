@@ -1,6 +1,4 @@
-const Task = require("../models/task.model");
-const Penalty = require("../models/penalty.model");
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const {
   uploadPenaltyAttachments,
   deletePenaltyAttachments,
@@ -26,27 +24,61 @@ const _deleteTaskAttachments = async (attachments) => {
   return deletePenaltyAttachments(attachments);
 };
 
+// assignee/createdBy/changedBy/penaltyRef — soft ref (FK emas), qo'lda yuklaymiz.
+// Foydalanuvchilarni bir so'rovda olib, xaritaga solamiz.
+const _loadUserMap = async (ids, select) => {
+  const uniqueIds = [...new Set(ids.filter(Boolean).map((x) => String(x)))];
+  if (uniqueIds.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: uniqueIds } },
+    select,
+  });
+  return new Map(users.map((u) => [u.id, u]));
+};
+
+// Ro'yxat topshiriqlariga assignee va createdBy'ni biriktiradi (list populate o'rnida).
+const _attachListRefs = async (tasks, { withAssignee } = {}) => {
+  const ids = [];
+  for (const t of tasks) {
+    if (withAssignee) ids.push(t.assignee);
+    ids.push(t.createdBy);
+  }
+  const map = await _loadUserMap(ids, {
+    id: true,
+    firstName: true,
+    lastName: true,
+    role: true,
+  });
+  return tasks.map((t) => ({
+    ...t,
+    ...(withAssignee ? { assignee: map.get(String(t.assignee)) || null } : {}),
+    createdBy: map.get(String(t.createdBy)) || null,
+  }));
+};
+
+// _applyPenalty jarima yaratadi, foydalanuvchi ballarini oshiradi va jarima hujjatini
+// qaytaradi. Chaqiruvchi task.penaltyRef/autopenalized ni o'z update data'siga qo'shadi.
 const _applyPenalty = async (task, points, reason, givenById) => {
   const now = new Date();
 
-  const penalty = await Penalty.create({
-    user: task.assignee,
-    givenBy: givenById,
-    title: `Topshiriq: ${task.title}`,
-    description: reason,
-    points,
-    status: "approved",
-    isCustom: true,
-    reviewedBy: givenById,
-    reviewedAt: now,
+  const penalty = await prisma.penalty.create({
+    data: {
+      userId: task.assignee,
+      givenBy: givenById,
+      title: `Topshiriq: ${task.title}`,
+      description: reason,
+      points,
+      status: "approved",
+      isCustom: true,
+      reviewedBy: givenById,
+      reviewedAt: now,
+    },
   });
 
-  await User.findByIdAndUpdate(task.assignee, {
-    $inc: { penaltyPoints: points },
+  await prisma.user.update({
+    where: { id: task.assignee },
+    data: { penaltyPoints: { increment: points } },
   });
-
-  task.penaltyRef = penalty._id;
-  task.autopenalized = true;
 
   return penalty;
 };
@@ -67,7 +99,10 @@ const createTasks = async ({
   }
 
   // Assigneelar mavjudligini tekshirish
-  const users = await User.find({ _id: { $in: assigneeIds } }).select("_id");
+  const users = await prisma.user.findMany({
+    where: { id: { in: assigneeIds } },
+    select: { id: true },
+  });
   if (users.length !== assigneeIds.length) {
     throw new BadRequestError("Ba'zi foydalanuvchilar topilmadi");
   }
@@ -80,26 +115,34 @@ const createTasks = async ({
   const now = new Date();
   const initialStatus = "pending";
 
-  const taskDocs = assigneeIds.map((assigneeId) => ({
-    title,
-    description,
-    dueDate: new Date(dueDate),
-    penaltyPoints,
-    assignee: assigneeId,
-    createdBy,
-    status: initialStatus,
-    attachments,
-    statusHistory: [
-      {
+  const tasks = [];
+  for (const assigneeId of assigneeIds) {
+    const task = await prisma.task.create({
+      data: {
+        title,
+        description,
+        dueDate: new Date(dueDate),
+        penaltyPoints,
+        assignee: assigneeId,
+        createdBy,
         status: initialStatus,
-        reason: "Topshiriq yaratildi",
-        changedBy: createdBy,
-        changedAt: now,
+        attachments,
+        statusHistory: {
+          create: [
+            {
+              status: initialStatus,
+              reason: "Topshiriq yaratildi",
+              changedBy: createdBy,
+              changedAt: now,
+              position: 0,
+            },
+          ],
+        },
       },
-    ],
-  }));
+    });
+    tasks.push(task);
+  }
 
-  const tasks = await Task.insertMany(taskDocs);
   return tasks;
 };
 
@@ -117,22 +160,24 @@ const getTasks = async (req) => {
   if (assigneeId) filter.assignee = assigneeId;
   if (startDate || endDate) {
     filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (startDate) filter.createdAt.gte = new Date(startDate);
     if (endDate)
-      filter.createdAt.$lte = new Date(
+      filter.createdAt.lte = new Date(
         new Date(endDate).setHours(23, 59, 59, 999),
       );
   }
 
-  const [tasks, total] = await Promise.all([
-    Task.find(filter)
-      .populate("assignee", "firstName lastName role")
-      .populate("createdBy", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Task.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.task.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.task.count({ where: filter }),
   ]);
+
+  const tasks = await _attachListRefs(rows, { withAssignee: true });
 
   return formatPaginationResponse(tasks, total, page, limit);
 };
@@ -144,33 +189,68 @@ const getMyTasks = async (userId, req) => {
   const filter = { assignee: userId };
   if (status && status !== "all") filter.status = status;
 
-  const [tasks, total] = await Promise.all([
-    Task.find(filter)
-      .populate("createdBy", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Task.countDocuments(filter),
+  const [rows, total] = await Promise.all([
+    prisma.task.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.task.count({ where: filter }),
   ]);
+
+  const tasks = await _attachListRefs(rows, { withAssignee: false });
 
   return formatPaginationResponse(tasks, total, page, limit);
 };
 
 const getTaskById = async (taskId, requestingUser) => {
-  const task = await Task.findById(taskId)
-    .populate("assignee", "firstName lastName role penaltyPoints")
-    .populate("createdBy", "firstName lastName role")
-    .populate("statusHistory.changedBy", "firstName lastName role")
-    .populate("deadlineHistory.changedBy", "firstName lastName role")
-    .populate("penaltyRef", "points title createdAt");
+  const task = await prisma.task.findUnique({
+    where: { id: taskId },
+    include: {
+      statusHistory: { orderBy: { position: "asc" } },
+      deadlineHistory: { orderBy: { position: "asc" } },
+    },
+  });
 
   if (!task) {
     throw new NotFoundError("Topshiriq topilmadi");
   }
 
+  // assignee/createdBy/changedBy/penaltyRef — soft ref, qo'lda populate qilamiz
+  const userMap = await _loadUserMap(
+    [
+      task.assignee,
+      task.createdBy,
+      ...task.statusHistory.map((h) => h.changedBy),
+      ...task.deadlineHistory.map((h) => h.changedBy),
+    ],
+    { id: true, firstName: true, lastName: true, role: true, penaltyPoints: true },
+  );
+
+  const assignee = userMap.get(String(task.assignee)) || null;
+  task.assignee = assignee;
+  task.createdBy = userMap.get(String(task.createdBy)) || null;
+  task.statusHistory = task.statusHistory.map((h) => ({
+    ...h,
+    changedBy: h.changedBy ? userMap.get(String(h.changedBy)) || null : null,
+  }));
+  task.deadlineHistory = task.deadlineHistory.map((h) => ({
+    ...h,
+    changedBy: h.changedBy ? userMap.get(String(h.changedBy)) || null : null,
+  }));
+
+  // penaltyRef — soft ref
+  task.penaltyRef = task.penaltyRef
+    ? await prisma.penalty.findUnique({
+        where: { id: task.penaltyRef },
+        select: { id: true, points: true, title: true, createdAt: true },
+      })
+    : null;
+
   if (
     requestingUser.role !== "owner" &&
-    task.assignee._id.toString() !== requestingUser._id.toString()
+    (!assignee || String(assignee.id) !== String(requestingUser._id))
   ) {
     throw new ForbiddenError("Bu topshiriqni ko'rishga ruxsat yo'q");
   }
@@ -179,10 +259,10 @@ const getTaskById = async (taskId, requestingUser) => {
 };
 
 const submitTaskCompletion = async (taskId, userId, { note, files }) => {
-  const task = await Task.findById(taskId);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
-  if (task.assignee.toString() !== userId.toString()) {
+  if (String(task.assignee) !== String(userId)) {
     throw new ForbiddenError("Bu topshiriqni yangilashga ruxsat yo'q");
   }
 
@@ -203,22 +283,33 @@ const submitTaskCompletion = async (taskId, userId, { note, files }) => {
     newAttachments = await _uploadTaskAttachments(files);
   }
 
-  task.completionNote = note || "";
-  task.completionAttachments = newAttachments;
-  task.status = "pending_review";
-  task.statusHistory.push({
-    status: "pending_review",
-    reason: note || "Topshiriq bajarildi",
-    changedBy: userId,
-    changedAt: new Date(),
+  const position = await prisma.taskStatusHistory.count({
+    where: { taskId: task.id },
   });
 
-  await task.save();
-  return task;
+  const updated = await prisma.task.update({
+    where: { id: task.id },
+    data: {
+      completionNote: note || "",
+      completionAttachments: newAttachments,
+      status: "pending_review",
+      statusHistory: {
+        create: {
+          status: "pending_review",
+          reason: note || "Topshiriq bajarildi",
+          changedBy: userId,
+          changedAt: new Date(),
+          position,
+        },
+      },
+    },
+  });
+
+  return updated;
 };
 
 const approveTask = async (taskId, { reason, approvedBy }) => {
-  const task = await Task.findById(taskId);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
   if (task.status !== "pending_review") {
@@ -227,20 +318,31 @@ const approveTask = async (taskId, { reason, approvedBy }) => {
     );
   }
 
-  task.status = "completed";
-  task.statusHistory.push({
-    status: "completed",
-    reason: reason || "Topshiriq tasdiqlandi",
-    changedBy: approvedBy,
-    changedAt: new Date(),
+  const position = await prisma.taskStatusHistory.count({
+    where: { taskId: task.id },
   });
 
-  await task.save();
-  return task;
+  const updated = await prisma.task.update({
+    where: { id: task.id },
+    data: {
+      status: "completed",
+      statusHistory: {
+        create: {
+          status: "completed",
+          reason: reason || "Topshiriq tasdiqlandi",
+          changedBy: approvedBy,
+          changedAt: new Date(),
+          position,
+        },
+      },
+    },
+  });
+
+  return updated;
 };
 
 const rejectTask = async (taskId, { reason, rejectedBy, newDueDate }) => {
-  const task = await Task.findById(taskId);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
   if (task.status !== "pending_review") {
@@ -258,42 +360,70 @@ const rejectTask = async (taskId, { reason, rejectedBy, newDueDate }) => {
     );
   }
 
+  const data = {};
+
   // Muddati o'tgan va hali jarima qo'llanilmagan bo'lsa jarima yoziladi
   if (isOverdue && !task.autopenalized) {
-    await _applyPenalty(task, task.penaltyPoints, reason, rejectedBy);
+    const penalty = await _applyPenalty(
+      task,
+      task.penaltyPoints,
+      reason,
+      rejectedBy,
+    );
+    data.penaltyRef = penalty.id;
+    data.autopenalized = true;
   }
 
-  task.status = "pending_rejected";
-  task.statusHistory.push({
-    status: "pending_rejected",
-    reason,
-    changedBy: rejectedBy,
-    changedAt: now,
-  });
+  data.status = "pending_rejected";
 
-  if (newDueDate) {
-    task.deadlineHistory.push({
-      oldDueDate: task.dueDate,
-      newDueDate: new Date(newDueDate),
+  const statusPosition = await prisma.taskStatusHistory.count({
+    where: { taskId: task.id },
+  });
+  const statusHistoryCreate = [
+    {
+      status: "pending_rejected",
       reason,
       changedBy: rejectedBy,
       changedAt: now,
-      withPenalty: false,
+      position: statusPosition,
+    },
+  ];
+
+  if (newDueDate) {
+    const deadlinePosition = await prisma.taskDeadlineHistory.count({
+      where: { taskId: task.id },
     });
-    task.dueDate = new Date(newDueDate);
+    data.deadlineHistory = {
+      create: {
+        oldDueDate: task.dueDate,
+        newDueDate: new Date(newDueDate),
+        reason,
+        changedBy: rejectedBy,
+        changedAt: now,
+        withPenalty: false,
+        position: deadlinePosition,
+      },
+    };
+    data.dueDate = new Date(newDueDate);
     // Yangi muddat = yangi imkoniyat, jarima qayta qo'llanilmasligi uchun
-    task.autopenalized = false;
+    data.autopenalized = false;
   }
 
-  await task.save();
-  return task;
+  data.statusHistory = { create: statusHistoryCreate };
+
+  const updated = await prisma.task.update({
+    where: { id: task.id },
+    data,
+  });
+
+  return updated;
 };
 
 const stopTask = async (
   taskId,
   { reason, withPenalty, penaltyPoints, stoppedBy },
 ) => {
-  const task = await Task.findById(taskId);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
   const activeStatuses = [
@@ -306,28 +436,43 @@ const stopTask = async (
     throw new BadRequestError("Bu topshiriqni to'xtatib bo'lmaydi");
   }
 
+  const data = {};
+
   if (withPenalty && !task.autopenalized) {
     const points = penaltyPoints || task.penaltyPoints;
-    await _applyPenalty(task, points, reason, stoppedBy);
+    const penalty = await _applyPenalty(task, points, reason, stoppedBy);
+    data.penaltyRef = penalty.id;
+    data.autopenalized = true;
   }
 
-  task.status = "stopped";
-  task.statusHistory.push({
-    status: "stopped",
-    reason,
-    changedBy: stoppedBy,
-    changedAt: new Date(),
+  const position = await prisma.taskStatusHistory.count({
+    where: { taskId: task.id },
   });
 
-  await task.save();
-  return task;
+  data.status = "stopped";
+  data.statusHistory = {
+    create: {
+      status: "stopped",
+      reason,
+      changedBy: stoppedBy,
+      changedAt: new Date(),
+      position,
+    },
+  };
+
+  const updated = await prisma.task.update({
+    where: { id: task.id },
+    data,
+  });
+
+  return updated;
 };
 
 const extendDeadline = async (
   taskId,
   { newDueDate, reason, withPenalty, penaltyPoints, extendedBy },
 ) => {
-  const task = await Task.findById(taskId);
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
   const terminalStatuses = ["completed", "stopped"];
@@ -345,39 +490,61 @@ const extendDeadline = async (
 
   const now = new Date();
 
+  const data = {};
+
   if (withPenalty) {
     const points = penaltyPoints || task.penaltyPoints;
-    await _applyPenalty(task, points, reason, extendedBy);
+    const penalty = await _applyPenalty(task, points, reason, extendedBy);
+    data.penaltyRef = penalty.id;
+    data.autopenalized = true;
   }
 
-  task.deadlineHistory.push({
-    oldDueDate: task.dueDate,
-    newDueDate: new Date(newDueDate),
-    reason,
-    changedBy: extendedBy,
-    changedAt: now,
-    withPenalty: !!withPenalty,
-    penaltyPoints: withPenalty ? penaltyPoints || task.penaltyPoints : 0,
+  const deadlinePosition = await prisma.taskDeadlineHistory.count({
+    where: { taskId: task.id },
   });
+  data.deadlineHistory = {
+    create: {
+      oldDueDate: task.dueDate,
+      newDueDate: new Date(newDueDate),
+      reason,
+      changedBy: extendedBy,
+      changedAt: now,
+      withPenalty: !!withPenalty,
+      penaltyPoints: withPenalty ? penaltyPoints || task.penaltyPoints : 0,
+      position: deadlinePosition,
+    },
+  };
 
   // pending, pending_rejected va pending_review statuslarida "extended" ga o'tkaziladi
+  let nextStatus = task.status;
   if (["pending", "pending_rejected", "pending_review"].includes(task.status)) {
-    task.status = "extended";
+    nextStatus = "extended";
   }
+  data.status = nextStatus;
 
-  task.dueDate = new Date(newDueDate);
+  data.dueDate = new Date(newDueDate);
   // Yangi muddat = yangi imkoniyat
-  task.autopenalized = false;
+  data.autopenalized = false;
 
-  task.statusHistory.push({
-    status: task.status,
-    reason: `Ijro muddati uzaytirildi: ${reason}`,
-    changedBy: extendedBy,
-    changedAt: now,
+  const statusPosition = await prisma.taskStatusHistory.count({
+    where: { taskId: task.id },
+  });
+  data.statusHistory = {
+    create: {
+      status: nextStatus,
+      reason: `Ijro muddati uzaytirildi: ${reason}`,
+      changedBy: extendedBy,
+      changedAt: now,
+      position: statusPosition,
+    },
+  };
+
+  const updated = await prisma.task.update({
+    where: { id: task.id },
+    data,
   });
 
-  await task.save();
-  return task;
+  return updated;
 };
 
 module.exports = {

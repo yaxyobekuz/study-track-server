@@ -1,24 +1,43 @@
-const User = require("../models/user.model");
-const Role = require("../models/role.model");
-const Class = require("../models/class.model");
-const TgUser = require("../models/tguser.model");
-const Premium = require("../models/premium.model");
+const prisma = require("../config/prisma");
 const {
   NotFoundError,
   ForbiddenError,
   BadRequestError,
 } = require("../utils/errors");
 const logger = require("../utils/logger");
+const { hashPassword, matchPassword } = require("../utils/password");
 const {
   recalculateCurrentWeekForStudent,
+  createWeeklyStatsForStudent,
 } = require("./weeklystats.service");
+const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
+
+// Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
+function flattenClasses(user) {
+  if (!user) return user;
+  const out = { ...user, _id: user.id };
+  if (Array.isArray(user.classes)) {
+    out.classes = user.classes.map((uc) => (uc.class ? uc.class : uc));
+  }
+  return out;
+}
+
+// classes junction bilan user'ni yuklab, password'siz tekislangan shaklda qaytaradi
+async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    include: { classes: { include: { class: { select: { id: true, name: true } } } } },
+    ...(withPassword ? {} : { omit: { password: true, plainPassword: !withPlain } }),
+  });
+  return flattenClasses(user);
+}
 
 async function getStats() {
   const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
-    TgUser.countDocuments(),
-    User.countDocuments({ role: { $nin: ["owner", "student"] } }),
-    User.countDocuments({ role: "student", isArchived: { $ne: true } }),
-    Premium.countDocuments({ status: "active" }),
+    prisma.tgUser.count(),
+    prisma.user.count({ where: { role: { notIn: ["owner", "student"] } } }),
+    prisma.user.count({ where: { role: "student", isArchived: false } }),
+    prisma.premium.count({ where: { status: "active" } }),
   ]);
 
   return { telegramUsers, workers, students, premiumUsers };
@@ -26,29 +45,27 @@ async function getStats() {
 
 /**
  * Barcha foydalanuvchilarni sahifalangan holda olish.
- * @param {object} query - { role, class, page, limit, search }
- * @returns {Promise<{users: Array, pagination: object}>}
  */
 async function getAllUsers(query) {
   const { role, class: classId, page = 1, limit = 24, search, archived } = query;
 
-  const filter = {};
-  if (role) filter.role = role;
-  if (classId) filter.classes = classId;
+  const where = {};
+  if (role) where.role = role;
+  if (classId) where.classes = { some: { classId } };
 
   // Arxivlangan tab faqat arxivlanganlarni, Asosiy tab esa qolganlarni ko'rsatadi
   if (archived === "true" || archived === true) {
-    filter.isArchived = true;
+    where.isArchived = true;
   } else {
-    filter.isArchived = { $ne: true };
+    where.isArchived = false;
   }
 
   if (search && search.trim()) {
-    const searchRegex = new RegExp(search.trim(), "i");
-    filter.$or = [
-      { firstName: searchRegex },
-      { lastName: searchRegex },
-      { username: searchRegex },
+    const s = search.trim();
+    where.OR = [
+      { firstName: { contains: s, mode: "insensitive" } },
+      { lastName: { contains: s, mode: "insensitive" } },
+      { username: { contains: s, mode: "insensitive" } },
     ];
   }
 
@@ -57,25 +74,28 @@ async function getAllUsers(query) {
   const skip = (pageNum - 1) * limitNum;
 
   const [total, users] = await Promise.all([
-    User.countDocuments(filter),
-    User.find(filter)
-      .populate("classes", "name")
-      .select("-password")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum),
+    prisma.user.count({ where }),
+    prisma.user.findMany({
+      where,
+      omit: { password: true, plainPassword: true },
+      include: { classes: { include: { class: { select: { id: true, name: true } } } } },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNum,
+    }),
   ]);
 
   // Har bir foydalanuvchi uchun effektiv default ish vaqti (rol → user merosi).
-  // Rollar bir marta yuklanadi - N+1 so'rov yo'q.
-  const roles = await Role.find().select("value workStartTime workEndTime").lean();
+  const roles = await prisma.role.findMany({
+    select: { value: true, workStartTime: true, workEndTime: true },
+  });
   const roleMap = {};
   roles.forEach((r) => {
     roleMap[r.value] = r;
   });
 
   const usersWithSchedule = users.map((u) => {
-    const obj = u.toObject({ virtuals: true });
+    const obj = flattenClasses(u);
     if (u.role === "student" || u.role === "owner") {
       obj.effectiveSchedule = null;
     } else {
@@ -111,8 +131,6 @@ async function getAllUsers(query) {
 
 /**
  * Yangi foydalanuvchi yaratish.
- * @param {object} data - { username, password, firstName, lastName, role, gender, classes }
- * @returns {Promise<object>} yaratilgan foydalanuvchi
  */
 async function createUser(data) {
   const {
@@ -137,46 +155,59 @@ async function createUser(data) {
     throw new BadRequestError("Owner rolini yaratish mumkin emas");
   }
 
-  const roleExists = await Role.findOne({ value: role });
+  const roleExists = await prisma.role.findUnique({ where: { value: role } });
   if (!roleExists) {
     throw new BadRequestError("Noto'g'ri rol");
   }
 
   if (role === "student" && userClasses && userClasses.length > 0) {
     for (const classId of userClasses) {
-      const classExists = await Class.findById(classId);
+      const classExists = await prisma.class.findUnique({ where: { id: classId } });
       if (!classExists) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
     }
   }
 
-  const user = await User.create({
-    username: username.toLowerCase(),
-    password,
-    firstName,
-    lastName,
-    role,
-    gender: gender || null,
-    classes: role === "student" ? userClasses : [],
-    ...(role !== "student" && {
-      workStartTime: workStartTime || null,
-      workEndTime: workEndTime || null,
-      workDays: workDays || undefined,
-      weeklySchedule: weeklySchedule || {},
-    }),
+  const hashed = await hashPassword(password);
+
+  const created = await prisma.user.create({
+    data: {
+      username: username.toLowerCase(),
+      password: hashed,
+      plainPassword: password,
+      firstName,
+      lastName,
+      role,
+      gender: gender || null,
+      ...(role === "student" && userClasses && userClasses.length > 0
+        ? { classes: { create: userClasses.map((classId) => ({ classId })) } }
+        : {}),
+      ...(role !== "student" && {
+        workStartTime: workStartTime || null,
+        workEndTime: workEndTime || null,
+        workDays: workDays || [],
+        weeklySchedule: weeklySchedule || {},
+      }),
+    },
   });
 
-  return User.findById(user._id)
-    .populate("classes", "name")
-    .select("-password");
+  // Mongoose post-save hook o'rniga: yangi student uchun WeeklyStats yaratish
+  if (role === "student") {
+    try {
+      const { weekNumber, year } = getCurrentWeekRange();
+      await createWeeklyStatsForStudent(created.id, weekNumber, year);
+      logger.info(`WeeklyStats yaratildi yangi o'quvchi uchun: ${created.id}`);
+    } catch (error) {
+      logger.error("Yangi o'quvchi uchun WeeklyStats yaratishda xato:", error);
+    }
+  }
+
+  return loadUser(created.id);
 }
 
 /**
  * Foydalanuvchini yangilash.
- * @param {string} id - foydalanuvchi ID
- * @param {object} data - { firstName, lastName, gender, classes, isActive }
- * @returns {Promise<object>} yangilangan foydalanuvchi
  */
 async function updateUser(id, data) {
   const {
@@ -191,31 +222,34 @@ async function updateUser(id, data) {
     weeklySchedule,
   } = data;
 
-  const user = await User.findById(id);
+  const user = await prisma.user.findUnique({
+    where: { id },
+    include: { classes: { select: { classId: true } } },
+  });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
 
   if (user.role === "owner") {
-    throw new ForbiddenError(
-      "Egasi foydalanuvchisini o'zgartirish mumkin emas",
-    );
+    throw new ForbiddenError("Egasi foydalanuvchisini o'zgartirish mumkin emas");
   }
 
-  if (firstName) user.firstName = firstName;
-  if (lastName) user.lastName = lastName;
-  if (isActive !== undefined) user.isActive = isActive;
-  if (gender !== undefined) user.gender = gender || null;
+  const update = {};
+  if (firstName) update.firstName = firstName;
+  if (lastName) update.lastName = lastName;
+  if (isActive !== undefined) update.isActive = isActive;
+  if (gender !== undefined) update.gender = gender || null;
 
   // Ish jadvali override (davomat uchun)
   if (user.role !== "student") {
-    if (workStartTime !== undefined) user.workStartTime = workStartTime || null;
-    if (workEndTime !== undefined) user.workEndTime = workEndTime || null;
-    if (workDays !== undefined) user.workDays = workDays || [];
-    if (weeklySchedule !== undefined) user.weeklySchedule = weeklySchedule || {};
+    if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
+    if (workEndTime !== undefined) update.workEndTime = workEndTime || null;
+    if (workDays !== undefined) update.workDays = workDays || [];
+    if (weeklySchedule !== undefined) update.weeklySchedule = weeklySchedule || {};
   }
 
   let classesChanged = false;
+  let nextClassIds = null;
   if (user.role === "student" && userClasses) {
     if (user.isArchived && userClasses.length > 0) {
       throw new BadRequestError(
@@ -223,30 +257,34 @@ async function updateUser(id, data) {
       );
     }
     for (const classId of userClasses) {
-      const classExists = await Class.findById(classId);
+      const classExists = await prisma.class.findUnique({ where: { id: classId } });
       if (!classExists) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
     }
 
-    // Sinf haqiqatan o'zgardimi - aniqlaymiz (keraksiz qayta hisoblashning oldini olish uchun)
-    const prevClasses = user.classes.map((c) => c.toString()).sort();
-    const nextClasses = userClasses.map((c) => c.toString()).sort();
+    const prevClasses = user.classes.map((c) => c.classId).sort();
+    nextClassIds = [...userClasses].sort();
     classesChanged =
-      prevClasses.length !== nextClasses.length ||
-      prevClasses.some((c, i) => c !== nextClasses[i]);
-
-    user.classes = userClasses;
+      prevClasses.length !== nextClassIds.length ||
+      prevClasses.some((c, i) => c !== nextClassIds[i]);
   }
 
-  await user.save();
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({ where: { id }, data: update });
+    if (classesChanged) {
+      await tx.userClass.deleteMany({ where: { userId: id } });
+      await tx.userClass.createMany({
+        data: userClasses.map((classId) => ({ userId: id, classId })),
+        skipDuplicates: true,
+      });
+    }
+  });
 
   // Sinf o'zgargan bo'lsa, joriy hafta statistikasini darhol qayta hisoblaymiz.
-  // Aks holda statistika faqat keyingi baho hodisasida yangilanardi.
-  // Statistika xatosi foydalanuvchi yangilanishini buzmasligi kerak.
   if (classesChanged) {
     try {
-      await recalculateCurrentWeekForStudent(user._id);
+      await recalculateCurrentWeekForStudent(id);
     } catch (error) {
       logger.error(
         "Sinf o'zgarganda haftalik statistikani yangilashda xato:",
@@ -255,23 +293,18 @@ async function updateUser(id, data) {
     }
   }
 
-  return User.findById(user._id)
-    .populate("classes", "name")
-    .select("-password");
+  return loadUser(id);
 }
 
 /**
  * Foydalanuvchi parolini tiklash.
- * @param {string} id - foydalanuvchi ID
- * @param {string} newPassword - yangi parol
- * @returns {Promise<void>}
  */
 async function resetPassword(id, newPassword) {
   if (!newPassword) {
     throw new BadRequestError("Yangi parol majburiy");
   }
 
-  const user = await User.findById(id);
+  const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
@@ -282,17 +315,21 @@ async function resetPassword(id, newPassword) {
     );
   }
 
-  user.password = newPassword;
-  await user.save();
+  const hashed = await hashPassword(newPassword);
+  await prisma.user.update({
+    where: { id },
+    data: { password: hashed, plainPassword: newPassword },
+  });
 }
 
 /**
  * Foydalanuvchi parolini olish (plainPassword).
- * @param {string} id - foydalanuvchi ID
- * @returns {Promise<string>} parol
  */
 async function getUserPassword(id) {
-  const user = await User.findById(id).select("+plainPassword");
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { plainPassword: true },
+  });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
@@ -302,11 +339,9 @@ async function getUserPassword(id) {
 
 /**
  * Foydalanuvchini o'chirish.
- * @param {string} id - foydalanuvchi ID
- * @returns {Promise<void>}
  */
 async function deleteUser(id) {
-  const user = await User.findById(id);
+  const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
@@ -321,21 +356,16 @@ async function deleteUser(id) {
     );
   }
 
-  await user.deleteOne();
+  await prisma.user.delete({ where: { id } });
 }
 
 /**
  * O'quvchini arxivlash (yumshoq o'chirish).
- * Ixtiyoriy ravishda Tangalar va/yoki Jarimalarni 0 ga tushiradi.
- * Asl qiymatlar har ehtimolga qarshi archiveSnapshot da saqlanadi.
- * @param {string} id - o'quvchi ID
- * @param {{ resetCoins?: boolean, resetPenalties?: boolean }} options
- * @returns {Promise<object>} arxivlangan o'quvchi
  */
 async function archiveStudent(id, options = {}) {
   const { resetCoins = false, resetPenalties = false } = options;
 
-  const user = await User.findById(id);
+  const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
@@ -348,36 +378,32 @@ async function archiveStudent(id, options = {}) {
     throw new BadRequestError("O'quvchi allaqachon arxivlangan");
   }
 
-  // 0lashtirishdan oldingi asl qiymatlarni saqlab qo'yamiz
-  user.archiveSnapshot = {
-    coinBalance: user.coinBalance,
-    penaltyPoints: user.penaltyPoints,
+  const update = {
+    // 0lashtirishdan oldingi asl qiymatlarni saqlab qo'yamiz
+    archiveSnapshot: {
+      coinBalance: user.coinBalance,
+      penaltyPoints: user.penaltyPoints,
+    },
+    isArchived: true,
+    archivedAt: new Date(),
   };
-
-  if (resetCoins) user.coinBalance = 0;
-  if (resetPenalties) user.penaltyPoints = 0;
+  if (resetCoins) update.coinBalance = 0;
+  if (resetPenalties) update.penaltyPoints = 0;
 
   // Arxivlangan o'quvchi barcha sinflardan avtomatik chiqariladi
-  user.classes = [];
+  await prisma.$transaction([
+    prisma.user.update({ where: { id }, data: update }),
+    prisma.userClass.deleteMany({ where: { userId: id } }),
+  ]);
 
-  user.isArchived = true;
-  user.archivedAt = new Date();
-
-  await user.save();
-
-  return User.findById(user._id)
-    .populate("classes", "name")
-    .select("-password");
+  return loadUser(id);
 }
 
 /**
  * Arxivlangan o'quvchini qaytarish.
- * Balanslar o'zgartirilmaydi (0 holatda qoladi), archiveSnapshot saqlanib qoladi.
- * @param {string} id - o'quvchi ID
- * @returns {Promise<object>} qaytarilgan o'quvchi
  */
 async function restoreStudent(id) {
-  const user = await User.findById(id);
+  const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
@@ -386,35 +412,32 @@ async function restoreStudent(id) {
     throw new BadRequestError("O'quvchi arxivlanmagan");
   }
 
-  user.isArchived = false;
-  user.archivedAt = null;
+  await prisma.user.update({
+    where: { id },
+    data: { isArchived: false, archivedAt: null },
+  });
 
-  await user.save();
-
-  return User.findById(user._id)
-    .populate("classes", "name")
-    .select("-password");
+  return loadUser(id);
 }
 
 /**
  * Excel eksport uchun foydalanuvchilar ma'lumotlarini tayyorlash.
- * @param {string} [role] - rol bo'yicha filtr (ixtiyoriy)
- * @returns {Promise<Array>} formatlangan foydalanuvchilar ro'yxati
  */
 async function getUsersForExport(role) {
-  const query = {};
+  const where = {};
   if (role) {
-    query.role = role;
+    where.role = role;
   } else {
-    query.role = { $ne: "owner" };
+    where.role = { not: "owner" };
   }
 
-  const users = await User.find(query)
-    .populate("classes", "name")
-    .select("+plainPassword")
-    .sort({ role: 1, firstName: 1 });
+  const users = await prisma.user.findMany({
+    where,
+    include: { classes: { include: { class: { select: { name: true } } } } },
+    orderBy: [{ role: "asc" }, { firstName: "asc" }],
+  });
 
-  const allRoles = await Role.find().lean();
+  const allRoles = await prisma.role.findMany();
   const roleMap = {};
   allRoles.forEach((r) => {
     roleMap[r.value] = r.name;
@@ -427,81 +450,82 @@ async function getUsersForExport(role) {
     role: roleMap[user.role] || user.role,
     classes:
       user.classes && user.classes.length > 0
-        ? user.classes.map((c) => c.name).join(", ")
+        ? user.classes.map((c) => c.class.name).join(", ")
         : "-",
   }));
 }
 
 /**
  * Barcha faol foydalanuvchilarning qisqa ro'yxatini olish (owner bundan mustasno).
- * @returns {Promise<Array>}
  */
 async function getAllUsersShort() {
-  return User.find({
-    isActive: true,
-    isArchived: { $ne: true },
-    role: { $ne: "owner" },
-  })
-    .select("firstName lastName role")
-    .sort({ role: 1, firstName: 1 })
-    .lean();
+  return prisma.user.findMany({
+    where: { isActive: true, isArchived: false, role: { not: "owner" } },
+    select: { id: true, firstName: true, lastName: true, role: true },
+    orderBy: [{ role: "asc" }, { firstName: "asc" }],
+  });
 }
 
 /**
  * Talabalar ro'yxatini olish (qidiruv bilan).
- * @param {object} query - { search, limit }
- * @returns {Promise<Array>} talabalar ro'yxati
  */
 async function getStudents(query) {
   const { search, limit = 500 } = query;
 
-  const filter = { role: "student", isArchived: { $ne: true } };
+  const where = { role: "student", isArchived: false };
 
   if (search && search.trim()) {
-    const searchRegex = new RegExp(search.trim(), "i");
-    filter.$or = [
-      { firstName: searchRegex },
-      { lastName: searchRegex },
-      { username: searchRegex },
+    const s = search.trim();
+    where.OR = [
+      { firstName: { contains: s, mode: "insensitive" } },
+      { lastName: { contains: s, mode: "insensitive" } },
+      { username: { contains: s, mode: "insensitive" } },
     ];
   }
 
-  return User.find(filter)
-    .select("firstName lastName username classes penaltyPoints")
-    .populate("classes", "name")
-    .sort({ firstName: 1 })
-    .limit(parseInt(limit, 10));
+  const users = await prisma.user.findMany({
+    where,
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      username: true,
+      penaltyPoints: true,
+      classes: { include: { class: { select: { id: true, name: true } } } },
+    },
+    orderBy: { firstName: "asc" },
+    take: parseInt(limit, 10),
+  });
+
+  return users.map(flattenClasses);
 }
 
 /**
- * Foydalanuvchining o'z profilini yangilash (faqat firstName va lastName).
- * @param {string} userId - Foydalanuvchi ID si
- * @param {{firstName?: string, lastName?: string}} data - Yangilanadigan ma'lumotlar
- * @returns {Promise<import('../models/user.model')>}
+ * Foydalanuvchining o'z profilini yangilash.
  */
 async function updateSelfProfile(userId, data) {
   const { firstName, lastName, username, currentPassword, newPassword } = data;
 
-  const user = await User.findById(userId);
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
 
-  if (firstName !== undefined) user.firstName = firstName;
-  if (lastName !== undefined) user.lastName = lastName;
+  const update = {};
+  if (firstName !== undefined) update.firstName = firstName;
+  if (lastName !== undefined) update.lastName = lastName;
 
   // Username o'zgartirish - unikallik tekshiruvi bilan
   if (username !== undefined) {
     const normalizedUsername = String(username).toLowerCase().trim();
     if (normalizedUsername !== user.username) {
-      const usernameTaken = await User.findOne({
-        username: normalizedUsername,
-        _id: { $ne: user._id },
+      const usernameTaken = await prisma.user.findFirst({
+        where: { username: normalizedUsername, id: { not: userId } },
       });
       if (usernameTaken) {
         throw new BadRequestError("Bu username allaqachon band");
       }
-      user.username = normalizedUsername;
+      update.username = normalizedUsername;
     }
   }
 
@@ -511,17 +535,18 @@ async function updateSelfProfile(userId, data) {
       throw new BadRequestError("Joriy parolni kiriting");
     }
 
-    const isMatch = await user.matchPassword(currentPassword);
+    const isMatch = await matchPassword(currentPassword, user.password);
     if (!isMatch) {
       throw new BadRequestError("Joriy parol noto'g'ri");
     }
 
-    user.password = newPassword;
+    update.password = await hashPassword(newPassword);
+    update.plainPassword = newPassword;
   }
 
-  await user.save();
+  await prisma.user.update({ where: { id: userId }, data: update });
 
-  return User.findById(user._id).select("-password");
+  return loadUser(userId);
 }
 
 module.exports = {

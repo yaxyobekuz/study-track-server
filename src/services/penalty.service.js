@@ -1,10 +1,5 @@
-const Penalty = require("../models/penalty.model");
-const PenaltyCategory = require("../models/penaltyCategory.model");
-const PenaltySettings = require("../models/penaltySettings.model");
-const FineReductionPackage = require("../models/fineReductionPackage.model");
-const CoinTransaction = require("../models/coinTransaction.model");
-const User = require("../models/user.model");
-const TgUser = require("../models/tguser.model");
+const prisma = require("../config/prisma");
+const { getPenaltySettings } = require("./settings.service");
 const penaltyNotificationQueueService = require("./penaltyNotificationQueue.service");
 const {
   uploadPenaltyAttachments,
@@ -17,6 +12,60 @@ const {
 const logger = require("../utils/logger");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
+// ─── SOFT-REF POPULATE HELPERLARI ──────────────────────────────────
+// user/givenBy/category/reviewedBy — FK emas (scalar String). Populate
+// o'rniga qo'lda findMany({ id: { in } }) + JS xarita bilan biriktiramiz.
+
+// Berilgan jarimalar massiviga user/givenBy/reviewedBy/category ni biriktiradi
+async function attachRefs(penalties, { user, givenBy, reviewedBy, category } = {}) {
+  const list = Array.isArray(penalties) ? penalties : [penalties];
+
+  const userIds = new Set();
+  const categoryIds = new Set();
+  for (const p of list) {
+    if (!p) continue;
+    if (user && p.userId) userIds.add(p.userId);
+    if (givenBy && p.givenBy) userIds.add(p.givenBy);
+    if (reviewedBy && p.reviewedBy) userIds.add(p.reviewedBy);
+    if (category && p.category) categoryIds.add(p.category);
+  }
+
+  const [users, categories] = await Promise.all([
+    userIds.size > 0
+      ? prisma.user.findMany({
+          where: { id: { in: [...userIds] } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            role: true,
+            username: true,
+            penaltyPoints: true,
+          },
+        })
+      : [],
+    categoryIds.size > 0
+      ? prisma.penaltyCategory.findMany({
+          where: { id: { in: [...categoryIds] } },
+          select: { id: true, title: true, description: true, points: true },
+        })
+      : [],
+  ]);
+
+  const userMap = new Map(users.map((u) => [u.id, u]));
+  const categoryMap = new Map(categories.map((c) => [c.id, c]));
+
+  return list.map((p) => {
+    if (!p) return p;
+    const out = { ...p };
+    if (user) out.user = userMap.get(p.userId) || null;
+    if (givenBy) out.givenBy = userMap.get(p.givenBy) || null;
+    if (reviewedBy) out.reviewedBy = userMap.get(p.reviewedBy) || null;
+    if (category) out.category = p.category ? categoryMap.get(p.category) || null : null;
+    return out;
+  });
+}
+
 // ─── KATEGORIYA CRUD ───────────────────────────────────────────────
 
 /**
@@ -26,12 +75,14 @@ const { BadRequestError, NotFoundError } = require("../utils/errors");
  * @returns {Promise<Document>} Yaratilgan kategoriya
  */
 const createPenaltyCategory = async (data, createdBy) => {
-  const category = await PenaltyCategory.create({
-    title: data.title,
-    description: data.description,
-    points: data.points,
-    targetRole: data.targetRole,
-    createdBy,
+  const category = await prisma.penaltyCategory.create({
+    data: {
+      title: data.title,
+      description: data.description,
+      points: data.points,
+      targetRole: data.targetRole,
+      createdBy,
+    },
   });
   return category;
 };
@@ -46,7 +97,10 @@ const getCategories = async (targetRole) => {
   if (targetRole) {
     filter.targetRole = targetRole;
   }
-  return PenaltyCategory.find(filter).sort({ createdAt: -1 });
+  return prisma.penaltyCategory.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+  });
 };
 
 /**
@@ -56,18 +110,18 @@ const getCategories = async (targetRole) => {
  * @returns {Promise<Document>} Yangilangan kategoriya
  */
 const updateCategory = async (id, data) => {
-  const category = await PenaltyCategory.findByIdAndUpdate(
-    id,
-    {
+  const existing = await prisma.penaltyCategory.findUnique({ where: { id } });
+  if (!existing) {
+    throw new Error("Kategoriya topilmadi");
+  }
+  const category = await prisma.penaltyCategory.update({
+    where: { id },
+    data: {
       title: data.title,
       description: data.description,
       points: data.points,
     },
-    { new: true, runValidators: true },
-  );
-  if (!category) {
-    throw new Error("Kategoriya topilmadi");
-  }
+  });
   return category;
 };
 
@@ -77,14 +131,14 @@ const updateCategory = async (id, data) => {
  * @returns {Promise<Document>} O'chirilgan kategoriya
  */
 const deleteCategory = async (id) => {
-  const category = await PenaltyCategory.findByIdAndUpdate(
-    id,
-    { isActive: false },
-    { new: true },
-  );
-  if (!category) {
+  const existing = await prisma.penaltyCategory.findUnique({ where: { id } });
+  if (!existing) {
     throw new Error("Kategoriya topilmadi");
   }
+  const category = await prisma.penaltyCategory.update({
+    where: { id },
+    data: { isActive: false },
+  });
   return category;
 };
 
@@ -106,10 +160,12 @@ const sendPenaltyNotification = async (user, penalty, totalPoints) => {
       return;
     }
 
-    const tgUsers = await TgUser.find({
-      student: user._id,
-      isActive: true,
-      notificationsEnabled: true,
+    const tgUsers = await prisma.tgUser.findMany({
+      where: {
+        student: user.id,
+        isActive: true,
+        notificationsEnabled: true,
+      },
     });
 
     if (tgUsers.length === 0) return;
@@ -140,9 +196,9 @@ const sendPenaltyNotification = async (user, penalty, totalPoints) => {
     }));
 
     const queueItems = tgUsers.map((tgUser) => ({
-      penaltyId: penalty._id,
+      penaltyId: penalty.id,
       telegramId: tgUser.chatId,
-      userId: user._id,
+      userId: user.id,
       messageText: text,
       attachments,
     }));
@@ -178,7 +234,7 @@ const createPenalty = async ({
   isCustom,
   files,
 }) => {
-  const user = await User.findById(userId);
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     throw new Error("Foydalanuvchi topilmadi");
   }
@@ -211,15 +267,17 @@ const createPenalty = async ({
   // Kategoriya bo'lsa, undan ma'lumot olish
   let categoryData = null;
   if (categoryId && !isCustom) {
-    categoryData = await PenaltyCategory.findById(categoryId);
+    categoryData = await prisma.penaltyCategory.findUnique({
+      where: { id: categoryId },
+    });
     if (!categoryData) {
       throw new Error("Kategoriya topilmadi");
     }
   }
 
   // PenaltySettings dan joriy jarima miqdorini olish (snapshot)
-  const settings = await PenaltySettings.getSettings();
-  const fineAmount = settings.fineAmounts?.get(user.role) || 0;
+  const settings = await getPenaltySettings();
+  const fineAmount = settings.fineAmounts?.[user.role] || 0;
 
   // Fayllarni yuklash
   const attachments = await uploadPenaltyAttachments(files);
@@ -228,28 +286,29 @@ const createPenalty = async ({
   const status =
     givenByRole === "owner" || givenByRole === "reception" ? "approved" : "pending";
 
-  const penalty = await Penalty.create({
-    user: userId,
-    givenBy,
-    category: categoryId || null,
-    title: isCustom ? title : categoryData?.title || title,
-    description: description || categoryData?.description,
-    points: isCustom ? points : categoryData?.points || points,
-    status,
-    isCustom: !!isCustom,
-    fineAmount,
-    attachments,
-    reviewedBy: status === "approved" ? givenBy : undefined,
-    reviewedAt: status === "approved" ? new Date() : undefined,
+  const penalty = await prisma.penalty.create({
+    data: {
+      userId,
+      givenBy,
+      category: categoryId || null,
+      title: isCustom ? title : categoryData?.title || title,
+      description: description || categoryData?.description,
+      points: isCustom ? points : categoryData?.points || points,
+      status,
+      isCustom: !!isCustom,
+      fineAmount,
+      attachments,
+      reviewedBy: status === "approved" ? givenBy : null,
+      reviewedAt: status === "approved" ? new Date() : null,
+    },
   });
 
   // Agar darhol approved bo'lsa - penaltyPoints oshirish
   if (status === "approved") {
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $inc: { penaltyPoints: penalty.points } },
-      { new: true },
-    );
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { penaltyPoints: { increment: penalty.points } },
+    });
 
     // Bot xabarnoma yuborish (background job orqali)
     sendPenaltyNotification(updatedUser, penalty, updatedUser.penaltyPoints);
@@ -273,7 +332,7 @@ const reviewPenalty = async (
   penaltyId,
   { status, rejectionReason, reviewedBy },
 ) => {
-  const penalty = await Penalty.findById(penaltyId);
+  const penalty = await prisma.penalty.findUnique({ where: { id: penaltyId } });
   if (!penalty) {
     throw new Error("Jarima topilmadi");
   }
@@ -288,32 +347,43 @@ const reviewPenalty = async (
     throw new Error("Rad etish sababi majburiy");
   }
 
-  penalty.status = status;
-  penalty.reviewedBy = reviewedBy;
-  penalty.reviewedAt = new Date();
+  const update = {
+    status,
+    reviewedBy,
+    reviewedAt: new Date(),
+  };
 
   if (status === "rejected") {
-    penalty.rejectionReason = rejectionReason;
+    update.rejectionReason = rejectionReason;
   }
 
-  await penalty.save();
+  const updatedPenalty = await prisma.penalty.update({
+    where: { id: penaltyId },
+    data: update,
+  });
 
   // Approved bo'lsa - penaltyPoints o'zgartirish (tur bo'yicha)
   if (status === "approved") {
-    const inc = penalty.type === "reduction" ? -penalty.points : penalty.points;
-    const updatedUser = await User.findByIdAndUpdate(
-      penalty.user,
-      { $inc: { penaltyPoints: inc } },
-      { new: true },
-    );
+    const inc =
+      updatedPenalty.type === "reduction"
+        ? -updatedPenalty.points
+        : updatedPenalty.points;
+    const updatedUser = await prisma.user.update({
+      where: { id: updatedPenalty.userId },
+      data: { penaltyPoints: { increment: inc } },
+    });
 
     // Bot xabarnoma faqat oddiy jarima uchun (background job orqali)
-    if (penalty.type === "penalty") {
-      sendPenaltyNotification(updatedUser, penalty, updatedUser.penaltyPoints);
+    if (updatedPenalty.type === "penalty") {
+      sendPenaltyNotification(
+        updatedUser,
+        updatedPenalty,
+        updatedUser.penaltyPoints,
+      );
     }
   }
 
-  return penalty;
+  return updatedPenalty;
 };
 
 // ─── JARIMA KAMAYTIRISH ────────────────────────────────────────────
@@ -334,7 +404,7 @@ const reducePenalty = async ({
   reducedBy,
   reducedByRole,
 }) => {
-  const user = await User.findById(userId);
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     throw new Error("Foydalanuvchi topilmadi");
   }
@@ -349,28 +419,33 @@ const reducePenalty = async ({
     );
   }
 
-  const settings = await PenaltySettings.getSettings();
-  const fineAmount = settings.fineAmounts?.get(user.role) || 0;
+  const settings = await getPenaltySettings();
+  const fineAmount = settings.fineAmounts?.[user.role] || 0;
 
   // Owner tomonidan yaratilgan kamaytirish darhol tasdiqlanadi
   const status = reducedByRole === "owner" ? "approved" : "pending";
 
-  const reduction = await Penalty.create({
-    type: "reduction",
-    user: userId,
-    givenBy: reducedBy,
-    description: reason,
-    points,
-    status,
-    isCustom: false,
-    fineAmount,
-    reviewedBy: status === "approved" ? reducedBy : undefined,
-    reviewedAt: status === "approved" ? new Date() : undefined,
+  const reduction = await prisma.penalty.create({
+    data: {
+      type: "reduction",
+      userId,
+      givenBy: reducedBy,
+      description: reason,
+      points,
+      status,
+      isCustom: false,
+      fineAmount,
+      reviewedBy: status === "approved" ? reducedBy : null,
+      reviewedAt: status === "approved" ? new Date() : null,
+    },
   });
 
   // Agar darhol approved bo'lsa - penaltyPoints kamaytirish
   if (status === "approved") {
-    await User.findByIdAndUpdate(userId, { $inc: { penaltyPoints: -points } });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { penaltyPoints: { decrement: points } },
+    });
   }
 
   return reduction;
@@ -391,38 +466,49 @@ const getPenalties = async (req) => {
   if (status) filter.status = status;
   if (startDate || endDate) {
     filter.createdAt = {};
-    if (startDate) filter.createdAt.$gte = new Date(startDate);
+    if (startDate) filter.createdAt.gte = new Date(startDate);
     if (endDate) {
       const end = new Date(endDate);
       end.setHours(23, 59, 59, 999);
-      filter.createdAt.$lte = end;
+      filter.createdAt.lte = end;
     }
   }
 
   if (search) {
-    const regex = new RegExp(search, "i");
-    const matchedUsers = await User.find({
-      $or: [{ firstName: regex }, { lastName: regex }, { username: regex }],
-    }).select("_id");
-    const userIds = matchedUsers.map((u) => u._id);
-    filter.$or = [
-      { title: regex },
-      { description: regex },
-      { user: { $in: userIds } },
+    const matchedUsers = await prisma.user.findMany({
+      where: {
+        OR: [
+          { firstName: { contains: search, mode: "insensitive" } },
+          { lastName: { contains: search, mode: "insensitive" } },
+          { username: { contains: search, mode: "insensitive" } },
+        ],
+      },
+      select: { id: true },
+    });
+    const userIds = matchedUsers.map((u) => u.id);
+    filter.OR = [
+      { title: { contains: search, mode: "insensitive" } },
+      { description: { contains: search, mode: "insensitive" } },
+      { userId: { in: userIds } },
     ];
   }
 
-  const [penalties, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("user", "firstName lastName role username penaltyPoints")
-      .populate("givenBy", "firstName lastName role")
-      .populate("reviewedBy", "firstName lastName")
-      .populate("category", "title points")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawPenalties, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const penalties = await attachRefs(rawPenalties, {
+    user: true,
+    givenBy: true,
+    reviewedBy: true,
+    category: true,
+  });
 
   return formatPaginationResponse(penalties, total, page, limit);
 };
@@ -437,16 +523,21 @@ const getPendingPenalties = async (req) => {
 
   const filter = { status: "pending" };
 
-  const [penalties, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("user", "firstName lastName role username")
-      .populate("givenBy", "firstName lastName role")
-      .populate("category", "title points")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawPenalties, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const penalties = await attachRefs(rawPenalties, {
+    user: true,
+    givenBy: true,
+    category: true,
+  });
 
   return formatPaginationResponse(penalties, total, page, limit);
 };
@@ -461,19 +552,24 @@ const getUserPenalties = async (userId, req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { status } = req.query;
 
-  const filter = { user: userId, type: "penalty" };
+  const filter = { userId, type: "penalty" };
   if (status) filter.status = status;
 
-  const [penalties, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("givenBy", "firstName lastName role")
-      .populate("reviewedBy", "firstName lastName")
-      .populate("category", "title points")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawPenalties, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const penalties = await attachRefs(rawPenalties, {
+    givenBy: true,
+    reviewedBy: true,
+    category: true,
+  });
 
   return formatPaginationResponse(penalties, total, page, limit);
 };
@@ -487,17 +583,22 @@ const getUserPenalties = async (userId, req) => {
 const getMyPenalties = async (userId, req) => {
   const { page, limit, skip } = getPaginationParams(req);
 
-  const filter = { user: userId };
+  const filter = { userId };
 
-  const [penalties, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("givenBy", "firstName lastName role")
-      .populate("category", "title points")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawPenalties, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const penalties = await attachRefs(rawPenalties, {
+    givenBy: true,
+    category: true,
+  });
 
   return formatPaginationResponse(penalties, total, page, limit);
 };
@@ -512,18 +613,23 @@ const getGivenPenalties = async (givenById, req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { status } = req.query;
 
-  const filter = { givenBy: givenById, type: { $ne: "reduction" } };
+  const filter = { givenBy: givenById, type: { not: "reduction" } };
   if (status) filter.status = status;
 
-  const [penalties, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("user", "firstName lastName role username")
-      .populate("category", "title points")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawPenalties, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const penalties = await attachRefs(rawPenalties, {
+    user: true,
+    category: true,
+  });
 
   return formatPaginationResponse(penalties, total, page, limit);
 };
@@ -534,15 +640,18 @@ const getGivenPenalties = async (givenById, req) => {
  * @returns {Promise<Document>} Jarima hujjati
  */
 const getPenaltyById = async (id) => {
-  const penalty = await Penalty.findById(id)
-    .populate("user", "firstName lastName role username penaltyPoints")
-    .populate("givenBy", "firstName lastName role")
-    .populate("reviewedBy", "firstName lastName")
-    .populate("category", "title description points");
+  const rawPenalty = await prisma.penalty.findUnique({ where: { id } });
 
-  if (!penalty) {
+  if (!rawPenalty) {
     throw new Error("Jarima topilmadi");
   }
+
+  const [penalty] = await attachRefs(rawPenalty, {
+    user: true,
+    givenBy: true,
+    reviewedBy: true,
+    category: true,
+  });
 
   return penalty;
 };
@@ -557,17 +666,22 @@ const getReductions = async (req) => {
   const { userId } = req.query;
 
   const filter = { type: "reduction" };
-  if (userId) filter.user = userId;
+  if (userId) filter.userId = userId;
 
-  const [reductions, total] = await Promise.all([
-    Penalty.find(filter)
-      .populate("user", "firstName lastName role username")
-      .populate("givenBy", "firstName lastName")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Penalty.countDocuments(filter),
+  const [rawReductions, total] = await Promise.all([
+    prisma.penalty.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.penalty.count({ where: filter }),
   ]);
+
+  const reductions = await attachRefs(rawReductions, {
+    user: true,
+    givenBy: true,
+  });
 
   return formatPaginationResponse(reductions, total, page, limit);
 };
@@ -592,66 +706,70 @@ const getPenaltyStats = async () => {
     dailyPenalties,
     dailyReductions,
   ] = await Promise.all([
-    Penalty.aggregate([
-      { $match: { type: "penalty", status: "approved" } },
-      { $group: { _id: null, total: { $sum: "$points" } } },
-    ]),
-    Penalty.aggregate([
-      { $match: { type: "reduction", status: "approved" } },
-      { $group: { _id: null, total: { $sum: "$points" } } },
-    ]),
-    User.find({
-      role: { $nin: ["owner", "student"] },
-      penaltyPoints: { $gt: 0 },
-    })
-      .select("firstName lastName username penaltyPoints role")
-      .sort({ penaltyPoints: -1 })
-      .limit(10),
-    User.find({ role: "student", penaltyPoints: { $gt: 0 } })
-      .select("firstName lastName username penaltyPoints role")
-      .sort({ penaltyPoints: -1 })
-      .limit(10),
-    Penalty.countDocuments({ status: "pending" }),
-    Penalty.aggregate([
-      {
-        $match: {
-          type: "penalty",
-          status: "approved",
-          createdAt: { $gte: thirtyDaysAgo },
-        },
+    prisma.penalty.aggregate({
+      where: { type: "penalty", status: "approved" },
+      _sum: { points: true },
+    }),
+    prisma.penalty.aggregate({
+      where: { type: "reduction", status: "approved" },
+      _sum: { points: true },
+    }),
+    prisma.user.findMany({
+      where: {
+        role: { notIn: ["owner", "student"] },
+        penaltyPoints: { gt: 0 },
       },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
-          },
-          points: { $sum: "$points" },
-        },
+      select: {
+        firstName: true,
+        lastName: true,
+        username: true,
+        penaltyPoints: true,
+        role: true,
       },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
-    ]),
-    Penalty.aggregate([
-      {
-        $match: {
-          type: "reduction",
-          status: "approved",
-          createdAt: { $gte: thirtyDaysAgo },
-        },
+      orderBy: { penaltyPoints: "desc" },
+      take: 10,
+    }),
+    prisma.user.findMany({
+      where: { role: "student", penaltyPoints: { gt: 0 } },
+      select: {
+        firstName: true,
+        lastName: true,
+        username: true,
+        penaltyPoints: true,
+        role: true,
       },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" },
-          },
-          points: { $sum: "$points" },
-        },
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } },
-    ]),
+      orderBy: { penaltyPoints: "desc" },
+      take: 10,
+    }),
+    prisma.penalty.count({ where: { status: "pending" } }),
+    prisma.$queryRawUnsafe(
+      `
+      SELECT
+        EXTRACT(YEAR FROM created_at)::int AS year,
+        EXTRACT(MONTH FROM created_at)::int AS month,
+        EXTRACT(DAY FROM created_at)::int AS day,
+        SUM(points)::int AS points
+      FROM penalties
+      WHERE type = 'penalty' AND status = 'approved' AND created_at >= $1
+      GROUP BY year, month, day
+      ORDER BY year ASC, month ASC, day ASC
+      `,
+      thirtyDaysAgo,
+    ),
+    prisma.$queryRawUnsafe(
+      `
+      SELECT
+        EXTRACT(YEAR FROM created_at)::int AS year,
+        EXTRACT(MONTH FROM created_at)::int AS month,
+        EXTRACT(DAY FROM created_at)::int AS day,
+        SUM(points)::int AS points
+      FROM penalties
+      WHERE type = 'reduction' AND status = 'approved' AND created_at >= $1
+      GROUP BY year, month, day
+      ORDER BY year ASC, month ASC, day ASC
+      `,
+      thirtyDaysAgo,
+    ),
   ]);
 
   // So'nggi 30 kun uchun to'liq kunlik massiv hosil qilish
@@ -664,10 +782,10 @@ const getPenaltyStats = async () => {
     const day = d.getDate();
 
     const penaltyEntry = dailyPenalties.find(
-      (e) => e._id.year === year && e._id.month === month && e._id.day === day,
+      (e) => e.year === year && e.month === month && e.day === day,
     );
     const reductionEntry = dailyReductions.find(
-      (e) => e._id.year === year && e._id.month === month && e._id.day === day,
+      (e) => e.year === year && e.month === month && e.day === day,
     );
 
     dailyTrend.push({
@@ -678,8 +796,8 @@ const getPenaltyStats = async () => {
   }
 
   return {
-    totalApprovedPoints: totalApprovedPoints[0]?.total || 0,
-    totalReducedPoints: totalReducedPoints[0]?.total || 0,
+    totalApprovedPoints: totalApprovedPoints._sum.points || 0,
+    totalReducedPoints: totalReducedPoints._sum.points || 0,
     topUsers,
     topStudents,
     pendingCount,
@@ -694,7 +812,7 @@ const getPenaltyStats = async () => {
  * @returns {Promise<Document>} PenaltySettings
  */
 const getSettings = async () => {
-  return PenaltySettings.getSettings();
+  return getPenaltySettings();
 };
 
 /**
@@ -705,33 +823,40 @@ const getSettings = async () => {
  * @returns {Promise<Document>} Yangilangan PenaltySettings
  */
 const updateSettings = async (data, updatedBy) => {
-  const settings = await PenaltySettings.getSettings();
+  const settings = await getPenaltySettings();
+
+  const fineAmounts = { ...(settings.fineAmounts || {}) };
+  const update = {};
 
   // Yangi format: fineAmounts object
   if (data.fineAmounts && typeof data.fineAmounts === "object") {
     for (const [role, amount] of Object.entries(data.fineAmounts)) {
-      settings.fineAmounts.set(role, Number(amount));
+      fineAmounts[role] = Number(amount);
     }
   }
 
   // Backward compat: eski format ham qabul qilinadi
   if (data.studentFineAmount !== undefined) {
-    settings.studentFineAmount = data.studentFineAmount;
-    settings.fineAmounts.set("student", data.studentFineAmount);
+    update.studentFineAmount = data.studentFineAmount;
+    fineAmounts.student = data.studentFineAmount;
   }
   if (data.teacherFineAmount !== undefined) {
-    settings.teacherFineAmount = data.teacherFineAmount;
-    settings.fineAmounts.set("teacher", data.teacherFineAmount);
+    update.teacherFineAmount = data.teacherFineAmount;
+    fineAmounts.teacher = data.teacherFineAmount;
   }
 
   if (data.premiumReductionDiscountPercent !== undefined) {
-    settings.premiumReductionDiscountPercent =
+    update.premiumReductionDiscountPercent =
       data.premiumReductionDiscountPercent;
   }
 
-  settings.updatedBy = updatedBy;
-  await settings.save();
-  return settings;
+  update.fineAmounts = fineAmounts;
+  update.updatedBy = updatedBy;
+
+  return prisma.penaltySettings.update({
+    where: { id: settings.id },
+    data: update,
+  });
 };
 
 // ─── KAMAYTIRISH PAKETLARI CRUD ────────────────────────────────────
@@ -743,12 +868,14 @@ const updateSettings = async (data, updatedBy) => {
  * @returns {Promise<Document>}
  */
 const createReductionPackage = async (data, createdBy) => {
-  return FineReductionPackage.create({
-    title: data.title,
-    points: data.points,
-    coinCost: data.coinCost,
-    order: data.order ?? 0,
-    createdBy,
+  return prisma.fineReductionPackage.create({
+    data: {
+      title: data.title,
+      points: data.points,
+      coinCost: data.coinCost,
+      order: data.order ?? 0,
+      createdBy,
+    },
   });
 };
 
@@ -759,7 +886,10 @@ const createReductionPackage = async (data, createdBy) => {
  */
 const getReductionPackages = async (onlyActive = false) => {
   const filter = onlyActive ? { isActive: true } : {};
-  return FineReductionPackage.find(filter).sort({ order: 1, createdAt: 1 });
+  return prisma.fineReductionPackage.findMany({
+    where: filter,
+    orderBy: [{ order: "asc" }, { createdAt: "asc" }],
+  });
 };
 
 /**
@@ -769,18 +899,18 @@ const getReductionPackages = async (onlyActive = false) => {
  * @returns {Promise<Document>}
  */
 const updateReductionPackage = async (id, data) => {
-  const pkg = await FineReductionPackage.findByIdAndUpdate(
-    id,
-    {
+  const existing = await prisma.fineReductionPackage.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("Paket topilmadi");
+  const pkg = await prisma.fineReductionPackage.update({
+    where: { id },
+    data: {
       ...(data.title !== undefined && { title: data.title }),
       ...(data.points !== undefined && { points: data.points }),
       ...(data.coinCost !== undefined && { coinCost: data.coinCost }),
       ...(data.order !== undefined && { order: data.order }),
       ...(data.isActive !== undefined && { isActive: data.isActive }),
     },
-    { new: true, runValidators: true },
-  );
-  if (!pkg) throw new NotFoundError("Paket topilmadi");
+  });
   return pkg;
 };
 
@@ -790,12 +920,12 @@ const updateReductionPackage = async (id, data) => {
  * @returns {Promise<Document>}
  */
 const deleteReductionPackage = async (id) => {
-  const pkg = await FineReductionPackage.findByIdAndUpdate(
-    id,
-    { isActive: false },
-    { new: true },
-  );
-  if (!pkg) throw new NotFoundError("Paket topilmadi");
+  const existing = await prisma.fineReductionPackage.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("Paket topilmadi");
+  const pkg = await prisma.fineReductionPackage.update({
+    where: { id },
+    data: { isActive: false },
+  });
   return pkg;
 };
 
@@ -806,11 +936,13 @@ const deleteReductionPackage = async (id) => {
  * @returns {Promise<{ penalty: Document, transaction: Document }>}
  */
 const purchaseReductionPackage = async (studentId, packageId) => {
-  const pkg = await FineReductionPackage.findById(packageId);
+  const pkg = await prisma.fineReductionPackage.findUnique({
+    where: { id: packageId },
+  });
   if (!pkg || !pkg.isActive) throw new NotFoundError("Paket topilmadi");
 
-  const settings = await PenaltySettings.getSettings();
-  const student = await User.findById(studentId);
+  const settings = await getPenaltySettings();
+  const student = await prisma.user.findUnique({ where: { id: studentId } });
   if (!student) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   if (student.role !== "student") {
@@ -823,7 +955,7 @@ const purchaseReductionPackage = async (studentId, packageId) => {
     );
   }
 
-  const discountPercent = student.premium?.isActive
+  const discountPercent = student.premiumIsActive
     ? (settings.premiumReductionDiscountPercent ?? 0)
     : 0;
   const finalCoinCost = Math.ceil(pkg.coinCost * (1 - discountPercent / 100));
@@ -836,51 +968,59 @@ const purchaseReductionPackage = async (studentId, packageId) => {
 
   const pointsReduced = Math.min(pkg.points, student.penaltyPoints);
 
-  // Atomic findOneAndUpdate - race condition himoyasi (replica set shart emas)
-  const updatedUser = await User.findOneAndUpdate(
-    {
-      _id: studentId,
-      coinBalance: { $gte: finalCoinCost },
-      penaltyPoints: { $gte: 1 },
+  // Atomic updateMany - race condition himoyasi (shart guard bilan)
+  const updateResult = await prisma.user.updateMany({
+    where: {
+      id: studentId,
+      coinBalance: { gte: finalCoinCost },
+      penaltyPoints: { gte: 1 },
     },
-    { $inc: { coinBalance: -finalCoinCost, penaltyPoints: -pointsReduced } },
-    { new: true },
-  );
+    data: {
+      coinBalance: { decrement: finalCoinCost },
+      penaltyPoints: { decrement: pointsReduced },
+    },
+  });
 
-  if (!updatedUser) {
+  if (updateResult.count === 0) {
     throw new BadRequestError(
       "Tangalar yetarli emas yoki jarima balingiz o'zgardi",
     );
   }
 
-  const penalty = await Penalty.create({
-    type: "reduction",
-    user: studentId,
-    givenBy: studentId,
-    title: `Jarima paketi xaridi`,
-    description: `"${pkg.title}" jarima paketi xarid qilindi`,
-    points: pointsReduced,
-    status: "approved",
-    isCustom: false,
-    fineAmount: 0,
-    reviewedBy: studentId,
-    reviewedAt: new Date(),
+  const updatedUser = await prisma.user.findUnique({ where: { id: studentId } });
+
+  const penalty = await prisma.penalty.create({
+    data: {
+      type: "reduction",
+      userId: studentId,
+      givenBy: studentId,
+      title: `Jarima paketi xaridi`,
+      description: `"${pkg.title}" jarima paketi xarid qilindi`,
+      points: pointsReduced,
+      status: "approved",
+      isCustom: false,
+      fineAmount: 0,
+      reviewedBy: studentId,
+      reviewedAt: new Date(),
+    },
   });
 
-  const transaction = await CoinTransaction.create({
-    student: studentId,
-    amount: finalCoinCost,
-    type: "fine_reduction_purchase",
-    description: `Jarima kamaytirishga sarflandi: ${pkg.title} (-${pointsReduced} ball)`,
-    balanceAfter: updatedUser.coinBalance,
-    date: new Date(),
-    meta: {
-      packageId: pkg._id,
-      pointsReduced,
-      originalCoinCost: pkg.coinCost,
-      discountPercent,
-      finalCoinCost,
-      penaltyRecordId: penalty._id,
+  const transaction = await prisma.coinTransaction.create({
+    data: {
+      studentId,
+      amount: finalCoinCost,
+      type: "fine_reduction_purchase",
+      description: `Jarima kamaytirishga sarflandi: ${pkg.title} (-${pointsReduced} ball)`,
+      balanceAfter: updatedUser.coinBalance,
+      date: new Date(),
+      meta: {
+        packageId: pkg.id,
+        pointsReduced,
+        originalCoinCost: pkg.coinCost,
+        discountPercent,
+        finalCoinCost,
+        penaltyRecordId: penalty.id,
+      },
     },
   });
 
@@ -895,14 +1035,15 @@ const purchaseReductionPackage = async (studentId, packageId) => {
  * @returns {Promise<Document>} O'chirilgan jarima
  */
 const deletePenalty = async (penaltyId) => {
-  const penalty = await Penalty.findById(penaltyId);
+  const penalty = await prisma.penalty.findUnique({ where: { id: penaltyId } });
   if (!penalty) throw new NotFoundError("Jarima topilmadi");
 
   // Approved jarimaning ta'sirini bekor qilish
   if (penalty.status === "approved") {
     const inc = penalty.type === "reduction" ? penalty.points : -penalty.points;
-    await User.findByIdAndUpdate(penalty.user, {
-      $inc: { penaltyPoints: inc },
+    await prisma.user.update({
+      where: { id: penalty.userId },
+      data: { penaltyPoints: { increment: inc } },
     });
   }
 
@@ -911,7 +1052,7 @@ const deletePenalty = async (penaltyId) => {
     await deletePenaltyAttachments(penalty.attachments);
   }
 
-  await penalty.deleteOne();
+  await prisma.penalty.delete({ where: { id: penaltyId } });
   return penalty;
 };
 
@@ -919,28 +1060,51 @@ const deletePenalty = async (penaltyId) => {
 // Baho qo'ymaslik jarima sozlamalari
 // ============================================================
 
-const GradePenaltySettings = require("../models/gradePenaltySettings.model");
+const { getGradePenaltySettings: getGradePenaltySettingsSingleton } = require(
+  "./settings.service",
+);
+
+// exemptTeachers — soft ref (scalar String[]). Populate o'rniga qo'lda yuklab
+// biriktiramiz (firstName lastName).
+async function populateExemptTeachers(settings) {
+  const ids = settings.exemptTeachers || [];
+  if (ids.length === 0) {
+    return { ...settings, exemptTeachers: [] };
+  }
+  const teachers = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const map = new Map(teachers.map((t) => [t.id, t]));
+  return {
+    ...settings,
+    exemptTeachers: ids.map((id) => map.get(id)).filter(Boolean),
+  };
+}
 
 const getGradePenaltySettings = async () => {
-  const settings = await GradePenaltySettings.getSettings();
-  await settings.populate("exemptTeachers", "firstName lastName");
-  return settings;
+  const settings = await getGradePenaltySettingsSingleton();
+  return populateExemptTeachers(settings);
 };
 
 const updateGradePenaltySettings = async (data, userId) => {
-  const settings = await GradePenaltySettings.getSettings();
+  const settings = await getGradePenaltySettingsSingleton();
 
-  if (data.isEnabled !== undefined) settings.isEnabled = data.isEnabled;
-  if (data.penaltyPoints !== undefined) settings.penaltyPoints = data.penaltyPoints;
+  const update = {};
+  if (data.isEnabled !== undefined) update.isEnabled = data.isEnabled;
+  if (data.penaltyPoints !== undefined) update.penaltyPoints = data.penaltyPoints;
   if (data.missingThresholdPercent !== undefined)
-    settings.missingThresholdPercent = data.missingThresholdPercent;
-  if (data.exemptTeachers !== undefined) settings.exemptTeachers = data.exemptTeachers;
+    update.missingThresholdPercent = data.missingThresholdPercent;
+  if (data.exemptTeachers !== undefined) update.exemptTeachers = data.exemptTeachers;
 
-  settings.updatedBy = userId;
-  await settings.save();
+  update.updatedBy = userId;
 
-  await settings.populate("exemptTeachers", "firstName lastName");
-  return settings;
+  const updated = await prisma.gradePenaltySettings.update({
+    where: { id: settings.id },
+    data: update,
+  });
+
+  return populateExemptTeachers(updated);
 };
 
 module.exports = {

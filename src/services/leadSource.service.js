@@ -1,5 +1,4 @@
-const LeadSource = require("../models/leadSource.model");
-const Lead = require("../models/lead.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 /**
@@ -13,7 +12,10 @@ async function getAllSources(query = {}) {
     filter.isActive = query.active === "true";
   }
 
-  return LeadSource.find(filter).sort({ createdAt: -1 }).lean();
+  return prisma.leadSource.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+  });
 }
 
 /**
@@ -28,12 +30,12 @@ async function createSource(data) {
     throw new BadRequestError("Manba nomi majburiy");
   }
 
-  const exists = await LeadSource.findOne({ name: name.trim() });
+  const exists = await prisma.leadSource.findFirst({ where: { name: name.trim() } });
   if (exists) {
     throw new BadRequestError("Bu nomdagi manba allaqachon mavjud");
   }
 
-  return LeadSource.create({ name: name.trim(), description });
+  return prisma.leadSource.create({ data: { name: name.trim(), description } });
 }
 
 /**
@@ -43,25 +45,28 @@ async function createSource(data) {
  * @returns {Promise<object>}
  */
 async function updateSource(id, data) {
-  const source = await LeadSource.findById(id);
+  const source = await prisma.leadSource.findUnique({ where: { id } });
   if (!source) {
     throw new NotFoundError("Manba topilmadi");
   }
 
   const { name, description, isActive } = data;
 
+  const update = {};
+
   if (name !== undefined) {
-    const duplicate = await LeadSource.findOne({ name: name.trim(), _id: { $ne: id } });
+    const duplicate = await prisma.leadSource.findFirst({
+      where: { name: name.trim(), id: { not: id } },
+    });
     if (duplicate) {
       throw new BadRequestError("Bu nomdagi manba allaqachon mavjud");
     }
-    source.name = name.trim();
+    update.name = name.trim();
   }
-  if (description !== undefined) source.description = description;
-  if (isActive !== undefined) source.isActive = isActive;
+  if (description !== undefined) update.description = description;
+  if (isActive !== undefined) update.isActive = isActive;
 
-  await source.save();
-  return source;
+  return prisma.leadSource.update({ where: { id }, data: update });
 }
 
 /**
@@ -70,19 +75,19 @@ async function updateSource(id, data) {
  * @returns {Promise<void>}
  */
 async function deleteSource(id) {
-  const source = await LeadSource.findById(id);
+  const source = await prisma.leadSource.findUnique({ where: { id } });
   if (!source) {
     throw new NotFoundError("Manba topilmadi");
   }
 
-  const leadsCount = await Lead.countDocuments({ source: id });
+  const leadsCount = await prisma.lead.count({ where: { source: id } });
   if (leadsCount > 0) {
     throw new BadRequestError(
       `Bu manbaga ${leadsCount} ta lead biriktirilgan. Avval ularni boshqa manbaga o'tkazing`,
     );
   }
 
-  await source.deleteOne();
+  await prisma.leadSource.delete({ where: { id } });
 }
 
 module.exports = {

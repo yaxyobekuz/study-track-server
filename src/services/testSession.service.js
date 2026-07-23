@@ -1,10 +1,5 @@
-const TestSession = require("../models/testSession.model");
-const Test = require("../models/test.model");
-const TestBinding = require("../models/testBinding.model");
-const TestSeason = require("../models/testSeason.model");
-const Question = require("../models/question.model");
-const User = require("../models/user.model");
-const TestSettings = require("../models/testSettings.model");
+const prisma = require("../config/prisma");
+const { getTestSettings } = require("./settings.service");
 const { distributePoints } = require("../helpers/scoring.helper");
 const { gradeSession } = require("./testResult.service");
 const {
@@ -30,11 +25,11 @@ function _shuffle(array) {
 /**
  * Sessiyadan javob kalitini (correctOptionId) olib tashlaydi.
  * O'quvchiga yuboriladigan har bir javobda chaqirilishi kerak.
- * @param {object} session - TestSession hujjati yoki obyekti
+ * @param {object} session - TestSession obyekti (questions/answers bilan)
  * @returns {object} kalitsiz sessiya obyekti
  */
 function _stripAnswerKey(session) {
-  const obj = session.toObject ? session.toObject() : session;
+  const obj = { ...session };
   if (obj.questions) {
     obj.questions = obj.questions.map((q) => {
       const { correctOptionId, ...rest } = q;
@@ -46,12 +41,12 @@ function _stripAnswerKey(session) {
 
 /**
  * Savol bankidagi savoldan muzlatilgan snapshot yaratadi.
- * @param {object} question - Question hujjati
- * @returns {object} frozen question obyekti
+ * @param {object} question - Question obyekti (options bilan)
+ * @returns {object} frozen question obyekti (child create shakli uchun tayyor)
  */
 function _freezeQuestion(question) {
   const frozen = {
-    question: question._id,
+    questionId: question.id,
     type: question.type,
     text: question.text,
     image: question.image || null,
@@ -65,31 +60,47 @@ function _freezeQuestion(question) {
   if (question.type === "standard") {
     const shuffledOptions = _shuffle(question.options);
     frozen.options = shuffledOptions.map((opt) => ({
-      optionId: opt._id,
+      optionId: opt.id,
       text: opt.text,
       image: opt.image || null,
     }));
     const correct = question.options.find((opt) => opt.isCorrect);
-    frozen.correctOptionId = correct ? correct._id : null;
+    frozen.correctOptionId = correct ? correct.id : null;
   }
 
   return frozen;
 }
 
 /**
+ * Sessiyani to'liq (questions+options, answers bilan) qayta yuklaydi.
+ * @param {string} sessionId
+ * @returns {Promise<object|null>}
+ */
+async function _loadFullSession(sessionId) {
+  return prisma.testSession.findUnique({
+    where: { id: sessionId },
+    include: {
+      questions: { orderBy: { position: "asc" }, include: { options: { orderBy: { position: "asc" } } } },
+      answers: true,
+    },
+  });
+}
+
+/**
  * Vaqti tugagan sessiyani yakunlaydi: holatni 'expired' qiladi va baholaydi.
  * Cron job va lazy-expiry tomonidan chaqiriladi.
- * @param {object} session - TestSession hujjati
+ * @param {object} session - TestSession obyekti
  * @returns {Promise<object>} baholangan natija
  */
 async function finalizeExpiredSession(session) {
   if (session.status !== "in_progress") {
     return null;
   }
-  session.status = "expired";
-  session.submittedAt = new Date();
-  await session.save();
-  return gradeSession(session._id);
+  await prisma.testSession.update({
+    where: { id: session.id },
+    data: { status: "expired", submittedAt: new Date() },
+  });
+  return gradeSession(session.id);
 }
 
 /**
@@ -101,26 +112,28 @@ async function finalizeExpiredSession(session) {
  * @returns {Promise<object>} kalitsiz sessiya obyekti
  */
 async function startSession(bindingId, studentId) {
-  const binding = await TestBinding.findById(bindingId).populate("test");
+  const binding = await prisma.testBinding.findUnique({
+    where: { id: bindingId },
+    include: { classes: true, reopenGrants: true },
+  });
   if (!binding || !binding.isActive) {
     throw new NotFoundError("Biriktiruv topilmadi");
   }
-  const test = binding.test;
+  const test = await prisma.test.findUnique({ where: { id: binding.testId } });
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
 
   // Test savollari yetarli bo'lsa (faol savol soni >= questionCount) ko'rinadi
-  const activeCount = await Question.countDocuments({
-    test: test._id,
-    isActive: true,
+  const activeCount = await prisma.question.count({
+    where: { testId: test.id, isActive: true },
   });
   if (activeCount < test.questionCount) {
     throw new ForbiddenError("Bu test hali o'quvchilar uchun tayyor emas");
   }
 
   // Mavsum tekshiruvi - o'quvchi faqat boshlanish va tugash vaqti oralig'ida ishlay oladi
-  const season = await TestSeason.findById(binding.season);
+  const season = await prisma.testSeason.findUnique({ where: { id: binding.seasonId } });
   if (!season || !season.isActive) {
     throw new ForbiddenError("Test mavsumi faol emas");
   }
@@ -136,12 +149,15 @@ async function startSession(bindingId, studentId) {
   }
 
   // O'quvchi biriktiruv sinflaridan birortasiga tegishli ekanligini tekshirish
-  const student = await User.findById(studentId).select("classes");
+  const student = await prisma.user.findUnique({
+    where: { id: studentId },
+    include: { classes: { select: { classId: true } } },
+  });
   if (!student) {
     throw new NotFoundError("O'quvchi topilmadi");
   }
-  const bindingClassIds = (binding.classes || []).map((c) => c.toString());
-  const studentClassIds = (student.classes || []).map((c) => c.toString());
+  const bindingClassIds = (binding.classes || []).map((c) => c.classId.toString());
+  const studentClassIds = (student.classes || []).map((c) => c.classId.toString());
   const intersects = studentClassIds.some((sc) =>
     bindingClassIds.includes(sc),
   );
@@ -152,10 +168,14 @@ async function startSession(bindingId, studentId) {
   }
 
   // Mavjud sessiyalar (biriktiruv bo'yicha)
-  const sessions = await TestSession.find({
-    binding: bindingId,
-    student: studentId,
-  }).sort({ attemptNumber: 1 });
+  const sessions = await prisma.testSession.findMany({
+    where: { bindingId, studentId },
+    orderBy: { attemptNumber: "asc" },
+    include: {
+      questions: { orderBy: { position: "asc" }, include: { options: { orderBy: { position: "asc" } } } },
+      answers: true,
+    },
+  });
 
   // Davom etayotgan sessiya bormi?
   const inProgress = sessions.find((s) => s.status === "in_progress");
@@ -170,7 +190,7 @@ async function startSession(bindingId, studentId) {
   // Urinishlar sonini hisoblash
   const attemptsCount = sessions.length;
   const grantsCount = (binding.reopenGrants || []).filter(
-    (g) => g.student.toString() === studentId.toString(),
+    (g) => g.studentId.toString() === studentId.toString(),
   ).length;
   const allowedAttempts = 1 + grantsCount;
 
@@ -183,9 +203,9 @@ async function startSession(bindingId, studentId) {
   const attemptNumber = attemptsCount + 1;
 
   // Test'ga tegishli faol savollarni olish
-  const activeQuestions = await Question.find({
-    test: test._id,
-    isActive: true,
+  const activeQuestions = await prisma.question.findMany({
+    where: { testId: test.id, isActive: true },
+    include: { options: true },
   });
   if (activeQuestions.length < test.questionCount) {
     throw new BadRequestError(
@@ -197,27 +217,56 @@ async function startSession(bindingId, studentId) {
   const frozenQuestions = selected.map(_freezeQuestion);
 
   // Tizimdagi max ballni savollarga qiyinlik bo'yicha taqsimlash
-  const settings = await TestSettings.getSettings();
+  const settings = await getTestSettings();
   distributePoints(frozenQuestions, settings.maxScore);
 
   const expiresAt = new Date(
     now.getTime() + test.timeLimitMinutes * 60 * 1000,
   );
 
-  const session = await TestSession.create({
-    binding: bindingId,
-    test: test._id,
-    student: studentId,
-    season: binding.season,
-    attemptNumber,
-    status: "in_progress",
-    startedAt: now,
-    expiresAt,
-    gradingMin: settings.minScore,
-    gradingMax: settings.maxScore,
-    questions: frozenQuestions,
-    answers: [],
+  await prisma.testSession.create({
+    data: {
+      bindingId,
+      testId: test.id,
+      studentId,
+      seasonId: binding.seasonId,
+      attemptNumber,
+      status: "in_progress",
+      startedAt: now,
+      expiresAt,
+      gradingMin: settings.minScore,
+      gradingMax: settings.maxScore,
+      questions: {
+        create: frozenQuestions.map((fq, qIndex) => ({
+          questionId: fq.questionId,
+          type: fq.type,
+          text: fq.text,
+          image: fq.image,
+          difficulty: fq.difficulty,
+          points: fq.points,
+          correctOptionId: fq.correctOptionId,
+          position: qIndex,
+          options: {
+            create: fq.options.map((opt, oIndex) => ({
+              optionId: opt.optionId,
+              text: opt.text,
+              image: opt.image,
+              position: oIndex,
+            })),
+          },
+        })),
+      },
+    },
   });
+
+  const session = await _loadFullSession(
+    (
+      await prisma.testSession.findFirst({
+        where: { bindingId, studentId, attemptNumber },
+        select: { id: true },
+      })
+    ).id,
+  );
 
   return _stripAnswerKey(session);
 }
@@ -236,9 +285,12 @@ async function saveAnswer(sessionId, studentId, data) {
     throw new BadRequestError("Savol ID majburiy");
   }
 
-  const session = await TestSession.findOne({
-    _id: sessionId,
-    student: studentId,
+  const session = await prisma.testSession.findFirst({
+    where: { id: sessionId, studentId },
+    include: {
+      questions: { include: { options: true } },
+      answers: true,
+    },
   });
   if (!session) {
     throw new NotFoundError("Sessiya topilmadi");
@@ -256,7 +308,7 @@ async function saveAnswer(sessionId, studentId, data) {
 
   // Savol sessiyada mavjudligini tekshirish
   const question = session.questions.find(
-    (q) => q.question.toString() === questionId.toString(),
+    (q) => q.questionId.toString() === questionId.toString(),
   );
   if (!question) {
     throw new BadRequestError("Savol bu sessiyada mavjud emas");
@@ -277,24 +329,31 @@ async function saveAnswer(sessionId, studentId, data) {
 
   // Javobni upsert qilish
   const existing = session.answers.find(
-    (a) => a.question.toString() === questionId.toString(),
+    (a) => a.questionId.toString() === questionId.toString(),
   );
   if (existing) {
-    existing.selectedOptionId =
-      question.type === "standard" ? selectedOptionId : null;
-    existing.textAnswer = question.type === "open" ? textAnswer : undefined;
-    existing.answeredAt = new Date();
+    await prisma.testSessionAnswer.update({
+      where: { id: existing.id },
+      data: {
+        selectedOptionId: question.type === "standard" ? selectedOptionId : null,
+        textAnswer: question.type === "open" ? textAnswer : null,
+        answeredAt: new Date(),
+      },
+    });
   } else {
-    session.answers.push({
-      question: questionId,
-      selectedOptionId: question.type === "standard" ? selectedOptionId : null,
-      textAnswer: question.type === "open" ? textAnswer : undefined,
-      answeredAt: new Date(),
+    await prisma.testSessionAnswer.create({
+      data: {
+        sessionId,
+        questionId,
+        selectedOptionId: question.type === "standard" ? selectedOptionId : null,
+        textAnswer: question.type === "open" ? textAnswer : null,
+        answeredAt: new Date(),
+      },
     });
   }
 
-  await session.save();
-  return _stripAnswerKey(session);
+  const full = await _loadFullSession(sessionId);
+  return _stripAnswerKey(full);
 }
 
 /**
@@ -304,9 +363,8 @@ async function saveAnswer(sessionId, studentId, data) {
  * @returns {Promise<object>} { session, result }
  */
 async function submitSession(sessionId, studentId) {
-  const session = await TestSession.findOne({
-    _id: sessionId,
-    student: studentId,
+  const session = await prisma.testSession.findFirst({
+    where: { id: sessionId, studentId },
   });
   if (!session) {
     throw new NotFoundError("Sessiya topilmadi");
@@ -317,13 +375,15 @@ async function submitSession(sessionId, studentId) {
   }
 
   // Vaqti tugagan bo'lsa ham topshiramiz (saqlangan javoblar bilan)
-  session.status = "submitted";
-  session.submittedAt = new Date();
-  await session.save();
+  await prisma.testSession.update({
+    where: { id: session.id },
+    data: { status: "submitted", submittedAt: new Date() },
+  });
 
-  const result = await gradeSession(session._id);
+  const result = await gradeSession(session.id);
 
-  return { session: _stripAnswerKey(session), result };
+  const full = await _loadFullSession(sessionId);
+  return { session: _stripAnswerKey(full), result };
 }
 
 /**
@@ -333,15 +393,41 @@ async function submitSession(sessionId, studentId) {
  * @returns {Promise<Array>} kalitsiz sessiyalar
  */
 async function getStudentSessions(studentId, seasonId) {
-  const filter = { student: studentId };
-  if (seasonId) filter.season = seasonId;
+  const where = { studentId };
+  if (seasonId) where.seasonId = seasonId;
 
-  const sessions = await TestSession.find(filter)
-    .populate("test", "title type")
-    .populate("season", "name")
-    .sort({ createdAt: -1 });
+  const sessions = await prisma.testSession.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    include: {
+      questions: { orderBy: { position: "asc" }, include: { options: { orderBy: { position: "asc" } } } },
+      answers: true,
+    },
+  });
 
-  return sessions.map(_stripAnswerKey);
+  // test, season — soft ref (relation YO'Q), qo'lda yuklaymiz
+  const testIds = [...new Set(sessions.map((s) => s.testId).filter(Boolean))];
+  const seasonIds = [...new Set(sessions.map((s) => s.seasonId).filter(Boolean))];
+  const [tests, seasons] = await Promise.all([
+    prisma.test.findMany({
+      where: { id: { in: testIds } },
+      select: { id: true, title: true },
+    }),
+    prisma.testSeason.findMany({
+      where: { id: { in: seasonIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  // "title type" so'ralgan — type Test'da yo'q, faqat mavjud maydonlar tanlanadi
+  const testMap = new Map(tests.map((t) => [t.id, t]));
+  const seasonMap = new Map(seasons.map((s) => [s.id, s]));
+
+  return sessions.map((s) => {
+    const stripped = _stripAnswerKey(s);
+    stripped.test = testMap.get(s.testId) || null;
+    stripped.season = seasonMap.get(s.seasonId) || null;
+    return stripped;
+  });
 }
 
 /**
@@ -351,12 +437,13 @@ async function getStudentSessions(studentId, seasonId) {
  * @returns {Promise<object>} kalitsiz sessiya obyekti
  */
 async function getSessionForStudent(sessionId, studentId) {
-  const session = await TestSession.findOne({
-    _id: sessionId,
-    student: studentId,
-  })
-    .populate("test", "title type timeLimitMinutes")
-    .populate("season", "name");
+  let session = await prisma.testSession.findFirst({
+    where: { id: sessionId, studentId },
+    include: {
+      questions: { orderBy: { position: "asc" }, include: { options: { orderBy: { position: "asc" } } } },
+      answers: true,
+    },
+  });
   if (!session) {
     throw new NotFoundError("Sessiya topilmadi");
   }
@@ -364,9 +451,26 @@ async function getSessionForStudent(sessionId, studentId) {
   // Lazy expiry
   if (session.status === "in_progress" && new Date() > session.expiresAt) {
     await finalizeExpiredSession(session);
+    session = await _loadFullSession(sessionId);
   }
 
-  return _stripAnswerKey(session);
+  const stripped = _stripAnswerKey(session);
+
+  // test, season — soft ref, qo'lda yuklaymiz (title timeLimitMinutes / name)
+  const [test, season] = await Promise.all([
+    prisma.test.findUnique({
+      where: { id: session.testId },
+      select: { id: true, title: true, timeLimitMinutes: true },
+    }),
+    prisma.testSeason.findUnique({
+      where: { id: session.seasonId },
+      select: { id: true, name: true },
+    }),
+  ]);
+  stripped.test = test || null;
+  stripped.season = season || null;
+
+  return stripped;
 }
 
 /**
@@ -379,27 +483,81 @@ async function getSessionForStudent(sessionId, studentId) {
  * @returns {Promise<Array>} kalitsiz sessiyalar
  */
 async function getSessionsForTeacher(testId, teacherId) {
-  const test = await Test.findById(testId);
+  const test = await prisma.test.findUnique({ where: { id: testId } });
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId.toString() !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 
-  const sessions = await TestSession.find({ test: testId })
-    .populate("student", "firstName lastName")
-    .populate({
-      path: "binding",
-      populate: [
-        { path: "season", select: "name" },
-        { path: "subject", select: "name" },
-        { path: "classes", select: "name" },
-      ],
-    })
-    .sort({ createdAt: -1 });
+  const sessions = await prisma.testSession.findMany({
+    where: { testId },
+    orderBy: { createdAt: "desc" },
+    include: {
+      questions: { orderBy: { position: "asc" }, include: { options: { orderBy: { position: "asc" } } } },
+      answers: true,
+    },
+  });
 
-  return sessions.map(_stripAnswerKey);
+  // student, binding (+season/subject/classes) — soft ref, qo'lda yuklaymiz
+  const studentIds = [...new Set(sessions.map((s) => s.studentId).filter(Boolean))];
+  const bindingIds = [...new Set(sessions.map((s) => s.bindingId).filter(Boolean))];
+
+  const [students, bindings] = await Promise.all([
+    prisma.user.findMany({
+      where: { id: { in: studentIds } },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+    prisma.testBinding.findMany({
+      where: { id: { in: bindingIds } },
+      include: { classes: true },
+    }),
+  ]);
+
+  // binding'lar uchun season/subject/class'larni yuklab xaritalash
+  const seasonIds = [...new Set(bindings.map((b) => b.seasonId).filter(Boolean))];
+  const subjectIds = [...new Set(bindings.map((b) => b.subjectId).filter(Boolean))];
+  const classIds = [
+    ...new Set(bindings.flatMap((b) => b.classes.map((c) => c.classId)).filter(Boolean)),
+  ];
+  const [seasons, subjects, classes] = await Promise.all([
+    prisma.testSeason.findMany({
+      where: { id: { in: seasonIds } },
+      select: { id: true, name: true },
+    }),
+    prisma.subject.findMany({
+      where: { id: { in: subjectIds } },
+      select: { id: true, name: true },
+    }),
+    prisma.class.findMany({
+      where: { id: { in: classIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+  const seasonMap = new Map(seasons.map((s) => [s.id, s]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, s]));
+  const classMap = new Map(classes.map((c) => [c.id, c]));
+  const bindingMap = new Map(
+    bindings.map((b) => [
+      b.id,
+      {
+        ...b,
+        season: seasonMap.get(b.seasonId) || null,
+        subject: subjectMap.get(b.subjectId) || null,
+        classes: b.classes.map((c) => classMap.get(c.classId)).filter(Boolean),
+      },
+    ]),
+  );
+
+  return sessions.map((s) => {
+    const stripped = _stripAnswerKey(s);
+    stripped.student = studentMap.get(s.studentId) || null;
+    stripped.binding = bindingMap.get(s.bindingId) || null;
+    return stripped;
+  });
 }
 
 module.exports = {

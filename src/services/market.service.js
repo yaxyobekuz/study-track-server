@@ -1,8 +1,4 @@
-const MarketProduct = require("../models/marketProduct.model");
-const MarketOrder = require("../models/marketOrder.model");
-const User = require("../models/user.model");
-const Image = require("../models/image.model");
-const CoinTransaction = require("../models/coinTransaction.model");
+const prisma = require("../config/prisma");
 const {
   uploadImageWithVariants,
   deleteImageVariants,
@@ -10,9 +6,6 @@ const {
 
 /**
  * Converts incoming value to positive integer with fallback.
- * @param {string|number} value Raw input value.
- * @param {number} fallback Default value.
- * @returns {number} Parsed number.
  */
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(value, 10);
@@ -21,8 +14,6 @@ const parsePositiveInt = (value, fallback) => {
 
 /**
  * Returns product cover image URL from populated images.
- * @param {object} product Product document.
- * @returns {string} Cover URL.
  */
 const getProductCoverImageUrl = (product) => {
   const firstImage = product?.images?.[0];
@@ -36,11 +27,84 @@ const getProductCoverImageUrl = (product) => {
   );
 };
 
+// MarketProduct.images junction → eski [Image] shakliga tekislaydi
+function flattenProduct(product) {
+  if (!product) return product;
+  const out = { ...product, _id: product.id };
+  if (Array.isArray(product.images)) {
+    // include: { images: { include: { image }, orderBy: position } }
+    out.images = product.images.map((pi) =>
+      pi.image ? { ...pi.image, _id: pi.image.id } : pi,
+    );
+  }
+  return out;
+}
+
+// createdBy soft ref (relation yo'q) yuklovchi
+async function attachCreatedBy(product) {
+  if (!product || !product.createdBy) return product;
+  const u = await prisma.user.findUnique({
+    where: { id: product.createdBy },
+    select: { id: true, firstName: true, lastName: true, username: true },
+  });
+  return { ...product, createdBy: u ? { ...u, _id: u.id } : null };
+}
+
+// MarketOrder ref (student/product/deliveryImage) larni qo'lda yuklab tekislaydi
+async function attachOrderRefs(orders) {
+  const arr = Array.isArray(orders) ? orders : [orders];
+  const studentIds = [...new Set(arr.map((o) => o.studentId).filter(Boolean))];
+  const productIds = [...new Set(arr.map((o) => o.productId).filter(Boolean))];
+  const imageIds = [...new Set(arr.map((o) => o.deliveryImage).filter(Boolean))];
+
+  const [students, products, images] = await Promise.all([
+    studentIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: {
+            id: true, firstName: true, lastName: true, username: true, coinBalance: true,
+            classes: { include: { class: { select: { id: true, name: true } } } },
+          },
+        })
+      : [],
+    productIds.length
+      ? prisma.marketProduct.findMany({
+          where: { id: { in: productIds } },
+          select: { id: true, name: true, quantity: true, price: true },
+        })
+      : [],
+    imageIds.length
+      ? prisma.image.findMany({ where: { id: { in: imageIds } } })
+      : [],
+  ]);
+
+  const sMap = new Map(students.map((s) => [s.id, { ...s, _id: s.id, classes: s.classes.map((uc) => ({ ...uc.class, _id: uc.class.id })) }]));
+  const pMap = new Map(products.map((p) => [p.id, { ...p, _id: p.id }]));
+  const iMap = new Map(images.map((i) => [i.id, { ...i, _id: i.id }]));
+
+  const mapped = arr.map((o) => ({
+    ...o,
+    _id: o.id,
+    student: sMap.get(o.studentId) || null,
+    product: pMap.get(o.productId) || null,
+    deliveryImage: o.deliveryImage ? iMap.get(o.deliveryImage) || null : null,
+  }));
+
+  return Array.isArray(orders) ? mapped : mapped[0];
+}
+
+// Order'ni statusHistory bilan yuklab, ref'larni biriktiradi
+async function loadOrder(id) {
+  const order = await prisma.marketOrder.findUnique({
+    where: { id },
+    include: { statusHistory: { orderBy: { position: "asc" } } },
+  });
+  if (!order) return null;
+  return attachOrderRefs(order);
+}
+
 /**
  * Uploads product image files and creates image documents.
- * @param {Array} files Multer files array.
- * @param {string} uploadedBy User ID.
- * @returns {Promise<Array>} Created image documents.
  */
 const createProductImages = async (files, uploadedBy) => {
   const createdImages = [];
@@ -52,16 +116,18 @@ const createProductImages = async (files, uploadedBy) => {
         mimeType: file.mimetype,
       });
 
-      const image = await Image.create({
-        uploadedBy,
-        variants: processedImage.variants,
-        extension: processedImage.extension,
-        mimeType: processedImage.mimeType,
-        originalName: file.originalname,
-        originalSizeBytes: file.size,
+      const image = await prisma.image.create({
+        data: {
+          uploadedBy,
+          variants: processedImage.variants,
+          extension: processedImage.extension,
+          mimeType: processedImage.mimeType,
+          originalName: file.originalname,
+          originalSizeBytes: file.size,
+        },
       });
 
-      createdImages.push(image);
+      createdImages.push({ ...image, _id: image.id });
     }
 
     return createdImages;
@@ -69,7 +135,7 @@ const createProductImages = async (files, uploadedBy) => {
     await Promise.allSettled(
       createdImages.map(async (image) => {
         await deleteImageVariants(image.variants);
-        await Image.findByIdAndDelete(image._id);
+        await prisma.image.delete({ where: { id: image.id } }).catch(() => {});
       }),
     );
 
@@ -79,8 +145,6 @@ const createProductImages = async (files, uploadedBy) => {
 
 /**
  * Validates product payload fields.
- * @param {object} payload Product payload.
- * @param {boolean} isEdit Edit mode flag.
  */
 const validateProductPayload = (payload, isEdit = false) => {
   const requiredFields = ["name", "price", "quantity"];
@@ -112,10 +176,6 @@ const validateProductPayload = (payload, isEdit = false) => {
 
 /**
  * Creates market product with images.
- * @param {object} payload Product payload.
- * @param {Array} files Product image files.
- * @param {string} ownerId Owner user ID.
- * @returns {Promise<object>} Created product.
  */
 const createProduct = async (payload, files, ownerId) => {
   validateProductPayload(payload, false);
@@ -126,42 +186,55 @@ const createProduct = async (payload, files, ownerId) => {
 
   const imageDocuments = await createProductImages(files, ownerId);
 
-  const created = await MarketProduct.create({
-    name: String(payload.name).trim(),
-    description: String(payload.description || "").trim(),
-    price: Number(payload.price),
-    quantity: Number(payload.quantity),
-    images: imageDocuments.map((image) => image._id),
-    createdBy: ownerId,
+  const created = await prisma.marketProduct.create({
+    data: {
+      name: String(payload.name).trim(),
+      description: String(payload.description || "").trim(),
+      price: Number(payload.price),
+      quantity: Number(payload.quantity),
+      createdBy: ownerId,
+      images: {
+        create: imageDocuments.map((image, i) => ({ imageId: image.id, position: i })),
+      },
+    },
   });
 
-  return MarketProduct.findById(created._id)
-    .populate("images")
-    .populate("createdBy", "firstName lastName username");
+  return getProductById(created.id, true);
 };
+
+// Mahsulotni images junction bilan yuklab tekislaydi + createdBy biriktiradi
+async function loadProduct(id, { admin = false } = {}) {
+  const product = await prisma.marketProduct.findUnique({
+    where: { id },
+    include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+  });
+  if (!product) return null;
+  const flat = flattenProduct(product);
+  return admin ? attachCreatedBy(flat) : flat;
+}
 
 /**
  * Returns paginated admin products list.
- * @param {object} params Query params.
- * @returns {Promise<object>} Product list with pagination.
  */
 const getAdminProducts = async ({ page = 1, limit = 12 } = {}) => {
   const pageNumber = parsePositiveInt(page, 1);
   const limitNumber = parsePositiveInt(limit, 12);
   const skip = (pageNumber - 1) * limitNumber;
 
-  const query = { isArchived: false };
+  const where = { isArchived: false };
 
-  const [products, totalItems] = await Promise.all([
-    MarketProduct.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .populate("images")
-      .populate("createdBy", "firstName lastName")
-      .lean(),
-    MarketProduct.countDocuments(query),
+  const [rows, totalItems] = await Promise.all([
+    prisma.marketProduct.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNumber,
+      include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+    }),
+    prisma.marketProduct.count({ where }),
   ]);
+
+  const products = await Promise.all(rows.map((p) => attachCreatedBy(flattenProduct(p))));
 
   return {
     data: products,
@@ -178,31 +251,27 @@ const getAdminProducts = async ({ page = 1, limit = 12 } = {}) => {
 
 /**
  * Returns public products for students.
- * @param {object} params Query params.
- * @returns {Promise<object>} Product list with pagination.
  */
 const getStudentProducts = async ({ page = 1, limit = 12 } = {}) => {
   const pageNumber = parsePositiveInt(page, 1);
   const limitNumber = parsePositiveInt(limit, 12);
   const skip = (pageNumber - 1) * limitNumber;
 
-  const query = {
-    isActive: true,
-    isArchived: false,
-  };
+  const where = { isActive: true, isArchived: false };
 
-  const [products, totalItems] = await Promise.all([
-    MarketProduct.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .populate("images")
-      .lean(),
-    MarketProduct.countDocuments(query),
+  const [rows, totalItems] = await Promise.all([
+    prisma.marketProduct.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNumber,
+      include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+    }),
+    prisma.marketProduct.count({ where }),
   ]);
 
   return {
-    data: products,
+    data: rows.map(flattenProduct),
     pagination: {
       page: pageNumber,
       limit: limitNumber,
@@ -216,55 +285,44 @@ const getStudentProducts = async ({ page = 1, limit = 12 } = {}) => {
 
 /**
  * Returns product detail by ID.
- * @param {string} productId Product ID.
- * @param {boolean} isAdmin Admin access flag.
- * @returns {Promise<object>} Product detail.
  */
 const getProductById = async (productId, isAdmin = false) => {
-  const query = { _id: productId };
+  const product = await prisma.marketProduct.findUnique({
+    where: { id: productId },
+    include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+  });
 
-  if (!isAdmin) {
-    query.isActive = true;
-    query.isArchived = false;
-  }
-
-  const product = await MarketProduct.findOne(query)
-    .populate("images")
-    .populate("createdBy", "firstName lastName username");
-
-  if (!product) {
+  if (!product || (!isAdmin && (!product.isActive || product.isArchived))) {
     throw new Error("Mahsulot topilmadi");
   }
 
-  return product;
+  const flat = flattenProduct(product);
+  return isAdmin ? attachCreatedBy(flat) : flat;
 };
 
 /**
  * Updates product fields and image set.
- * @param {string} productId Product ID.
- * @param {object} payload Update payload.
- * @param {Array} files New image files.
- * @param {string} ownerId Owner user ID.
- * @returns {Promise<object>} Updated product.
  */
 const updateProduct = async (productId, payload, files, ownerId) => {
   validateProductPayload(payload, true);
 
-  const product = await MarketProduct.findOne({
-    _id: productId,
-    isArchived: false,
-  }).populate("images");
+  const product = await prisma.marketProduct.findFirst({
+    where: { id: productId, isArchived: false },
+    include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+  });
 
   if (!product) {
     throw new Error("Mahsulot topilmadi");
   }
+
+  const currentImages = product.images.map((pi) => ({ ...pi.image, _id: pi.image.id }));
 
   const removeImageIds = Array.isArray(payload.removeImageIds)
     ? payload.removeImageIds
     : [];
   const normalizedRemoveIds = removeImageIds.map((id) => String(id));
 
-  const existingImageIds = product.images.map((image) => String(image._id));
+  const existingImageIds = currentImages.map((image) => String(image.id));
   const invalidRemoveId = normalizedRemoveIds.find(
     (id) => !existingImageIds.includes(id),
   );
@@ -277,11 +335,11 @@ const updateProduct = async (productId, payload, files, ownerId) => {
     throw new Error("Maksimal 3 ta rasm yuklash mumkin");
   }
 
-  const preservedImageDocs = product.images.filter(
-    (image) => !normalizedRemoveIds.includes(String(image._id)),
+  const preservedImageDocs = currentImages.filter(
+    (image) => !normalizedRemoveIds.includes(String(image.id)),
   );
-  const removedImageDocs = product.images.filter((image) =>
-    normalizedRemoveIds.includes(String(image._id)),
+  const removedImageDocs = currentImages.filter((image) =>
+    normalizedRemoveIds.includes(String(image.id)),
   );
 
   const newImageDocs = files?.length
@@ -293,28 +351,33 @@ const updateProduct = async (productId, payload, files, ownerId) => {
     throw new Error("Mahsulot rasmlari 1 tadan 3 tagacha bo'lishi kerak");
   }
 
-  if (payload.name !== undefined) product.name = String(payload.name).trim();
+  const data = {};
+  if (payload.name !== undefined) data.name = String(payload.name).trim();
   if (payload.description !== undefined)
-    product.description = String(payload.description || "").trim();
-  if (payload.price !== undefined) product.price = Number(payload.price);
-  if (payload.quantity !== undefined)
-    product.quantity = Number(payload.quantity);
+    data.description = String(payload.description || "").trim();
+  if (payload.price !== undefined) data.price = Number(payload.price);
+  if (payload.quantity !== undefined) data.quantity = Number(payload.quantity);
   if (payload.isActive !== undefined) {
-    product.isActive =
+    data.isActive =
       payload.isActive === true || String(payload.isActive) === "true";
   }
 
-  product.images = [...preservedImageDocs, ...newImageDocs].map(
-    (image) => image._id,
-  );
+  const nextImages = [...preservedImageDocs, ...newImageDocs];
 
-  await product.save();
+  await prisma.$transaction([
+    prisma.marketProduct.update({ where: { id: productId }, data }),
+    prisma.marketProductImage.deleteMany({ where: { productId } }),
+    prisma.marketProductImage.createMany({
+      data: nextImages.map((image, i) => ({ productId, imageId: image.id, position: i })),
+      skipDuplicates: true,
+    }),
+  ]);
 
   if (removedImageDocs.length > 0) {
     await Promise.allSettled(
       removedImageDocs.map(async (image) => {
         await deleteImageVariants(image.variants);
-        await Image.findByIdAndDelete(image._id);
+        await prisma.image.delete({ where: { id: image.id } }).catch(() => {});
       }),
     );
   }
@@ -324,31 +387,26 @@ const updateProduct = async (productId, payload, files, ownerId) => {
 
 /**
  * Soft deletes a product.
- * @param {string} productId Product ID.
- * @returns {Promise<object>} Updated product.
  */
 const deleteProduct = async (productId) => {
-  const product = await MarketProduct.findOne({
-    _id: productId,
-    isArchived: false,
+  const product = await prisma.marketProduct.findFirst({
+    where: { id: productId, isArchived: false },
   });
 
   if (!product) {
     throw new Error("Mahsulot topilmadi");
   }
 
-  product.isArchived = true;
-  product.isActive = false;
-  product.archivedAt = new Date();
-  await product.save();
+  const updated = await prisma.marketProduct.update({
+    where: { id: productId },
+    data: { isArchived: true, isActive: false, archivedAt: new Date() },
+  });
 
-  return product;
+  return { ...updated, _id: updated.id };
 };
 
 /**
  * Creates purchase transaction document.
- * @param {object} params Transaction params.
- * @returns {Promise<void>}
  */
 const createPurchaseTransaction = async ({
   studentId,
@@ -359,27 +417,21 @@ const createPurchaseTransaction = async ({
   totalPrice,
   balanceAfter,
 }) => {
-  await CoinTransaction.create({
-    student: studentId,
-    amount: totalPrice,
-    type: "market_purchase",
-    description: `Marketdan mahsulot buyurtma qilindi: -${totalPrice} coin`,
-    balanceAfter,
-    meta: {
-      orderId,
-      productId,
-      quantity,
-      unitPrice,
-      totalPrice,
+  await prisma.coinTransaction.create({
+    data: {
+      studentId,
+      amount: totalPrice,
+      type: "market_purchase",
+      description: `Marketdan mahsulot buyurtma qilindi: -${totalPrice} coin`,
+      balanceAfter,
+      meta: { orderId, productId, quantity, unitPrice, totalPrice },
+      date: new Date(),
     },
-    date: new Date(),
   });
 };
 
 /**
  * Creates refund transaction document.
- * @param {object} params Transaction params.
- * @returns {Promise<void>}
  */
 const createRefundTransaction = async ({
   studentId,
@@ -391,28 +443,21 @@ const createRefundTransaction = async ({
   balanceAfter,
   reason,
 }) => {
-  await CoinTransaction.create({
-    student: studentId,
-    amount: totalPrice,
-    type: "market_refund",
-    description: `Market buyurtmasi uchun qaytarim: +${totalPrice} coin (${reason})`,
-    balanceAfter,
-    meta: {
-      orderId,
-      productId,
-      quantity,
-      unitPrice,
-      totalPrice,
+  await prisma.coinTransaction.create({
+    data: {
+      studentId,
+      amount: totalPrice,
+      type: "market_refund",
+      description: `Market buyurtmasi uchun qaytarim: +${totalPrice} coin (${reason})`,
+      balanceAfter,
+      meta: { orderId, productId, quantity, unitPrice, totalPrice },
+      date: new Date(),
     },
-    date: new Date(),
   });
 };
 
 /**
  * Places a student order for product.
- * @param {string} studentId Student ID.
- * @param {object} payload Order payload.
- * @returns {Promise<object>} Created order.
  */
 const createOrder = async (studentId, payload) => {
   const quantity = Number(payload.quantity);
@@ -422,16 +467,18 @@ const createOrder = async (studentId, payload) => {
   }
 
   // Jarima bali 3 dan yuqori bo'lsa do'kondan foydalanish cheklangan
-  const student = await User.findById(studentId).select("penaltyPoints");
+  const student = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: { penaltyPoints: true },
+  });
   if (student && student.penaltyPoints > 3) {
     throw new Error("Jarima balingiz 3 dan yuqori. Do'kondan foydalanish cheklangan.");
   }
 
-  const product = await MarketProduct.findOne({
-    _id: payload.productId,
-    isActive: true,
-    isArchived: false,
-  }).populate("images");
+  const product = await prisma.marketProduct.findFirst({
+    where: { id: payload.productId, isActive: true, isArchived: false },
+    include: { images: { include: { image: true }, orderBy: { position: "asc" } } },
+  });
 
   if (!product) {
     throw new Error("Mahsulot topilmadi yoki faol emas");
@@ -441,98 +488,96 @@ const createOrder = async (studentId, payload) => {
     throw new Error("Omborda yetarli mahsulot mavjud emas");
   }
 
+  const flatProduct = flattenProduct(product);
   const totalPrice = Number(product.price) * quantity;
 
-  const updatedStudent = await User.findOneAndUpdate(
-    {
-      _id: studentId,
-      role: "student",
-      coinBalance: { $gte: totalPrice },
-    },
-    { $inc: { coinBalance: -totalPrice } },
-    { new: true },
-  );
-
-  if (!updatedStudent) {
+  // Atomik coin yechish (balans yetsa)
+  const debit = await prisma.user.updateMany({
+    where: { id: studentId, role: "student", coinBalance: { gte: totalPrice } },
+    data: { coinBalance: { decrement: totalPrice } },
+  });
+  if (debit.count === 0) {
     throw new Error("Coin yetarli emas");
   }
+  const updatedStudent = await prisma.user.findUnique({
+    where: { id: studentId },
+    select: { coinBalance: true },
+  });
 
-  const updatedProduct = await MarketProduct.findOneAndUpdate(
-    {
-      _id: product._id,
-      isArchived: false,
-      isActive: true,
-      quantity: { $gte: quantity },
-    },
-    { $inc: { quantity: -quantity } },
-    { new: true },
-  ).populate("images");
-
-  if (!updatedProduct) {
-    await User.findByIdAndUpdate(studentId, {
-      $inc: { coinBalance: totalPrice },
+  // Atomik ombor kamaytirish
+  const stock = await prisma.marketProduct.updateMany({
+    where: { id: product.id, isArchived: false, isActive: true, quantity: { gte: quantity } },
+    data: { quantity: { decrement: quantity } },
+  });
+  if (stock.count === 0) {
+    // rollback coin
+    await prisma.user.update({
+      where: { id: studentId },
+      data: { coinBalance: { increment: totalPrice } },
     });
     throw new Error("Omborda yetarli mahsulot qolmagan");
   }
 
-  const createdOrder = await MarketOrder.create({
-    student: studentId,
-    product: product._id,
-    quantity,
-    unitPrice: Number(product.price),
-    totalPrice,
-    productSnapshot: {
-      name: product.name,
-      description: product.description || "",
-      imageUrl: getProductCoverImageUrl(product),
-    },
-    statusHistory: [
-      {
-        status: "pending",
-        changedBy: studentId,
-        note: "Buyurtma yaratildi",
-        changedAt: new Date(),
+  const createdOrder = await prisma.marketOrder.create({
+    data: {
+      studentId,
+      productId: product.id,
+      quantity,
+      unitPrice: Number(product.price),
+      totalPrice,
+      productSnapshot: {
+        name: product.name,
+        description: product.description || "",
+        imageUrl: getProductCoverImageUrl(flatProduct),
       },
-    ],
+      statusHistory: {
+        create: {
+          status: "pending",
+          changedBy: studentId,
+          note: "Buyurtma yaratildi",
+          changedAt: new Date(),
+          position: 0,
+        },
+      },
+    },
   });
 
   await createPurchaseTransaction({
-    orderId: createdOrder._id,
+    orderId: createdOrder.id,
     studentId,
-    productId: product._id,
+    productId: product.id,
     quantity,
     totalPrice,
     unitPrice: Number(product.price),
     balanceAfter: updatedStudent.coinBalance,
   });
 
-  return MarketOrder.findById(createdOrder._id)
-    .populate("product", "name quantity price")
-    .populate("student", "firstName lastName username coinBalance classes");
+  return loadOrder(createdOrder.id);
 };
 
 /**
  * Applies order refund and stock rollback.
- * @param {object} order Order document.
- * @param {string} reason Refund reason.
- * @returns {Promise<object>} Updated student.
  */
 const applyRefundAndRollback = async (order, reason) => {
-  await MarketProduct.findByIdAndUpdate(order.product, {
-    $inc: { quantity: order.quantity },
+  await prisma.marketProduct.update({
+    where: { id: order.productId },
+    data: { quantity: { increment: order.quantity } },
   });
 
-  const updatedStudent = await User.findByIdAndUpdate(
-    order.student,
-    { $inc: { coinBalance: order.totalPrice } },
-    { new: true },
-  );
+  await prisma.user.update({
+    where: { id: order.studentId },
+    data: { coinBalance: { increment: order.totalPrice } },
+  });
+  const updatedStudent = await prisma.user.findUnique({
+    where: { id: order.studentId },
+    select: { coinBalance: true },
+  });
 
   await createRefundTransaction({
     reason,
-    orderId: order._id,
-    studentId: order.student,
-    productId: order.product,
+    orderId: order.id,
+    studentId: order.studentId,
+    productId: order.productId,
     quantity: order.quantity,
     unitPrice: order.unitPrice,
     totalPrice: order.totalPrice,
@@ -544,12 +589,11 @@ const applyRefundAndRollback = async (order, reason) => {
 
 /**
  * Cancels order by student.
- * @param {string} orderId Order ID.
- * @param {string} studentId Student ID.
- * @returns {Promise<object>} Updated order.
  */
 const cancelOrderByStudent = async (orderId, studentId) => {
-  const order = await MarketOrder.findOne({ _id: orderId, student: studentId });
+  const order = await prisma.marketOrder.findFirst({
+    where: { id: orderId, studentId },
+  });
 
   if (!order) {
     throw new Error("Buyurtma topilmadi");
@@ -563,24 +607,26 @@ const cancelOrderByStudent = async (orderId, studentId) => {
     throw new Error("Buyurtma allaqachon bekor qilingan");
   }
 
-  order.status = "cancelled";
-  order.rejectReason = "";
-
   await applyRefundAndRollback(order, "o'quvchi tomonidan bekor qilindi");
-  await order.save();
 
-  return MarketOrder.findById(order._id)
-    .populate("product", "name quantity price")
-    .populate("student", "firstName lastName username coinBalance classes");
+  await prisma.marketOrder.update({
+    where: { id: orderId },
+    data: { status: "cancelled", rejectReason: "" },
+  });
+
+  return loadOrder(orderId);
 };
+
+// Buyurtmaga status tarixi qatorini qo'shadi (position count'dan)
+async function appendStatusHistory(orderId, entry) {
+  const count = await prisma.marketOrderStatusHistory.count({ where: { orderId } });
+  await prisma.marketOrderStatusHistory.create({
+    data: { orderId, ...entry, position: count },
+  });
+}
 
 /**
  * Updates order status by owner.
- * @param {string} orderId Order ID.
- * @param {object} payload Status payload.
- * @param {string} ownerId Owner user ID.
- * @param {object|null} file Uploaded delivery image file (optional).
- * @returns {Promise<object>} Updated order.
  */
 const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) => {
   const status = String(payload.status || "").trim();
@@ -590,10 +636,7 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) 
     throw new Error("Noto'g'ri status yuborildi");
   }
 
-  const order = await MarketOrder.findById(orderId)
-    .populate("student", "firstName lastName username coinBalance classes")
-    .populate("product", "name quantity price")
-    .populate("student.classes", "name");
+  const order = await prisma.marketOrder.findUnique({ where: { id: orderId } });
 
   if (!order) {
     throw new Error("Buyurtma topilmadi");
@@ -615,8 +658,10 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) 
     throw new Error("Rad etish sababi majburiy");
   }
 
-  order.status = status;
-  order.rejectReason = status === "rejected" ? rejectReason : order.rejectReason;
+  const data = {
+    status,
+    rejectReason: status === "rejected" ? rejectReason : order.rejectReason,
+  };
 
   if (status === "rejected") {
     await applyRefundAndRollback(order, "owner tomonidan rad etildi");
@@ -628,16 +673,18 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) 
       mimeType: file.mimetype,
     });
 
-    const image = await Image.create({
-      uploadedBy: ownerId,
-      variants: processedImage.variants,
-      extension: processedImage.extension,
-      mimeType: processedImage.mimeType,
-      originalName: file.originalname,
-      originalSizeBytes: file.size,
+    const image = await prisma.image.create({
+      data: {
+        uploadedBy: ownerId,
+        variants: processedImage.variants,
+        extension: processedImage.extension,
+        mimeType: processedImage.mimeType,
+        originalName: file.originalname,
+        originalSizeBytes: file.size,
+      },
     });
 
-    order.deliveryImage = image._id;
+    data.deliveryImage = image.id;
   }
 
   const noteMap = {
@@ -646,35 +693,26 @@ const updateOrderStatusByOwner = async (orderId, payload, ownerId, file = null) 
     rejected: rejectReason,
   };
 
-  order.statusHistory.push({
+  await prisma.marketOrder.update({ where: { id: orderId }, data });
+  await appendStatusHistory(orderId, {
     status,
     changedBy: ownerId,
     note: noteMap[status] || "",
     changedAt: new Date(),
   });
 
-  await order.save();
-
-  return MarketOrder.findById(order._id)
-    .populate("student", "firstName lastName username coinBalance classes")
-    .populate("product", "name quantity price")
-    .populate("deliveryImage")
-    .populate("student.classes", "name");
+  return loadOrder(orderId);
 };
 
 /**
  * Adds or replaces delivery image on an approved order.
- * @param {string} orderId Order ID.
- * @param {object} file Uploaded image file.
- * @param {string} ownerId Owner user ID.
- * @returns {Promise<object>} Updated order.
  */
 const addDeliveryImageByOwner = async (orderId, file, ownerId) => {
   if (!file) {
     throw new Error("Rasm majburiy");
   }
 
-  const order = await MarketOrder.findById(orderId).populate("deliveryImage");
+  const order = await prisma.marketOrder.findUnique({ where: { id: orderId } });
 
   if (!order) {
     throw new Error("Buyurtma topilmadi");
@@ -684,66 +722,67 @@ const addDeliveryImageByOwner = async (orderId, file, ownerId) => {
     throw new Error("Faqat yetkazib berilgan buyurtmaga rasm qo'shish mumkin");
   }
 
-  const oldImage = order.deliveryImage;
+  const oldImage = order.deliveryImage
+    ? await prisma.image.findUnique({ where: { id: order.deliveryImage } })
+    : null;
 
   const processedImage = await uploadImageWithVariants({
     buffer: file.buffer,
     mimeType: file.mimetype,
   });
 
-  const image = await Image.create({
-    uploadedBy: ownerId,
-    variants: processedImage.variants,
-    extension: processedImage.extension,
-    mimeType: processedImage.mimeType,
-    originalName: file.originalname,
-    originalSizeBytes: file.size,
+  const image = await prisma.image.create({
+    data: {
+      uploadedBy: ownerId,
+      variants: processedImage.variants,
+      extension: processedImage.extension,
+      mimeType: processedImage.mimeType,
+      originalName: file.originalname,
+      originalSizeBytes: file.size,
+    },
   });
 
-  order.deliveryImage = image._id;
-  await order.save();
+  await prisma.marketOrder.update({
+    where: { id: orderId },
+    data: { deliveryImage: image.id },
+  });
 
   if (oldImage) {
     await deleteImageVariants(oldImage.variants);
-    await Image.findByIdAndDelete(oldImage._id);
+    await prisma.image.delete({ where: { id: oldImage.id } }).catch(() => {});
   }
 
-  return MarketOrder.findById(order._id)
-    .populate("student", "firstName lastName username coinBalance classes")
-    .populate("product", "name quantity price")
-    .populate("deliveryImage");
+  return loadOrder(orderId);
 };
 
 /**
  * Returns paginated admin orders list.
- * @param {object} params Query params.
- * @returns {Promise<object>} Orders with pagination.
  */
 const getAdminOrders = async ({ page = 1, limit = 20, status = "", productId = "" } = {}) => {
   const pageNumber = parsePositiveInt(page, 1);
   const limitNumber = parsePositiveInt(limit, 20);
   const skip = (pageNumber - 1) * limitNumber;
 
-  const query = {};
+  const where = {};
   if (["pending", "delivering", "approved", "rejected", "cancelled"].includes(status)) {
-    query.status = status;
+    where.status = status;
   }
   if (productId) {
-    query.product = productId;
+    where.productId = productId;
   }
 
-  const [orders, totalItems] = await Promise.all([
-    MarketOrder.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .populate("product", "name quantity price")
-      .populate("student", "firstName lastName username coinBalance classes")
-      .populate("student.classes", "name")
-      .populate("deliveryImage")
-      .lean(),
-    MarketOrder.countDocuments(query),
+  const [rows, totalItems] = await Promise.all([
+    prisma.marketOrder.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNumber,
+      include: { statusHistory: { orderBy: { position: "asc" } } },
+    }),
+    prisma.marketOrder.count({ where }),
   ]);
+
+  const orders = await attachOrderRefs(rows);
 
   return {
     data: orders,
@@ -760,27 +799,26 @@ const getAdminOrders = async ({ page = 1, limit = 20, status = "", productId = "
 
 /**
  * Returns paginated student orders list.
- * @param {string} studentId Student ID.
- * @param {object} params Query params.
- * @returns {Promise<object>} Orders with pagination.
  */
 const getStudentOrders = async (studentId, { page = 1, limit = 20 } = {}) => {
   const pageNumber = parsePositiveInt(page, 1);
   const limitNumber = parsePositiveInt(limit, 20);
   const skip = (pageNumber - 1) * limitNumber;
 
-  const query = { student: studentId };
+  const where = { studentId };
 
-  const [orders, totalItems] = await Promise.all([
-    MarketOrder.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .populate("product", "name quantity price")
-      .populate("deliveryImage")
-      .lean(),
-    MarketOrder.countDocuments(query),
+  const [rows, totalItems] = await Promise.all([
+    prisma.marketOrder.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNumber,
+      include: { statusHistory: { orderBy: { position: "asc" } } },
+    }),
+    prisma.marketOrder.count({ where }),
   ]);
+
+  const orders = await attachOrderRefs(rows);
 
   return {
     data: orders,
@@ -797,13 +835,8 @@ const getStudentOrders = async (studentId, { page = 1, limit = 20 } = {}) => {
 
 /**
  * Returns order statistics for a specific product.
- * @param {string} productId Product ID.
- * @param {object} params Query params { days, startDate, endDate }.
- * @returns {Promise<object>} Stats data.
  */
 const getProductStats = async (productId, { days, startDate: qStartDate, endDate: qEndDate } = {}) => {
-  const mongoose = require("mongoose");
-
   let rangeEnd = new Date();
   rangeEnd.setHours(23, 59, 59, 999);
 
@@ -829,56 +862,45 @@ const getProductStats = async (productId, { days, startDate: qStartDate, endDate
   else if (diffDays <= 365) groupBy = "week";
   else groupBy = "month";
 
-  let dateFormat;
-  if (groupBy === "month") dateFormat = "%Y-%m";
-  else if (groupBy === "week") dateFormat = "%G-W%V";
-  else dateFormat = "%Y-%m-%d";
-
-  const matchBase = {
-    product: new mongoose.Types.ObjectId(productId),
-    createdAt: { $gte: rangeStart, $lte: rangeEnd },
-  };
+  // Postgres TO_CHAR format ($dateToString ekvivalenti)
+  let dateFmt;
+  if (groupBy === "month") dateFmt = "YYYY-MM";
+  else if (groupBy === "week") dateFmt = 'IYYY-"W"IW';
+  else dateFmt = "YYYY-MM-DD";
 
   const [byStatusRaw, trendsRaw] = await Promise.all([
-    MarketOrder.aggregate([
-      { $match: matchBase },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-          coins: { $sum: "$totalPrice" },
-          quantity: { $sum: "$quantity" },
-        },
-      },
-    ]),
-    MarketOrder.aggregate([
-      { $match: matchBase },
-      {
-        $group: {
-          _id: { $dateToString: { format: dateFormat, date: "$createdAt" } },
-          total: { $sum: 1 },
-          approved: { $sum: { $cond: [{ $eq: ["$status", "approved"] }, 1, 0] } },
-          rejected: { $sum: { $cond: [{ $eq: ["$status", "rejected"] }, 1, 0] } },
-          cancelled: { $sum: { $cond: [{ $eq: ["$status", "cancelled"] }, 1, 0] } },
-        },
-      },
-      { $sort: { _id: 1 } },
-      {
-        $project: {
-          _id: 0,
-          date: "$_id",
-          total: 1,
-          approved: 1,
-          rejected: 1,
-          cancelled: 1,
-        },
-      },
-    ]),
+    prisma.marketOrder.groupBy({
+      by: ["status"],
+      where: { productId, createdAt: { gte: rangeStart, lte: rangeEnd } },
+      _count: { _all: true },
+      _sum: { totalPrice: true, quantity: true },
+    }),
+    prisma.$queryRawUnsafe(
+      `SELECT TO_CHAR(created_at, $1) AS date,
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE status = 'approved')::int AS approved,
+              COUNT(*) FILTER (WHERE status = 'rejected')::int AS rejected,
+              COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled
+       FROM market_orders
+       WHERE product_id = $2 AND created_at >= $3 AND created_at <= $4
+       GROUP BY 1
+       ORDER BY 1`,
+      dateFmt,
+      productId,
+      rangeStart,
+      rangeEnd,
+    ),
   ]);
 
   const allStatuses = ["pending", "delivering", "approved", "rejected", "cancelled"];
   const statusMap = {};
-  byStatusRaw.forEach((s) => { statusMap[s._id] = s; });
+  byStatusRaw.forEach((s) => {
+    statusMap[s.status] = {
+      count: s._count._all,
+      coins: s._sum.totalPrice || 0,
+      quantity: s._sum.quantity || 0,
+    };
+  });
 
   const byStatus = allStatuses.map((status) => ({
     status,

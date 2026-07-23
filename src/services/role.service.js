@@ -1,21 +1,38 @@
-const Role = require("../models/role.model");
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+
+// Prisma unique-constraint xatosini do'stona xabarga aylantiradi
+function handleUnique(error) {
+  if (error.code === "P2002") {
+    const target = Array.isArray(error.meta?.target) ? error.meta.target : [];
+    const message = target.includes("value")
+      ? "Bu rol qiymati allaqachon mavjud"
+      : "Bu rol nomi allaqachon mavjud";
+    throw new BadRequestError(message);
+  }
+  throw error;
+}
 
 /**
  * Barcha rollarni foydalanuvchilar soni bilan olish.
- * @returns {Promise<Array>} rollar ro'yxati (usersCount bilan)
  */
 async function getAllRoles() {
-  const roles = await Role.find()
-    .populate("createdBy", "firstName lastName")
-    .sort({ isSystem: -1, createdAt: 1 })
-    .lean();
+  const roles = await prisma.role.findMany({
+    orderBy: [{ isSystem: "desc" }, { createdAt: "asc" }],
+  });
+
+  // createdBy — soft ref (FK emas), qo'lda yuklaymiz
+  const creatorIds = [...new Set(roles.map((r) => r.createdBy).filter(Boolean))];
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
 
   const rolesWithCounts = await Promise.all(
     roles.map(async (role) => {
-      const usersCount = await User.countDocuments({ role: role.value });
-      return { ...role, usersCount };
+      const usersCount = await prisma.user.count({ where: { role: role.value } });
+      return { ...role, createdBy: creatorMap.get(role.createdBy) || null, usersCount };
     }),
   );
 
@@ -24,24 +41,16 @@ async function getAllRoles() {
 
 /**
  * Select/dropdown uchun rol variantlarini olish.
- * @returns {Promise<Array>} rol variantlari
  */
 async function getRoleOptions() {
-  const roles = await Role.find()
-    .select("name value isSystem")
-    .sort({ isSystem: -1, name: 1 })
-    .lean();
-
-  return roles;
+  return prisma.role.findMany({
+    select: { id: true, name: true, value: true, isSystem: true },
+    orderBy: [{ isSystem: "desc" }, { name: "asc" }],
+  });
 }
 
 /**
  * Yangi rol yaratish.
- * @param {object} data - rol ma'lumotlari
- * @param {string} data.name - rol nomi
- * @param {string} data.value - rol qiymati
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<object>} yaratilgan rol
  */
 async function createRole(data, createdBy) {
   const { name, value } = data;
@@ -51,87 +60,60 @@ async function createRole(data, createdBy) {
   }
 
   try {
-    const role = await Role.create({
-      name,
-      value,
-      createdBy,
+    return await prisma.role.create({
+      data: { name, value: value.toLowerCase().trim(), createdBy },
     });
-
-    return role;
   } catch (error) {
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      const message =
-        field === "value"
-          ? "Bu rol qiymati allaqachon mavjud"
-          : "Bu rol nomi allaqachon mavjud";
-      throw new BadRequestError(message);
-    }
-    throw error;
+    handleUnique(error);
   }
 }
 
 /**
  * Rolni yangilash. Tizim rollari yangilanmaydi.
- * @param {string} id - rol ID
- * @param {object} data - yangilash ma'lumotlari
- * @param {string} [data.name] - rol nomi
- * @param {string} [data.value] - rol qiymati
- * @returns {Promise<object>} yangilangan rol
  */
 async function updateRole(id, data) {
   const { name, value, workStartTime, workEndTime, workDays, weeklySchedule } = data;
 
-  const role = await Role.findById(id);
+  const role = await prisma.role.findUnique({ where: { id } });
 
   if (!role) {
     throw new NotFoundError("Rol topilmadi");
   }
 
+  const update = {};
+
   // Tizim rollarining nomi va kaliti o'zgartirilmaydi, faqat ish vaqti sozlanadi
   if (!role.isSystem) {
     if (value && value !== role.value) {
-      const usersCount = await User.countDocuments({ role: role.value });
+      const usersCount = await prisma.user.count({ where: { role: role.value } });
       if (usersCount > 0) {
         throw new BadRequestError(
           "Bu rol qiymatini o'zgartirib bo'lmaydi, chunki foydalanuvchilar mavjud",
         );
       }
-      role.value = value;
+      update.value = value;
     }
 
-    if (name) role.name = name;
+    if (name) update.name = name;
   }
 
-  if (workStartTime !== undefined) role.workStartTime = workStartTime || null;
-  if (workEndTime !== undefined) role.workEndTime = workEndTime || null;
-  if (workDays !== undefined) role.workDays = workDays || [1, 2, 3, 4, 5];
-  if (weeklySchedule !== undefined) role.weeklySchedule = weeklySchedule || {};
+  if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
+  if (workEndTime !== undefined) update.workEndTime = workEndTime || null;
+  if (workDays !== undefined) update.workDays = workDays || [1, 2, 3, 4, 5];
+  if (weeklySchedule !== undefined) update.weeklySchedule = weeklySchedule || {};
 
   try {
-    await role.save();
+    return await prisma.role.update({ where: { id }, data: update });
   } catch (error) {
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      const message =
-        field === "value"
-          ? "Bu rol qiymati allaqachon mavjud"
-          : "Bu rol nomi allaqachon mavjud";
-      throw new BadRequestError(message);
-    }
-    throw error;
+    handleUnique(error);
   }
-
-  return role;
 }
 
 /**
  * Rolni o'chirish. Tizim rollari va foydalanuvchilari bor rollar o'chirilmaydi.
- * @param {string} id - rol ID
- * @returns {Promise<void>}
  */
 async function deleteRole(id) {
-  const role = await Role.findById(id);
+  const role = await prisma.role.findUnique({ where: { id } });
 
   if (!role) {
     throw new NotFoundError("Rol topilmadi");
@@ -141,14 +123,14 @@ async function deleteRole(id) {
     throw new BadRequestError("Tizim rollarini o'chirib bo'lmaydi");
   }
 
-  const usersCount = await User.countDocuments({ role: role.value });
+  const usersCount = await prisma.user.count({ where: { role: role.value } });
   if (usersCount > 0) {
     throw new BadRequestError(
       `Bu rolni o'chirib bo'lmaydi, chunki ${usersCount} ta foydalanuvchi mavjud`,
     );
   }
 
-  await role.deleteOne();
+  await prisma.role.delete({ where: { id } });
 }
 
 module.exports = {

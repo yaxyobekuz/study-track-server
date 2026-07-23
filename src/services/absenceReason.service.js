@@ -1,4 +1,4 @@
-const AbsenceReason = require("../models/absenceReason.model");
+const prisma = require("../config/prisma");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const { NotFoundError } = require("../utils/errors");
 
@@ -19,9 +19,11 @@ function pickReasonFields(data = {}) {
 }
 
 async function createReason(data, createdBy) {
-  const reason = await AbsenceReason.create({
-    ...pickReasonFields(data),
-    createdBy,
+  const reason = await prisma.absenceReason.create({
+    data: {
+      ...pickReasonFields(data),
+      createdBy,
+    },
   });
   return reason;
 }
@@ -33,8 +35,13 @@ async function getReasons(req) {
   const filter = { isActive: true };
 
   const [data, total] = await Promise.all([
-    AbsenceReason.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
-    AbsenceReason.countDocuments(filter),
+    prisma.absenceReason.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.absenceReason.count({ where: filter }),
   ]);
 
   return formatPaginationResponse(data, total, page, limit);
@@ -42,36 +49,43 @@ async function getReasons(req) {
 
 // Barcha aktiv sabablar (admin belgilash sahifasida rol bo'yicha filtrlash uchun)
 async function getActiveReasons() {
-  return AbsenceReason.find({ isActive: true }).sort({ title: 1 }).lean();
+  return prisma.absenceReason.findMany({
+    where: { isActive: true },
+    orderBy: { title: "asc" },
+  });
 }
 
 // Berilgan rolga tegishli aktiv sabablar (o'zini belgilash panellari uchun)
 async function getApplicableForRole(role) {
-  return AbsenceReason.find({
-    isActive: true,
-    $or: [{ appliesToAll: true }, { roles: role }],
-  })
-    .sort({ title: 1 })
-    .lean();
+  return prisma.absenceReason.findMany({
+    where: {
+      isActive: true,
+      OR: [{ appliesToAll: true }, { roles: { has: role } }],
+    },
+    orderBy: { title: "asc" },
+  });
 }
 
 async function updateReason(id, data) {
-  const reason = await AbsenceReason.findByIdAndUpdate(id, pickReasonFields(data), {
-    new: true,
-    runValidators: true,
+  const existing = await prisma.absenceReason.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("Sabab topilmadi");
+
+  const reason = await prisma.absenceReason.update({
+    where: { id },
+    data: pickReasonFields(data),
   });
-  if (!reason) throw new NotFoundError("Sabab topilmadi");
   return reason;
 }
 
 // Yumshoq o'chirish (yozuvlar bilan bog'liqlikni saqlash uchun)
 async function deleteReason(id) {
-  const reason = await AbsenceReason.findByIdAndUpdate(
-    id,
-    { isActive: false },
-    { new: true }
-  );
-  if (!reason) throw new NotFoundError("Sabab topilmadi");
+  const existing = await prisma.absenceReason.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("Sabab topilmadi");
+
+  const reason = await prisma.absenceReason.update({
+    where: { id },
+    data: { isActive: false },
+  });
   return reason;
 }
 

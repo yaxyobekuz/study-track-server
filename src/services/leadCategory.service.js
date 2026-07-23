@@ -1,5 +1,4 @@
-const LeadCategory = require("../models/leadCategory.model");
-const Lead = require("../models/lead.model");
+const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 /**
@@ -13,7 +12,10 @@ async function getAllCategories(query = {}) {
     filter.isActive = query.active === "true";
   }
 
-  return LeadCategory.find(filter).sort({ createdAt: -1 }).lean();
+  return prisma.leadCategory.findMany({
+    where: filter,
+    orderBy: { createdAt: "desc" },
+  });
 }
 
 /**
@@ -28,12 +30,12 @@ async function createCategory(data) {
     throw new BadRequestError("Toifa nomi majburiy");
   }
 
-  const exists = await LeadCategory.findOne({ name: name.trim() });
+  const exists = await prisma.leadCategory.findFirst({ where: { name: name.trim() } });
   if (exists) {
     throw new BadRequestError("Bu nomdagi toifa allaqachon mavjud");
   }
 
-  return LeadCategory.create({ name: name.trim(), description });
+  return prisma.leadCategory.create({ data: { name: name.trim(), description } });
 }
 
 /**
@@ -43,25 +45,28 @@ async function createCategory(data) {
  * @returns {Promise<object>}
  */
 async function updateCategory(id, data) {
-  const category = await LeadCategory.findById(id);
+  const category = await prisma.leadCategory.findUnique({ where: { id } });
   if (!category) {
     throw new NotFoundError("Toifa topilmadi");
   }
 
   const { name, description, isActive } = data;
 
+  const update = {};
+
   if (name !== undefined) {
-    const duplicate = await LeadCategory.findOne({ name: name.trim(), _id: { $ne: id } });
+    const duplicate = await prisma.leadCategory.findFirst({
+      where: { name: name.trim(), id: { not: id } },
+    });
     if (duplicate) {
       throw new BadRequestError("Bu nomdagi toifa allaqachon mavjud");
     }
-    category.name = name.trim();
+    update.name = name.trim();
   }
-  if (description !== undefined) category.description = description;
-  if (isActive !== undefined) category.isActive = isActive;
+  if (description !== undefined) update.description = description;
+  if (isActive !== undefined) update.isActive = isActive;
 
-  await category.save();
-  return category;
+  return prisma.leadCategory.update({ where: { id }, data: update });
 }
 
 /**
@@ -70,19 +75,19 @@ async function updateCategory(id, data) {
  * @returns {Promise<void>}
  */
 async function deleteCategory(id) {
-  const category = await LeadCategory.findById(id);
+  const category = await prisma.leadCategory.findUnique({ where: { id } });
   if (!category) {
     throw new NotFoundError("Toifa topilmadi");
   }
 
-  const leadsCount = await Lead.countDocuments({ category: id });
+  const leadsCount = await prisma.lead.count({ where: { category: id } });
   if (leadsCount > 0) {
     throw new BadRequestError(
       `Bu toifaga ${leadsCount} ta lead biriktirilgan. Avval ularni boshqa toifaga o'tkazing`,
     );
   }
 
-  await category.deleteOne();
+  await prisma.leadCategory.delete({ where: { id } });
 }
 
 module.exports = {

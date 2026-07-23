@@ -1,5 +1,4 @@
-const Topic = require("../models/topic.model");
-const Subject = require("../models/subject.model");
+const prisma = require("../config/prisma");
 const XLSX = require("xlsx");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
@@ -32,7 +31,7 @@ async function uploadTopics(subjectId, file, createdBy) {
   const errors = [];
 
   if (subjectId) {
-    const subject = await Subject.findById(subjectId);
+    const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
     if (!subject) {
       throw new NotFoundError("Fan topilmadi");
     }
@@ -61,7 +60,7 @@ async function uploadTopics(subjectId, file, createdBy) {
       }
 
       topics.push({
-        subject: subjectId,
+        subjectId,
         order,
         name: String(name).trim(),
         description: String(description).trim(),
@@ -73,8 +72,8 @@ async function uploadTopics(subjectId, file, createdBy) {
       throw new BadRequestError("Excel faylda to'g'ri formatdagi mavzular topilmadi");
     }
 
-    await Topic.deleteMany({ subject: subjectId });
-    await Topic.insertMany(topics);
+    await prisma.topic.deleteMany({ where: { subjectId } });
+    await prisma.topic.createMany({ data: topics });
 
     processedSubjects = 1;
     totalTopics = topics.length;
@@ -88,8 +87,8 @@ async function uploadTopics(subjectId, file, createdBy) {
         continue;
       }
 
-      const subject = await Subject.findOne({
-        name: new RegExp(`^${sheetName}$`, "i"),
+      const subject = await prisma.subject.findFirst({
+        where: { name: { equals: sheetName, mode: "insensitive" } },
       });
 
       if (!subject) {
@@ -113,7 +112,7 @@ async function uploadTopics(subjectId, file, createdBy) {
         }
 
         topics.push({
-          subject: subject._id,
+          subjectId: subject.id,
           order,
           name: String(name).trim(),
           description: String(description).trim(),
@@ -122,8 +121,8 @@ async function uploadTopics(subjectId, file, createdBy) {
       }
 
       if (topics.length > 0) {
-        await Topic.deleteMany({ subject: subject._id });
-        await Topic.insertMany(topics);
+        await prisma.topic.deleteMany({ where: { subjectId: subject.id } });
+        await prisma.topic.createMany({ data: topics });
 
         processedSubjects++;
         totalTopics += topics.length;
@@ -148,14 +147,16 @@ async function uploadTopics(subjectId, file, createdBy) {
  * @returns {Promise<Array>} mavzular ro'yxati
  */
 async function getTopicsBySubject(subjectId) {
-  const subject = await Subject.findById(subjectId);
+  const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
-  return Topic.find({ subject: subjectId })
-    .sort({ order: 1 })
-    .select("-createdBy");
+  return prisma.topic.findMany({
+    where: { subjectId },
+    orderBy: { order: "asc" },
+    omit: { createdBy: true },
+  });
 }
 
 /**
@@ -164,13 +165,13 @@ async function getTopicsBySubject(subjectId) {
  * @returns {Promise<{deletedCount: number}>}
  */
 async function deleteTopicsBySubject(subjectId) {
-  const subject = await Subject.findById(subjectId);
+  const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
-  const result = await Topic.deleteMany({ subject: subjectId });
-  return { deletedCount: result.deletedCount };
+  const result = await prisma.topic.deleteMany({ where: { subjectId } });
+  return { deletedCount: result.count };
 }
 
 module.exports = {

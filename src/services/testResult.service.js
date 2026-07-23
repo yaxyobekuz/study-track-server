@@ -1,7 +1,5 @@
-const TestResult = require("../models/testResult.model");
-const TestSession = require("../models/testSession.model");
-const Test = require("../models/test.model");
-const TestSettings = require("../models/testSettings.model");
+const prisma = require("../config/prisma");
+const { getTestSettings } = require("./settings.service");
 const {
   BadRequestError,
   NotFoundError,
@@ -13,30 +11,34 @@ const { getPaginationParams, formatPaginationResponse } = require("../utils/pagi
  * Natija yakuniy ballini qayta hisoblaydi va holatini yangilaydi.
  * V2: clamp olib tashlandi. finalScore = autoGraded + manualGraded + Σextra.
  *
- * @param {object} result - TestResult hujjati
+ * @param {object} result - TestResult obyekti (extraPoints/perQuestion massivlari bilan)
+ * @returns {object} { finalScore, passed, status } — yangilangan qiymatlar
  */
 function _recomputeFinalScore(result) {
   const extraSum = result.extraPoints.reduce(
     (sum, ep) => sum + (ep.amount || 0),
     0,
   );
-  result.finalScore =
+  const finalScore =
     (result.autoGradedScore || 0) +
     (result.manualGradedScore || 0) +
     extraSum;
 
   // O'tish holati: finalScore >= o'tish bali (gradingMin)
-  result.passed = result.finalScore >= (result.gradingMin ?? 0);
+  const passed = finalScore >= (result.gradingMin ?? 0);
 
   // Holatni perQuestion bo'yicha aniqlash
   const pending = result.perQuestion.filter((pq) => pq.status === "pending");
+  let status;
   if (pending.length === 0) {
-    result.status = "graded";
+    status = "graded";
   } else if (pending.length === result.perQuestion.length) {
-    result.status = "pending";
+    status = "pending";
   } else {
-    result.status = "partially_graded";
+    status = "partially_graded";
   }
+
+  return { finalScore, passed, status };
 }
 
 /**
@@ -47,15 +49,16 @@ function _recomputeFinalScore(result) {
  * @returns {Promise<object>} yaratilgan/yangilangan TestResult
  */
 async function gradeSession(sessionId) {
-  // Javob kalitini ham olish uchun select bilan
-  const session = await TestSession.findById(sessionId).select(
-    "+questions.correctOptionId",
-  );
+  // Javob kalitini ham olish uchun questions va answers bilan
+  const session = await prisma.testSession.findUnique({
+    where: { id: sessionId },
+    include: { questions: true, answers: true },
+  });
   if (!session) {
     throw new NotFoundError("Session topilmadi");
   }
 
-  const test = await Test.findById(session.test);
+  const test = await prisma.test.findUnique({ where: { id: session.testId } });
   if (!test) {
     throw new NotFoundError("Test topilmadi");
   }
@@ -63,14 +66,14 @@ async function gradeSession(sessionId) {
   // Javoblarni savol bo'yicha xaritalash
   const answerMap = new Map();
   for (const ans of session.answers) {
-    answerMap.set(ans.question.toString(), ans);
+    answerMap.set(ans.questionId, ans);
   }
 
   let autoGradedScore = 0;
   const perQuestion = [];
 
   for (const q of session.questions) {
-    const qId = q.question.toString();
+    const qId = q.questionId;
     const answer = answerMap.get(qId);
 
     if (q.type === "standard") {
@@ -78,70 +81,153 @@ async function gradeSession(sessionId) {
         answer &&
         answer.selectedOptionId &&
         q.correctOptionId &&
-        answer.selectedOptionId.toString() === q.correctOptionId.toString();
+        answer.selectedOptionId === q.correctOptionId;
       const awarded = isCorrect ? q.points : 0;
       autoGradedScore += awarded;
       perQuestion.push({
-        question: q.question,
+        questionId: q.questionId,
         awardedPoints: awarded,
         maxPoints: q.points,
         gradedBy: null,
         status: "graded",
-        feedback: undefined,
+        feedback: null,
       });
     } else {
       // Ochiq savol - o'qituvchi qo'lda baholaydi
       perQuestion.push({
-        question: q.question,
+        questionId: q.questionId,
         awardedPoints: 0,
         maxPoints: q.points,
         gradedBy: null,
         status: "pending",
-        feedback: undefined,
+        feedback: null,
       });
     }
   }
 
   // Mavjud natijani topish yoki yangi yaratish
-  let result = await TestResult.findOne({ session: sessionId });
+  let result = await prisma.testResult.findUnique({
+    where: { sessionId },
+    include: { extraPoints: true, perQuestion: true },
+  });
+
   if (!result) {
     // V3: binding ma'lumotini olish (subject denormalizatsiya uchun)
-    const TestBinding = require("../models/testBinding.model");
-    const binding = await TestBinding.findById(session.binding);
+    const binding = await prisma.testBinding.findUnique({
+      where: { id: session.bindingId },
+      include: { classes: true },
+    });
     const bindingClass =
       binding && binding.classes && binding.classes.length > 0
-        ? binding.classes[0]
-        : undefined;
-    const bindingSubject = binding ? binding.subject : undefined;
+        ? binding.classes[0].classId
+        : null;
+    const bindingSubject = binding ? binding.subjectId : undefined;
 
-    result = new TestResult({
-      session: sessionId,
-      binding: session.binding,
-      test: session.test,
-      student: session.student,
-      season: session.season,
-      class: bindingClass,
-      subject: bindingSubject,
+    // Ball shkalasini sessiyadan olish (eski sessiyalar uchun joriy sozlamadan)
+    let gradingMin;
+    let gradingMax;
+    if (session.gradingMin != null && session.gradingMax != null) {
+      gradingMin = session.gradingMin;
+      gradingMax = session.gradingMax;
+    } else {
+      const settings = await getTestSettings();
+      gradingMin = settings.minScore;
+      gradingMax = settings.maxScore;
+    }
+
+    const draft = {
+      autoGradedScore,
+      manualGradedScore: 0,
+      gradingMin,
+      gradingMax,
+      extraPoints: [],
+      perQuestion,
+    };
+    const { finalScore, passed, status } = _recomputeFinalScore(draft);
+
+    result = await prisma.testResult.create({
+      data: {
+        sessionId,
+        bindingId: session.bindingId,
+        testId: session.testId,
+        studentId: session.studentId,
+        seasonId: session.seasonId,
+        classId: bindingClass,
+        subjectId: bindingSubject,
+        autoGradedScore,
+        manualGradedScore: 0,
+        gradingMin,
+        gradingMax,
+        finalScore,
+        passed,
+        status,
+        perQuestion: {
+          create: perQuestion.map((pq, index) => ({
+            questionId: pq.questionId,
+            awardedPoints: pq.awardedPoints,
+            maxPoints: pq.maxPoints,
+            gradedBy: pq.gradedBy,
+            status: pq.status,
+            feedback: pq.feedback,
+            position: index,
+          })),
+        },
+      },
+      include: { extraPoints: true, perQuestion: true },
     });
+
+    return result;
   }
 
+  // Mavjud natija — perQuestion ni qayta yaratamiz, extraPoints saqlanadi
   // Ball shkalasini sessiyadan olish (eski sessiyalar uchun joriy sozlamadan)
+  let gradingMin = result.gradingMin;
+  let gradingMax = result.gradingMax;
   if (session.gradingMin != null && session.gradingMax != null) {
-    result.gradingMin = session.gradingMin;
-    result.gradingMax = session.gradingMax;
+    gradingMin = session.gradingMin;
+    gradingMax = session.gradingMax;
   } else if (result.gradingMin == null || result.gradingMax == null) {
-    const settings = await TestSettings.getSettings();
-    result.gradingMin = settings.minScore;
-    result.gradingMax = settings.maxScore;
+    const settings = await getTestSettings();
+    gradingMin = settings.minScore;
+    gradingMax = settings.maxScore;
   }
 
-  result.autoGradedScore = autoGradedScore;
-  result.manualGradedScore = 0;
-  result.perQuestion = perQuestion;
-  // extraPoints saqlanib qoladi (agar oldindan mavjud bo'lsa)
+  const draft = {
+    autoGradedScore,
+    manualGradedScore: 0,
+    gradingMin,
+    // extraPoints saqlanib qoladi (agar oldindan mavjud bo'lsa)
+    extraPoints: result.extraPoints,
+    perQuestion,
+  };
+  const { finalScore, passed, status } = _recomputeFinalScore(draft);
 
-  _recomputeFinalScore(result);
-  await result.save();
+  await prisma.testResultPerQuestion.deleteMany({ where: { resultId: result.id } });
+
+  result = await prisma.testResult.update({
+    where: { id: result.id },
+    data: {
+      gradingMin,
+      gradingMax,
+      autoGradedScore,
+      manualGradedScore: 0,
+      finalScore,
+      passed,
+      status,
+      perQuestion: {
+        create: perQuestion.map((pq, index) => ({
+          questionId: pq.questionId,
+          awardedPoints: pq.awardedPoints,
+          maxPoints: pq.maxPoints,
+          gradedBy: pq.gradedBy,
+          status: pq.status,
+          feedback: pq.feedback,
+          position: index,
+        })),
+      },
+    },
+    include: { extraPoints: true, perQuestion: true },
+  });
 
   return result;
 }
@@ -161,21 +247,24 @@ async function gradeOpenAnswer(resultId, questionId, teacherId, data) {
     throw new BadRequestError("Ball miqdori majburiy");
   }
 
-  const result = await TestResult.findById(resultId);
+  const result = await prisma.testResult.findUnique({
+    where: { id: resultId },
+    include: { extraPoints: true, perQuestion: true },
+  });
   if (!result) {
     throw new NotFoundError("Natija topilmadi");
   }
 
-  const test = await Test.findById(result.test);
+  const test = await prisma.test.findUnique({ where: { id: result.testId } });
   if (!test) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 
   const pq = result.perQuestion.find(
-    (item) => item.question.toString() === questionId.toString(),
+    (item) => item.questionId === questionId.toString(),
   );
   if (!pq) {
     throw new NotFoundError("Savol natijada topilmadi");
@@ -188,22 +277,41 @@ async function gradeOpenAnswer(resultId, questionId, teacherId, data) {
     );
   }
 
+  // perQuestion yozuvini yangilaymiz (mahalliy nusxa va DB)
   pq.awardedPoints = points;
   pq.status = "graded";
   pq.gradedBy = teacherId;
   if (feedback !== undefined) pq.feedback = feedback;
 
+  const pqUpdate = {
+    awardedPoints: points,
+    status: "graded",
+    gradedBy: teacherId,
+  };
+  if (feedback !== undefined) pqUpdate.feedback = feedback;
+  await prisma.testResultPerQuestion.update({
+    where: { id: pq.id },
+    data: pqUpdate,
+  });
+
   // Qo'lda baholangan ballarni qayta yig'ish
   // (auto baholangan savollar gradeSession da hisoblangan, bu yerda
   //  faqat o'qituvchi tomonidan baholangan savollar yig'iladi)
-  result.manualGradedScore = result.perQuestion
+  const manualGradedScore = result.perQuestion
     .filter((item) => item.gradedBy)
     .reduce((sum, item) => sum + (item.awardedPoints || 0), 0);
+  result.manualGradedScore = manualGradedScore;
 
-  _recomputeFinalScore(result);
-  await result.save();
+  const { finalScore, passed, status } = _recomputeFinalScore(result);
+  await prisma.testResult.update({
+    where: { id: result.id },
+    data: { manualGradedScore, finalScore, passed, status },
+  });
 
-  return result;
+  return prisma.testResult.findUnique({
+    where: { id: result.id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 }
 
 /**
@@ -223,46 +331,65 @@ async function addExtraPoints(resultId, teacherId, data) {
     throw new BadRequestError("Qo'shimcha ball sababi majburiy");
   }
 
-  const result = await TestResult.findById(resultId);
+  const result = await prisma.testResult.findUnique({
+    where: { id: resultId },
+    include: { extraPoints: true, perQuestion: true },
+  });
   if (!result) {
     throw new NotFoundError("Natija topilmadi");
   }
 
-  const test = await Test.findById(result.test);
+  const test = await prisma.test.findUnique({ where: { id: result.testId } });
   if (!test) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 
-  result.extraPoints.push({
-    amount: Number(amount),
-    reason,
-    addedBy: teacherId,
-    addedAt: new Date(),
+  const nextPosition = result.extraPoints.length;
+  await prisma.testResultExtraPoint.create({
+    data: {
+      resultId: result.id,
+      amount: Number(amount),
+      reason,
+      addedBy: teacherId,
+      addedAt: new Date(),
+      position: nextPosition,
+    },
   });
 
-  _recomputeFinalScore(result);
-  await result.save();
+  // Mahalliy nusxaga qo'shib finalScore ni qayta hisoblaymiz
+  result.extraPoints.push({ amount: Number(amount) });
+  const { finalScore, passed, status } = _recomputeFinalScore(result);
+  await prisma.testResult.update({
+    where: { id: result.id },
+    data: { finalScore, passed, status },
+  });
 
-  return result;
+  return prisma.testResult.findUnique({
+    where: { id: result.id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 }
 
 /**
  * Natija egaligini tekshirib, natijani qaytaradi (qo'shimcha ball amallari uchun).
  */
 async function _loadResultOwnedByTeacher(resultId, teacherId) {
-  const result = await TestResult.findById(resultId);
+  const result = await prisma.testResult.findUnique({
+    where: { id: resultId },
+    include: { extraPoints: true, perQuestion: true },
+  });
   if (!result) {
     throw new NotFoundError("Natija topilmadi");
   }
 
-  const test = await Test.findById(result.test);
+  const test = await prisma.test.findUnique({ where: { id: result.testId } });
   if (!test) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 
@@ -289,7 +416,7 @@ async function editExtraPoints(resultId, entryId, teacherId, data) {
 
   const result = await _loadResultOwnedByTeacher(resultId, teacherId);
 
-  const entry = result.extraPoints.id(entryId);
+  const entry = result.extraPoints.find((ep) => ep.id === entryId.toString());
   if (!entry) {
     throw new NotFoundError("Qo'shimcha ball yozuvi topilmadi");
   }
@@ -297,10 +424,21 @@ async function editExtraPoints(resultId, entryId, teacherId, data) {
   entry.amount = Number(amount);
   entry.reason = reason;
 
-  _recomputeFinalScore(result);
-  await result.save();
+  await prisma.testResultExtraPoint.update({
+    where: { id: entry.id },
+    data: { amount: Number(amount), reason },
+  });
 
-  return result;
+  const { finalScore, passed, status } = _recomputeFinalScore(result);
+  await prisma.testResult.update({
+    where: { id: result.id },
+    data: { finalScore, passed, status },
+  });
+
+  return prisma.testResult.findUnique({
+    where: { id: result.id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 }
 
 /**
@@ -313,17 +451,25 @@ async function editExtraPoints(resultId, entryId, teacherId, data) {
 async function deleteExtraPoints(resultId, entryId, teacherId) {
   const result = await _loadResultOwnedByTeacher(resultId, teacherId);
 
-  const entry = result.extraPoints.id(entryId);
+  const entry = result.extraPoints.find((ep) => ep.id === entryId.toString());
   if (!entry) {
     throw new NotFoundError("Qo'shimcha ball yozuvi topilmadi");
   }
 
-  result.extraPoints.pull(entryId);
+  await prisma.testResultExtraPoint.delete({ where: { id: entry.id } });
 
-  _recomputeFinalScore(result);
-  await result.save();
+  // Mahalliy nusxadan o'chirib finalScore ni qayta hisoblaymiz
+  result.extraPoints = result.extraPoints.filter((ep) => ep.id !== entry.id);
+  const { finalScore, passed, status } = _recomputeFinalScore(result);
+  await prisma.testResult.update({
+    where: { id: result.id },
+    data: { finalScore, passed, status },
+  });
 
-  return result;
+  return prisma.testResult.findUnique({
+    where: { id: result.id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 }
 
 /**
@@ -333,15 +479,20 @@ async function deleteExtraPoints(resultId, entryId, teacherId) {
  * @returns {Promise<Array>} natijalar
  */
 async function getResultsForStudent(studentId, seasonId) {
-  const filter = { student: studentId };
-  if (seasonId) filter.season = seasonId;
+  const where = { studentId };
+  if (seasonId) where.seasonId = seasonId;
 
-  return TestResult.find(filter)
-    .populate("test", "title")
-    .populate("season", "name")
-    .populate("subject", "name")
-    .populate("class", "name")
-    .sort({ createdAt: -1 });
+  const results = await prisma.testResult.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+
+  return _attachRefs(results, {
+    test: { select: { id: true, title: true } },
+    season: { select: { id: true, name: true } },
+    subject: { select: { id: true, name: true } },
+    class: { select: { id: true, name: true } },
+  });
 }
 
 /**
@@ -351,31 +502,43 @@ async function getResultsForStudent(studentId, seasonId) {
  * @returns {Promise<object>} natija
  */
 async function getResultById(id, user) {
-  const result = await TestResult.findById(id)
-    .populate("test", "title teacher")
-    .populate("season", "name")
-    .populate("subject", "name")
-    .populate("class", "name")
-    .populate("student", "firstName lastName")
-    .populate("session")
-    .populate("perQuestion.gradedBy", "firstName lastName")
-    .populate("extraPoints.addedBy", "firstName lastName");
+  const result = await prisma.testResult.findUnique({
+    where: { id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 
   if (!result) {
     throw new NotFoundError("Natija topilmadi");
   }
 
+  // test'ni teacher bilan olish (egalikni tekshirish uchun)
+  const test = await prisma.test.findUnique({
+    where: { id: result.testId },
+    select: { id: true, title: true, teacherId: true },
+  });
+
   if (user.role === "student") {
-    if (result.student._id.toString() !== user._id.toString()) {
+    if (result.studentId !== user.id.toString()) {
       throw new ForbiddenError("Bu natija sizga tegishli emas");
     }
   } else if (user.role === "teacher") {
-    if (result.test.teacher.toString() !== user._id.toString()) {
+    if ((test?.teacherId || null) !== user.id.toString()) {
       throw new ForbiddenError("Bu natija sizning testingizga tegishli emas");
     }
   }
 
-  return result;
+  const [enriched] = await _attachRefs([result], {
+    test: { select: { id: true, title: true, teacherId: true } },
+    season: { select: { id: true, name: true } },
+    subject: { select: { id: true, name: true } },
+    class: { select: { id: true, name: true } },
+    student: { select: { id: true, firstName: true, lastName: true } },
+    session: { full: true },
+    perQuestionGradedBy: { select: { id: true, firstName: true, lastName: true } },
+    extraPointsAddedBy: { select: { id: true, firstName: true, lastName: true } },
+  });
+
+  return enriched;
 }
 
 /**
@@ -386,21 +549,28 @@ async function getResultById(id, user) {
  * @returns {Promise<object>} natija
  */
 async function getResultForAdmin(id) {
-  const result = await TestResult.findById(id)
-    .populate("test", "title")
-    .populate("season", "name")
-    .populate("subject", "name")
-    .populate("class", "name")
-    .populate("student", "firstName lastName username")
-    .populate({ path: "session", select: "+questions.correctOptionId" })
-    .populate("perQuestion.gradedBy", "firstName lastName")
-    .populate("extraPoints.addedBy", "firstName lastName");
+  const result = await prisma.testResult.findUnique({
+    where: { id },
+    include: { extraPoints: true, perQuestion: true },
+  });
 
   if (!result) {
     throw new NotFoundError("Natija topilmadi");
   }
 
-  return result;
+  const [enriched] = await _attachRefs([result], {
+    test: { select: { id: true, title: true } },
+    season: { select: { id: true, name: true } },
+    subject: { select: { id: true, name: true } },
+    class: { select: { id: true, name: true } },
+    student: { select: { id: true, firstName: true, lastName: true, username: true } },
+    // admin uchun to'liq sessiya (frozen savollar correctOptionId bilan)
+    session: { full: true, withKey: true },
+    perQuestionGradedBy: { select: { id: true, firstName: true, lastName: true } },
+    extraPointsAddedBy: { select: { id: true, firstName: true, lastName: true } },
+  });
+
+  return enriched;
 }
 
 /**
@@ -411,31 +581,174 @@ async function getResultForAdmin(id) {
  * @returns {Promise<object>} sahifalangan javob
  */
 async function getResultsForTest(req, testId, teacherId) {
-  const test = await Test.findById(testId);
+  const test = await prisma.test.findUnique({ where: { id: testId } });
   if (!test) {
     throw new NotFoundError("Test topilmadi");
   }
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 
   const { page, limit, skip } = getPaginationParams(req);
   const { status } = req.query;
 
-  const filter = { test: testId };
-  if (status && status !== "all") filter.status = status;
+  const where = { testId };
+  if (status && status !== "all") where.status = status;
 
   const [results, total] = await Promise.all([
-    TestResult.find(filter)
-      .populate("student", "firstName lastName")
-      .populate("session", "status startedAt submittedAt attemptNumber")
-      .sort({ finalScore: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    TestResult.countDocuments(filter),
+    prisma.testResult.findMany({
+      where,
+      orderBy: [{ finalScore: "desc" }, { createdAt: "desc" }],
+      skip,
+      take: limit,
+    }),
+    prisma.testResult.count({ where }),
   ]);
 
-  return formatPaginationResponse(results, total, page, limit);
+  const enriched = await _attachRefs(results, {
+    student: { select: { id: true, firstName: true, lastName: true } },
+    session: {
+      select: {
+        id: true,
+        status: true,
+        startedAt: true,
+        submittedAt: true,
+        attemptNumber: true,
+      },
+    },
+  });
+
+  return formatPaginationResponse(enriched, total, page, limit);
+}
+
+/**
+ * Natijalarga soft-ref (scalar FK) hujjatlarni qo'lda yuklab xaritalaydi.
+ * Populate o'rnini bosadi — relation bo'lmagan ref'lar uchun.
+ *
+ * @param {Array<object>} results - TestResult obyektlari
+ * @param {object} spec - qaysi ref'larni yuklash kerakligini bildiruvchi konfiguratsiya
+ * @returns {Promise<Array<object>>} boyitilgan natijalar
+ */
+async function _attachRefs(results, spec) {
+  if (results.length === 0) return results;
+
+  const collect = (key) => [
+    ...new Set(results.map((r) => r[key]).filter(Boolean)),
+  ];
+
+  // Parallel yuklashlar
+  const tasks = {};
+
+  if (spec.test) {
+    tasks.test = prisma.test
+      .findMany({ where: { id: { in: collect("testId") } }, select: spec.test.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.season) {
+    tasks.season = prisma.testSeason
+      .findMany({ where: { id: { in: collect("seasonId") } }, select: spec.season.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.subject) {
+    tasks.subject = prisma.subject
+      .findMany({ where: { id: { in: collect("subjectId") } }, select: spec.subject.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.class) {
+    tasks.class = prisma.class
+      .findMany({ where: { id: { in: collect("classId") } }, select: spec.class.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.student) {
+    tasks.student = prisma.user
+      .findMany({ where: { id: { in: collect("studentId") } }, select: spec.student.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.session) {
+    tasks.session = prisma.testSession
+      .findMany(
+        spec.session.full
+          ? {
+              where: { id: { in: collect("sessionId") } },
+              include: { questions: { include: { options: true } }, answers: true },
+            }
+          : { where: { id: { in: collect("sessionId") } }, select: spec.session.select },
+      )
+      .then((rows) => {
+        // Admin ko'rinishi uchun kalit qoladi, aks holda olib tashlanadi
+        const mapped = rows.map((s) =>
+          spec.session.full && !spec.session.withKey ? _stripSessionKey(s) : s,
+        );
+        return new Map(mapped.map((x) => [x.id, x]));
+      });
+  }
+
+  // gradedBy / addedBy uchun foydalanuvchilarni yig'ish
+  if (spec.perQuestionGradedBy) {
+    const ids = [
+      ...new Set(
+        results.flatMap((r) => (r.perQuestion || []).map((pq) => pq.gradedBy).filter(Boolean)),
+      ),
+    ];
+    tasks.perQuestionGradedBy = prisma.user
+      .findMany({ where: { id: { in: ids } }, select: spec.perQuestionGradedBy.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+  if (spec.extraPointsAddedBy) {
+    const ids = [
+      ...new Set(
+        results.flatMap((r) => (r.extraPoints || []).map((ep) => ep.addedBy).filter(Boolean)),
+      ),
+    ];
+    tasks.extraPointsAddedBy = prisma.user
+      .findMany({ where: { id: { in: ids } }, select: spec.extraPointsAddedBy.select })
+      .then((rows) => new Map(rows.map((x) => [x.id, x])));
+  }
+
+  const keys = Object.keys(tasks);
+  const maps = await Promise.all(keys.map((k) => tasks[k]));
+  const byName = {};
+  keys.forEach((k, i) => {
+    byName[k] = maps[i];
+  });
+
+  return results.map((r) => {
+    const out = { ...r };
+    if (byName.test) out.test = byName.test.get(r.testId) || null;
+    if (byName.season) out.season = byName.season.get(r.seasonId) || null;
+    if (byName.subject) out.subject = byName.subject.get(r.subjectId) || null;
+    if (byName.class) out.class = r.classId ? byName.class.get(r.classId) || null : null;
+    if (byName.student) out.student = byName.student.get(r.studentId) || null;
+    if (byName.session) out.session = byName.session.get(r.sessionId) || null;
+    if (byName.perQuestionGradedBy) {
+      out.perQuestion = (r.perQuestion || []).map((pq) => ({
+        ...pq,
+        gradedBy: pq.gradedBy ? byName.perQuestionGradedBy.get(pq.gradedBy) || null : null,
+      }));
+    }
+    if (byName.extraPointsAddedBy) {
+      out.extraPoints = (r.extraPoints || []).map((ep) => ({
+        ...ep,
+        addedBy: ep.addedBy ? byName.extraPointsAddedBy.get(ep.addedBy) || null : null,
+      }));
+    }
+    return out;
+  });
+}
+
+/**
+ * To'liq yuklangan sessiyadan frozen savollar javob kalitini (correctOptionId)
+ * olib tashlaydi (o'quvchiga ko'rsatiladigan ko'rinish uchun).
+ */
+function _stripSessionKey(session) {
+  if (!session.questions) return session;
+  return {
+    ...session,
+    questions: session.questions.map((q) => {
+      const { correctOptionId, ...rest } = q;
+      return rest;
+    }),
+  };
 }
 
 module.exports = {

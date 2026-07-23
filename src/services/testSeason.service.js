@@ -1,9 +1,4 @@
-const TestSeason = require("../models/testSeason.model");
-const Test = require("../models/test.model");
-const TeacherAssignment = require("../models/teacherAssignment.model");
-const Class = require("../models/class.model");
-const User = require("../models/user.model");
-const Message = require("../models/message.model");
+const prisma = require("../config/prisma");
 const messageQueueService = require("./messageQueue.service");
 const seasonRewardService = require("./seasonReward.service");
 const { config } = require("../config/env.config");
@@ -29,6 +24,29 @@ function formatDate(date) {
 }
 
 /**
+ * createdBy (soft ref — FK emas) uchun yaratuvchilarni qo'lda yuklab xaritalaydi.
+ * @param {Array} seasons - createdBy maydoni bor mavsumlar
+ * @returns {Promise<Array>} createdBy obyektga almashtirilgan mavsumlar
+ */
+async function attachCreators(seasons) {
+  const creatorIds = [
+    ...new Set(seasons.map((s) => s.createdBy).filter(Boolean)),
+  ];
+  if (creatorIds.length === 0) {
+    return seasons.map((s) => ({ ...s, createdBy: null }));
+  }
+  const creators = await prisma.user.findMany({
+    where: { id: { in: creatorIds } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const creatorMap = new Map(creators.map((c) => [c.id, c]));
+  return seasons.map((s) => ({
+    ...s,
+    createdBy: creatorMap.get(s.createdBy) || null,
+  }));
+}
+
+/**
  * Berilgan sana oralig'i bilan ustma-ust keladigan mavsumlarni topadi.
  * @param {Date} startDate - boshlanish sanasi
  * @param {Date} endDate - tugash sanasi
@@ -36,13 +54,16 @@ function formatDate(date) {
  * @returns {Promise<Array>} ustma-ust keladigan mavsumlar
  */
 async function findOverlappingSeasons(startDate, endDate, excludeId) {
-  const query = {
-    startDate: { $lte: endDate },
-    endDate: { $gte: startDate },
+  const where = {
+    startDate: { lte: endDate },
+    endDate: { gte: startDate },
   };
-  if (excludeId) query._id = { $ne: excludeId };
+  if (excludeId) where.id = { not: excludeId };
 
-  return TestSeason.find(query).select("name startDate endDate status");
+  return prisma.testSeason.findMany({
+    where,
+    select: { id: true, name: true, startDate: true, endDate: true, status: true },
+  });
 }
 
 /**
@@ -54,19 +75,22 @@ async function listSeasons(req) {
   const { page, limit, skip } = getPaginationParams(req);
   const { status } = req.query;
 
-  const filter = {};
-  if (status && status !== "all") filter.status = status;
+  const where = {};
+  if (status && status !== "all") where.status = status;
 
   const [seasons, total] = await Promise.all([
-    TestSeason.find(filter)
-      .populate("createdBy", "firstName lastName")
-      .sort({ startDate: -1 })
-      .skip(skip)
-      .limit(limit),
-    TestSeason.countDocuments(filter),
+    prisma.testSeason.findMany({
+      where,
+      orderBy: { startDate: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.testSeason.count({ where }),
   ]);
 
-  return formatPaginationResponse(seasons, total, page, limit);
+  const seasonsWithCreators = await attachCreators(seasons);
+
+  return formatPaginationResponse(seasonsWithCreators, total, page, limit);
 }
 
 /**
@@ -74,8 +98,9 @@ async function listSeasons(req) {
  * @returns {Promise<Array>} faol mavsumlar
  */
 async function getActiveSeasons() {
-  return TestSeason.find({ status: "active", isActive: true }).sort({
-    startDate: -1,
+  return prisma.testSeason.findMany({
+    where: { status: "active", isActive: true },
+    orderBy: { startDate: "desc" },
   });
 }
 
@@ -85,14 +110,12 @@ async function getActiveSeasons() {
  * @returns {Promise<object>} mavsum
  */
 async function getSeasonById(id) {
-  const season = await TestSeason.findById(id).populate(
-    "createdBy",
-    "firstName lastName",
-  );
+  const season = await prisma.testSeason.findUnique({ where: { id } });
   if (!season) {
     throw new NotFoundError("Mavsum topilmadi");
   }
-  return season;
+  const [withCreator] = await attachCreators([season]);
+  return withCreator;
 }
 
 /**
@@ -116,16 +139,20 @@ async function createSeason(data, createdBy) {
     );
   }
 
-  // status sanalardan avtomatik hisoblanadi (pre-save hook)
-  const season = await TestSeason.create({
-    name,
-    description,
-    startDate: start,
-    endDate: end,
-    createdBy,
+  // status sanalardan avtomatik hisoblanadi (computeSeasonStatus helper)
+  const { computeSeasonStatus } = require("../helpers/seasonStatus.helper");
+  const season = await prisma.testSeason.create({
+    data: {
+      name,
+      description,
+      startDate: start,
+      endDate: end,
+      status: computeSeasonStatus(start, end),
+      createdBy,
+    },
   });
 
-  const overlapping = await findOverlappingSeasons(start, end, season._id);
+  const overlapping = await findOverlappingSeasons(start, end, season.id);
 
   return { season, overlapping };
 }
@@ -137,35 +164,46 @@ async function createSeason(data, createdBy) {
  * @returns {Promise<object>} yangilangan mavsum va ustma-ust mavsumlar
  */
 async function updateSeason(id, data) {
-  const season = await TestSeason.findById(id);
+  const season = await prisma.testSeason.findUnique({ where: { id } });
   if (!season) {
     throw new NotFoundError("Mavsum topilmadi");
   }
 
-  // status sanalardan avtomatik hisoblanadi (pre-save hook), qo'lda o'zgartirilmaydi
+  // status sanalardan avtomatik hisoblanadi (computeSeasonStatus), qo'lda o'zgartirilmaydi
   const { name, description, startDate, endDate, isActive } = data;
 
-  if (name !== undefined) season.name = name;
-  if (description !== undefined) season.description = description;
-  if (startDate !== undefined) season.startDate = new Date(startDate);
-  if (endDate !== undefined) season.endDate = new Date(endDate);
-  if (isActive !== undefined) season.isActive = isActive;
+  const update = {};
+  if (name !== undefined) update.name = name;
+  if (description !== undefined) update.description = description;
+  if (startDate !== undefined) update.startDate = new Date(startDate);
+  if (endDate !== undefined) update.endDate = new Date(endDate);
+  if (isActive !== undefined) update.isActive = isActive;
 
-  if (season.endDate <= season.startDate) {
+  const nextStart =
+    update.startDate !== undefined ? update.startDate : season.startDate;
+  const nextEnd = update.endDate !== undefined ? update.endDate : season.endDate;
+
+  if (nextEnd <= nextStart) {
     throw new BadRequestError(
       "Tugash sanasi boshlanish sanasidan keyin bo'lishi kerak",
     );
   }
 
-  await season.save();
+  const { computeSeasonStatus } = require("../helpers/seasonStatus.helper");
+  update.status = computeSeasonStatus(nextStart, nextEnd);
+
+  const updated = await prisma.testSeason.update({
+    where: { id },
+    data: update,
+  });
 
   const overlapping = await findOverlappingSeasons(
-    season.startDate,
-    season.endDate,
-    season._id,
+    updated.startDate,
+    updated.endDate,
+    updated.id,
   );
 
-  return { season, overlapping };
+  return { season: updated, overlapping };
 }
 
 /**
@@ -174,21 +212,24 @@ async function updateSeason(id, data) {
  * @returns {Promise<object>} natija ({ deleted: boolean })
  */
 async function deleteSeason(id) {
-  const season = await TestSeason.findById(id);
+  const season = await prisma.testSeason.findUnique({ where: { id } });
   if (!season) {
     throw new NotFoundError("Mavsum topilmadi");
   }
 
-  const testCount = await Test.countDocuments({ season: id });
+  // Testlar TestBinding orqali mavsumga bog'lanadi (season → binding)
+  const testCount = await prisma.testBinding.count({ where: { seasonId: id } });
   if (testCount > 0) {
     // Testlari bor mavsumni o'chirib bo'lmaydi - faqat nofaol qilamiz
     // (status sanalardan avtomatik hisoblanadi)
-    season.isActive = false;
-    await season.save();
-    return { deleted: false, season };
+    const updated = await prisma.testSeason.update({
+      where: { id },
+      data: { isActive: false },
+    });
+    return { deleted: false, season: updated };
   }
 
-  await TestSeason.findByIdAndDelete(id);
+  await prisma.testSeason.delete({ where: { id } });
   return { deleted: true };
 }
 
@@ -199,39 +240,46 @@ async function deleteSeason(id) {
  * @returns {Promise<Array<{_id, name, studentCount}>>}
  */
 async function getSeasonClasses(seasonId) {
-  const season = await TestSeason.findById(seasonId);
+  const season = await prisma.testSeason.findUnique({ where: { id: seasonId } });
   if (!season) throw new NotFoundError("Mavsum topilmadi");
 
-  const classIds = await TeacherAssignment.find({
-    season: seasonId,
-    isActive: true,
-  }).distinct("class");
+  const assignments = await prisma.teacherAssignment.findMany({
+    where: { seasonId, isActive: true },
+    distinct: ["classId"],
+    select: { classId: true },
+  });
+  const classIds = assignments.map((a) => a.classId);
 
   if (classIds.length === 0) return [];
 
-  const [classes, counts] = await Promise.all([
-    Class.find({ _id: { $in: classIds } }).select("name"),
-    User.aggregate([
-      {
-        $match: {
-          role: ROLES.STUDENT,
-          isActive: { $ne: false },
-          classes: { $in: classIds },
-          telegramIds: { $exists: true, $ne: [] },
-        },
-      },
-      { $unwind: "$classes" },
-      { $match: { classes: { $in: classIds } } },
-      { $group: { _id: "$classes", count: { $sum: 1 } } },
-    ]),
-  ]);
+  const classes = await prisma.class.findMany({
+    where: { id: { in: classIds } },
+    select: { id: true, name: true },
+  });
 
-  const countMap = new Map(counts.map((c) => [String(c._id), c.count]));
+  // Telegramga ulangan, faol o'quvchilarni biriktirilgan sinflar bo'yicha sanash.
+  // classes M2M (UserClass) — junctiondan foydalanamiz.
+  const members = await prisma.userClass.findMany({
+    where: {
+      classId: { in: classIds },
+      user: {
+        role: ROLES.STUDENT,
+        isActive: { not: false },
+        NOT: { telegramIds: { isEmpty: true } },
+      },
+    },
+    select: { classId: true, userId: true },
+  });
+
+  const countMap = new Map();
+  for (const m of members) {
+    countMap.set(m.classId, (countMap.get(m.classId) || 0) + 1);
+  }
 
   return classes.map((c) => ({
-    _id: c._id,
+    _id: c.id,
     name: c.name,
-    studentCount: countMap.get(String(c._id)) || 0,
+    studentCount: countMap.get(c.id) || 0,
   }));
 }
 
@@ -246,14 +294,16 @@ async function getSeasonClasses(seasonId) {
 async function announceSeason(seasonId, data, sentBy) {
   const { note, excludedClassIds = [] } = data || {};
 
-  const season = await TestSeason.findById(seasonId);
+  const season = await prisma.testSeason.findUnique({ where: { id: seasonId } });
   if (!season) throw new NotFoundError("Mavsum topilmadi");
 
   // Biriktirilgan sinflar
-  const allClassIds = await TeacherAssignment.find({
-    season: seasonId,
-    isActive: true,
-  }).distinct("class");
+  const assignments = await prisma.teacherAssignment.findMany({
+    where: { seasonId, isActive: true },
+    distinct: ["classId"],
+    select: { classId: true },
+  });
+  const allClassIds = assignments.map((a) => a.classId);
 
   const excluded = new Set((excludedClassIds || []).map(String));
   const targetClassIds = allClassIds.filter((c) => !excluded.has(String(c)));
@@ -262,13 +312,26 @@ async function announceSeason(seasonId, data, sentBy) {
     throw new BadRequestError("Yuboriladigan sinf yo'q (barchasi istisno qilingan yoki biriktiruv yo'q)");
   }
 
-  // Telegramga ulangan o'quvchilar
-  const students = await User.find({
-    role: ROLES.STUDENT,
-    isActive: { $ne: false },
-    classes: { $in: targetClassIds },
-    telegramIds: { $exists: true, $ne: [] },
-  }).select("_id telegramIds");
+  // Telegramga ulangan o'quvchilar (classes M2M junction orqali)
+  const memberships = await prisma.userClass.findMany({
+    where: {
+      classId: { in: targetClassIds },
+      user: {
+        role: ROLES.STUDENT,
+        isActive: { not: false },
+        NOT: { telegramIds: { isEmpty: true } },
+      },
+    },
+    select: {
+      user: { select: { id: true, telegramIds: true } },
+    },
+  });
+  // O'quvchi bir nechta target sinfda bo'lsa ham bir marta olinsin
+  const studentMap = new Map();
+  for (const m of memberships) {
+    if (m.user) studentMap.set(m.user.id, m.user);
+  }
+  const students = [...studentMap.values()];
 
   // E'lon matnini tuzish: avtomatik mavsum ma'lumoti + ixtiyoriy izoh
   let text = `📢 <b>${escapeHtml(season.name)}</b>\n`;
@@ -284,7 +347,7 @@ async function announceSeason(seasonId, data, sentBy) {
   students.forEach((s) => {
     s.telegramIds.forEach((telegramId) => {
       recipientIds.push(telegramId);
-      deliveryStatus.push({ telegramId, userId: s._id, status: "pending" });
+      deliveryStatus.push({ telegramId, userId: s.id, status: "pending" });
     });
   });
 
@@ -292,19 +355,28 @@ async function announceSeason(seasonId, data, sentBy) {
     throw new BadRequestError("Telegramga ulangan o'quvchi topilmadi");
   }
 
-  const message = await Message.create({
-    messageText: text,
-    sentBy,
-    recipientType: "season",
-    season: seasonId,
-    recipientIds,
-    totalRecipients: recipientIds.length,
-    deliveryStatus,
+  const message = await prisma.message.create({
+    data: {
+      messageText: text,
+      sentBy,
+      recipientType: "season",
+      season: seasonId,
+      recipientIds,
+      totalRecipients: recipientIds.length,
+      deliveryStatus: {
+        create: deliveryStatus.map((d, position) => ({
+          telegramId: d.telegramId,
+          userId: d.userId,
+          status: d.status,
+          position,
+        })),
+      },
+    },
   });
 
   await messageQueueService.addBulkToQueue(
     deliveryStatus.map((d) => ({
-      messageId: message._id,
+      messageId: message.id,
       telegramId: d.telegramId,
       userId: d.userId,
       messageText: text,
@@ -312,7 +384,7 @@ async function announceSeason(seasonId, data, sentBy) {
   );
 
   return {
-    messageId: message._id,
+    messageId: message.id,
     totalRecipients: recipientIds.length,
     studentCount: students.length,
     classCount: targetClassIds.length,
@@ -328,7 +400,7 @@ async function announceSeason(seasonId, data, sentBy) {
  * @returns {Promise<object>} { finalizedAt, distributed, notified }
  */
 async function finalizeSeason(seasonId, userId) {
-  const season = await TestSeason.findById(seasonId);
+  const season = await prisma.testSeason.findUnique({ where: { id: seasonId } });
   if (!season) throw new NotFoundError("Mavsum topilmadi");
   if (season.finalizedAt) {
     throw new BadRequestError("Mavsum allaqachon to'liq yakunlangan");
@@ -371,13 +443,14 @@ async function finalizeSeason(seasonId, userId) {
 
   // 4) Telegramga ulangan o'quvchilar
   const studentIds = schoolRows.map((r) => r.student._id);
-  const users = await User.find({
-    _id: { $in: studentIds },
-    telegramIds: { $exists: true, $ne: [] },
-  }).select("_id telegramIds");
-  const tgByStudent = new Map(
-    users.map((u) => [u._id.toString(), u.telegramIds]),
-  );
+  const users = await prisma.user.findMany({
+    where: {
+      id: { in: studentIds },
+      NOT: { telegramIds: { isEmpty: true } },
+    },
+    select: { id: true, telegramIds: true },
+  });
+  const tgByStudent = new Map(users.map((u) => [u.id.toString(), u.telegramIds]));
 
   const webappUrl = `${config.studentWebappUrl.replace(/\/$/, "")}/seasons/${seasonId}/rewards`;
   const replyMarkup = {
@@ -420,14 +493,23 @@ async function finalizeSeason(seasonId, userId) {
   }
 
   if (recipientIds.length > 0) {
-    const message = await Message.create({
-      messageText: `${season.name} - yakuniy natijalar`,
-      sentBy: userId,
-      recipientType: "season",
-      season: seasonId,
-      recipientIds,
-      totalRecipients: recipientIds.length,
-      deliveryStatus,
+    const message = await prisma.message.create({
+      data: {
+        messageText: `${season.name} - yakuniy natijalar`,
+        sentBy: userId,
+        recipientType: "season",
+        season: seasonId,
+        recipientIds,
+        totalRecipients: recipientIds.length,
+        deliveryStatus: {
+          create: deliveryStatus.map((d, position) => ({
+            telegramId: d.telegramId,
+            userId: d.userId,
+            status: d.status,
+            position,
+          })),
+        },
+      },
     });
 
     const queueItems = [];
@@ -438,7 +520,7 @@ async function finalizeSeason(seasonId, userId) {
       if (!tgIds || !text) continue;
       for (const tgId of tgIds) {
         queueItems.push({
-          messageId: message._id,
+          messageId: message.id,
           telegramId: tgId,
           userId: r.student._id,
           messageText: text,
@@ -451,10 +533,10 @@ async function finalizeSeason(seasonId, userId) {
 
   // 6) Mavsumni yakunlangan deb belgilash (distributedAt ni saqlab qolish uchun
   //    yangidan yuklaymiz)
-  const fresh = await TestSeason.findById(seasonId);
-  fresh.finalizedAt = new Date();
-  fresh.finalizedBy = userId;
-  await fresh.save();
+  const fresh = await prisma.testSeason.update({
+    where: { id: seasonId },
+    data: { finalizedAt: new Date(), finalizedBy: userId },
+  });
 
   return {
     finalizedAt: fresh.finalizedAt,

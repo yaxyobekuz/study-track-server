@@ -1,7 +1,4 @@
-const Test = require("../models/test.model");
-const TestBinding = require("../models/testBinding.model");
-const TestSession = require("../models/testSession.model");
-const Question = require("../models/question.model");
+const prisma = require("../config/prisma");
 const {
   BadRequestError,
   NotFoundError,
@@ -13,7 +10,7 @@ const { getPaginationParams, formatPaginationResponse } = require("../utils/pagi
  * Test muallifi ekanligini tekshiradi.
  */
 function _assertTestOwner(test, teacherId) {
-  if (test.teacher.toString() !== teacherId.toString()) {
+  if (test.teacherId.toString() !== teacherId.toString()) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
 }
@@ -26,40 +23,44 @@ async function listTests(req, teacherId) {
   const { page, limit, skip } = getPaginationParams(req);
   const { search } = req.query;
 
-  const filter = { teacher: teacherId, isActive: true };
-  if (search) filter.title = { $regex: search, $options: "i" };
+  const filter = { teacherId, isActive: true };
+  if (search) filter.title = { contains: search, mode: "insensitive" };
 
   const [tests, total] = await Promise.all([
-    Test.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit),
-    Test.countDocuments(filter),
+    prisma.test.findMany({
+      where: filter,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    }),
+    prisma.test.count({ where: filter }),
   ]);
 
   // Har test uchun biriktiruvlar va savollar sonini qo'shish (preview)
-  const testIds = tests.map((t) => t._id);
+  const testIds = tests.map((t) => t.id);
   const [bindingsAgg, questionsAgg] = await Promise.all([
-    TestBinding.aggregate([
-      { $match: { test: { $in: testIds }, isActive: true } },
-      { $group: { _id: "$test", count: { $sum: 1 } } },
-    ]),
-    Question.aggregate([
-      { $match: { test: { $in: testIds }, isActive: true } },
-      { $group: { _id: "$test", count: { $sum: 1 } } },
-    ]),
+    prisma.testBinding.groupBy({
+      by: ["testId"],
+      where: { testId: { in: testIds }, isActive: true },
+      _count: { _all: true },
+    }),
+    prisma.question.groupBy({
+      by: ["testId"],
+      where: { testId: { in: testIds }, isActive: true },
+      _count: { _all: true },
+    }),
   ]);
   const bindingCountMap = new Map(
-    bindingsAgg.map((b) => [b._id.toString(), b.count]),
+    bindingsAgg.map((b) => [b.testId, b._count._all]),
   );
   const questionCountMap = new Map(
-    questionsAgg.map((q) => [q._id.toString(), q.count]),
+    questionsAgg.map((q) => [q.testId, q._count._all]),
   );
 
   const enriched = tests.map((t) => ({
-    ...t.toObject(),
-    bindingCount: bindingCountMap.get(t._id.toString()) || 0,
-    questionCountActual: questionCountMap.get(t._id.toString()) || 0,
+    ...t,
+    bindingCount: bindingCountMap.get(t.id) || 0,
+    questionCountActual: questionCountMap.get(t.id) || 0,
   }));
 
   return formatPaginationResponse(enriched, total, page, limit);
@@ -69,18 +70,24 @@ async function listTests(req, teacherId) {
  * Testni ID bo'yicha oladi.
  */
 async function getTestById(id, user) {
-  const test = await Test.findById(id).populate(
-    "teacher",
-    "firstName lastName",
-  );
+  const test = await prisma.test.findUnique({ where: { id } });
 
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
 
+  // teacher — soft ref (relation emas), qo'lda yuklab populate shaklini saqlaymiz
+  const teacher = await prisma.user.findUnique({
+    where: { id: test.teacherId },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  test.teacher = teacher
+    ? { _id: teacher.id, firstName: teacher.firstName, lastName: teacher.lastName }
+    : null;
+
   if (
     user.role === "teacher" &&
-    test.teacher._id.toString() !== user._id.toString()
+    test.teacherId.toString() !== user._id.toString()
   ) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }
@@ -99,12 +106,14 @@ async function createTest(data, teacherId) {
     throw new BadRequestError("Test nomi majburiy");
   }
 
-  const test = await Test.create({
-    teacher: teacherId,
-    title,
-    questionCount: questionCount !== undefined ? Number(questionCount) : 30,
-    timeLimitMinutes:
-      timeLimitMinutes !== undefined ? Number(timeLimitMinutes) : 30,
+  const test = await prisma.test.create({
+    data: {
+      teacherId,
+      title,
+      questionCount: questionCount !== undefined ? Number(questionCount) : 30,
+      timeLimitMinutes:
+        timeLimitMinutes !== undefined ? Number(timeLimitMinutes) : 30,
+    },
   });
 
   return test;
@@ -116,7 +125,7 @@ async function createTest(data, teacherId) {
  * mosligi tekshiriladi.
  */
 async function updateTest(id, data, teacherId) {
-  const test = await Test.findById(id);
+  const test = await prisma.test.findUnique({ where: { id } });
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
@@ -124,18 +133,20 @@ async function updateTest(id, data, teacherId) {
 
   const { title, questionCount, timeLimitMinutes } = data;
 
-  if (title !== undefined) test.title = title;
+  const update = {};
+
+  if (title !== undefined) update.title = title;
   if (timeLimitMinutes !== undefined) {
-    test.timeLimitMinutes = Number(timeLimitMinutes);
+    update.timeLimitMinutes = Number(timeLimitMinutes);
   }
   if (questionCount !== undefined) {
     // Avtomatik ko'rinish modeli: questionCount savollardan ko'p bo'lsa, test
     // shunchaki o'quvchilarga ko'rinmaydi - alohida cheklov shart emas.
-    test.questionCount = Number(questionCount);
+    update.questionCount = Number(questionCount);
   }
 
-  await test.save();
-  return test;
+  const updated = await prisma.test.update({ where: { id }, data: update });
+  return updated;
 }
 
 /**
@@ -143,25 +154,24 @@ async function updateTest(id, data, teacherId) {
  * Aks holda hard delete + bog'liq savollar va biriktiruvlarni ham.
  */
 async function deleteTest(id, teacherId) {
-  const test = await Test.findById(id);
+  const test = await prisma.test.findUnique({ where: { id } });
   if (!test || !test.isActive) {
     throw new NotFoundError("Test topilmadi");
   }
   _assertTestOwner(test, teacherId);
 
-  const sessionCount = await TestSession.countDocuments({ test: id });
+  const sessionCount = await prisma.testSession.count({ where: { testId: id } });
   if (sessionCount > 0) {
-    test.isActive = false;
-    await test.save();
+    await prisma.test.update({ where: { id }, data: { isActive: false } });
     return { deleted: false };
   }
 
   // Hard delete: barcha bog'liq narsalar
   await Promise.all([
-    Question.deleteMany({ test: id }),
-    TestBinding.deleteMany({ test: id }),
+    prisma.question.deleteMany({ where: { testId: id } }),
+    prisma.testBinding.deleteMany({ where: { testId: id } }),
   ]);
-  await Test.findByIdAndDelete(id);
+  await prisma.test.delete({ where: { id } });
   return { deleted: true };
 }
 
