@@ -5,7 +5,7 @@
 ## Stack
 
 - Node.js + Express.js
-- MongoDB + Mongoose
+- PostgreSQL + Prisma (ORM)
 - JWT authentication
 - DigitalOcean Spaces (S3) for file storage
 - Winston for logging
@@ -14,24 +14,30 @@
 ## Project structure
 
 ```
-server/src/
-├── config/        # DB connection, env validation
-├── controllers/   # Route handlers (thin, delegate to services)
-├── middleware/    # Auth, error, validation, upload
-├── models/        # Mongoose schemas
-├── routes/        # Express routers
-├── services/      # Business logic (fat services, thin controllers)
-├── jobs/          # Cron jobs
-├── helpers/       # Reusable pure functions
-├── utils/         # Constants, errors, JWT, logger, pagination
-└── scripts/       # One-time migration/setup scripts
+server/
+├── prisma/
+│   └── schema.prisma  # Single source of truth for the DB schema
+└── src/
+    ├── config/        # prisma.js (PrismaClient singleton + extensions), env validation
+    ├── controllers/   # Route handlers (thin, delegate to services)
+    ├── generated/     # Prisma Client (generated — do not edit)
+    ├── middleware/    # Auth, error, validation, upload
+    ├── routes/        # Express routers
+    ├── services/      # Business logic (fat services, thin controllers)
+    ├── jobs/          # Cron jobs
+    ├── helpers/       # Reusable pure functions
+    ├── utils/         # idGenerator, objectId, password, constants, errors, JWT, logger, pagination
+    └── scripts/       # One-time migration/setup scripts (incl. migrate-mongo-to-postgres)
 ```
 
-## Models
+## Data model (Prisma)
 
-- Every model must define a clear schema with types and validations.
-- Use `timestamps: true` on all schemas.
-- Sensitive fields (e.g., `password`) must have `select: false`.
+- The schema lives in `prisma/schema.prisma`. After editing it, run `npm run prisma:generate` (and `prisma migrate dev` in development) — never hand-edit `src/generated/`.
+- IDs are `String @id @db.Char(24)` — 24-hex, ObjectId-compatible (preserved from the old MongoDB data). New rows get an auto-generated id from the `auto-id` extension in `config/prisma.js`; do not set `id` manually.
+- Prisma model fields are camelCase; PostgreSQL columns/tables use snake_case via `@map`/`@@map`.
+- Sensitive fields (`password`, `plainPassword`) must be excluded from reads with Prisma `omit`, never returned to clients.
+- Mongoose virtuals/hooks are replaced by: computed fields in the `virtuals` extension (`config/prisma.js`), bcrypt hashing in the service layer, and settings singletons via `services/settings.service.js`.
+- All access to the DB goes through the shared client: `require("../config/prisma")`.
 
 ## Middleware
 
