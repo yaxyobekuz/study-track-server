@@ -1,0 +1,1449 @@
+// Study-Track — PostgreSQL (Prisma) schema.
+//
+// Migratsiya: MongoDB (Mongoose) → PostgreSQL.
+//  - ID: String @db.Char(24) — eski MongoDB ObjectId hex qiymatlari saqlanadi.
+//    Yangi yozuvlar uchun ID config/prisma.js dagi Client Extension bilan generatsiya qilinadi.
+//  - Naming: model field'lari camelCase; PostgreSQL ustunlari snake_case (@map),
+//    jadvallar snake_case ko'plik (@@map).
+//  - User.role oddiy String (Role.value ga ishora qiladi, lekin FK emas —
+//    User↔Role doiraviy bog'liqligi va seed tartibini soddalashtirish uchun;
+//    validatsiya service qatlamida).
+//  - Embedded arraylar: query/update qilinadiganlar alohida jadval;
+//    faqat o'qiladigan snapshot/log/Map → Json (JSONB).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// ENUM'LAR
+// ─────────────────────────────────────────────
+
+enum Gender {
+  male
+  female
+}
+
+enum AttendanceStatus {
+  present
+  late
+  absent
+  excused
+}
+
+enum ExcuseRequestType {
+  advance
+  after
+}
+
+enum ReviewStatus {
+  pending
+  approved
+  rejected
+}
+
+enum TaskStatus {
+  pending
+  extended
+  pending_rejected
+  stopped
+  completed
+  pending_review
+}
+
+enum PenaltyType {
+  penalty
+  reduction
+}
+
+enum QueueStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum CoinTransactionType {
+  daily
+  weekly_school_bonus
+  weekly_class_bonus
+  market_purchase
+  market_refund
+  holiday_bonus
+  manual_give
+  manual_take
+  premium_purchase
+  fine_reduction_purchase
+  season_absolute_reward
+  season_class_top_reward
+}
+
+enum MarketOrderStatus {
+  pending
+  delivering
+  approved
+  rejected
+  cancelled
+}
+
+enum LeadStatus {
+  new
+  contacted
+  interested
+  visited
+  trial
+  negotiation
+  enrolled
+  rejected
+  lost
+  postponed
+}
+
+enum LeadActivityType {
+  call
+  meeting
+  note
+  status_change
+  visit
+}
+
+enum QuestionType {
+  standard
+  open
+}
+
+enum Difficulty {
+  easy
+  medium
+  hard
+}
+
+enum TestBindingStatus {
+  draft
+  published
+  closed
+}
+
+enum TestSessionStatus {
+  in_progress
+  submitted
+  expired
+}
+
+enum TestResultStatus {
+  pending
+  partially_graded
+  graded
+}
+
+enum PerQuestionStatus {
+  pending
+  graded
+}
+
+enum TestSeasonStatus {
+  draft
+  active
+  closed
+}
+
+enum MessageRecipientType {
+  all
+  class
+  student
+  season
+}
+
+enum MessageDeliveryStatusEnum {
+  pending
+  sent
+  failed
+  cancelled
+}
+
+enum MessageQueueStatus {
+  pending
+  processing
+  completed
+  failed
+  cancelled
+}
+
+enum MessageQueueFileType {
+  photo
+  document
+}
+
+enum HolidayType {
+  single
+  range
+  recurring
+}
+
+enum PremiumStatus {
+  active
+  expired
+  revoked
+}
+
+enum PremiumSource {
+  purchase
+  admin_grant
+}
+
+enum ScheduleDay {
+  dushanba
+  seshanba
+  chorshanba
+  payshanba
+  juma
+  shanba
+}
+
+// ─────────────────────────────────────────────
+// FOYDALANUVCHI VA ROLLAR
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @db.Char(24)
+  username      String    @unique
+  password      String
+  plainPassword String?   @map("plain_password")
+  firstName     String    @map("first_name")
+  lastName      String?   @map("last_name")
+  telegramIds   String[]  @map("telegram_ids")
+  role          String // Role.value ga ishora (FK emas, service validatsiya)
+  isActive      Boolean   @default(true) @map("is_active")
+  gender        Gender?
+  coinBalance   Int       @default(0) @map("coin_balance")
+  penaltyPoints Int       @default(0) @map("penalty_points")
+  isArchived    Boolean   @default(false) @map("is_archived")
+  archivedAt    DateTime? @map("archived_at")
+  // { coinBalance, penaltyPoints } — arxivlashdan oldingi zaxira
+  archiveSnapshot Json?   @map("archive_snapshot")
+  workStartTime String?   @map("work_start_time")
+  workEndTime   String?   @map("work_end_time")
+  workDays      Int[]     @map("work_days")
+  // Map<hafta_kuni, { startTime, endTime }>
+  weeklySchedule Json     @default("{}") @map("weekly_schedule")
+  premiumIsActive  Boolean   @default(false) @map("premium_is_active")
+  premiumExpiresAt DateTime? @map("premium_expires_at")
+  profilePicture String?   @map("profile_picture") @db.Char(24)
+  emojiBadgeId  String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
+  displayName   String?   @map("display_name")
+  nameColor     String?   @map("name_color")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  profileImage Image?      @relation("UserProfileImage", fields: [profilePicture], references: [id])
+  classes      UserClass[]
+
+  @@index([role, isActive])
+  @@index([role, isArchived])
+  @@index([isArchived])
+  @@index([premiumIsActive])
+  @@map("users")
+}
+
+// User ↔ Class M2M junction
+model UserClass {
+  userId  String @map("user_id") @db.Char(24)
+  classId String @map("class_id") @db.Char(24)
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  class Class @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([userId, classId])
+  @@index([classId])
+  @@map("user_classes")
+}
+
+model Role {
+  id             String   @id @db.Char(24)
+  name           String   @unique
+  value          String   @unique
+  isSystem       Boolean  @default(false) @map("is_system")
+  workStartTime  String?  @map("work_start_time")
+  workEndTime    String?  @map("work_end_time")
+  workDays       Int[]    @default([1, 2, 3, 4, 5]) @map("work_days")
+  weeklySchedule Json     @default("{}") @map("weekly_schedule")
+  createdBy      String   @map("created_by") @db.Char(24)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("roles")
+}
+
+// ─────────────────────────────────────────────
+// AKADEMIK STRUKTURA
+// ─────────────────────────────────────────────
+
+model Class {
+  id        String   @id @db.Char(24)
+  name      String   @unique
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users            UserClass[]
+  testBindings     TestBindingClass[]
+  weeklyStats      WeeklyStatsClass[]
+
+  @@map("classes")
+}
+
+model Subject {
+  id          String   @id @db.Char(24)
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdBy   String   @map("created_by") @db.Char(24)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  topics Topic[]
+
+  @@map("subjects")
+}
+
+model Topic {
+  id          String   @id @db.Char(24)
+  subjectId   String   @map("subject_id") @db.Char(24)
+  order       Int
+  name        String
+  description String?
+  createdBy   String   @map("created_by") @db.Char(24)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([subjectId, order])
+  @@index([subjectId])
+  @@map("topics")
+}
+
+model Schedule {
+  id        String      @id @db.Char(24)
+  classId   String      @map("class_id") @db.Char(24)
+  day       ScheduleDay
+  createdBy String      @map("created_by") @db.Char(24)
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  lessons ScheduleLesson[]
+
+  @@unique([classId, day])
+  @@map("schedules")
+}
+
+// schedule.subjects[] → alohida jadval (teacher bo'yicha filter/populate qilinadi)
+model ScheduleLesson {
+  id         String  @id @db.Char(24)
+  scheduleId String  @map("schedule_id") @db.Char(24)
+  subjectId  String  @map("subject_id") @db.Char(24)
+  teacherId  String  @map("teacher_id") @db.Char(24)
+  order      Int
+  startTime  String? @map("start_time")
+  endTime    String? @map("end_time")
+  position   Int // massiv tartibi
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([scheduleId])
+  @@index([teacherId])
+  @@map("schedule_lessons")
+}
+
+model ScheduleSettings {
+  id        String   @id @default("singleton") @db.VarChar(24)
+  // periods[] — { order, startTime, endTime }
+  periods   Json     @default("[]")
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("schedule_settings")
+}
+
+model TeacherAssignment {
+  id        String   @id @db.Char(24)
+  seasonId  String   @map("season_id") @db.Char(24)
+  classId   String   @map("class_id") @db.Char(24)
+  subjectId String   @map("subject_id") @db.Char(24)
+  teacherId String   @map("teacher_id") @db.Char(24)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([seasonId, classId, subjectId, teacherId])
+  @@index([teacherId, seasonId])
+  @@index([seasonId, classId, subjectId])
+  @@map("teacher_assignments")
+}
+
+model ClassSubjectProgress {
+  id                 String   @id @db.Char(24)
+  classId            String   @map("class_id") @db.Char(24)
+  subjectId          String   @map("subject_id") @db.Char(24)
+  currentTopicNumber Int      @default(1) @map("current_topic_number")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@unique([classId, subjectId])
+  @@map("class_subject_progress")
+}
+
+// ─────────────────────────────────────────────
+// DAVOMAT (XODIMLAR + O'QUVCHILAR)
+// ─────────────────────────────────────────────
+
+model Attendance {
+  id               String           @id @db.Char(24)
+  userId           String           @map("user_id") @db.Char(24)
+  date             DateTime
+  checkIn          DateTime?        @map("check_in")
+  checkOut         DateTime?        @map("check_out")
+  status           AttendanceStatus @default(present)
+  isLate           Boolean          @default(false) @map("is_late")
+  lateMinutes      Int              @default(0) @map("late_minutes")
+  isEarlyOut       Boolean          @default(false) @map("is_early_out")
+  earlyOutMinutes  Int              @default(0) @map("early_out_minutes")
+  // { lat, lng, accuracy }
+  checkInLocation  Json?            @map("check_in_location")
+  checkOutLocation Json?            @map("check_out_location")
+  locationWarning  Boolean          @default(false) @map("location_warning")
+  outOfOffice      Boolean          @default(false) @map("out_of_office")
+  penaltyApplied   Boolean          @default(false) @map("penalty_applied")
+  penaltyRef       String?          @map("penalty_ref") @db.Char(24)
+  excuseReason     String?          @map("excuse_reason")
+  absenceReason    String?          @map("absence_reason") @db.Char(24)
+  autoMarked       Boolean          @default(false) @map("auto_marked")
+  createdBy        String?          @map("created_by") @db.Char(24)
+  lastModifiedBy   String?          @map("last_modified_by") @db.Char(24)
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  @@unique([userId, date])
+  @@index([date, status])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("attendances")
+}
+
+model AttendanceSettings {
+  id                         String   @id @default("singleton") @db.VarChar(24)
+  // { lat, lng }
+  officeLocation             Json?    @map("office_location")
+  officeRadius               Int      @default(100) @map("office_radius")
+  lateArrivalPenaltyPoints   Int      @default(1) @map("late_arrival_penalty_points")
+  lateArrivalGraceMinutes    Int      @default(10) @map("late_arrival_grace_minutes")
+  earlyDeparturePenaltyPoints Int     @default(1) @map("early_departure_penalty_points")
+  earlyDepartureGraceMinutes Int      @default(10) @map("early_departure_grace_minutes")
+  absentPenaltyPoints        Int      @default(2) @map("absent_penalty_points")
+  penaltyPaused              Boolean  @default(false) @map("penalty_paused")
+  pausedRoles                String[] @map("paused_roles")
+  pausedUsers                String[] @map("paused_users")
+  updatedBy                  String?  @map("updated_by") @db.Char(24)
+  createdAt                  DateTime @default(now()) @map("created_at")
+  updatedAt                  DateTime @updatedAt @map("updated_at")
+
+  @@map("attendance_settings")
+}
+
+model AbsenceReason {
+  id           String   @id @db.Char(24)
+  title        String
+  description  String   @default("")
+  roles        String[]
+  appliesToAll Boolean  @default(false) @map("applies_to_all")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdBy    String?  @map("created_by") @db.Char(24)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive])
+  @@index([appliesToAll, isActive])
+  @@map("absence_reasons")
+}
+
+model StudentAttendance {
+  id             String           @id @db.Char(24)
+  studentId      String           @map("student_id") @db.Char(24)
+  classId        String           @map("class_id") @db.Char(24)
+  date           DateTime
+  status         AttendanceStatus @default(absent)
+  markedAt       DateTime?        @map("marked_at")
+  excuseReason   String?          @map("excuse_reason")
+  absenceReason  String?          @map("absence_reason") @db.Char(24)
+  autoMarked     Boolean          @default(false) @map("auto_marked")
+  createdBy      String?          @map("created_by") @db.Char(24)
+  lastModifiedBy String?          @map("last_modified_by") @db.Char(24)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  @@unique([studentId, date])
+  @@index([classId, date])
+  @@index([date, status])
+  @@index([studentId, createdAt(sort: Desc)])
+  @@map("student_attendances")
+}
+
+model ExcuseRequest {
+  id              String            @id @db.Char(24)
+  userId          String            @map("user_id") @db.Char(24)
+  date            DateTime
+  absenceReason   String?           @map("absence_reason") @db.Char(24)
+  reason          String?
+  type            ExcuseRequestType
+  status          ReviewStatus      @default(pending)
+  reviewedBy      String?           @map("reviewed_by") @db.Char(24)
+  reviewedAt      DateTime?         @map("reviewed_at")
+  rejectionReason String?           @map("rejection_reason")
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  attachments     Json              @default("[]")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  @@index([userId, date])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("excuse_requests")
+}
+
+// ─────────────────────────────────────────────
+// BAHOLASH VA VAZIFALAR
+// ─────────────────────────────────────────────
+
+model Grade {
+  id          String   @id @db.Char(24)
+  studentId   String   @map("student_id") @db.Char(24)
+  subjectId   String   @map("subject_id") @db.Char(24)
+  classId     String   @map("class_id") @db.Char(24)
+  teacherId   String   @map("teacher_id") @db.Char(24)
+  grade       Int
+  comment     String?
+  date        DateTime
+  lessonOrder Int      @default(1) @map("lesson_order")
+  isEdited    Boolean  @default(false) @map("is_edited")
+  // editHistory[] — { previousGrade, editedAt, editedBy } (faqat audit)
+  editHistory Json     @default("[]") @map("edit_history")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([studentId, subjectId, date, lessonOrder])
+  @@index([classId, date])
+  @@index([teacherId, date])
+  @@map("grades")
+}
+
+model GradePenaltySettings {
+  id                      String   @id @default("singleton") @db.VarChar(24)
+  isEnabled               Boolean  @default(true) @map("is_enabled")
+  penaltyPoints           Int      @default(1) @map("penalty_points")
+  missingThresholdPercent Int      @default(40) @map("missing_threshold_percent")
+  exemptTeachers          String[] @map("exempt_teachers")
+  updatedBy               String?  @map("updated_by") @db.Char(24)
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@map("grade_penalty_settings")
+}
+
+model Task {
+  id                    String     @id @db.Char(24)
+  title                 String
+  description           String
+  assignee              String     @db.Char(24)
+  createdBy             String     @map("created_by") @db.Char(24)
+  status                TaskStatus @default(pending)
+  dueDate               DateTime   @map("due_date")
+  penaltyPoints         Int        @default(1) @map("penalty_points")
+  // attachments[] / completionAttachments[] — { key, url, type, ... }
+  attachments           Json       @default("[]")
+  completionNote        String?    @map("completion_note")
+  completionAttachments Json       @default("[]") @map("completion_attachments")
+  penaltyRef            String?    @map("penalty_ref") @db.Char(24)
+  autopenalized         Boolean    @default(false)
+  createdAt             DateTime   @default(now()) @map("created_at")
+  updatedAt             DateTime   @updatedAt @map("updated_at")
+
+  statusHistory   TaskStatusHistory[]
+  deadlineHistory TaskDeadlineHistory[]
+
+  @@index([assignee, status])
+  @@index([assignee, createdAt(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([status, dueDate])
+  @@index([dueDate, autopenalized, status])
+  @@map("tasks")
+}
+
+model TaskStatusHistory {
+  id        String     @id @db.Char(24)
+  taskId    String     @map("task_id") @db.Char(24)
+  status    TaskStatus
+  reason    String
+  changedBy String?    @map("changed_by") @db.Char(24)
+  changedAt DateTime   @default(now()) @map("changed_at")
+  position  Int
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("task_status_history")
+}
+
+model TaskDeadlineHistory {
+  id            String   @id @db.Char(24)
+  taskId        String   @map("task_id") @db.Char(24)
+  oldDueDate    DateTime @map("old_due_date")
+  newDueDate    DateTime @map("new_due_date")
+  reason        String
+  changedBy     String   @map("changed_by") @db.Char(24)
+  changedAt     DateTime @default(now()) @map("changed_at")
+  withPenalty   Boolean  @default(false) @map("with_penalty")
+  penaltyPoints Int      @default(0) @map("penalty_points")
+  position      Int
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@map("task_deadline_history")
+}
+
+// ─────────────────────────────────────────────
+// JARIMALAR (PENALTY)
+// ─────────────────────────────────────────────
+
+model Penalty {
+  id              String       @id @db.Char(24)
+  userId          String       @map("user_id") @db.Char(24)
+  givenBy         String       @map("given_by") @db.Char(24)
+  category        String?      @db.Char(24)
+  type            PenaltyType  @default(penalty)
+  title           String?
+  description     String?
+  points          Int
+  status          ReviewStatus @default(pending)
+  reviewedBy      String?      @map("reviewed_by") @db.Char(24)
+  reviewedAt      DateTime?    @map("reviewed_at")
+  rejectionReason String?      @map("rejection_reason")
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  attachments     Json         @default("[]")
+  isCustom        Boolean      @default(false) @map("is_custom")
+  fineAmount      Int          @default(0) @map("fine_amount")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([givenBy])
+  @@index([type, status, createdAt(sort: Desc)])
+  @@map("penalties")
+}
+
+model PenaltyCategory {
+  id          String   @id @db.Char(24)
+  title       String
+  description String?
+  points      Int
+  targetRole  String   @map("target_role")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdBy   String   @map("created_by") @db.Char(24)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([targetRole, isActive])
+  @@map("penalty_categories")
+}
+
+model PenaltyNotificationQueue {
+  id           String      @id @db.Char(24)
+  penaltyId    String      @map("penalty_id") @db.Char(24)
+  telegramId   String      @map("telegram_id")
+  userId       String?     @map("user_id") @db.Char(24)
+  messageText  String      @map("message_text")
+  // attachments[] — { url, type, originalName }
+  attachments  Json        @default("[]")
+  status       QueueStatus @default(pending)
+  priority     Int         @default(0)
+  attempts     Int         @default(0)
+  maxAttempts  Int         @default(3) @map("max_attempts")
+  errorMessage String?     @map("error_message")
+  processedAt  DateTime?   @map("processed_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  @@index([status, priority(sort: Desc), createdAt])
+  @@index([penaltyId])
+  @@map("penalty_notification_queue")
+}
+
+model PenaltySettings {
+  id                            String   @id @default("singleton") @db.VarChar(24)
+  // Map<role, amount>
+  fineAmounts                   Json     @default("{}") @map("fine_amounts")
+  studentFineAmount             Int      @default(2100000) @map("student_fine_amount")
+  teacherFineAmount             Int      @default(2100000) @map("teacher_fine_amount")
+  premiumReductionDiscountPercent Int    @default(0) @map("premium_reduction_discount_percent")
+  updatedBy                     String?  @map("updated_by") @db.Char(24)
+  createdAt                     DateTime @default(now()) @map("created_at")
+  updatedAt                     DateTime @updatedAt @map("updated_at")
+
+  @@map("penalty_settings")
+}
+
+model FineReductionPackage {
+  id        String   @id @db.Char(24)
+  title     String
+  points    Int
+  coinCost  Int      @map("coin_cost")
+  order     Int      @default(0)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive, order])
+  @@map("fine_reduction_packages")
+}
+
+// ─────────────────────────────────────────────
+// TANGALAR (COIN) VA MARKET
+// ─────────────────────────────────────────────
+
+model CoinSettings {
+  id                   String   @id @default("singleton") @db.VarChar(24)
+  dailyCoinPercentage  Int      @default(60) @map("daily_coin_percentage")
+  schoolRankBonus      Int      @default(100) @map("school_rank_bonus")
+  classRankBonus       Int      @default(20) @map("class_rank_bonus")
+  minDailyGradeForCoin Int      @default(10) @map("min_daily_grade_for_coin")
+  updatedBy            String?  @map("updated_by") @db.Char(24)
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("coin_settings")
+}
+
+model CoinTransaction {
+  id           String              @id @db.Char(24)
+  studentId    String              @map("student_id") @db.Char(24)
+  amount       Int
+  type         CoinTransactionType
+  description  String
+  balanceAfter Int                 @map("balance_after")
+  // meta — denormalizatsiya snapshot (reflar ham string sifatida ichida)
+  meta         Json?
+  date         DateTime
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  @@index([studentId, date(sort: Desc)])
+  @@index([studentId, type, date(sort: Desc)])
+  @@index([date(sort: Desc), type])
+  @@map("coin_transactions")
+}
+
+model DailyCoinStat {
+  id               String   @id @db.Char(24)
+  date             DateTime @unique
+  totalDistributed Int      @default(0) @map("total_distributed")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("daily_coin_stats")
+}
+
+model MarketProduct {
+  id          String   @id @db.Char(24)
+  name        String
+  description String   @default("")
+  price       Int
+  quantity    Int
+  isActive    Boolean  @default(true) @map("is_active")
+  isArchived  Boolean  @default(false) @map("is_archived")
+  createdBy   String   @map("created_by") @db.Char(24)
+  archivedAt  DateTime? @map("archived_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  images MarketProductImage[]
+
+  @@index([isArchived, isActive, createdAt(sort: Desc)])
+  @@index([quantity, createdAt(sort: Desc)])
+  @@map("market_products")
+}
+
+// MarketProduct ↔ Image M2M (tartibli — position 0 = asosiy rasm)
+model MarketProductImage {
+  productId String @map("product_id") @db.Char(24)
+  imageId   String @map("image_id") @db.Char(24)
+  position  Int
+
+  product MarketProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  image   Image         @relation(fields: [imageId], references: [id], onDelete: Cascade)
+
+  @@id([productId, imageId])
+  @@index([imageId])
+  @@map("market_product_images")
+}
+
+model MarketOrder {
+  id              String            @id @db.Char(24)
+  studentId       String            @map("student_id") @db.Char(24)
+  productId       String            @map("product_id") @db.Char(24)
+  quantity        Int
+  unitPrice       Int               @map("unit_price")
+  totalPrice      Int               @map("total_price")
+  // { name, description, imageUrl }
+  productSnapshot Json              @map("product_snapshot")
+  status          MarketOrderStatus @default(pending)
+  deliveryImage   String?           @map("delivery_image") @db.Char(24)
+  rejectReason    String            @default("") @map("reject_reason")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  statusHistory MarketOrderStatusHistory[]
+
+  @@index([studentId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("market_orders")
+}
+
+model MarketOrderStatusHistory {
+  id        String            @id @db.Char(24)
+  orderId   String            @map("order_id") @db.Char(24)
+  status    MarketOrderStatus
+  changedBy String            @map("changed_by") @db.Char(24)
+  note      String            @default("")
+  changedAt DateTime          @default(now()) @map("changed_at")
+  position  Int
+
+  order MarketOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("market_order_status_history")
+}
+
+// ─────────────────────────────────────────────
+// LEAD / CRM
+// ─────────────────────────────────────────────
+
+model Lead {
+  id                 String     @id @db.Char(24)
+  firstName          String     @map("first_name")
+  lastName           String     @map("last_name")
+  phone              String
+  additionalPhone    String?    @map("additional_phone")
+  // Mongoose'da required edi, lekin eski data'da ba'zan bo'sh — nullable (data yo'qotmaslik uchun)
+  source             String?    @db.Char(24)
+  direction          String?    @db.Char(24)
+  category           String?    @db.Char(24)
+  status             LeadStatus @default(new)
+  classInterest      String?    @map("class_interest")
+  parentName         String?    @map("parent_name")
+  parentPhone        String?    @map("parent_phone")
+  address            String?
+  notes              String?
+  expectedEnrollDate DateTime?  @map("expected_enroll_date")
+  lostReason         String?    @map("lost_reason")
+  createdBy          String     @map("created_by") @db.Char(24)
+  createdAt          DateTime   @default(now()) @map("created_at")
+  updatedAt          DateTime   @updatedAt @map("updated_at")
+
+  activities LeadActivity[]
+
+  @@index([status, source, createdAt(sort: Desc)])
+  @@index([phone])
+  @@index([createdBy])
+  @@index([direction])
+  @@index([category])
+  @@map("leads")
+}
+
+model LeadActivity {
+  id             String           @id @db.Char(24)
+  leadId         String           @map("lead_id") @db.Char(24)
+  type           LeadActivityType
+  description    String
+  previousStatus String?          @map("previous_status")
+  newStatus      String?          @map("new_status")
+  createdBy      String           @map("created_by") @db.Char(24)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt(sort: Desc)])
+  @@map("lead_activities")
+}
+
+model LeadCategory {
+  id          String   @id @db.Char(24)
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("lead_categories")
+}
+
+model LeadDirection {
+  id          String   @id @db.Char(24)
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("lead_directions")
+}
+
+model LeadSource {
+  id          String   @id @db.Char(24)
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("lead_sources")
+}
+
+// ─────────────────────────────────────────────
+// TEST TIZIMI (V3)
+// ─────────────────────────────────────────────
+
+model Test {
+  id               String   @id @db.Char(24)
+  teacherId        String   @map("teacher_id") @db.Char(24)
+  title            String
+  questionCount    Int      @default(30) @map("question_count")
+  timeLimitMinutes Int      @default(30) @map("time_limit_minutes")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  questions Question[]
+
+  @@index([teacherId, isActive])
+  @@index([createdAt(sort: Desc)])
+  @@map("tests")
+}
+
+model Question {
+  id         String       @id @db.Char(24)
+  testId     String       @map("test_id") @db.Char(24)
+  type       QuestionType
+  text       String?
+  // { key, url, type, originalName, sizeBytes }
+  image      Json?
+  difficulty Difficulty   @default(medium)
+  points     Float        @default(0)
+  order      Int          @default(0)
+  isActive   Boolean      @default(true) @map("is_active")
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+
+  test    Test             @relation(fields: [testId], references: [id], onDelete: Cascade)
+  options QuestionOption[]
+
+  @@index([testId, order])
+  @@index([testId, isActive])
+  @@map("questions")
+}
+
+model QuestionOption {
+  id         String  @id @db.Char(24)
+  questionId String  @map("question_id") @db.Char(24)
+  text       String?
+  // { key, url, type, ... }
+  image      Json?
+  isCorrect  Boolean @default(false) @map("is_correct")
+  position   Int
+
+  question Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("question_options")
+}
+
+model TestBinding {
+  id        String            @id @db.Char(24)
+  testId    String            @map("test_id") @db.Char(24)
+  teacherId String            @map("teacher_id") @db.Char(24)
+  seasonId  String            @map("season_id") @db.Char(24)
+  subjectId String            @map("subject_id") @db.Char(24)
+  status    TestBindingStatus @default(draft)
+  isActive  Boolean           @default(true) @map("is_active")
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  classes      TestBindingClass[]
+  reopenGrants TestBindingReopenGrant[]
+
+  @@index([testId])
+  @@index([seasonId, subjectId])
+  @@index([teacherId, seasonId])
+  @@index([status])
+  @@map("test_bindings")
+}
+
+// TestBinding ↔ Class M2M
+model TestBindingClass {
+  bindingId String @map("binding_id") @db.Char(24)
+  classId   String @map("class_id") @db.Char(24)
+
+  binding TestBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+  class   Class       @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([bindingId, classId])
+  @@index([classId])
+  @@map("test_binding_classes")
+}
+
+model TestBindingReopenGrant {
+  id        String   @id @db.Char(24)
+  bindingId String   @map("binding_id") @db.Char(24)
+  studentId String   @map("student_id") @db.Char(24)
+  grantedBy String   @map("granted_by") @db.Char(24)
+  grantedAt DateTime @default(now()) @map("granted_at")
+
+  binding TestBinding @relation(fields: [bindingId], references: [id], onDelete: Cascade)
+
+  @@index([bindingId, studentId])
+  @@map("test_binding_reopen_grants")
+}
+
+model TestSession {
+  id            String            @id @db.Char(24)
+  bindingId     String            @map("binding_id") @db.Char(24)
+  testId        String            @map("test_id") @db.Char(24)
+  studentId     String            @map("student_id") @db.Char(24)
+  seasonId      String            @map("season_id") @db.Char(24)
+  attemptNumber Int               @default(1) @map("attempt_number")
+  status        TestSessionStatus @default(in_progress)
+  startedAt     DateTime          @default(now()) @map("started_at")
+  expiresAt     DateTime          @map("expires_at")
+  submittedAt   DateTime?         @map("submitted_at")
+  gradingMin    Int?              @map("grading_min")
+  gradingMax    Int?              @map("grading_max")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  questions TestSessionQuestion[]
+  answers   TestSessionAnswer[]
+
+  @@unique([bindingId, studentId, attemptNumber])
+  @@index([studentId, seasonId])
+  @@index([bindingId])
+  @@index([testId])
+  @@index([status, expiresAt])
+  @@map("test_sessions")
+}
+
+// testSession.questions[] — muzlatilgan savol snapshot'i
+model TestSessionQuestion {
+  id              String       @id @db.Char(24)
+  sessionId       String       @map("session_id") @db.Char(24)
+  questionId      String       @map("question_id") @db.Char(24) // proveniyans
+  type            QuestionType
+  text            String?
+  // attachment snapshot
+  image           Json?
+  difficulty      Difficulty   @default(medium)
+  points          Float        @default(0)
+  correctOptionId String?      @map("correct_option_id") @db.Char(24) // maxfiy: select bilan boshqariladi
+  position        Int
+
+  session TestSession                 @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  options TestSessionQuestionOption[]
+
+  @@index([sessionId])
+  @@map("test_session_questions")
+}
+
+model TestSessionQuestionOption {
+  id            String  @id @db.Char(24)
+  questionRowId String  @map("question_row_id") @db.Char(24)
+  optionId      String  @map("option_id") @db.Char(24) // original variant _id
+  text          String?
+  image         Json?
+  position      Int
+
+  questionRow TestSessionQuestion @relation(fields: [questionRowId], references: [id], onDelete: Cascade)
+
+  @@index([questionRowId])
+  @@map("test_session_question_options")
+}
+
+model TestSessionAnswer {
+  id               String   @id @db.Char(24)
+  sessionId        String   @map("session_id") @db.Char(24)
+  questionId       String   @map("question_id") @db.Char(24)
+  selectedOptionId String?  @map("selected_option_id") @db.Char(24)
+  textAnswer       String?  @map("text_answer")
+  answeredAt       DateTime @default(now()) @map("answered_at")
+
+  session TestSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("test_session_answers")
+}
+
+model TestResult {
+  id                String           @id @db.Char(24)
+  sessionId         String           @unique @map("session_id") @db.Char(24)
+  bindingId         String           @map("binding_id") @db.Char(24)
+  testId            String           @map("test_id") @db.Char(24)
+  studentId         String           @map("student_id") @db.Char(24)
+  seasonId          String           @map("season_id") @db.Char(24)
+  classId           String?          @map("class_id") @db.Char(24)
+  subjectId         String           @map("subject_id") @db.Char(24)
+  autoGradedScore   Float            @default(0) @map("auto_graded_score")
+  manualGradedScore Float            @default(0) @map("manual_graded_score")
+  finalScore        Float            @default(0) @map("final_score")
+  gradingMin        Int?             @map("grading_min")
+  gradingMax        Int?             @map("grading_max")
+  passed            Boolean          @default(false)
+  status            TestResultStatus @default(pending)
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  extraPoints TestResultExtraPoint[]
+  perQuestion TestResultPerQuestion[]
+
+  @@index([testId])
+  @@index([bindingId])
+  @@index([studentId, seasonId])
+  @@index([status])
+  @@index([seasonId, subjectId])
+  @@map("test_results")
+}
+
+// testResult.extraPoints[] (_id:true — individual CRUD)
+model TestResultExtraPoint {
+  id       String   @id @db.Char(24)
+  resultId String   @map("result_id") @db.Char(24)
+  amount   Float
+  reason   String
+  addedBy  String   @map("added_by") @db.Char(24)
+  addedAt  DateTime @default(now()) @map("added_at")
+  position Int
+
+  result TestResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+
+  @@index([resultId])
+  @@map("test_result_extra_points")
+}
+
+// testResult.perQuestion[] — ochiq savol baholash tafsiloti
+model TestResultPerQuestion {
+  id            String            @id @db.Char(24)
+  resultId      String            @map("result_id") @db.Char(24)
+  questionId    String            @map("question_id") @db.Char(24)
+  awardedPoints Float             @default(0) @map("awarded_points")
+  maxPoints     Float             @map("max_points")
+  gradedBy      String?           @map("graded_by") @db.Char(24)
+  status        PerQuestionStatus @default(graded)
+  feedback      String?
+  position      Int
+
+  result TestResult @relation(fields: [resultId], references: [id], onDelete: Cascade)
+
+  @@index([resultId])
+  @@map("test_result_per_questions")
+}
+
+model TestSeason {
+  id            String           @id @db.Char(24)
+  name          String
+  description   String?
+  startDate     DateTime         @map("start_date")
+  endDate       DateTime         @map("end_date")
+  status        TestSeasonStatus @default(draft)
+  isActive      Boolean          @default(true) @map("is_active")
+  createdBy     String?          @map("created_by") @db.Char(24)
+  // schoolTiers[] / classTiers[] — { position, coinReward, note }
+  schoolTiers   Json             @default("[]") @map("school_tiers")
+  classTiers    Json             @default("[]") @map("class_tiers")
+  distributedAt DateTime?        @map("distributed_at")
+  distributedBy String?          @map("distributed_by") @db.Char(24)
+  finalizedAt   DateTime?        @map("finalized_at")
+  finalizedBy   String?          @map("finalized_by") @db.Char(24)
+  createdAt     DateTime         @default(now()) @map("created_at")
+  updatedAt     DateTime         @updatedAt @map("updated_at")
+
+  @@index([status, startDate])
+  @@index([startDate, endDate])
+  @@map("test_seasons")
+}
+
+model TestSettings {
+  id        String   @id @default("singleton") @db.VarChar(24)
+  minScore  Int      @default(56) @map("min_score")
+  maxScore  Int      @default(189) @map("max_score")
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("test_settings")
+}
+
+// ─────────────────────────────────────────────
+// XABAR YUBORISH (TELEGRAM)
+// ─────────────────────────────────────────────
+
+model Message {
+  id              String               @id @db.Char(24)
+  messageText     String               @map("message_text")
+  sentBy          String               @map("sent_by") @db.Char(24)
+  recipientType   MessageRecipientType @map("recipient_type")
+  recipientIds    String[]             @map("recipient_ids")
+  classId         String?              @map("class_id") @db.Char(24)
+  season          String?              @db.Char(24)
+  studentId       String?              @map("student_id") @db.Char(24)
+  totalRecipients Int                  @default(0) @map("total_recipients")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+
+  deliveryStatus MessageDeliveryStatus[]
+
+  @@index([sentBy, createdAt(sort: Desc)])
+  @@index([classId, createdAt(sort: Desc)])
+  @@index([recipientType, createdAt(sort: Desc)])
+  @@map("messages")
+}
+
+model MessageDeliveryStatus {
+  id           String                    @id @db.Char(24)
+  messageId    String                    @map("message_id") @db.Char(24)
+  telegramId   String                    @map("telegram_id")
+  userId       String?                   @map("user_id") @db.Char(24)
+  status       MessageDeliveryStatusEnum @default(pending)
+  errorMessage String?                   @map("error_message")
+  sentAt       DateTime?                 @map("sent_at")
+  position     Int
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_delivery_status")
+}
+
+model MessageQueue {
+  id              String                @id @db.Char(24)
+  messageId       String                @map("message_id") @db.Char(24)
+  telegramId      String                @map("telegram_id")
+  userId          String?               @map("user_id") @db.Char(24)
+  messageText     String                @map("message_text")
+  filePath        String?               @map("file_path")
+  fileName        String?               @map("file_name")
+  fileContentType String?               @map("file_content_type")
+  fileType        MessageQueueFileType?  @map("file_type")
+  // Telegram reply_markup (Mixed)
+  replyMarkup     Json?                 @map("reply_markup")
+  status          MessageQueueStatus    @default(pending)
+  priority        Int                   @default(0)
+  attempts        Int                   @default(0)
+  maxAttempts     Int                   @default(3) @map("max_attempts")
+  errorMessage    String?               @map("error_message")
+  processedAt     DateTime?             @map("processed_at")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  @@index([status, priority(sort: Desc), createdAt])
+  @@index([messageId])
+  @@map("message_queue")
+}
+
+model TgUser {
+  id                   String   @id @db.Char(24)
+  telegramId           String   @unique @map("telegram_id")
+  chatId               String   @map("chat_id")
+  student              String   @db.Char(24)
+  firstName            String?  @map("first_name")
+  lastName             String?  @map("last_name")
+  username             String?
+  notificationsEnabled Boolean  @default(true) @map("notifications_enabled")
+  lastActivity         DateTime @default(now()) @map("last_activity")
+  isActive             Boolean  @default(true) @map("is_active")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@index([student])
+  @@index([notificationsEnabled, isActive])
+  @@map("tg_users")
+}
+
+model SocialNetwork {
+  id        String   @id @db.Char(24)
+  platform  String   @default("telegram")
+  name      String
+  chatId    String   @map("chat_id")
+  username  String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([platform, isActive])
+  @@map("social_networks")
+}
+
+// ─────────────────────────────────────────────
+// STATISTIKA, BAYRAMLAR, MEDIA, MONITOR, PREMIUM, EMOJI
+// ─────────────────────────────────────────────
+
+model WeeklyStats {
+  id                  String   @id @db.Char(24)
+  student             String   @db.Char(24)
+  weekStart           DateTime @map("week_start")
+  weekEnd             DateTime @map("week_end")
+  weekNumber          Int      @map("week_number")
+  year                Int
+  // simpleStats — { subjects:[{subject,grades[],sum,count,teachers[]}], totalSum, totalGrades }
+  simpleStats         Json     @default("{}") @map("simple_stats")
+  totalSum            Float    @default(0) @map("total_sum")
+  totalGrades         Int      @default(0) @map("total_grades")
+  // rankings.classRanks[] — { class, rank, totalStudents }
+  classRanks          Json     @default("[]") @map("class_ranks")
+  schoolRank          Int?     @map("school_rank")
+  schoolTotalStudents Int?     @map("school_total_students")
+  lastUpdated         DateTime @default(now()) @map("last_updated")
+  isComplete          Boolean  @default(false) @map("is_complete")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  classes WeeklyStatsClass[]
+
+  @@unique([student, year, weekNumber])
+  @@index([student])
+  @@index([weekStart])
+  @@index([year])
+  @@index([weekStart, weekEnd])
+  @@index([schoolRank])
+  @@map("weekly_stats")
+}
+
+// weeklyStats.classes[] M2M
+model WeeklyStatsClass {
+  weeklyStatsId String @map("weekly_stats_id") @db.Char(24)
+  classId       String @map("class_id") @db.Char(24)
+
+  weeklyStats WeeklyStats @relation(fields: [weeklyStatsId], references: [id], onDelete: Cascade)
+  class       Class       @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([weeklyStatsId, classId])
+  @@index([classId])
+  @@map("weekly_stats_classes")
+}
+
+model Holiday {
+  id          String      @id @db.Char(24)
+  name        String
+  description String?
+  type        HolidayType
+  date        DateTime?
+  startDate   DateTime?   @map("start_date")
+  endDate     DateTime?   @map("end_date")
+  // { month, day }
+  recurringDate      Json? @map("recurring_date")
+  recurringStartDate Json? @map("recurring_start_date")
+  recurringEndDate   Json? @map("recurring_end_date")
+  isActive    Boolean     @default(true) @map("is_active")
+  createdBy   String?     @map("created_by") @db.Char(24)
+  createdAt   DateTime    @default(now()) @map("created_at")
+  updatedAt   DateTime    @updatedAt @map("updated_at")
+
+  @@map("holidays")
+}
+
+model Image {
+  id                String   @id @db.Char(24)
+  originalName      String   @map("original_name")
+  mimeType          String   @map("mime_type")
+  extension         String
+  originalSizeBytes Int      @map("original_size_bytes")
+  // { original, sm, md, lg } — har biri { key, url, width, height, sizeBytes, reusedOriginal }
+  variants          Json
+  uploadedBy        String   @map("uploaded_by") @db.Char(24)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  profileUsers   User[]               @relation("UserProfileImage")
+  productImages  MarketProductImage[]
+
+  @@index([uploadedBy])
+  @@index([createdAt(sort: Desc)])
+  @@map("images")
+}
+
+model Monitor {
+  id        String   @id @db.Char(24)
+  code      String   @unique
+  name      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("monitors")
+}
+
+model Premium {
+  id               String        @id @db.Char(24)
+  student          String        @db.Char(24)
+  durationDays     Int           @default(30) @map("duration_days")
+  coinCost         Int           @map("coin_cost")
+  startDate        DateTime      @map("start_date")
+  endDate          DateTime      @map("end_date")
+  status           PremiumStatus @default(active)
+  coinBalanceAfter Int           @map("coin_balance_after")
+  source           PremiumSource @default(purchase)
+  grantedBy        String?       @map("granted_by") @db.Char(24)
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  @@index([student])
+  @@index([status])
+  @@index([source])
+  @@index([student, status])
+  @@index([endDate, status])
+  @@map("premiums")
+}
+
+model PremiumSettings {
+  id           String   @id @default("singleton") @db.VarChar(24)
+  isEnabled    Boolean  @default(true) @map("is_enabled")
+  coinCost     Int      @default(100) @map("coin_cost")
+  durationDays Int      @default(30) @map("duration_days")
+  // allowedNameColors[] — { key, label, hex, isActive }
+  allowedNameColors Json @default("[]") @map("allowed_name_colors")
+  updatedBy    String?  @map("updated_by") @db.Char(24)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("premium_settings")
+}
+
+model EmojiConfig {
+  id           String   @id @db.Char(24)
+  name         String
+  animationUrl String   @map("animation_url")
+  fileKey      String   @map("file_key")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("emoji_configs")
+}

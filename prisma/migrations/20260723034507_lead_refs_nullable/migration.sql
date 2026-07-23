@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "leads" ALTER COLUMN "source" DROP NOT NULL,
+ALTER COLUMN "direction" DROP NOT NULL,
+ALTER COLUMN "category" DROP NOT NULL;
