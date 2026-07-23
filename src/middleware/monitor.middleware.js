@@ -1,4 +1,4 @@
-const Monitor = require("../models/monitor.model");
+const prisma = require("../config/prisma");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError } = require("../utils/errors");
 
@@ -17,7 +17,7 @@ const verifyMonitor = asyncHandler(async (req, res, next) => {
     throw new UnauthorizedError("Monitor kodi taqdim etilmagan");
   }
 
-  const monitor = await Monitor.findOne({ code, isActive: true });
+  const monitor = await prisma.monitor.findFirst({ where: { code, isActive: true } });
 
   if (!monitor) {
     throw new UnauthorizedError("Monitor kodi noto'g'ri yoki faol emas");

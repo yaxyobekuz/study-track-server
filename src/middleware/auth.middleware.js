@@ -1,4 +1,4 @@
-const User = require("../models/user.model");
+const prisma = require("../config/prisma");
 const { verifyToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
@@ -27,7 +27,11 @@ const protect = asyncHandler(async (req, res, next) => {
     throw new UnauthorizedError("Noto'g'ri yoki muddati o'tgan token");
   }
 
-  const user = await User.findById(decoded.id).select("-password");
+  const user = await prisma.user.findUnique({
+    where: { id: decoded.id },
+    omit: { password: true, plainPassword: true },
+    include: { classes: { include: { class: true } } },
+  });
 
   if (!user) {
     throw new UnauthorizedError("Foydalanuvchi topilmadi");
@@ -42,10 +46,18 @@ const protect = asyncHandler(async (req, res, next) => {
   }
 
   // Lazy premium expiry check
-  if (user.premium?.isActive && user.premium?.expiresAt < new Date()) {
-    User.findByIdAndUpdate(user._id, { "premium.isActive": false }).exec().catch(() => {});
-    user.premium.isActive = false;
+  if (user.premiumIsActive && user.premiumExpiresAt && user.premiumExpiresAt < new Date()) {
+    prisma.user
+      .update({ where: { id: user.id }, data: { premiumIsActive: false } })
+      .catch(() => {});
+    user.premiumIsActive = false;
   }
+
+  // Junction M2M → eski `classes: [Class]` shakliga flatten (frontend mosligi)
+  user.classes = (user.classes || []).map((uc) => uc.class);
+
+  // Mongoose bilan mos: _id alias (eski kod req.user._id ishlatgan joylar uchun)
+  user._id = user.id;
 
   req.user = user;
   next();

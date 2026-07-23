@@ -1,9 +1,9 @@
-const mongoose = require("mongoose");
+const { isValidId } = require("../utils/objectId");
 const { ValidationError } = require("../utils/errors");
 const { GRADE_MIN, GRADE_MAX } = require("../utils/constants");
 
 /**
- * MongoDB ObjectId formatini tekshiradi
+ * 24-belgili hex ID formatini tekshiradi
  * @param {string} paramName - Param nomi (masalan: 'id', 'classId')
  * @returns {Function} Express middleware
  */
@@ -11,7 +11,7 @@ const validateObjectId = (paramName) => {
   return (req, res, next) => {
     const id = req.params[paramName];
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isValidId(id)) {
       throw new ValidationError(`Noto'g'ri ${paramName} formati`);
     }
 
