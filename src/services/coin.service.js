@@ -357,6 +357,7 @@ async function getCoinStats() {
   // classes junction'ni eski `classes: [{ name }]` shakliga tekislaymiz
   const topEarnersFlat = topEarners.map((u) => ({
     ...u,
+    fullName: u.fullName,
     classes: (u.classes || []).map((uc) => uc.class),
   }));
 
