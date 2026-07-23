@@ -6,11 +6,6 @@ const {
 } = require("../utils/errors");
 const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
-const {
-  recalculateCurrentWeekForStudent,
-  createWeeklyStatsForStudent,
-} = require("./weeklystats.service");
-const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 
 // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
 function flattenClasses(user) {
@@ -192,17 +187,6 @@ async function createUser(data) {
     },
   });
 
-  // Mongoose post-save hook o'rniga: yangi student uchun WeeklyStats yaratish
-  if (role === "student") {
-    try {
-      const { weekNumber, year } = getCurrentWeekRange();
-      await createWeeklyStatsForStudent(created.id, weekNumber, year);
-      logger.info(`WeeklyStats yaratildi yangi o'quvchi uchun: ${created.id}`);
-    } catch (error) {
-      logger.error("Yangi o'quvchi uchun WeeklyStats yaratishda xato:", error);
-    }
-  }
-
   return loadUser(created.id);
 }
 
@@ -280,18 +264,6 @@ async function updateUser(id, data) {
       });
     }
   });
-
-  // Sinf o'zgargan bo'lsa, joriy hafta statistikasini darhol qayta hisoblaymiz.
-  if (classesChanged) {
-    try {
-      await recalculateCurrentWeekForStudent(id);
-    } catch (error) {
-      logger.error(
-        "Sinf o'zgarganda haftalik statistikani yangilashda xato:",
-        error,
-      );
-    }
-  }
 
   return loadUser(id);
 }

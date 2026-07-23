@@ -6,9 +6,6 @@ const logger = require("../utils/logger");
 const prisma = require("../config/prisma");
 
 // Services
-const {
-  updateWeeklyStatsForGrade,
-} = require("../services/weeklystats.service");
 const { isHoliday } = require("../services/holiday.service");
 const ExcelService = require("../services/excel.service");
 
@@ -633,16 +630,6 @@ const createGrade = asyncHandler(async (req, res) => {
 
   const populatedGrade = await attachGradeRefs(createdGrades[0]);
 
-  // Update WeeklyStats after creating grades
-  try {
-    for (const createdGrade of createdGrades) {
-      await updateWeeklyStatsForGrade(createdGrade);
-    }
-  } catch (statsError) {
-    logger.error("Error updating WeeklyStats:", statsError);
-    // Don't fail the request if stats update fails
-  }
-
   res.status(201).json({
     success: true,
     message:
@@ -779,14 +766,6 @@ const updateGrade = asyncHandler(async (req, res) => {
     }));
   }
 
-  // Update WeeklyStats after updating grade
-  try {
-    await updateWeeklyStatsForGrade(savedGrade);
-  } catch (statsError) {
-    logger.error("Error updating WeeklyStats:", statsError);
-    // Don't fail the request if stats update fails
-  }
-
   res.json({
     success: true,
     message: "Baho muvaffaqiyatli yangilandi",
@@ -821,27 +800,8 @@ const deleteGrade = asyncHandler(async (req, res) => {
     }
   }
 
-  // Save grade data before deleting (for WeeklyStats update)
-  const gradeData = {
-    studentId: grade.studentId,
-    subjectId: grade.subjectId,
-    classId: grade.classId,
-    teacherId: grade.teacherId,
-    grade: grade.grade,
-    date: grade.date,
-    lessonOrder: grade.lessonOrder,
-  };
-
-  // Delete the grade
+  // Delete the grade (reytinglar grade jadvalidan jonli hisoblanadi — sync shart emas)
   await prisma.grade.delete({ where: { id: req.params.id } });
-
-  // Update WeeklyStats after deleting grade
-  try {
-    await updateWeeklyStatsForGrade(gradeData);
-  } catch (statsError) {
-    logger.error("Error updating WeeklyStats:", statsError);
-    // Don't fail the request if stats update fails
-  }
 
   res.json({
     success: true,
