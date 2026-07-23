@@ -79,21 +79,21 @@ const schemas = {
   ClassRef: {
     type: "object",
     properties: {
-      _id: { type: "string", example: "665f1c2e8a1b2c3d4e5f0001" },
+      id: { type: "string", example: "665f1c2e8a1b2c3d4e5f0001" },
       name: { type: "string", example: "10-A" },
     },
   },
   SubjectRef: {
     type: "object",
     properties: {
-      _id: { type: "string", example: "665f1c2e8a1b2c3d4e5f0002" },
+      id: { type: "string", example: "665f1c2e8a1b2c3d4e5f0002" },
       name: { type: "string", example: "Matematika" },
     },
   },
   UserRef: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       firstName: { type: "string", example: "Ali" },
       lastName: { type: "string", example: "Valiyev" },
     },
@@ -103,7 +103,7 @@ const schemas = {
   User: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       username: { type: "string", example: "teacher01" },
       firstName: { type: "string", example: "Ali" },
       lastName: { type: "string", example: "Valiyev" },
@@ -124,7 +124,7 @@ const schemas = {
   Class: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       name: { type: "string", example: "10-A" },
       isActive: { type: "boolean", example: true },
       createdBy: { $ref: "#/components/schemas/UserRef" },
@@ -135,7 +135,7 @@ const schemas = {
   Subject: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       name: { type: "string", example: "Matematika" },
       description: { type: "string", example: "Algebra va geometriya" },
       isActive: { type: "boolean", example: true },
@@ -147,7 +147,7 @@ const schemas = {
   Topic: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       subject: { type: "string", description: "Subject ObjectId" },
       order: { type: "integer", example: 1 },
       name: { type: "string", example: "Kirish. Sonlar" },
@@ -171,7 +171,7 @@ const schemas = {
   Schedule: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       class: { type: "string", description: "Class ObjectId" },
       day: {
         type: "string",
@@ -191,7 +191,7 @@ const schemas = {
   Attendance: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       user: { type: "string" },
       date: { type: "string", format: "date-time" },
       checkIn: { type: "string", format: "date-time", nullable: true },
@@ -219,7 +219,7 @@ const schemas = {
   ExcuseRequest: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       user: { type: "string" },
       date: { type: "string", format: "date-time" },
       absenceReason: { $ref: "#/components/schemas/AbsenceReason" },
@@ -250,7 +250,7 @@ const schemas = {
   AbsenceReason: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       title: { type: "string", example: "Kasallik" },
       description: { type: "string" },
       roles: { type: "array", items: { type: "string" } },
@@ -263,7 +263,7 @@ const schemas = {
   Holiday: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       name: { type: "string", example: "Mustaqillik kuni" },
       description: { type: "string" },
       type: { type: "string", enum: ["single", "range", "recurring"], example: "single" },
@@ -295,7 +295,7 @@ const schemas = {
   PenaltyCategory: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       title: { type: "string", example: "Kechikish" },
       description: { type: "string" },
       points: { type: "number", example: 2 },
@@ -306,7 +306,7 @@ const schemas = {
   Penalty: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       user: { type: "string" },
       givenBy: { type: "string" },
       category: { type: "string", nullable: true },
@@ -341,7 +341,7 @@ const schemas = {
   Grade: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       student: { $ref: "#/components/schemas/UserRef" },
       subject: { $ref: "#/components/schemas/SubjectRef" },
       teacher: { $ref: "#/components/schemas/UserRef" },
@@ -371,7 +371,7 @@ const schemas = {
   Task: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       title: { type: "string" },
       description: { type: "string" },
       assignee: { $ref: "#/components/schemas/UserRef" },
@@ -399,7 +399,7 @@ const schemas = {
   Message: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       messageText: { type: "string" },
       sentBy: { $ref: "#/components/schemas/UserRef" },
       recipientType: {
@@ -418,8 +418,8 @@ const schemas = {
   TeacherAssignment: {
     type: "object",
     properties: {
-      _id: { type: "string" },
-      season: { type: "object", properties: { _id: { type: "string" }, name: { type: "string" } } },
+      id: { type: "string" },
+      season: { type: "object", properties: { id: { type: "string" }, name: { type: "string" } } },
       class: { $ref: "#/components/schemas/ClassRef" },
       subject: { $ref: "#/components/schemas/SubjectRef" },
       teacher: { $ref: "#/components/schemas/UserRef" },
@@ -431,7 +431,7 @@ const schemas = {
   TestSeason: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       name: { type: "string", example: "2026 Bahor mavsumi" },
       description: { type: "string" },
       startDate: { type: "string", format: "date-time" },
@@ -443,7 +443,7 @@ const schemas = {
   Test: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       teacher: { type: "string" },
       title: { type: "string", example: "1-chorak nazorat testi" },
       questionCount: { type: "integer", example: 30 },
@@ -472,7 +472,7 @@ const schemas = {
   Question: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       test: { type: "string" },
       type: { type: "string", enum: ["standard", "open"], example: "standard" },
       text: { type: "string" },
@@ -490,7 +490,7 @@ const schemas = {
   TestBinding: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       test: { type: "string" },
       teacher: { type: "string" },
       season: { type: "string" },
@@ -528,7 +528,7 @@ const schemas = {
   TestResult: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       test: { type: "object" },
       student: { $ref: "#/components/schemas/UserRef" },
       season: { type: "object" },
@@ -550,7 +550,7 @@ const schemas = {
         items: {
           type: "object",
           properties: {
-            _id: { type: "string" },
+            id: { type: "string" },
             amount: { type: "number" },
             reason: { type: "string" },
             addedAt: { type: "string", format: "date-time" },
@@ -594,7 +594,7 @@ const schemas = {
   TestSession: {
     type: "object",
     properties: {
-      _id: { type: "string" },
+      id: { type: "string" },
       test: { type: "object" },
       student: { $ref: "#/components/schemas/UserRef" },
       attemptNumber: { type: "integer", example: 1 },
@@ -1288,7 +1288,7 @@ const paths = {
                     items: {
                       type: "object",
                       properties: {
-                        _id: { type: "string" },
+                        id: { type: "string" },
                         firstName: { type: "string" },
                         lastName: { type: "string" },
                         grade: {
