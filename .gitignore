@@ -4,3 +4,9 @@ logs
 package-lock.json
 *scripts
 uploads
+# Migratsiya skriptini git'da saqlaymiz (yuqoridagi *scripts istisnosi)
+!src/scripts/
+src/scripts/*
+!src/scripts/migrate-mongo-to-postgres/
+# Prisma Client (generatsiya artifakti — `prisma generate` qayta yaratadi)
+src/generated
