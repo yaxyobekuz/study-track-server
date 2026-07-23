@@ -1,10 +1,7 @@
 const cron = require("node-cron");
-const User = require("../models/user.model");
-const Grade = require("../models/grade.model");
-const Schedule = require("../models/schedule.model");
-const Holiday = require("../models/holiday.model");
-const Penalty = require("../models/penalty.model");
-const GradePenaltySettings = require("../models/gradePenaltySettings.model");
+const prisma = require("../config/prisma");
+const { isHoliday } = require("../services/holiday.service");
+const { getGradePenaltySettings } = require("../services/settings.service");
 const logger = require("../utils/logger");
 const {
   getNowInUzbekistan,
@@ -23,7 +20,7 @@ async function runGradePenaltyPass(ownerUser) {
     return;
   }
 
-  const settings = await GradePenaltySettings.getSettings();
+  const settings = await getGradePenaltySettings();
 
   if (!settings.isEnabled) {
     logger.info("[GradePenaltyCron] Baho jarima tizimi o'chirilgan, o'tkazib yuborildi");
@@ -37,8 +34,8 @@ async function runGradePenaltyPass(ownerUser) {
     return;
   }
 
-  const { isHoliday } = await Holiday.isHoliday(now);
-  if (isHoliday) {
+  const { isHoliday: holidayToday } = await isHoliday(now);
+  if (holidayToday) {
     logger.info("[GradePenaltyCron] Bayram kuni, o'tkazib yuborildi");
     return;
   }
@@ -51,38 +48,53 @@ async function runGradePenaltyPass(ownerUser) {
     (settings.exemptTeachers || []).map((id) => id.toString()),
   );
 
-  const todaySchedules = await Schedule.find({ day: todayDayName })
-    .populate("class", "name isActive")
-    .populate("subjects.subject", "name")
-    .populate("subjects.teacher", "_id firstName lastName");
+  const todaySchedules = await prisma.schedule.findMany({
+    where: { day: todayDayName },
+    include: { lessons: true },
+  });
+
+  // Schedule.classId scalar (relation YO'Q) — sinflarni qo'lda yuklaymiz
+  const classIds = [...new Set(todaySchedules.map((s) => s.classId))];
+  const classes = await prisma.class.findMany({
+    where: { id: { in: classIds } },
+    select: { id: true, name: true, isActive: true },
+  });
+  const classMap = {};
+  classes.forEach((c) => {
+    classMap[c.id] = c;
+  });
 
   let penalized = 0;
   let skipped = 0;
   let errors = 0;
 
   for (const schedule of todaySchedules) {
-    if (!schedule.class || !schedule.class.isActive) continue;
+    const scheduleClass = classMap[schedule.classId];
+    if (!scheduleClass || !scheduleClass.isActive) continue;
 
-    const studentsInClass = await User.find({
-      role: "student",
-      classes: schedule.class._id,
-      isActive: true,
-    })
-      .select("_id")
-      .lean();
+    const studentsInClass = await prisma.user.findMany({
+      where: {
+        role: "student",
+        classes: { some: { classId: schedule.classId } },
+        isActive: true,
+      },
+      select: { id: true },
+    });
 
     const totalStudents = studentsInClass.length;
     if (totalStudents === 0) continue;
 
-    const todayGrades = await Grade.find({
-      class: schedule.class._id,
-      date: { $gte: startDate, $lte: endDate },
-    }).lean();
+    const todayGrades = await prisma.grade.findMany({
+      where: {
+        classId: schedule.classId,
+        date: { gte: startDate, lte: endDate },
+      },
+    });
 
-    for (const lesson of schedule.subjects) {
-      if (!lesson.teacher) continue;
+    for (const lesson of schedule.lessons) {
+      if (!lesson.teacherId) continue;
 
-      const teacherId = lesson.teacher._id.toString();
+      const teacherId = lesson.teacherId.toString();
 
       if (exemptSet.has(teacherId)) {
         skipped++;
@@ -93,14 +105,14 @@ async function runGradePenaltyPass(ownerUser) {
         todayGrades
           .filter(
             (g) =>
-              g.subject.toString() === lesson.subject._id.toString() &&
+              g.subjectId.toString() === lesson.subjectId.toString() &&
               g.lessonOrder === lesson.order,
           )
-          .map((g) => g.student.toString()),
+          .map((g) => g.studentId.toString()),
       );
 
       const missingCount = studentsInClass.filter(
-        (s) => !gradedStudentIds.has(s._id.toString()),
+        (s) => !gradedStudentIds.has(s.id.toString()),
       ).length;
 
       const missingPercent = (missingCount / totalStudents) * 100;
@@ -110,13 +122,15 @@ async function runGradePenaltyPass(ownerUser) {
         continue;
       }
 
-      const penaltyTitle = `Baho qo'ymaslik: ${schedule.class.name} ${lesson.order}-dars (${dateStr})`;
+      const penaltyTitle = `Baho qo'ymaslik: ${scheduleClass.name} ${lesson.order}-dars (${dateStr})`;
 
-      const alreadyPenalized = await Penalty.findOne({
-        user: lesson.teacher._id,
-        title: penaltyTitle,
-        isCustom: true,
-      }).lean();
+      const alreadyPenalized = await prisma.penalty.findFirst({
+        where: {
+          userId: lesson.teacherId,
+          title: penaltyTitle,
+          isCustom: true,
+        },
+      });
 
       if (alreadyPenalized) {
         skipped++;
@@ -124,20 +138,23 @@ async function runGradePenaltyPass(ownerUser) {
       }
 
       try {
-        await Penalty.create({
-          user: lesson.teacher._id,
-          givenBy: ownerUser._id,
-          title: penaltyTitle,
-          description: `${missingCount}/${totalStudents} o'quvchiga baho qo'yilmagan (${Math.round(missingPercent)}%)`,
-          points: settings.penaltyPoints,
-          status: "approved",
-          isCustom: true,
-          reviewedBy: ownerUser._id,
-          reviewedAt: new Date(),
+        await prisma.penalty.create({
+          data: {
+            userId: lesson.teacherId,
+            givenBy: ownerUser.id,
+            title: penaltyTitle,
+            description: `${missingCount}/${totalStudents} o'quvchiga baho qo'yilmagan (${Math.round(missingPercent)}%)`,
+            points: settings.penaltyPoints,
+            status: "approved",
+            isCustom: true,
+            reviewedBy: ownerUser.id,
+            reviewedAt: new Date(),
+          },
         });
 
-        await User.findByIdAndUpdate(lesson.teacher._id, {
-          $inc: { penaltyPoints: settings.penaltyPoints },
+        await prisma.user.update({
+          where: { id: lesson.teacherId },
+          data: { penaltyPoints: { increment: settings.penaltyPoints } },
         });
 
         penalized++;
@@ -166,7 +183,10 @@ async function startGradePenaltyCron() {
     async () => {
       logger.info("[GradePenaltyCron] Baho qo'ymaslik tekshiruvi boshlandi...");
       try {
-        const ownerUser = await User.findOne({ role: "owner" }).select("_id").lean();
+        const ownerUser = await prisma.user.findFirst({
+          where: { role: "owner" },
+          select: { id: true },
+        });
         if (!ownerUser) {
           logger.warn("[GradePenaltyCron] Owner topilmadi - jarimalar qo'llanilmaydi");
         }

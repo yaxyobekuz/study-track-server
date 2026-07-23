@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const TestSeason = require("../models/testSeason.model");
+const prisma = require("../config/prisma");
 const { computeSeasonStatus } = require("../helpers/seasonStatus.helper");
 const logger = require("../utils/logger");
 
@@ -11,23 +11,25 @@ const logger = require("../utils/logger");
  */
 async function syncSeasonStatuses() {
   const now = new Date();
-  const seasons = await TestSeason.find().select("startDate endDate status");
+  const seasons = await prisma.testSeason.findMany({
+    select: { id: true, startDate: true, endDate: true, status: true },
+  });
 
   const ops = [];
   for (const season of seasons) {
     const computed = computeSeasonStatus(season.startDate, season.endDate, now);
     if (computed !== season.status) {
-      ops.push({
-        updateOne: {
-          filter: { _id: season._id },
-          update: { $set: { status: computed } },
-        },
-      });
+      ops.push(
+        prisma.testSeason.update({
+          where: { id: season.id },
+          data: { status: computed },
+        }),
+      );
     }
   }
 
   if (ops.length > 0) {
-    await TestSeason.bulkWrite(ops);
+    await prisma.$transaction(ops);
     logger.info(`[SeasonStatusCron] ${ops.length} ta mavsum holati yangilandi`);
   }
 }

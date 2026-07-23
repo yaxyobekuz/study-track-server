@@ -1,5 +1,5 @@
 const cron = require("node-cron");
-const TestSession = require("../models/testSession.model");
+const prisma = require("../config/prisma");
 const { finalizeExpiredSession } = require("../services/testSession.service");
 const logger = require("../utils/logger");
 
@@ -17,9 +17,11 @@ function startTestSessionExpiryCron() {
     async () => {
       try {
         const now = new Date();
-        const expiredSessions = await TestSession.find({
-          status: "in_progress",
-          expiresAt: { $lt: now },
+        const expiredSessions = await prisma.testSession.findMany({
+          where: {
+            status: "in_progress",
+            expiresAt: { lt: now },
+          },
         });
 
         if (expiredSessions.length === 0) {
@@ -40,7 +42,7 @@ function startTestSessionExpiryCron() {
           } catch (error) {
             errorCount++;
             logger.error(
-              `Test session ${session._id} yakunlashda xato:`,
+              `Test session ${session.id} yakunlashda xato:`,
               error,
             );
           }

@@ -1,6 +1,5 @@
 const cron = require("node-cron");
-const User = require("../models/user.model");
-const Premium = require("../models/premium.model");
+const prisma = require("../config/prisma");
 const { notifyPremiumEvent } = require("../services/premiumNotification.service");
 const logger = require("../utils/logger");
 
@@ -12,10 +11,19 @@ const logger = require("../utils/logger");
 async function runPremiumExpiryPass() {
   const now = new Date();
 
-  const expiredUsers = await User.find({
-    "premium.isActive": true,
-    "premium.expiresAt": { $lte: now },
-  }).select("_id firstName lastName premium");
+  const expiredUsers = await prisma.user.findMany({
+    where: {
+      premiumIsActive: true,
+      premiumExpiresAt: { lte: now },
+    },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      premiumIsActive: true,
+      premiumExpiresAt: true,
+    },
+  });
 
   if (expiredUsers.length === 0) {
     logger.info("[PremiumExpiryCron] Muddati tugagan premium topilmadi");
@@ -25,16 +33,19 @@ async function runPremiumExpiryPass() {
   let count = 0;
   for (const user of expiredUsers) {
     try {
-      await User.findByIdAndUpdate(user._id, { "premium.isActive": false });
-      await Premium.updateMany(
-        { student: user._id, status: "active" },
-        { status: "expired" },
-      );
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { premiumIsActive: false },
+      });
+      await prisma.premium.updateMany({
+        where: { student: user.id, status: "active" },
+        data: { status: "expired" },
+      });
       await notifyPremiumEvent(user, "expired");
       count++;
     } catch (error) {
       logger.error(
-        `[PremiumExpiryCron] ${user._id} premiumini tugatishda xato: ${error.message}`,
+        `[PremiumExpiryCron] ${user.id} premiumini tugatishda xato: ${error.message}`,
       );
     }
   }

@@ -1,7 +1,5 @@
 const cron = require("node-cron");
-const Schedule = require("../models/schedule.model");
-const Topic = require("../models/topic.model");
-const ClassSubjectProgress = require("../models/classSubjectProgress.model");
+const prisma = require("../config/prisma");
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
 const logger = require("../utils/logger");
 
@@ -29,41 +27,48 @@ function startTopicIncrementCron() {
         const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 
         // Bugungi jadvallarni topish
-        const schedules = await Schedule.find({ day: dayName });
+        const schedules = await prisma.schedule.findMany({
+          where: { day: dayName },
+          include: { lessons: true },
+        });
 
         for (const schedule of schedules) {
-          const classId = schedule.class.toString();
+          const classId = schedule.classId.toString();
 
-          for (const subject of schedule.subjects) {
+          for (const subject of schedule.lessons) {
             // Faqat endTime bor va hozirgi vaqtga teng bo'lgan darslar
             if (subject.endTime && subject.endTime === currentTime) {
-              const subjectId = subject.subject.toString();
+              const subjectId = subject.subjectId.toString();
 
               // ClassSubjectProgress dan hozirgi mavzu raqamini olish yoki yaratish
-              let progress = await ClassSubjectProgress.findOne({
-                class: classId,
-                subject: subjectId,
+              let progress = await prisma.classSubjectProgress.findUnique({
+                where: { classId_subjectId: { classId, subjectId } },
               });
 
               if (!progress) {
-                progress = await ClassSubjectProgress.create({
-                  class: classId,
-                  subject: subjectId,
-                  currentTopicNumber: 1,
+                progress = await prisma.classSubjectProgress.create({
+                  data: {
+                    classId,
+                    subjectId,
+                    currentTopicNumber: 1,
+                  },
                 });
               }
 
               const currentTopic = progress.currentTopicNumber;
 
               // Keyingi mavzu mavjudligini tekshirish
-              const nextTopic = await Topic.findOne({
-                subject: subjectId,
-                order: currentTopic + 1,
+              const nextTopic = await prisma.topic.findUnique({
+                where: {
+                  subjectId_order: { subjectId, order: currentTopic + 1 },
+                },
               });
 
               if (nextTopic) {
-                progress.currentTopicNumber = currentTopic + 1;
-                await progress.save();
+                await prisma.classSubjectProgress.update({
+                  where: { id: progress.id },
+                  data: { currentTopicNumber: currentTopic + 1 },
+                });
 
                 logger.info(
                   `[TopicCron] Incremented topic for class ${classId}, ` +

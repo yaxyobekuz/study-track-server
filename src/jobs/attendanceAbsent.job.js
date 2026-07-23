@@ -1,8 +1,6 @@
 const cron = require("node-cron");
-const User = require("../models/user.model");
-const Attendance = require("../models/attendance.model");
-const ExcuseRequest = require("../models/excuseRequest.model");
-const Holiday = require("../models/holiday.model");
+const prisma = require("../config/prisma");
+const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
 const {
   getTodayNormalized,
@@ -11,7 +9,7 @@ const {
   createAttendancePenalty,
   getDayOfWeekTashkent,
 } = require("../services/attendance.service");
-const AttendanceSettings = require("../models/attendanceSettings.model");
+const { getAttendanceSettings } = require("../services/settings.service");
 
 /**
  * Kun oxirida davomatsiz qolgan xodimlarni "absent" deb belgilaydi va jarima yozadi.
@@ -27,19 +25,21 @@ async function runAbsentMarking(ownerUser) {
   const todayDayOfWeek = getDayOfWeekTashkent();
 
   // Bugun bayram kunmi?
-  const { isHoliday } = await Holiday.isHoliday(today);
+  const { isHoliday } = await checkHoliday(today);
   if (isHoliday) {
     logger.info("[AttendanceCron] Bugun bayram kuni, o'tkazib yuborildi");
     return;
   }
 
-  const settings = await AttendanceSettings.getSettings();
+  const settings = await getAttendanceSettings();
 
   // Barcha aktiv, non-student, non-owner foydalanuvchilar
-  const users = await User.find({
-    isActive: true,
-    role: { $nin: ["owner", "student"] },
-  }).lean();
+  const users = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      role: { notIn: ["owner", "student"] },
+    },
+  });
 
   if (users.length === 0) {
     logger.info("[AttendanceCron] Tekshiriladigan foydalanuvchi topilmadi");
@@ -62,27 +62,33 @@ async function runAbsentMarking(ownerUser) {
       }
 
       // Bugungi yozuv bor bo'lsa (check-in qilgan yoki allaqachon belgilangan), o'tkazib yuborish
-      const existingRecord = await Attendance.findOne({ user: user._id, date: today });
+      const existingRecord = await prisma.attendance.findFirst({
+        where: { userId: user.id, date: today },
+      });
       if (existingRecord) {
         skipped++;
         continue;
       }
 
       // Tasdiqlangan excuse bor bo'lsa
-      const approvedExcuse = await ExcuseRequest.findOne({
-        user: user._id,
-        date: today,
-        status: "approved",
+      const approvedExcuse = await prisma.excuseRequest.findFirst({
+        where: {
+          userId: user.id,
+          date: today,
+          status: "approved",
+        },
       });
 
       const status = approvedExcuse ? "excused" : "absent";
 
-      const record = await Attendance.create({
-        user: user._id,
-        date: today,
-        status,
-        autoMarked: true,
-        createdBy: ownerUser._id,
+      const record = await prisma.attendance.create({
+        data: {
+          userId: user.id,
+          date: today,
+          status,
+          autoMarked: true,
+          createdBy: ownerUser.id,
+        },
       });
 
       if (status === "absent") {
@@ -90,25 +96,26 @@ async function runAbsentMarking(ownerUser) {
 
         // Ish vaqti umuman sozlanmagan rol/foydalanuvchi uchun jarima yozilmaydi
         const hasWorkSchedule = !!schedule.workStartTime;
-        const penaltyPaused = isPenaltyPaused(settings, user._id, user.role);
+        const penaltyPaused = isPenaltyPaused(settings, user.id, user.role);
         if (hasWorkSchedule && !penaltyPaused && settings.absentPenaltyPoints > 0) {
           const dateStr = today.toISOString().split("T")[0];
           const penalty = await createAttendancePenalty(
-            user._id,
-            ownerUser._id,
+            user.id,
+            ownerUser.id,
             `Kelmaganlik uchun: ${dateStr}`,
             settings.absentPenaltyPoints
           );
-          record.penaltyApplied = true;
-          record.penaltyRef = penalty._id;
-          await record.save();
+          await prisma.attendance.update({
+            where: { id: record.id },
+            data: { penaltyApplied: true, penaltyRef: penalty.id },
+          });
         }
       } else {
         markedExcused++;
       }
     } catch (error) {
       errors++;
-      logger.error(`[AttendanceCron] ${user._id} foydalanuvchi uchun xato:`, error);
+      logger.error(`[AttendanceCron] ${user.id} foydalanuvchi uchun xato:`, error);
     }
   }
 
@@ -127,7 +134,10 @@ async function startAttendanceAbsentCron() {
     async () => {
       logger.info("[AttendanceCron] Davomatsiz xodimlarni belgilash boshlandi...");
       try {
-        const ownerUser = await User.findOne({ role: "owner" }).select("_id").lean();
+        const ownerUser = await prisma.user.findFirst({
+          where: { role: "owner" },
+          select: { id: true },
+        });
         if (!ownerUser) {
           logger.warn("[AttendanceCron] Owner topilmadi - jarimalar qo'llanilmaydi");
         }

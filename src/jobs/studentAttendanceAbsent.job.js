@@ -1,7 +1,6 @@
 const cron = require("node-cron");
-const User = require("../models/user.model");
-const StudentAttendance = require("../models/studentAttendance.model");
-const Holiday = require("../models/holiday.model");
+const prisma = require("../config/prisma");
+const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
 const { getTodayNormalized } = require("../services/attendance.service");
 const { getLessonDayMap } = require("../services/schedule.service");
@@ -19,7 +18,7 @@ async function runStudentAbsentMarking() {
     return;
   }
 
-  const { isHoliday } = await Holiday.isHoliday(today);
+  const { isHoliday } = await checkHoliday(today);
   if (isHoliday) {
     logger.info("[StudentAttendanceCron] Bugun bayram kuni, o'tkazib yuborildi");
     return;
@@ -28,10 +27,13 @@ async function runStudentAbsentMarking() {
   // Bugun darsi bor sinflar to'plami ("classId|dayName")
   const lessonDays = await getLessonDayMap();
 
-  const students = await User.find(
-    { isActive: true, role: "student" },
-    "_id classes"
-  ).lean();
+  const students = await prisma.user.findMany({
+    where: { isActive: true, role: "student" },
+    select: {
+      id: true,
+      classes: { select: { classId: true } },
+    },
+  });
 
   if (students.length === 0) {
     logger.info("[StudentAttendanceCron] Faol o'quvchilar topilmadi");
@@ -45,9 +47,11 @@ async function runStudentAbsentMarking() {
 
   for (const student of students) {
     try {
-      const existing = await StudentAttendance.findOne({
-        student: student._id,
-        date: today,
+      const existing = await prisma.studentAttendance.findFirst({
+        where: {
+          studentId: student.id,
+          date: today,
+        },
       });
 
       if (existing) {
@@ -57,27 +61,29 @@ async function runStudentAbsentMarking() {
 
       // O'quvchining bugun darsi bor birinchi sinfini topamiz.
       // Jadvalga ko'ra darsi bo'lmagan o'quvchi absent belgilanmaydi.
-      const classId = (student.classes || []).find((c) =>
-        lessonDays.has(`${c}|${dayName}`)
-      );
+      const classId = (student.classes || [])
+        .map((c) => c.classId)
+        .find((c) => lessonDays.has(`${c}|${dayName}`));
 
       if (!classId) {
         skippedNoLesson++;
         continue;
       }
 
-      await StudentAttendance.create({
-        student: student._id,
-        class: classId,
-        date: today,
-        status: "absent",
-        autoMarked: true,
+      await prisma.studentAttendance.create({
+        data: {
+          studentId: student.id,
+          classId: classId,
+          date: today,
+          status: "absent",
+          autoMarked: true,
+        },
       });
 
       marked++;
     } catch (error) {
       errors++;
-      logger.error(`[StudentAttendanceCron] ${student._id} uchun xato:`, error);
+      logger.error(`[StudentAttendanceCron] ${student.id} uchun xato:`, error);
     }
   }
 
