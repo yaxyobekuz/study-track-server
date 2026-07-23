@@ -1,5 +1,6 @@
 const prisma = require("../config/prisma");
 const { getCoinSettings } = require("../services/settings.service");
+const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const logger = require("../utils/logger");
 
 // ─────────────────────────────────────────────
@@ -169,37 +170,55 @@ async function distributeDailyCoins(targetDate) {
 // WEEKLY BONUS DISTRIBUTION
 // ─────────────────────────────────────────────
 
-async function distributeWeeklyBonusCoins(weekNumber, year) {
+/**
+ * Haftalik bonus coinlarni tarqatadi — g'oliblar TO'G'RIDAN-TO'G'RI `grade`
+ * jadvalidan hisoblanadi (WeeklyStats'ga tayanmaydi). Maktab #1 va har bir
+ * sinf #1 bonusi beriladi. Idempotent (coinTransaction.meta orqali).
+ * @param {{weekStart:Date, weekEnd:Date, weekNumber:number, year:number}} [range]
+ */
+async function distributeWeeklyBonusCoins(range) {
+  const { weekStart, weekEnd, weekNumber, year } =
+    range || getCurrentWeekRange();
   const settings = await getCoinSettings();
   const { schoolRankBonus, classRankBonus } = settings;
 
-  const allStats = await prisma.weeklyStats.findMany({
-    where: { weekNumber, year },
-    include: {
-      classes: { include: { class: { select: { id: true, name: true } } } },
-    },
+  // Barcha faol o'quvchilar + sinf a'zoliklari
+  const students = await prisma.user.findMany({
+    where: { role: "student", isActive: true },
+    select: { id: true, classes: { select: { classId: true } } },
   });
 
-  if (!allStats.length) {
-    logger.info(
-      `[CoinService] No weekly stats found for week ${weekNumber}/${year}`,
-    );
+  if (!students.length) {
+    logger.info(`[CoinService] No active students for week ${weekNumber}/${year}`);
     return;
   }
 
-  // `student` — scalar String (user ID), `classes` — junction → cls.class
-  const normalized = allStats.map((stat) => ({
-    ...stat,
-    studentId: stat.student,
-    classList: (stat.classes || []).map((uc) => uc.class),
+  // Haftalik baho yig'indilari (bitta GROUP BY)
+  const sumRows = await prisma.grade.groupBy({
+    by: ["studentId"],
+    where: {
+      studentId: { in: students.map((s) => s.id) },
+      date: { gte: weekStart, lte: weekEnd },
+    },
+    _sum: { grade: true },
+  });
+  const sumById = new Map(sumRows.map((r) => [r.studentId, r._sum.grade || 0]));
+
+  const withSums = students.map((s) => ({
+    studentId: s.id,
+    classIds: (s.classes || []).map((c) => c.classId),
+    totalSum: sumById.get(s.id) || 0,
   }));
 
-  // ── Maktab #1 bonusi ──
-  const sortedBySchool = [...normalized].sort(
-    (a, b) => b.totalSum - a.totalSum,
-  );
+  // Eng yuqori ballli (birinchi uchragani — teng bo'lsa) ni topadi
+  const topOf = (list) =>
+    list.reduce(
+      (best, s) => (s.totalSum > (best ? best.totalSum : -1) ? s : best),
+      null,
+    );
 
-  const schoolTop = sortedBySchool[0];
+  // ── Maktab #1 bonusi ──
+  const schoolTop = topOf(withSums);
   if (schoolTop && schoolTop.totalSum > 0) {
     await _awardBonus({
       studentId: schoolTop.studentId,
@@ -211,33 +230,26 @@ async function distributeWeeklyBonusCoins(weekNumber, year) {
     });
   }
 
-  // ── Sinf #1 bonusi (faqat bitta, nechta sinfda bo'lsa ham) ──
-  const allClassIds = new Set();
-  normalized.forEach((stat) => {
-    (stat.classList || []).forEach((cls) => allClassIds.add(cls.id));
+  // ── Sinf #1 bonusi (bitta o'quvchi bir nechta sinfda bo'lsa ham faqat bir marta) ──
+  const allClassIds = [...new Set(withSums.flatMap((s) => s.classIds))];
+  const classDocs = await prisma.class.findMany({
+    where: { id: { in: allClassIds } },
+    select: { id: true, name: true },
   });
+  const classNameById = new Map(classDocs.map((c) => [c.id, c.name]));
 
   const awardedForClassBonus = new Set();
-
   for (const classId of allClassIds) {
-    const classStats = normalized
-      .filter((stat) =>
-        (stat.classList || []).some((c) => c.id === classId),
-      )
-      .sort((a, b) => b.totalSum - a.totalSum);
+    const members = withSums.filter((s) => s.classIds.includes(classId));
+    const classTop = topOf(members);
 
-    if (!classStats.length) continue;
-
-    const classTop = classStats[0];
-    const studentIdStr = classTop.studentId;
-
-    if (classTop.totalSum > 0 && !awardedForClassBonus.has(studentIdStr)) {
-      awardedForClassBonus.add(studentIdStr);
-
-      const classObj = (classTop.classList || []).find(
-        (c) => c.id === classId,
-      );
-      const className = classObj?.name || "Noma'lum sinf";
+    if (
+      classTop &&
+      classTop.totalSum > 0 &&
+      !awardedForClassBonus.has(classTop.studentId)
+    ) {
+      awardedForClassBonus.add(classTop.studentId);
+      const className = classNameById.get(classId) || "Noma'lum sinf";
 
       await _awardBonus({
         studentId: classTop.studentId,

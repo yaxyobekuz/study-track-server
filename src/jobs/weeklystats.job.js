@@ -1,46 +1,30 @@
 const cron = require("node-cron");
-const {
-  generateWeeklyStatsForAllStudents,
-  recalculateRankings,
-} = require("../services/weeklystats.service");
 const { distributeWeeklyBonusCoins } = require("../services/coin.service");
-const { getWeekNumber } = require("../helpers/statistics.helpers");
+const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const logger = require("../utils/logger");
 
 /**
- * Cron job: Generate WeeklyStats every Sunday at 00:01
- * Cron syntax: "1 0 * * 0" (minute hour day month weekday)
- * 0 = Sunday
+ * Cron job: Haftalik bonus coinlarni har yakshanba 00:01 da tarqatadi.
+ * Reytinglar `grade` jadvalidan jonli hisoblangani uchun endi WeeklyStats
+ * generatsiyasi shart emas — faqat maktab/sinf #1 bonuslari beriladi.
+ * Cron: "1 0 * * 0" (daqiqa soat kun oy hafta-kuni; 0 = yakshanba)
  */
 function startWeeklyStatsCron() {
-  // Run every Sunday at 00:01
   cron.schedule(
     "1 0 * * 0",
     async () => {
       try {
-        logger.info("=== Weekly Stats Cron Job Started ===");
+        logger.info("=== Weekly Bonus Cron Job Started ===");
 
-        const today = new Date();
-        const weekNumber = getWeekNumber(today);
-        const year = today.getFullYear();
-
-        // Generate stats for all students
-        const result = await generateWeeklyStatsForAllStudents(
-          weekNumber,
-          year,
-        );
-
-        // Recalculate rankings
-        await recalculateRankings(weekNumber, year);
-
-        // Haftalik bonus coinlarni tarqatish (reytinglar tayyor bo'lgandan keyin)
-        await distributeWeeklyBonusCoins(weekNumber, year);
+        // Yakshanba 00:01 da joriy hafta oralig'i = endigina tugagan hafta (Du–Sha)
+        const range = getCurrentWeekRange();
+        await distributeWeeklyBonusCoins(range);
 
         logger.info(
-          `=== Weekly Stats Cron Job Completed: ${result.successCount} success, ${result.errorCount} errors ===`,
+          `=== Weekly Bonus Cron Job Completed for week ${range.weekNumber}/${range.year} ===`,
         );
       } catch (error) {
-        logger.error("Error in weekly stats cron job:", error);
+        logger.error("Error in weekly bonus cron job:", error);
       }
     },
     {
@@ -50,7 +34,7 @@ function startWeeklyStatsCron() {
   );
 
   logger.info(
-    "Weekly stats cron job scheduled: Every Sunday at 00:01 (Asia/Tashkent)",
+    "Weekly bonus cron job scheduled: Every Sunday at 00:01 (Asia/Tashkent)",
   );
 }
 
