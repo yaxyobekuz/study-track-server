@@ -5,12 +5,7 @@ const logger = require("../utils/logger");
 const prisma = require("../config/prisma");
 
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
-const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
-const {
-  createWeeklyStatsForStudent,
-  calculateStudentRankInClass,
-  calculateStudentRankInSchool,
-} = require("../services/weeklystats.service");
+const statisticsService = require("../services/statistics.service");
 
 /**
  * ScheduleLesson child yozuvlaridagi subject/teacher soft ref'larni (relation YO'Q)
@@ -62,68 +57,6 @@ function mapLessons(lessons, subjectMap, teacherMap) {
     startTime: lesson.startTime,
     endTime: lesson.endTime,
   }));
-}
-
-/**
- * WeeklyStats.simpleStats — JSONB (populate ishlamaydi). subjects[].subject
- * ObjectId'larni JSONB ichidan olib, alohida prisma.subject.findMany bilan yuklab biriktiradi.
- */
-async function attachSimpleStatsSubjects(simpleStats) {
-  if (!simpleStats || !Array.isArray(simpleStats.subjects)) {
-    return simpleStats;
-  }
-
-  const subjectIds = [
-    ...new Set(
-      simpleStats.subjects.map((s) => s.subject).filter((v) => typeof v === "string"),
-    ),
-  ];
-
-  if (subjectIds.length === 0) {
-    return simpleStats;
-  }
-
-  const subjects = await prisma.subject.findMany({
-    where: { id: { in: subjectIds } },
-  });
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s }]));
-
-  return {
-    ...simpleStats,
-    subjects: simpleStats.subjects.map((s) => ({
-      ...s,
-      subject:
-        typeof s.subject === "string"
-          ? subjectMap.get(s.subject) || s.subject
-          : s.subject,
-    })),
-  };
-}
-
-// WeeklyStats hujjatini student/classes/simpleStats.subjects.subject bilan yuklaydi
-async function loadWeeklyStats(studentId, weekNumber, year) {
-  const weeklyStats = await prisma.weeklyStats.findUnique({
-    where: {
-      student_year_weekNumber: { student: studentId, year, weekNumber },
-    },
-    include: { classes: { include: { class: true } } },
-  });
-
-  if (!weeklyStats) return null;
-
-  const [student, simpleStats] = await Promise.all([
-    prisma.user.findUnique({
-      where: { id: weeklyStats.student },
-      select: { id: true, firstName: true, lastName: true, fullName: true },
-    }),
-    attachSimpleStatsSubjects(weeklyStats.simpleStats),
-  ]);
-
-  const classes = (weeklyStats.classes || []).map((wc) => ({
-    ...wc.class,
-  }));
-
-  return { ...weeklyStats, student, classes, simpleStats };
 }
 
 // ============================================================
@@ -293,70 +226,8 @@ const getClassSchedule = asyncHandler(async (req, res) => {
  */
 const getStudentWeeklyStats = asyncHandler(async (req, res) => {
   const { studentId } = req.params;
-  const { weekNumber, year } = getCurrentWeekRange();
-
-  let weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
-
-  if (!weeklyStats) {
-    try {
-      await createWeeklyStatsForStudent(studentId, weekNumber, year);
-      weeklyStats = await loadWeeklyStats(studentId, weekNumber, year);
-    } catch (error) {
-      throw new NotFoundError("O'quvchi topilmadi yoki sinfga biriktirilmagan");
-    }
-  }
-
-  const schoolRanking = await calculateStudentRankInSchool(
-    studentId,
-    weekNumber,
-    year,
-  );
-
-  const classRankings = [];
-  if (weeklyStats.classes && weeklyStats.classes.length > 0) {
-    for (const cls of weeklyStats.classes) {
-      const classRanking = await calculateStudentRankInClass(
-        studentId,
-        cls.id,
-        weekNumber,
-        year,
-      );
-      if (classRanking) {
-        classRankings.push({
-          class: cls,
-          rank: classRanking.rank,
-          totalStudents: classRanking.totalStudents,
-        });
-      }
-    }
-  }
-
-  return res.json({
-    success: true,
-    data: {
-      student: {
-        id: weeklyStats.student.id,
-        firstName: weeklyStats.student.firstName,
-        lastName: weeklyStats.student.lastName,
-        fullName: weeklyStats.student.fullName,
-      },
-      class:
-        weeklyStats.classes && weeklyStats.classes[0]
-          ? weeklyStats.classes[0]
-          : null,
-      classes: weeklyStats.classes || [],
-      weekStart: weeklyStats.weekStart,
-      weekEnd: weeklyStats.weekEnd,
-      weekNumber: weeklyStats.weekNumber,
-      year: weeklyStats.year,
-      simpleStats: weeklyStats.simpleStats,
-      rankings: {
-        schoolRank: schoolRanking?.rank || null,
-        schoolTotalStudents: schoolRanking?.totalStudents || 0,
-        classRanks: classRankings,
-      },
-    },
-  });
+  const data = await statisticsService.getStudentWeekly(studentId);
+  return res.json({ success: true, data });
 });
 
 /**
