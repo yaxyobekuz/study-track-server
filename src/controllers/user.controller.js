@@ -41,10 +41,10 @@ const getUser = asyncHandler(async (req, res) => {
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaymiz
-  const data = { ...user, _id: user.id };
+  const data = { ...user, id: user.id };
   data.classes = (user.classes || []).map((uc) => ({
     ...uc.class,
-    _id: uc.class.id,
+    id: uc.class.id,
   }));
 
   res.json({ success: true, data });
@@ -161,7 +161,7 @@ const getStudents = asyncHandler(async (req, res) => {
 const updateMe = asyncHandler(async (req, res) => {
   const { firstName, lastName, username, currentPassword, newPassword } = req.body;
 
-  const user = await userService.updateSelfProfile(req.user._id, {
+  const user = await userService.updateSelfProfile(req.user.id, {
     firstName,
     lastName,
     username,

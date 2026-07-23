@@ -62,7 +62,7 @@ const createSocialNetwork = asyncHandler(async (req, res) => {
       chatId,
       username,
       isActive: isActive !== undefined ? isActive : true,
-      createdBy: req.user._id,
+      createdBy: req.user.id,
     },
   });
 

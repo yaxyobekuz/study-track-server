@@ -19,7 +19,7 @@ const getScheduleByDay = asyncHandler(async (req, res) => {
 
 // Create or update schedule (Owner only)
 const createOrUpdateSchedule = asyncHandler(async (req, res) => {
-  const data = await scheduleService.createOrUpdateSchedule(req.body, req.user._id);
+  const data = await scheduleService.createOrUpdateSchedule(req.body, req.user.id);
 
   res.json({
     success: true,
@@ -33,7 +33,7 @@ const saveClassSchedule = asyncHandler(async (req, res) => {
   const data = await scheduleService.saveClassSchedule(
     req.params.classId,
     req.body.schedules,
-    req.user._id,
+    req.user.id,
   );
 
   res.json({
@@ -85,7 +85,7 @@ const getAllTodaySchedules = asyncHandler(async (req, res) => {
 
 // Get teacher's schedule for today
 const getMyTodaySchedule = asyncHandler(async (req, res) => {
-  const data = await scheduleService.getMyTodaySchedule(req.user._id);
+  const data = await scheduleService.getMyTodaySchedule(req.user.id);
 
   res.json({ success: true, data });
 });

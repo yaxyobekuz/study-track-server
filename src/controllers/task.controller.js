@@ -30,7 +30,7 @@ const createTask = asyncHandler(async (req, res) => {
     dueDate,
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : 1,
     assigneeIds: parsedAssigneeIds,
-    createdBy: req.user._id,
+    createdBy: req.user.id,
     files: req.files || [],
   });
 
@@ -55,7 +55,7 @@ const getTasks = asyncHandler(async (req, res) => {
  * GET /tasks/my
  */
 const getMyTasks = asyncHandler(async (req, res) => {
-  const result = await taskService.getMyTasks(req.user._id, req);
+  const result = await taskService.getMyTasks(req.user.id, req);
   return res.json(result);
 });
 
@@ -76,7 +76,7 @@ const submitCompletion = asyncHandler(async (req, res) => {
   const { note } = req.body;
   const task = await taskService.submitTaskCompletion(
     req.params.id,
-    req.user._id,
+    req.user.id,
     { note, files: req.files || [] },
   );
   return res.json({ success: true, data: task, message: "Topshiriq ko'rib chiqishga yuborildi" });
@@ -92,7 +92,7 @@ const approveTask = asyncHandler(async (req, res) => {
 
   const task = await taskService.approveTask(req.params.id, {
     reason,
-    approvedBy: req.user._id,
+    approvedBy: req.user.id,
   });
   return res.json({ success: true, data: task, message: "Topshiriq tasdiqlandi" });
 });
@@ -107,7 +107,7 @@ const rejectTask = asyncHandler(async (req, res) => {
 
   const task = await taskService.rejectTask(req.params.id, {
     reason,
-    rejectedBy: req.user._id,
+    rejectedBy: req.user.id,
     newDueDate,
   });
   return res.json({ success: true, data: task, message: "Topshiriq rad etildi" });
@@ -125,7 +125,7 @@ const stopTask = asyncHandler(async (req, res) => {
     reason,
     withPenalty: !!withPenalty,
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
-    stoppedBy: req.user._id,
+    stoppedBy: req.user.id,
   });
   return res.json({ success: true, data: task, message: "Topshiriq to'xtatildi" });
 });
@@ -144,7 +144,7 @@ const extendDeadline = asyncHandler(async (req, res) => {
     reason,
     withPenalty: !!withPenalty,
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
-    extendedBy: req.user._id,
+    extendedBy: req.user.id,
   });
   return res.json({ success: true, data: task, message: "Ijro muddati uzaytirildi" });
 });

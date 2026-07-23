@@ -6,7 +6,7 @@ const testService = require("../services/test.service");
  * GET /api/tests
  */
 const getTests = asyncHandler(async (req, res) => {
-  const result = await testService.listTests(req, req.user._id);
+  const result = await testService.listTests(req, req.user.id);
   res.json(result);
 });
 
@@ -27,7 +27,7 @@ const getTestById = asyncHandler(async (req, res) => {
  * POST /api/tests
  */
 const createTest = asyncHandler(async (req, res) => {
-  const test = await testService.createTest(req.body, req.user._id);
+  const test = await testService.createTest(req.body, req.user.id);
   res.status(201).json({
     success: true,
     data: test,
@@ -42,7 +42,7 @@ const updateTest = asyncHandler(async (req, res) => {
   const test = await testService.updateTest(
     req.params.id,
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -55,7 +55,7 @@ const updateTest = asyncHandler(async (req, res) => {
  * DELETE /api/tests/:id
  */
 const deleteTest = asyncHandler(async (req, res) => {
-  const result = await testService.deleteTest(req.params.id, req.user._id);
+  const result = await testService.deleteTest(req.params.id, req.user.id);
   res.json({
     success: true,
     message: result.deleted

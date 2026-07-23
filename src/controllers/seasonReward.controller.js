@@ -33,7 +33,7 @@ const getClassStats = asyncHandler(async (req, res) => {
 const getMyStats = asyncHandler(async (req, res) => {
   const stats = await seasonRewardService.getMyStats(
     req.params.id,
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: stats });
 });
@@ -46,7 +46,7 @@ const setSchoolTiers = asyncHandler(async (req, res) => {
   const season = await seasonRewardService.setSchoolTiers(
     req.params.id,
     req.body.tiers,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -63,7 +63,7 @@ const setClassTiers = asyncHandler(async (req, res) => {
   const season = await seasonRewardService.setClassTiers(
     req.params.id,
     req.body.tiers,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -88,7 +88,7 @@ const previewDistribution = asyncHandler(async (req, res) => {
 const distributeCoins = asyncHandler(async (req, res) => {
   const result = await seasonRewardService.distributeCoins(
     req.params.id,
-    req.user._id,
+    req.user.id,
     { force: Boolean(req.body.force) },
   );
   res.json({

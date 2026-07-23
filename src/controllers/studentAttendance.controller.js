@@ -5,7 +5,7 @@ const mark = asyncHandler(async (req, res) => {
   const { classId, date, records } = req.body;
   const result = await studentAttendanceService.markAttendance(
     { classId, date, records },
-    req.user._id
+    req.user.id
   );
   res.status(200).json({ success: true, data: result });
 });
@@ -15,7 +15,7 @@ const updateRecord = asyncHandler(async (req, res) => {
   const record = await studentAttendanceService.updateRecord(
     req.params.id,
     { status, excuseReason },
-    req.user._id
+    req.user.id
   );
   res.json({ success: true, data: record });
 });

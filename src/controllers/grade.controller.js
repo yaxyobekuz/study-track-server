@@ -194,7 +194,7 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
         if (!teacherDataMap[teacherId]) {
           teacherDataMap[teacherId] = {
             teacher: {
-              _id: lessonTeacher.id,
+              id: lessonTeacher.id,
               firstName: lessonTeacher.firstName,
               lastName: lessonTeacher.lastName,
             },
@@ -205,11 +205,11 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
         // Dars ma'lumotlarini qo'shish
         teacherDataMap[teacherId].lessons.push({
           class: {
-            _id: scheduleClass.id,
+            id: scheduleClass.id,
             name: scheduleClass.name,
           },
           subject: {
-            _id: lesson.subjectId,
+            id: lesson.subjectId,
             name: lessonSubject ? lessonSubject.name : undefined,
           },
           lessonOrder: lesson.order,
@@ -217,7 +217,7 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
           endTime: lesson.endTime,
           totalStudents: studentsInClass.length,
           missingStudents: missingStudents.map((s) => ({
-            _id: s.id,
+            id: s.id,
             firstName: s.firstName,
             lastName: s.lastName,
           })),
@@ -294,12 +294,12 @@ async function attachGradeRefs(grades, { student = true, subject = true, teacher
       : [],
   ]);
 
-  const userMap = new Map(users.map((u) => [u.id, { ...u, _id: u.id }]));
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
-  const classMap = new Map(classes.map((c) => [c.id, { ...c, _id: c.id }]));
+  const userMap = new Map(users.map((u) => [u.id, { ...u, id: u.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
+  const classMap = new Map(classes.map((c) => [c.id, { ...c, id: c.id }]));
 
   const mapped = arr.map((g) => {
-    const out = { ...g, _id: g.id };
+    const out = { ...g, id: g.id };
     if (student) out.student = g.studentId ? userMap.get(g.studentId) || null : null;
     if (teacher) out.teacher = g.teacherId ? userMap.get(g.teacherId) || null : null;
     if (subject) out.subject = g.subjectId ? subjectMap.get(g.subjectId) || null : null;
@@ -406,7 +406,7 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
   // Group grades by student
   const gradesByStudent = {};
   grades.forEach((grade) => {
-    const studentId = grade.student._id;
+    const studentId = grade.student.id;
     if (!gradesByStudent[studentId]) {
       gradesByStudent[studentId] = {
         student: grade.student,
@@ -422,7 +422,7 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
     if (!gradesByStudent[studentId]) {
       gradesByStudent[studentId] = {
         student: {
-          _id: student.id,
+          id: student.id,
           firstName: student.firstName,
           lastName: student.lastName,
         },
@@ -772,7 +772,7 @@ const updateGrade = asyncHandler(async (req, res) => {
       where: { id: { in: historyEditorIds } },
       select: { id: true, firstName: true, lastName: true },
     });
-    const editorMap = new Map(editors.map((e) => [e.id, { ...e, _id: e.id }]));
+    const editorMap = new Map(editors.map((e) => [e.id, { ...e, id: e.id }]));
     updatedGrade.editHistory = (updatedGrade.editHistory || []).map((h) => ({
       ...h,
       editedBy: h.editedBy ? editorMap.get(h.editedBy) || null : null,
@@ -1006,7 +1006,7 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
 
       // Add subject with lesson number
       teacherSubjects.push({
-        _id: subjectId,
+        id: subjectId,
         name: subjectDoc ? subjectDoc.name : undefined,
         order: item.order,
         lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
@@ -1095,7 +1095,7 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
   const studentsWithGrades = students.map((student) => {
     const grade = grades.find((g) => g.studentId === student.id);
     return {
-      _id: student.id,
+      id: student.id,
       firstName: student.firstName,
       lastName: student.lastName,
       grade: grade || null,
@@ -1172,9 +1172,9 @@ const exportGrades = asyncHandler(async (req, res) => {
   const studentGradesMap = {};
   allStudents.forEach((student) => {
     studentGradesMap[student.id] = {
-      student: { ...student, _id: student.id },
+      student: { ...student, id: student.id },
       grades: grades.filter(
-        (g) => g.student && g.student._id && g.student._id === student.id,
+        (g) => g.student && g.student.id && g.student.id === student.id,
       ),
     };
   });
@@ -1196,7 +1196,7 @@ const exportGrades = asyncHandler(async (req, res) => {
 
     data = studentsWithGrades.map((item) => {
       const gradeData = item.grades.find(
-        (g) => g.subject && g.subject._id && g.subject._id === subjectId,
+        (g) => g.subject && g.subject.id && g.subject.id === subjectId,
       );
 
       return {
@@ -1251,8 +1251,8 @@ const exportGrades = asyncHandler(async (req, res) => {
       // Har bir fan uchun baholarni guruhlash
       const gradesBySubject = {};
       sortedGrades.forEach((g) => {
-        if (g.subject && g.subject._id) {
-          const subjectId = g.subject._id;
+        if (g.subject && g.subject.id) {
+          const subjectId = g.subject.id;
           if (!gradesBySubject[subjectId]) {
             gradesBySubject[subjectId] = [];
           }

@@ -63,7 +63,7 @@ const generateQuestions = asyncHandler(async (req, res) => {
   const result = await questionService.bulkCreateQuestions(
     testId,
     questions,
-    req.user._id,
+    req.user.id,
     difficulty,
   );
 

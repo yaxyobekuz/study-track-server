@@ -18,12 +18,12 @@ function _shapeBinding(binding, { season, subject, test } = {}) {
   const shaped = { ...binding };
 
   shaped.classes = (binding.classes || []).map((c) => ({
-    _id: c.classId,
+    id: c.classId,
     name: c.class ? c.class.name : undefined,
   }));
 
   shaped.reopenGrants = (binding.reopenGrants || []).map((g) => ({
-    _id: g.id,
+    id: g.id,
     student: g.studentId,
     grantedBy: g.grantedBy,
     grantedAt: g.grantedAt,
@@ -94,11 +94,11 @@ async function listBindingsForTest(testId, teacherId) {
   const seasonMap = new Map(
     seasons.map((s) => [
       s.id,
-      { _id: s.id, name: s.name, status: s.status, startDate: s.startDate, endDate: s.endDate },
+      { id: s.id, name: s.name, status: s.status, startDate: s.startDate, endDate: s.endDate },
     ]),
   );
   const subjectMap = new Map(
-    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+    subjects.map((s) => [s.id, { id: s.id, name: s.name }]),
   );
 
   return bindings.map((b) =>
@@ -349,7 +349,7 @@ async function listAvailableBindingsForStudent(studentId) {
     testDocs.map((t) => [
       t.id,
       {
-        _id: t.id,
+        id: t.id,
         title: t.title,
         questionCount: t.questionCount,
         timeLimitMinutes: t.timeLimitMinutes,
@@ -357,10 +357,10 @@ async function listAvailableBindingsForStudent(studentId) {
     ]),
   );
   const seasonMap = new Map(
-    seasonDocs.map((s) => [s.id, { _id: s.id, name: s.name, endDate: s.endDate }]),
+    seasonDocs.map((s) => [s.id, { id: s.id, name: s.name, endDate: s.endDate }]),
   );
   const subjectMap = new Map(
-    subjectDocs.map((s) => [s.id, { _id: s.id, name: s.name }]),
+    subjectDocs.map((s) => [s.id, { id: s.id, name: s.name }]),
   );
 
   // Faqat savollari yetarli (faol savol soni >= test.questionCount) testlar
@@ -368,7 +368,7 @@ async function listAvailableBindingsForStudent(studentId) {
   const testIds = [
     ...new Set(
       candidateBindings
-        .map((b) => testMap.get(b.testId)?._id)
+        .map((b) => testMap.get(b.testId)?.id)
         .filter(Boolean),
     ),
   ];
@@ -392,7 +392,7 @@ async function listAvailableBindingsForStudent(studentId) {
 
   const bindings = shapedBindings.filter((b) => {
     if (!b.test) return false;
-    const activeCount = activeCountMap.get(b.test._id) || 0;
+    const activeCount = activeCountMap.get(b.test.id) || 0;
     return activeCount >= (b.test.questionCount || 0);
   });
 

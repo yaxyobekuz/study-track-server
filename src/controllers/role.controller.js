@@ -35,7 +35,7 @@ const getRoleOptions = asyncHandler(async (req, res) => {
  * @access Owner only
  */
 const createRole = asyncHandler(async (req, res) => {
-  const role = await roleService.createRole(req.body, req.user._id);
+  const role = await roleService.createRole(req.body, req.user.id);
 
   res.status(201).json({
     success: true,

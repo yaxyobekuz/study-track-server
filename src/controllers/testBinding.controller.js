@@ -8,7 +8,7 @@ const testBindingService = require("../services/testBinding.service");
 const getBindingsForTest = asyncHandler(async (req, res) => {
   const bindings = await testBindingService.listBindingsForTest(
     req.params.testId,
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: bindings });
 });
@@ -21,7 +21,7 @@ const createBinding = asyncHandler(async (req, res) => {
   const binding = await testBindingService.createBinding(
     req.params.testId,
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({ success: true, data: binding });
 });
@@ -34,7 +34,7 @@ const updateBinding = asyncHandler(async (req, res) => {
   const binding = await testBindingService.updateBinding(
     req.params.id,
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: binding });
 });
@@ -46,7 +46,7 @@ const updateBinding = asyncHandler(async (req, res) => {
 const deleteBinding = asyncHandler(async (req, res) => {
   const result = await testBindingService.deleteBinding(
     req.params.id,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -64,7 +64,7 @@ const reopenSession = asyncHandler(async (req, res) => {
   const result = await testBindingService.reopenSessionForStudent(
     req.params.id,
     req.body.studentId,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -79,7 +79,7 @@ const reopenSession = asyncHandler(async (req, res) => {
  */
 const getAvailableBindings = asyncHandler(async (req, res) => {
   const bindings = await testBindingService.listAvailableBindingsForStudent(
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: bindings });
 });

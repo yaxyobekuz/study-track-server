@@ -37,7 +37,7 @@ exports.updateSettings = asyncHandler(async (req, res) => {
 
   const settings = await coinService.updateSettings(
     { dailyCoinPercentage, schoolRankBonus, classRankBonus, minDailyGradeForCoin },
-    req.user._id,
+    req.user.id,
   );
   return res.json({
     success: true,
@@ -65,7 +65,7 @@ exports.getMyTransactions = asyncHandler(async (req, res) => {
   const limitNum = parseInt(limit, 10);
 
   const result = await coinService.getStudentTransactions(
-    req.user._id,
+    req.user.id,
     pageNum,
     limitNum,
   );
@@ -127,7 +127,7 @@ exports.distributeCoins = asyncHandler(async (req, res) => {
     reason: reason.trim(),
     filterType,
     filterValue,
-    givenBy: req.user._id,
+    givenBy: req.user.id,
   });
 
   const message =

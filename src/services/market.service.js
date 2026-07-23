@@ -30,11 +30,11 @@ const getProductCoverImageUrl = (product) => {
 // MarketProduct.images junction → eski [Image] shakliga tekislaydi
 function flattenProduct(product) {
   if (!product) return product;
-  const out = { ...product, _id: product.id };
+  const out = { ...product, id: product.id };
   if (Array.isArray(product.images)) {
     // include: { images: { include: { image }, orderBy: position } }
     out.images = product.images.map((pi) =>
-      pi.image ? { ...pi.image, _id: pi.image.id } : pi,
+      pi.image ? { ...pi.image, id: pi.image.id } : pi,
     );
   }
   return out;
@@ -47,7 +47,7 @@ async function attachCreatedBy(product) {
     where: { id: product.createdBy },
     select: { id: true, firstName: true, lastName: true, username: true },
   });
-  return { ...product, createdBy: u ? { ...u, _id: u.id } : null };
+  return { ...product, createdBy: u ? { ...u, id: u.id } : null };
 }
 
 // MarketOrder ref (student/product/deliveryImage) larni qo'lda yuklab tekislaydi
@@ -78,13 +78,13 @@ async function attachOrderRefs(orders) {
       : [],
   ]);
 
-  const sMap = new Map(students.map((s) => [s.id, { ...s, _id: s.id, classes: s.classes.map((uc) => ({ ...uc.class, _id: uc.class.id })) }]));
-  const pMap = new Map(products.map((p) => [p.id, { ...p, _id: p.id }]));
-  const iMap = new Map(images.map((i) => [i.id, { ...i, _id: i.id }]));
+  const sMap = new Map(students.map((s) => [s.id, { ...s, id: s.id, classes: s.classes.map((uc) => ({ ...uc.class, id: uc.class.id })) }]));
+  const pMap = new Map(products.map((p) => [p.id, { ...p, id: p.id }]));
+  const iMap = new Map(images.map((i) => [i.id, { ...i, id: i.id }]));
 
   const mapped = arr.map((o) => ({
     ...o,
-    _id: o.id,
+    id: o.id,
     student: sMap.get(o.studentId) || null,
     product: pMap.get(o.productId) || null,
     deliveryImage: o.deliveryImage ? iMap.get(o.deliveryImage) || null : null,
@@ -127,7 +127,7 @@ const createProductImages = async (files, uploadedBy) => {
         },
       });
 
-      createdImages.push({ ...image, _id: image.id });
+      createdImages.push({ ...image, id: image.id });
     }
 
     return createdImages;
@@ -315,7 +315,7 @@ const updateProduct = async (productId, payload, files, ownerId) => {
     throw new Error("Mahsulot topilmadi");
   }
 
-  const currentImages = product.images.map((pi) => ({ ...pi.image, _id: pi.image.id }));
+  const currentImages = product.images.map((pi) => ({ ...pi.image, id: pi.image.id }));
 
   const removeImageIds = Array.isArray(payload.removeImageIds)
     ? payload.removeImageIds
@@ -402,7 +402,7 @@ const deleteProduct = async (productId) => {
     data: { isArchived: true, isActive: false, archivedAt: new Date() },
   });
 
-  return { ...updated, _id: updated.id };
+  return { ...updated, id: updated.id };
 };
 
 /**

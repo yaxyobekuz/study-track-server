@@ -58,31 +58,31 @@ async function attachRefs(assignments, options = {}) {
       s.id,
       seasonExtra
         ? {
-            _id: s.id,
+            id: s.id,
             name: s.name,
             status: s.status,
             startDate: s.startDate,
             endDate: s.endDate,
           }
-        : { _id: s.id, name: s.name, status: s.status },
+        : { id: s.id, name: s.name, status: s.status },
     ]),
   );
   const classMap = new Map(
-    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
   );
   const subjectMap = new Map(
-    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+    subjects.map((s) => [s.id, { id: s.id, name: s.name }]),
   );
   const teacherMap = new Map(
     teachers.map((t) => [
       t.id,
-      { _id: t.id, firstName: t.firstName, lastName: t.lastName },
+      { id: t.id, firstName: t.firstName, lastName: t.lastName },
     ]),
   );
 
   return assignments.map((a) => ({
     ...a,
-    _id: a.id,
+    id: a.id,
     season: seasonMap.get(a.seasonId) || null,
     class: classMap.get(a.classId) || null,
     subject: subjectMap.get(a.subjectId) || null,

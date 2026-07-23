@@ -17,7 +17,7 @@ exports.getSettings = asyncHandler(async (req, res) => {
 exports.updateSettings = asyncHandler(async (req, res) => {
   const settings = await testSettingsService.updateSettings(
     req.body,
-    req.user._id,
+    req.user.id,
   );
   return res.json({
     success: true,

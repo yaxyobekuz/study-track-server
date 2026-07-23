@@ -18,7 +18,7 @@ const getLeadById = asyncHandler(async (req, res) => {
 
 // Create new lead
 const createLead = asyncHandler(async (req, res) => {
-  const lead = await leadService.createLead(req.body, req.user._id);
+  const lead = await leadService.createLead(req.body, req.user.id);
 
   res.status(201).json({
     success: true,
@@ -46,7 +46,7 @@ const updateLeadStatus = asyncHandler(async (req, res) => {
     status,
     description,
     lostReason,
-    req.user._id,
+    req.user.id,
   );
 
   res.json({
@@ -81,7 +81,7 @@ const createLeadActivity = asyncHandler(async (req, res) => {
   const activity = await leadActivityService.createActivity(
     req.params.id,
     req.body,
-    req.user._id,
+    req.user.id,
   );
 
   res.status(201).json({

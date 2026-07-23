@@ -40,12 +40,12 @@ async function loadLessonRefs(schedules) {
   ]);
 
   const subjectMap = new Map(
-    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+    subjects.map((s) => [s.id, { id: s.id, name: s.name }]),
   );
   const teacherMap = new Map(
     teachers.map((t) => [
       t.id,
-      { _id: t.id, firstName: t.firstName, lastName: t.lastName },
+      { id: t.id, firstName: t.firstName, lastName: t.lastName },
     ]),
   );
 
@@ -55,7 +55,7 @@ async function loadLessonRefs(schedules) {
 // lessons[] → eski subjects[] shakliga xaritalaydi (subject/teacher biriktirilgan)
 function mapLessons(lessons, subjectMap, teacherMap) {
   return (lessons || []).map((lesson) => ({
-    _id: lesson.id,
+    id: lesson.id,
     subject: subjectMap.get(lesson.subjectId) || null,
     teacher: teacherMap.get(lesson.teacherId) || null,
     order: lesson.order,
@@ -86,7 +86,7 @@ async function attachSimpleStatsSubjects(simpleStats) {
   const subjects = await prisma.subject.findMany({
     where: { id: { in: subjectIds } },
   });
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
 
   return {
     ...simpleStats,
@@ -121,7 +121,7 @@ async function loadWeeklyStats(studentId, weekNumber, year) {
 
   const classes = (weeklyStats.classes || []).map((wc) => ({
     ...wc.class,
-    _id: wc.class.id,
+    id: wc.class.id,
   }));
 
   return { ...weeklyStats, student, classes, simpleStats };
@@ -158,7 +158,7 @@ const verifyCode = asyncHandler(async (req, res) => {
     data: {
       verified: true,
       monitor: {
-        _id: monitor.id,
+        id: monitor.id,
         name: monitor.name,
         code: monitor.code,
       },
@@ -234,7 +234,7 @@ const getAllTodaySchedules = asyncHandler(async (req, res) => {
     select: { id: true, name: true },
   });
   const classMap = new Map(
-    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
   );
 
   const formattedSchedules = schedules.map((schedule) => ({
@@ -277,7 +277,7 @@ const getClassSchedule = asyncHandler(async (req, res) => {
   // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
   const sortedSchedules = schedules.map((schedule) => ({
     ...schedule,
-    _id: schedule.id,
+    id: schedule.id,
     class: schedule.classId,
     subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort(
       (a, b) => (a.order || 0) - (b.order || 0),
@@ -337,7 +337,7 @@ const getStudentWeeklyStats = asyncHandler(async (req, res) => {
     success: true,
     data: {
       student: {
-        _id: weeklyStats.student.id,
+        id: weeklyStats.student.id,
         firstName: weeklyStats.student.firstName,
         lastName: weeklyStats.student.lastName,
         fullName: weeklyStats.student.fullName,

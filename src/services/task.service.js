@@ -250,7 +250,7 @@ const getTaskById = async (taskId, requestingUser) => {
 
   if (
     requestingUser.role !== "owner" &&
-    (!assignee || String(assignee.id) !== String(requestingUser._id))
+    (!assignee || String(assignee.id) !== String(requestingUser.id))
   ) {
     throw new ForbiddenError("Bu topshiriqni ko'rishga ruxsat yo'q");
   }

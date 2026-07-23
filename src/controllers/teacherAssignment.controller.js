@@ -16,7 +16,7 @@ const getAssignments = asyncHandler(async (req, res) => {
  */
 const getMyAssignments = asyncHandler(async (req, res) => {
   const assignments = await teacherAssignmentService.getAssignmentsForTeacher(
-    req.user._id,
+    req.user.id,
     req.query.season,
   );
   res.json({
@@ -32,7 +32,7 @@ const getMyAssignments = asyncHandler(async (req, res) => {
 const createAssignment = asyncHandler(async (req, res) => {
   const assignment = await teacherAssignmentService.createAssignment(
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({
     success: true,
@@ -47,7 +47,7 @@ const createAssignment = asyncHandler(async (req, res) => {
 const bulkCreateAssignments = asyncHandler(async (req, res) => {
   const result = await teacherAssignmentService.bulkCreateAssignments(
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({
     success: true,

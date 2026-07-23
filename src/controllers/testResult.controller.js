@@ -7,7 +7,7 @@ const testResultService = require("../services/testResult.service");
  */
 const getMyResults = asyncHandler(async (req, res) => {
   const results = await testResultService.getResultsForStudent(
-    req.user._id,
+    req.user.id,
     req.query.season,
   );
   res.json({
@@ -60,7 +60,7 @@ const getResultsByTest = asyncHandler(async (req, res) => {
   const result = await testResultService.getResultsForTest(
     req,
     req.params.testId,
-    req.user._id,
+    req.user.id,
   );
   res.json(result);
 });
@@ -74,7 +74,7 @@ const gradeOpenAnswer = asyncHandler(async (req, res) => {
   const result = await testResultService.gradeOpenAnswer(
     req.params.id,
     questionId,
-    req.user._id,
+    req.user.id,
     { awardedPoints, feedback },
   );
   res.json({
@@ -91,7 +91,7 @@ const gradeOpenAnswer = asyncHandler(async (req, res) => {
 const addExtraPoints = asyncHandler(async (req, res) => {
   const result = await testResultService.addExtraPoints(
     req.params.id,
-    req.user._id,
+    req.user.id,
     req.body,
   );
   res.json({
@@ -109,7 +109,7 @@ const editExtraPoints = asyncHandler(async (req, res) => {
   const result = await testResultService.editExtraPoints(
     req.params.id,
     req.params.entryId,
-    req.user._id,
+    req.user.id,
     req.body,
   );
   res.json({
@@ -127,7 +127,7 @@ const deleteExtraPoints = asyncHandler(async (req, res) => {
   const result = await testResultService.deleteExtraPoints(
     req.params.id,
     req.params.entryId,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,

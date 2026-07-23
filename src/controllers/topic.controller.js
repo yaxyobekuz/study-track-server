@@ -8,7 +8,7 @@ const topicService = require("../services/topic.service");
  */
 const uploadTopics = asyncHandler(async (req, res) => {
   const singleSubjectId = req.body.subjectId || req.query.subjectId;
-  const result = await topicService.uploadTopics(singleSubjectId, req.file, req.user._id);
+  const result = await topicService.uploadTopics(singleSubjectId, req.file, req.user.id);
 
   res.json({
     success: true,

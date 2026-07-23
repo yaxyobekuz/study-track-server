@@ -82,12 +82,12 @@ async function getTestById(id, user) {
     select: { id: true, firstName: true, lastName: true },
   });
   test.teacher = teacher
-    ? { _id: teacher.id, firstName: teacher.firstName, lastName: teacher.lastName }
+    ? { id: teacher.id, firstName: teacher.firstName, lastName: teacher.lastName }
     : null;
 
   if (
     user.role === "teacher" &&
-    test.teacherId.toString() !== user._id.toString()
+    test.teacherId.toString() !== user.id.toString()
   ) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
   }

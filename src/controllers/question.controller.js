@@ -8,7 +8,7 @@ const questionService = require("../services/question.service");
 const getQuestionsForTest = asyncHandler(async (req, res) => {
   const questions = await questionService.listQuestionsForTest(
     req.params.testId,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -25,7 +25,7 @@ const createQuestion = asyncHandler(async (req, res) => {
     req.params.testId,
     req.body,
     req.files,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({
     success: true,
@@ -41,7 +41,7 @@ const reorderQuestions = asyncHandler(async (req, res) => {
   await questionService.reorderQuestions(
     req.params.testId,
     req.body.orderedIds,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -58,7 +58,7 @@ const updateQuestion = asyncHandler(async (req, res) => {
     req.params.id,
     req.body,
     req.files,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -71,7 +71,7 @@ const updateQuestion = asyncHandler(async (req, res) => {
  * DELETE /api/questions/:id
  */
 const deleteQuestion = asyncHandler(async (req, res) => {
-  await questionService.deactivateQuestion(req.params.id, req.user._id);
+  await questionService.deactivateQuestion(req.params.id, req.user.id);
   res.json({
     success: true,
     message: "Savol o'chirildi",
@@ -85,7 +85,7 @@ const deleteQuestion = asyncHandler(async (req, res) => {
 const deleteAllQuestionsForTest = asyncHandler(async (req, res) => {
   const result = await questionService.deactivateAllQuestions(
     req.params.testId,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,

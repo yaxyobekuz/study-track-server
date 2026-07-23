@@ -2,7 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const absenceReasonService = require("../services/absenceReason.service");
 
 const create = asyncHandler(async (req, res) => {
-  const reason = await absenceReasonService.createReason(req.body, req.user._id);
+  const reason = await absenceReasonService.createReason(req.body, req.user.id);
   res.status(201).json({ success: true, data: reason });
 });
 

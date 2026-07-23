@@ -8,7 +8,7 @@ const testSessionService = require("../services/testSession.service");
 const startSession = asyncHandler(async (req, res) => {
   const session = await testSessionService.startSession(
     req.body.bindingId,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({
     success: true,
@@ -22,7 +22,7 @@ const startSession = asyncHandler(async (req, res) => {
  */
 const getMySessions = asyncHandler(async (req, res) => {
   const sessions = await testSessionService.getStudentSessions(
-    req.user._id,
+    req.user.id,
     req.query.season,
   );
   res.json({
@@ -38,7 +38,7 @@ const getMySessions = asyncHandler(async (req, res) => {
 const getSession = asyncHandler(async (req, res) => {
   const session = await testSessionService.getSessionForStudent(
     req.params.id,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -53,7 +53,7 @@ const getSession = asyncHandler(async (req, res) => {
 const saveAnswer = asyncHandler(async (req, res) => {
   const session = await testSessionService.saveAnswer(
     req.params.id,
-    req.user._id,
+    req.user.id,
     req.body,
   );
   res.json({
@@ -69,7 +69,7 @@ const saveAnswer = asyncHandler(async (req, res) => {
 const submitSession = asyncHandler(async (req, res) => {
   const { session, result } = await testSessionService.submitSession(
     req.params.id,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -85,7 +85,7 @@ const submitSession = asyncHandler(async (req, res) => {
 const getSessionsByTest = asyncHandler(async (req, res) => {
   const sessions = await testSessionService.getSessionsForTeacher(
     req.params.testId,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,

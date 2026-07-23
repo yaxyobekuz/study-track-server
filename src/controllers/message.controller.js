@@ -93,7 +93,7 @@ const sendMessage = asyncHandler(async (req, res) => {
   const duplicateWindowMs = 5000;
   const recentDuplicate = await prisma.message.findFirst({
     where: {
-      sentBy: req.user._id,
+      sentBy: req.user.id,
       messageText: messageText.trim(),
       recipientType,
       createdAt: { gte: new Date(Date.now() - duplicateWindowMs) },
@@ -194,7 +194,7 @@ const sendMessage = asyncHandler(async (req, res) => {
   const message = await prisma.message.create({
     data: {
       messageText: messageText.trim(),
-      sentBy: req.user._id,
+      sentBy: req.user.id,
       recipientType,
       recipientIds,
       classId: messageClassId,
@@ -257,7 +257,7 @@ const getMessages = asyncHandler(async (req, res) => {
 
   // If teacher, only show their own messages
   if (req.user.role === "teacher") {
-    query.sentBy = req.user._id;
+    query.sentBy = req.user.id;
   }
 
   // If owner, can filter by sentBy
@@ -356,7 +356,7 @@ const getMessageById = asyncHandler(async (req, res) => {
   // Check permissions (sentBy hali scalar id)
   if (
     req.user.role === "teacher" &&
-    rawMessage.sentBy.toString() !== req.user._id.toString()
+    rawMessage.sentBy.toString() !== req.user.id.toString()
   ) {
     throw new ForbiddenError("Ruxsat berilmagan");
   }
@@ -414,7 +414,7 @@ const cancelMessage = asyncHandler(async (req, res) => {
   }
 
   // Owner can cancel any message; teacher can cancel only their own
-  if (req.user.role === "teacher" && message.sentBy.toString() !== req.user._id.toString()) {
+  if (req.user.role === "teacher" && message.sentBy.toString() !== req.user.id.toString()) {
     throw new ForbiddenError("Ruxsat berilmagan");
   }
 

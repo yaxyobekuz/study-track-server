@@ -8,7 +8,7 @@ const { BadRequestError } = require("../utils/errors");
  * @access Student
  */
 const buyPremium = asyncHandler(async (req, res) => {
-  const user = await premiumService.purchasePremium(req.user._id);
+  const user = await premiumService.purchasePremium(req.user.id);
 
   res.status(200).json({
     success: true,
@@ -22,7 +22,7 @@ const buyPremium = asyncHandler(async (req, res) => {
  * @access Student
  */
 const getMyPremiumStatus = asyncHandler(async (req, res) => {
-  const { user, latestPremium } = await premiumService.getPremiumStatus(req.user._id);
+  const { user, latestPremium } = await premiumService.getPremiumStatus(req.user.id);
 
   res.status(200).json({
     success: true,
@@ -48,7 +48,7 @@ const getAvailableEmojis = asyncHandler(async (req, res) => {
  * @access Student
  */
 const uploadMyProfilePicture = asyncHandler(async (req, res) => {
-  const image = await premiumService.uploadProfilePicture(req.user._id, req.file);
+  const image = await premiumService.uploadProfilePicture(req.user.id, req.file);
 
   res.status(200).json({
     success: true,
@@ -62,7 +62,7 @@ const uploadMyProfilePicture = asyncHandler(async (req, res) => {
  * @access Student
  */
 const deleteMyProfilePicture = asyncHandler(async (req, res) => {
-  await premiumService.deleteProfilePicture(req.user._id);
+  await premiumService.deleteProfilePicture(req.user.id);
 
   res.status(200).json({
     success: true,
@@ -76,7 +76,7 @@ const deleteMyProfilePicture = asyncHandler(async (req, res) => {
  */
 const setMyEmojiBadge = asyncHandler(async (req, res) => {
   const { emojiId } = req.body;
-  const user = await premiumService.setEmojiBadge(req.user._id, emojiId);
+  const user = await premiumService.setEmojiBadge(req.user.id, emojiId);
 
   res.status(200).json({
     success: true,
@@ -91,7 +91,7 @@ const setMyEmojiBadge = asyncHandler(async (req, res) => {
  */
 const setMyDisplayName = asyncHandler(async (req, res) => {
   const { displayName } = req.body;
-  const user = await premiumService.setDisplayName(req.user._id, displayName);
+  const user = await premiumService.setDisplayName(req.user.id, displayName);
 
   res.status(200).json({
     success: true,
@@ -106,7 +106,7 @@ const setMyDisplayName = asyncHandler(async (req, res) => {
  */
 const setMyNameColor = asyncHandler(async (req, res) => {
   const { nameColor } = req.body;
-  const user = await premiumService.setNameColor(req.user._id, nameColor);
+  const user = await premiumService.setNameColor(req.user.id, nameColor);
 
   res.status(200).json({
     success: true,
@@ -167,7 +167,7 @@ const updateSettings = asyncHandler(async (req, res) => {
 
   const settings = await premiumService.updateSettings(
     { isEnabled, coinCost, durationDays, allowedNameColors },
-    req.user._id,
+    req.user.id,
   );
   res.status(200).json({ success: true, message: "Sozlamalar saqlandi", data: settings });
 });
@@ -240,7 +240,7 @@ const grantPremium = asyncHandler(async (req, res) => {
   const { studentId, durationDays } = req.body;
   if (!studentId) throw new BadRequestError("O'quvchi IDsi majburiy");
 
-  const user = await premiumService.grantPremium(studentId, durationDays, req.user._id);
+  const user = await premiumService.grantPremium(studentId, durationDays, req.user.id);
   res.status(200).json({ success: true, message: "Premium berildi", data: user });
 });
 
@@ -252,7 +252,7 @@ const revokePremium = asyncHandler(async (req, res) => {
   const { studentId } = req.body;
   if (!studentId) throw new BadRequestError("O'quvchi IDsi majburiy");
 
-  const user = await premiumService.revokePremium(studentId, req.user._id);
+  const user = await premiumService.revokePremium(studentId, req.user.id);
   res.status(200).json({ success: true, message: "Premium bekor qilindi", data: user });
 });
 

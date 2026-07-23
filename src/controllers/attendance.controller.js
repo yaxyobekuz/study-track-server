@@ -4,7 +4,7 @@ const attendanceService = require("../services/attendance.service");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 const getToday = asyncHandler(async (req, res) => {
-  const record = await attendanceService.getTodayRecord(req.user._id);
+  const record = await attendanceService.getTodayRecord(req.user.id);
   res.json({ success: true, data: record });
 });
 
@@ -16,10 +16,10 @@ const checkIn = asyncHandler(async (req, res) => {
     where: { role: "owner" },
     select: { id: true },
   });
-  const adminUserId = adminUser?.id || req.user._id;
+  const adminUserId = adminUser?.id || req.user.id;
 
   const record = await attendanceService.checkIn(
-    req.user._id,
+    req.user.id,
     lat,
     lng,
     accuracy,
@@ -36,10 +36,10 @@ const checkOut = asyncHandler(async (req, res) => {
     where: { role: "owner" },
     select: { id: true },
   });
-  const adminUserId = adminUser?.id || req.user._id;
+  const adminUserId = adminUser?.id || req.user.id;
 
   const record = await attendanceService.checkOut(
-    req.user._id,
+    req.user.id,
     lat,
     lng,
     accuracy,
@@ -50,7 +50,7 @@ const checkOut = asyncHandler(async (req, res) => {
 });
 
 const getMySchedule = asyncHandler(async (req, res) => {
-  const schedule = await attendanceService.getScheduleForUser(req.user._id);
+  const schedule = await attendanceService.getScheduleForUser(req.user.id);
   res.json({ success: true, data: schedule });
 });
 
@@ -66,7 +66,7 @@ const getMyHistory = asyncHandler(async (req, res) => {
   const year = req.query.year || new Date().getFullYear();
 
   const result = await attendanceService.getMyHistory(
-    req.user._id,
+    req.user.id,
     month,
     year,
   );
@@ -85,7 +85,7 @@ const markStaff = asyncHandler(async (req, res) => {
   const { date, records } = req.body;
   const result = await attendanceService.markStaffAttendance(
     { date, records },
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: result });
 });
@@ -98,7 +98,7 @@ const getSettings = asyncHandler(async (req, res) => {
 const updateSettings = asyncHandler(async (req, res) => {
   const settings = await attendanceService.updateSettings(
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.json({ success: true, data: settings });
 });
@@ -158,7 +158,7 @@ const createExcuseRequest = asyncHandler(async (req, res) => {
     throw new BadRequestError("So'rov turi noto'g'ri (advance | after)");
   }
 
-  const excuse = await attendanceService.createExcuseRequest(req.user._id, {
+  const excuse = await attendanceService.createExcuseRequest(req.user.id, {
     date,
     reason,
     type,
@@ -169,12 +169,12 @@ const createExcuseRequest = asyncHandler(async (req, res) => {
 });
 
 const getMyExcuses = asyncHandler(async (req, res) => {
-  const result = await attendanceService.getMyExcuses(req.user._id, req);
+  const result = await attendanceService.getMyExcuses(req.user.id, req);
   res.json(result);
 });
 
 const cancelExcuseRequest = asyncHandler(async (req, res) => {
-  await attendanceService.cancelExcuseRequest(req.params.id, req.user._id);
+  await attendanceService.cancelExcuseRequest(req.params.id, req.user.id);
   res.json({ success: true });
 });
 
@@ -237,7 +237,7 @@ const reviewExcuse = asyncHandler(async (req, res) => {
     req.params.id,
     status,
     rejectionReason,
-    req.user._id,
+    req.user.id,
   );
 
   res.json({ success: true, data: excuse });

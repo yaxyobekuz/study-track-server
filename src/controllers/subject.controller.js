@@ -14,7 +14,7 @@ const getAllSubjects = asyncHandler(async (req, res) => {
 
 // Create new subject (Owner only)
 const createSubject = asyncHandler(async (req, res) => {
-  const subject = await subjectService.createSubject(req.body, req.user._id);
+  const subject = await subjectService.createSubject(req.body, req.user.id);
 
   res.status(201).json({
     success: true,

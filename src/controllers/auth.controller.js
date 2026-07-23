@@ -14,7 +14,7 @@ const login = asyncHandler(async (req, res) => {
 
 // Get current user data
 const getMe = asyncHandler(async (req, res) => {
-  const user = await authService.getMe(req.user._id);
+  const user = await authService.getMe(req.user.id);
 
   res.json({
     success: true,

@@ -42,7 +42,7 @@ exports.createPenaltyCategory = asyncHandler(async (req, res) => {
 
   const category = await penaltyService.createPenaltyCategory(
     { title, description, points, targetRole },
-    req.user._id,
+    req.user.id,
   );
   return res.status(201).json({ success: true, data: category });
 });
@@ -103,7 +103,7 @@ exports.createPenalty = asyncHandler(async (req, res) => {
     title,
     description,
     points: Number(points),
-    givenBy: req.user._id,
+    givenBy: req.user.id,
     givenByRole: req.user.role,
     isCustom: isCustom === "true" || isCustom === true,
     files: req.files || [],
@@ -189,7 +189,7 @@ exports.updateSettings = asyncHandler(async (req, res) => {
 
   const settings = await penaltyService.updateSettings(
     { fineAmounts, studentFineAmount, teacherFineAmount, premiumReductionDiscountPercent },
-    req.user._id,
+    req.user.id,
   );
   return res.json({
     success: true,
@@ -203,7 +203,7 @@ exports.updateSettings = asyncHandler(async (req, res) => {
  * @access Private (student, teacher)
  */
 exports.getMyPenalties = asyncHandler(async (req, res) => {
-  const result = await penaltyService.getMyPenalties(req.user._id, req);
+  const result = await penaltyService.getMyPenalties(req.user.id, req);
   return res.json(result);
 });
 
@@ -212,7 +212,7 @@ exports.getMyPenalties = asyncHandler(async (req, res) => {
  * @access Private (teacher)
  */
 exports.getGivenPenalties = asyncHandler(async (req, res) => {
-  const result = await penaltyService.getGivenPenalties(req.user._id, req);
+  const result = await penaltyService.getGivenPenalties(req.user.id, req);
   return res.json(result);
 });
 
@@ -257,7 +257,7 @@ exports.reviewPenalty = asyncHandler(async (req, res) => {
   const penalty = await penaltyService.reviewPenalty(req.params.id, {
     status,
     rejectionReason,
-    reviewedBy: req.user._id,
+    reviewedBy: req.user.id,
   });
 
   const isReduction = penalty.type === "reduction";
@@ -301,7 +301,7 @@ exports.createReductionPackage = asyncHandler(async (req, res) => {
 
   const pkg = await penaltyService.createReductionPackage(
     { title, points: Number(points), coinCost: Number(coinCost), order: order !== undefined ? Number(order) : 0 },
-    req.user._id,
+    req.user.id,
   );
   return res.status(201).json({ success: true, data: pkg });
 });
@@ -339,7 +339,7 @@ exports.purchaseReductionPackage = asyncHandler(async (req, res) => {
   const { packageId } = req.body;
   if (!packageId) throw new BadRequestError("Paket IDsi majburiy");
 
-  const result = await penaltyService.purchaseReductionPackage(req.user._id, packageId);
+  const result = await penaltyService.purchaseReductionPackage(req.user.id, packageId);
   return res.status(201).json({
     success: true,
     message: "Jarima muvaffaqiyatli kamaytirildi",
@@ -366,7 +366,7 @@ exports.reducePenalty = asyncHandler(async (req, res) => {
     userId,
     points: Number(points),
     reason,
-    reducedBy: req.user._id,
+    reducedBy: req.user.id,
     reducedByRole: req.user.role,
   });
 
@@ -410,7 +410,7 @@ exports.updateGradePenaltySettings = asyncHandler(async (req, res) => {
 
   const settings = await penaltyService.updateGradePenaltySettings(
     { isEnabled, penaltyPoints, missingThresholdPercent, exemptTeachers },
-    req.user._id,
+    req.user.id,
   );
 
   return res.json({

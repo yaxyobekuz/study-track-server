@@ -13,7 +13,7 @@ const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
  */
 function mapLessons(lessons, subjectMap, teacherMap) {
   return (lessons || []).map((lesson) => ({
-    _id: lesson.id,
+    id: lesson.id,
     subject: subjectMap.get(lesson.subjectId) || null,
     teacher: teacherMap.get(lesson.teacherId) || null,
     order: lesson.order,
@@ -50,12 +50,12 @@ async function loadLessonRefs(schedules) {
   ]);
 
   const subjectMap = new Map(
-    subjects.map((s) => [s.id, { _id: s.id, name: s.name }]),
+    subjects.map((s) => [s.id, { id: s.id, name: s.name }]),
   );
   const teacherMap = new Map(
     teachers.map((t) => [
       t.id,
-      { _id: t.id, firstName: t.firstName, lastName: t.lastName },
+      { id: t.id, firstName: t.firstName, lastName: t.lastName },
     ]),
   );
 
@@ -71,7 +71,7 @@ async function loadLessonRefs(schedules) {
  */
 function formatSchedule(schedule, subjectMap, teacherMap) {
   return {
-    _id: schedule.id,
+    id: schedule.id,
     class: schedule.classId,
     day: schedule.day,
     subjects: mapLessons(schedule.lessons, subjectMap, teacherMap),
@@ -567,7 +567,7 @@ async function getAllTodaySchedules() {
     select: { id: true, name: true },
   });
   const classMap = new Map(
-    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
   );
 
   const result = schedules.map((schedule) => ({
@@ -612,7 +612,7 @@ async function getMyTodaySchedule(teacherId) {
     select: { id: true, name: true },
   });
   const classMap = new Map(
-    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
   );
 
   return schedules
@@ -625,7 +625,7 @@ async function getMyTodaySchedule(teacherId) {
         .filter(
           (item) =>
             item.teacher &&
-            item.teacher._id.toString() === teacherId.toString(),
+            item.teacher.id.toString() === teacherId.toString(),
         )
         .sort((a, b) => a.order - b.order);
 
@@ -668,7 +668,7 @@ async function getClassesBySubject(subjectId) {
   ]);
 
   const classInfoMap = new Map(
-    classes.map((c) => [c.id, { _id: c.id, name: c.name }]),
+    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
   );
 
   const progressMap = new Map();
@@ -695,7 +695,7 @@ async function getClassesBySubject(subjectId) {
 
   return {
     classes: classesResult,
-    subject: { _id: subject.id, name: subject.name },
+    subject: { id: subject.id, name: subject.name },
   };
 }
 
@@ -736,8 +736,8 @@ async function updateCurrentTopic(classId, subjectId, topicNumber) {
   });
 
   return {
-    class: { _id: classDoc.id, name: classDoc.name },
-    subject: { _id: subject.id, name: subject.name },
+    class: { id: classDoc.id, name: classDoc.name },
+    subject: { id: subject.id, name: subject.name },
     currentTopicNumber: progress.currentTopicNumber,
   };
 }

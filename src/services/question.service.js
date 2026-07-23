@@ -22,7 +22,7 @@ function _mapOptions(options) {
     .slice()
     .sort((a, b) => a.position - b.position)
     .map((opt) => ({
-      _id: opt.id,
+      id: opt.id,
       text: opt.text,
       image: opt.image,
       isCorrect: opt.isCorrect,

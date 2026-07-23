@@ -277,7 +277,7 @@ async function getSeasonClasses(seasonId) {
   }
 
   return classes.map((c) => ({
-    _id: c.id,
+    id: c.id,
     name: c.name,
     studentCount: countMap.get(c.id) || 0,
   }));
@@ -414,7 +414,7 @@ async function finalizeSeason(seasonId, userId) {
   // 2) Har o'quvchining yutgan tangasi (preview dan)
   const preview = await seasonRewardService.previewDistribution(seasonId);
   const coinByStudent = new Map(
-    preview.students.map((s) => [s.student._id.toString(), s.totalAmount]),
+    preview.students.map((s) => [s.student.id.toString(), s.totalAmount]),
   );
 
   // 3) Maktab va sinf reytinglari
@@ -423,15 +423,15 @@ async function finalizeSeason(seasonId, userId) {
   const classIds = new Set();
   for (const r of schoolRows) {
     const firstClass = (r.student.classes || [])[0];
-    if (firstClass) classIds.add(firstClass._id.toString());
+    if (firstClass) classIds.add(firstClass.id.toString());
   }
   for (const cid of classIds) {
     const classRows = await seasonRewardService.getClassStats(seasonId, cid);
     for (const r of classRows) {
-      const sid = r.student._id.toString();
+      const sid = r.student.id.toString();
       if (!classRankByStudent.has(sid)) {
         const cls = (r.student.classes || []).find(
-          (c) => c._id.toString() === cid,
+          (c) => c.id.toString() === cid,
         );
         classRankByStudent.set(sid, {
           classRank: r.classRank,
@@ -442,7 +442,7 @@ async function finalizeSeason(seasonId, userId) {
   }
 
   // 4) Telegramga ulangan o'quvchilar
-  const studentIds = schoolRows.map((r) => r.student._id);
+  const studentIds = schoolRows.map((r) => r.student.id);
   const users = await prisma.user.findMany({
     where: {
       id: { in: studentIds },
@@ -464,7 +464,7 @@ async function finalizeSeason(seasonId, userId) {
   const deliveryStatus = [];
   const perStudentText = new Map();
   for (const r of schoolRows) {
-    const sid = r.student._id.toString();
+    const sid = r.student.id.toString();
     const tgIds = tgByStudent.get(sid);
     if (!tgIds || tgIds.length === 0) continue;
 
@@ -486,7 +486,7 @@ async function finalizeSeason(seasonId, userId) {
       recipientIds.push(tgId);
       deliveryStatus.push({
         telegramId: tgId,
-        userId: r.student._id,
+        userId: r.student.id,
         status: "pending",
       });
     }
@@ -514,7 +514,7 @@ async function finalizeSeason(seasonId, userId) {
 
     const queueItems = [];
     for (const r of schoolRows) {
-      const sid = r.student._id.toString();
+      const sid = r.student.id.toString();
       const tgIds = tgByStudent.get(sid);
       const text = perStudentText.get(sid);
       if (!tgIds || !text) continue;
@@ -522,7 +522,7 @@ async function finalizeSeason(seasonId, userId) {
         queueItems.push({
           messageId: message.id,
           telegramId: tgId,
-          userId: r.student._id,
+          userId: r.student.id,
           messageText: text,
           replyMarkup,
         });

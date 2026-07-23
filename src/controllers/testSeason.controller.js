@@ -41,7 +41,7 @@ const getSeasonById = asyncHandler(async (req, res) => {
 const createSeason = asyncHandler(async (req, res) => {
   const { season, overlapping } = await testSeasonService.createSeason(
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.status(201).json({
     success: true,
@@ -100,7 +100,7 @@ const announceSeason = asyncHandler(async (req, res) => {
   const result = await testSeasonService.announceSeason(
     req.params.id,
     req.body,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,
@@ -116,7 +116,7 @@ const announceSeason = asyncHandler(async (req, res) => {
 const finalizeSeason = asyncHandler(async (req, res) => {
   const result = await testSeasonService.finalizeSeason(
     req.params.id,
-    req.user._id,
+    req.user.id,
   );
   res.json({
     success: true,

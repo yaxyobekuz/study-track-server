@@ -125,12 +125,12 @@ async function getSeasonStats(seasonId, filter = {}) {
     const sid = u.id.toString();
     // classes M2M junctiondan { _id, name } shakliga keltiramiz (populate o'rnini bosadi)
     const classes = (u.classes || []).map((uc) => ({
-      _id: uc.class.id,
+      id: uc.class.id,
       name: uc.class.name,
     }));
     const assigned = new Set();
     for (const c of classes) {
-      const set = classToTests.get(c._id.toString());
+      const set = classToTests.get(c.id.toString());
       if (set) for (const t of set) assigned.add(t);
     }
     const g = resultMap.get(sid);
@@ -140,7 +140,7 @@ async function getSeasonStats(seasonId, filter = {}) {
     const averageScore = assignedCount > 0 ? sumScore / assignedCount : 0;
     return {
       student: {
-        _id: u.id,
+        id: u.id,
         firstName: u.firstName,
         lastName: u.lastName,
         username: u.username,
@@ -157,7 +157,7 @@ async function getSeasonStats(seasonId, filter = {}) {
   if (filter.classId) {
     const cid = filter.classId.toString();
     rows = rows.filter((r) =>
-      (r.student.classes || []).some((c) => c._id.toString() === cid),
+      (r.student.classes || []).some((c) => c.id.toString() === cid),
     );
   }
 
@@ -185,7 +185,7 @@ async function getClassStats(seasonId, classId) {
  */
 async function getMyStats(seasonId, studentId) {
   const all = await getSeasonStats(seasonId);
-  const me = all.find((r) => r.student._id.toString() === studentId.toString());
+  const me = all.find((r) => r.student.id.toString() === studentId.toString());
   if (!me) {
     return {
       student: null,
@@ -198,12 +198,12 @@ async function getMyStats(seasonId, studentId) {
     };
   }
   // Sinf rank ham qo'shimcha
-  const myClassIds = (me.student.classes || []).map((c) => c._id.toString());
+  const myClassIds = (me.student.classes || []).map((c) => c.id.toString());
   let classRank = null;
   if (myClassIds.length > 0) {
     const classRows = await getClassStats(seasonId, myClassIds[0]);
     const mc = classRows.find(
-      (r) => r.student._id.toString() === studentId.toString(),
+      (r) => r.student.id.toString() === studentId.toString(),
     );
     classRank = mc ? mc.classRank : null;
   }
@@ -310,7 +310,7 @@ async function previewDistribution(seasonId) {
     const classMap = new Map(); // classId -> className
     for (const row of stats) {
       for (const c of row.student.classes || []) {
-        classMap.set(c._id.toString(), c.name);
+        classMap.set(c.id.toString(), c.name);
       }
     }
 
@@ -340,7 +340,7 @@ async function previewDistribution(seasonId) {
   // O'quvchi bo'yicha guruhlash (xulosa)
   const byStudent = new Map();
   for (const a of awards) {
-    const sid = a.student._id.toString();
+    const sid = a.student.id.toString();
     if (!byStudent.has(sid)) {
       byStudent.set(sid, {
         student: a.student,
@@ -387,7 +387,7 @@ async function distributeCoins(seasonId, distributorId, { force = false } = {}) 
   let skipped = 0;
 
   for (const award of awards) {
-    const sid = award.student._id;
+    const sid = award.student.id;
 
     // Idempotentlik: shu mavsum + shu turdagi + (agar mavjud bo'lsa) classId/position bo'yicha mavjudligini tekshirish.
     // meta — JSONB; har bir kalit alohida path filter (eski "meta.x" query'lari o'rnini bosadi).

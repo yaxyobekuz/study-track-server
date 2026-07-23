@@ -569,7 +569,7 @@ async function getTodayAllRecords(roleFilter, dateInput) {
       const schedule = await getEffectiveSchedule(u);
       return {
         user: {
-          _id: u.id,
+          id: u.id,
           firstName: u.firstName,
           lastName: u.lastName,
           role: u.role,

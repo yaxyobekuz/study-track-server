@@ -63,7 +63,7 @@ const createProduct = asyncHandler(async (req, res) => {
   const product = await marketService.createProduct(
     req.body,
     req.files || [],
-    req.user._id,
+    req.user.id,
   );
 
   return res.status(201).json({
@@ -95,7 +95,7 @@ const updateProduct = asyncHandler(async (req, res) => {
       removeImageIds,
     },
     req.files || [],
-    req.user._id,
+    req.user.id,
   );
 
   return res.json({
@@ -140,7 +140,7 @@ const updateOrderStatusByOwner = asyncHandler(async (req, res) => {
   const order = await marketService.updateOrderStatusByOwner(
     req.params.orderId,
     req.body,
-    req.user._id,
+    req.user.id,
     req.file || null,
   );
 
@@ -159,7 +159,7 @@ const addDeliveryImage = asyncHandler(async (req, res) => {
   const order = await marketService.addDeliveryImageByOwner(
     req.params.orderId,
     req.file || null,
-    req.user._id,
+    req.user.id,
   );
 
   return res.json({
@@ -174,7 +174,7 @@ const addDeliveryImage = asyncHandler(async (req, res) => {
  * @access Private (student)
  */
 const createOrder = asyncHandler(async (req, res) => {
-  const order = await marketService.createOrder(req.user._id, req.body);
+  const order = await marketService.createOrder(req.user.id, req.body);
 
   return res.status(201).json({
     success: true,
@@ -189,7 +189,7 @@ const createOrder = asyncHandler(async (req, res) => {
  */
 const getMyOrders = asyncHandler(async (req, res) => {
   const result = await marketService.getStudentOrders(
-    req.user._id,
+    req.user.id,
     req.query,
   );
 
@@ -217,7 +217,7 @@ const getProductStats = asyncHandler(async (req, res) => {
 const cancelMyOrder = asyncHandler(async (req, res) => {
   const order = await marketService.cancelOrderByStudent(
     req.params.orderId,
-    req.user._id,
+    req.user.id,
   );
 
   return res.json({

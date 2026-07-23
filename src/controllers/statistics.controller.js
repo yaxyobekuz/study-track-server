@@ -36,7 +36,7 @@ async function attachSimpleStatsSubjects(simpleStats) {
   const subjects = await prisma.subject.findMany({
     where: { id: { in: subjectIds } },
   });
-  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, _id: s.id }]));
+  const subjectMap = new Map(subjects.map((s) => [s.id, { ...s, id: s.id }]));
 
   return {
     ...simpleStats,
@@ -93,7 +93,7 @@ async function hydrateWeeklyStats(weeklyStats) {
 
   const classes = (weeklyStats.classes || []).map((wc) => ({
     ...wc.class,
-    _id: wc.class.id,
+    id: wc.class.id,
   }));
 
   return { ...weeklyStats, student, classes, simpleStats };
@@ -161,7 +161,7 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
     success: true,
     data: {
       student: {
-        _id: student.id,
+        id: student.id,
         firstName: student.firstName,
         lastName: student.lastName,
         fullName: student.fullName,
@@ -259,7 +259,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
     return res.json({
       success: true,
       data: {
-        class: { ...classDoc, _id: classDoc.id },
+        class: { ...classDoc, id: classDoc.id },
         weekStart,
         weekEnd,
         weekNumber,
@@ -287,7 +287,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
     .map((stat, index) => ({
       rank: index + 1, // Rank based on sorted position
       student: {
-        _id: stat.student.id,
+        id: stat.student.id,
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,
@@ -312,7 +312,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
   return res.json({
     success: true,
     data: {
-      class: { ...classDoc, _id: classDoc.id },
+      class: { ...classDoc, id: classDoc.id },
       weekStart,
       weekEnd,
       weekNumber,
@@ -382,7 +382,7 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
       s.id,
       {
         ...s,
-        classes: (s.classes || []).map((uc) => ({ ...uc.class, _id: uc.class.id })),
+        classes: (s.classes || []).map((uc) => ({ ...uc.class, id: uc.class.id })),
       },
     ]),
   );
@@ -423,7 +423,7 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
     .map((stat, index) => ({
       rank: index + 1,
       student: {
-        _id: stat.student.id,
+        id: stat.student.id,
         firstName: stat.student.firstName,
         lastName: stat.student.lastName,
         fullName: stat.student.fullName,

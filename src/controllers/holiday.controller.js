@@ -19,7 +19,7 @@ const getHolidays = asyncHandler(async (req, res) => {
  * POST /api/holidays
  */
 const createHoliday = asyncHandler(async (req, res) => {
-  const holiday = await holidayService.createHoliday(req.body, req.user._id);
+  const holiday = await holidayService.createHoliday(req.body, req.user.id);
 
   res.status(201).json({
     success: true,
