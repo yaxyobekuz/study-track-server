@@ -8,7 +8,7 @@
  * shuning uchun faqat console.log ishlatiladi.
  */
 
-const requiredEnvVars = ["MONGODB_URI", "JWT_SECRET"];
+const requiredEnvVars = ["DATABASE_URL", "JWT_SECRET"];
 
 const optionalEnvVars = {
   PORT: 5000,
@@ -65,8 +65,8 @@ const config = {
   isDevelopment: (process.env.NODE_ENV || "development") === "development",
   isTest: (process.env.NODE_ENV || "development") === "test",
 
-  // Database
-  mongodbUri: process.env.MONGODB_URI,
+  // Database (PostgreSQL — Prisma)
+  databaseUrl: process.env.DATABASE_URL,
 
   // JWT
   jwtSecret: process.env.JWT_SECRET,

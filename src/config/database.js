@@ -1,13 +1,17 @@
-const mongoose = require("mongoose");
-const { config } = require("./env.config");
+const prisma = require("./prisma");
 const logger = require("../utils/logger");
 
+/**
+ * PostgreSQL (Prisma) ulanishini tekshiradi.
+ * Prisma lazy-connect qiladi, lekin startup'da xatoni erta aniqlash uchun
+ * bir marta `$connect()` chaqiramiz.
+ */
 const connectDB = async () => {
   try {
-    const db = await mongoose.connect(config.mongodbUri);
-    logger.info(`MongoDB connected: ${db.connection.host}`);
+    await prisma.$connect();
+    logger.info("PostgreSQL (Prisma) ulandi");
   } catch (error) {
-    logger.error(`MongoDB ulanish xatosi: ${error.message}`);
+    logger.error(`PostgreSQL ulanish xatosi: ${error.message}`);
     process.exit(1);
   }
 };
