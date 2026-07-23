@@ -11,7 +11,7 @@ const errorHandler = (err, req, res, next) => {
     url: req.originalUrl,
     method: req.method,
     ip: req.ip,
-    userId: req.user?._id,
+    userId: req.user?.id,
     timestamp: new Date().toISOString(),
   });
 

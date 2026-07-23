@@ -56,9 +56,6 @@ const protect = asyncHandler(async (req, res, next) => {
   // Junction M2M → eski `classes: [Class]` shakliga flatten (frontend mosligi)
   user.classes = (user.classes || []).map((uc) => uc.class);
 
-  // Mongoose bilan mos: _id alias (eski kod req.user._id ishlatgan joylar uchun)
-  user._id = user.id;
-
   req.user = user;
   next();
 });

@@ -28,7 +28,7 @@ const requestLogger = (req, res, next) => {
 
     // Agar foydalanuvchi autentifikatsiya qilgan bo'lsa, user ID ni ham qo'shamiz
     if (req.user) {
-      logData.userId = req.user._id;
+      logData.userId = req.user.id;
       logData.userRole = req.user.role;
     }
 
