@@ -15,7 +15,7 @@ const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
 function flattenClasses(user) {
   if (!user) return user;
-  const out = { ...user, id: user.id };
+  const out = { ...user };
   if (Array.isArray(user.classes)) {
     out.classes = user.classes.map((uc) => (uc.class ? uc.class : uc));
   }

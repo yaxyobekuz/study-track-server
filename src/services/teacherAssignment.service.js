@@ -82,7 +82,6 @@ async function attachRefs(assignments, options = {}) {
 
   return assignments.map((a) => ({
     ...a,
-    id: a.id,
     season: seasonMap.get(a.seasonId) || null,
     class: classMap.get(a.classId) || null,
     subject: subjectMap.get(a.subjectId) || null,
