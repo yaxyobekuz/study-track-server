@@ -11,7 +11,8 @@ const {
 } = require("../controllers/message.controller");
 
 // Middlewares
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
@@ -20,7 +21,7 @@ const { ROLES } = require("../utils/constants");
 router.use(protect);
 
 // Only owner and teacher can access these routes
-router.use(authorize(ROLES.OWNER, ROLES.TEACHER));
+router.use(authorizePermission(PERMISSIONS.MESSAGES, ROLES.TEACHER));
 
 // Routes
 router

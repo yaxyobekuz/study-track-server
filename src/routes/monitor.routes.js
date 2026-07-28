@@ -2,7 +2,8 @@ const express = require("express");
 const router = express.Router();
 
 const { verifyMonitor } = require("../middleware/monitor.middleware");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -32,7 +33,7 @@ router.get("/coins/balance/:studentId", verifyMonitor, validateObjectId("student
 router.get("/social-networks", verifyMonitor, getSocialNetworks);
 
 // Admin endpointlar (JWT bilan himoyalangan, faqat owner)
-router.get("/admin/settings", protect, authorize(ROLES.OWNER), getMonitorSettings);
-router.put("/admin/settings", protect, authorize(ROLES.OWNER), updateMonitorSettings);
+router.get("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS), getMonitorSettings);
+router.put("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS), updateMonitorSettings);
 
 module.exports = router;

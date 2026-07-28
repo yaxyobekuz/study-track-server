@@ -3,7 +3,8 @@ const express = require("express");
 const router = express.Router();
 
 // Middleware
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -25,8 +26,8 @@ router.get("/check/:date", protect, checkDate);
 router.get("/", protect, getHolidays);
 
 // Faqat owner uchun - CRUD
-router.post("/", protect, authorize(ROLES.OWNER), createHoliday);
-router.put("/:id", protect, authorize(ROLES.OWNER), validateObjectId("id"), updateHoliday);
-router.delete("/:id", protect, authorize(ROLES.OWNER), validateObjectId("id"), deleteHoliday);
+router.post("/", protect, authorizePermission(PERMISSIONS.HOLIDAYS), createHoliday);
+router.put("/:id", protect, authorizePermission(PERMISSIONS.HOLIDAYS), validateObjectId("id"), updateHoliday);
+router.delete("/:id", protect, authorizePermission(PERMISSIONS.HOLIDAYS), validateObjectId("id"), deleteHoliday);
 
 module.exports = router;

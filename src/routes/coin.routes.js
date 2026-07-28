@@ -10,18 +10,19 @@ const {
   distributeCoins,
   getCoinLeaderboard,
 } = require("../controllers/coin.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
 router.use(protect);
 
 // Owner routes
-router.get("/settings", authorize(ROLES.OWNER), getSettings);
-router.put("/settings", authorize(ROLES.OWNER), updateSettings);
-router.get("/stats", authorize(ROLES.OWNER), getCoinStats);
-router.get("/transactions/:studentId", validateObjectId("studentId"), authorize(ROLES.OWNER), getStudentTransactions);
-router.post("/distribute", authorize(ROLES.OWNER), distributeCoins);
+router.get("/settings", authorizePermission(PERMISSIONS.COINS), getSettings);
+router.put("/settings", authorizePermission(PERMISSIONS.COINS), updateSettings);
+router.get("/stats", authorizePermission(PERMISSIONS.COINS), getCoinStats);
+router.get("/transactions/:studentId", validateObjectId("studentId"), authorizePermission(PERMISSIONS.COINS), getStudentTransactions);
+router.post("/distribute", authorizePermission(PERMISSIONS.COINS), distributeCoins);
 
 // Student routes
 router.get("/balance", authorize(ROLES.STUDENT), getMyBalance);

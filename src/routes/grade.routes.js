@@ -12,7 +12,8 @@ const {
   getStudentsWithGrades,
   exportGrades,
 } = require("../controllers/grade.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId, validateGrade } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -20,10 +21,10 @@ const { ROLES } = require("../utils/constants");
 router.use(protect);
 
 // Export grades to Excel
-router.get("/export", authorize(ROLES.OWNER, ROLES.TEACHER), exportGrades);
+router.get("/export", authorizePermission(PERMISSIONS.GRADES, ROLES.TEACHER), exportGrades);
 
 // Qo'yilmagan baholar (faqat owner)
-router.get("/missing-today", authorize(ROLES.OWNER), getMissingGradesToday);
+router.get("/missing-today", authorizePermission(PERMISSIONS.GRADES), getMissingGradesToday);
 
 // Student views their own grades
 router.get("/student/my-grades", authorize(ROLES.STUDENT), getStudentGrades);
@@ -37,16 +38,16 @@ router.get(
 );
 router.get(
   "/students-with-grades",
-  authorize(ROLES.TEACHER, ROLES.OWNER),
+  authorizePermission(PERMISSIONS.GRADES, ROLES.TEACHER),
   getStudentsWithGrades
 );
 
 // View grades for Owner and teachers
-router.get("/", authorize(ROLES.OWNER, ROLES.TEACHER), getGrades);
+router.get("/", authorizePermission(PERMISSIONS.GRADES, ROLES.TEACHER), getGrades);
 router.get(
   "/class/:classId/date/:date",
   validateObjectId("classId"),
-  authorize(ROLES.OWNER, ROLES.TEACHER),
+  authorizePermission(PERMISSIONS.GRADES, ROLES.TEACHER),
   getGradesByClassAndDate
 );
 
@@ -55,9 +56,9 @@ router.post("/", authorize(ROLES.TEACHER), validateGrade(), createGrade);
 router.put("/:id", validateObjectId("id"), authorize(ROLES.TEACHER), validateGrade(), updateGrade);
 
 // Teacher can delete own today's grades, Owner can delete any
-router.delete("/:id", validateObjectId("id"), authorize(ROLES.TEACHER, ROLES.OWNER), deleteGrade);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.GRADES, ROLES.TEACHER), deleteGrade);
 
 // Owner views a student's grades
-router.get("/student/:studentId", validateObjectId("studentId"), authorize(ROLES.OWNER), getStudentGrades);
+router.get("/student/:studentId", validateObjectId("studentId"), authorizePermission(PERMISSIONS.GRADES), getStudentGrades);
 
 module.exports = router;

@@ -1,7 +1,8 @@
 const express = require("express");
 const router = express.Router();
 
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const {
   getSettings,
@@ -10,7 +11,7 @@ const {
 
 router.use(protect);
 
-router.get("/", authorize(ROLES.OWNER, ROLES.TEACHER), getSettings);
-router.put("/", authorize(ROLES.OWNER), updateSettings);
+router.get("/", authorizePermission(PERMISSIONS.SCHEDULES, ROLES.TEACHER), getSettings);
+router.put("/", authorizePermission(PERMISSIONS.SCHEDULES), updateSettings);
 
 module.exports = router;

@@ -1,7 +1,8 @@
 const express = require("express");
 const router = express.Router();
 
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const {
   createMultiFileUpload,
   createSingleFileUpload,
@@ -40,12 +41,12 @@ const uploadDeliveryImage = createSingleFileUpload({
 
 router.use(protect);
 
-router.get("/admin/products", authorize(ROLES.OWNER), getAdminProducts);
-router.get("/admin/products/:productId", validateObjectId("productId"), authorize(ROLES.OWNER), getProductById);
-router.get("/admin/products/:productId/stats", validateObjectId("productId"), authorize(ROLES.OWNER), getProductStats);
+router.get("/admin/products", authorizePermission(PERMISSIONS.MARKET), getAdminProducts);
+router.get("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), getProductById);
+router.get("/admin/products/:productId/stats", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), getProductStats);
 router.post(
   "/admin/products",
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.MARKET),
   uploadProductImages,
   handleFileUploadError,
   createProduct,
@@ -53,18 +54,18 @@ router.post(
 router.put(
   "/admin/products/:productId",
   validateObjectId("productId"),
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.MARKET),
   uploadProductImages,
   handleFileUploadError,
   updateProduct,
 );
-router.delete("/admin/products/:productId", validateObjectId("productId"), authorize(ROLES.OWNER), deleteProduct);
+router.delete("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), deleteProduct);
 
-router.get("/admin/orders", authorize(ROLES.OWNER), getAdminOrders);
+router.get("/admin/orders", authorizePermission(PERMISSIONS.MARKET), getAdminOrders);
 router.patch(
   "/admin/orders/:orderId/status",
   validateObjectId("orderId"),
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.MARKET),
   uploadDeliveryImage,
   handleFileUploadError,
   updateOrderStatusByOwner,
@@ -73,7 +74,7 @@ router.patch(
 router.patch(
   "/admin/orders/:orderId/delivery-image",
   validateObjectId("orderId"),
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.MARKET),
   uploadDeliveryImage,
   handleFileUploadError,
   addDeliveryImage,

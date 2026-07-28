@@ -11,7 +11,8 @@ const {
   stopTask,
   extendDeadline,
 } = require("../controllers/task.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const {
   createMultiFileUpload,
@@ -29,10 +30,10 @@ router.use(protect);
 
 // ─── Ro'yxat ──────────────────────────────────────────────────────
 router.get("/my", getMyTasks);
-router.get("/", authorize(ROLES.OWNER), getTasks);
+router.get("/", authorizePermission(PERMISSIONS.TASKS), getTasks);
 
 // ─── Yaratish (owner, multipart) ──────────────────────────────────
-router.post("/", authorize(ROLES.OWNER), upload, handleFileUploadError, createTask);
+router.post("/", authorizePermission(PERMISSIONS.TASKS), upload, handleFileUploadError, createTask);
 
 // ─── Bitta topshiriq ──────────────────────────────────────────────
 router.get("/:id", validateObjectId("id"), getTaskById);
@@ -41,9 +42,9 @@ router.get("/:id", validateObjectId("id"), getTaskById);
 router.put("/:id/submit", validateObjectId("id"), upload, handleFileUploadError, submitCompletion);
 
 // ─── Owner amallari ───────────────────────────────────────────────
-router.put("/:id/approve", validateObjectId("id"), authorize(ROLES.OWNER), approveTask);
-router.put("/:id/reject", validateObjectId("id"), authorize(ROLES.OWNER), rejectTask);
-router.put("/:id/stop", validateObjectId("id"), authorize(ROLES.OWNER), stopTask);
-router.put("/:id/extend", validateObjectId("id"), authorize(ROLES.OWNER), extendDeadline);
+router.put("/:id/approve", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), approveTask);
+router.put("/:id/reject", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), rejectTask);
+router.put("/:id/stop", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), stopTask);
+router.put("/:id/extend", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), extendDeadline);
 
 module.exports = router;

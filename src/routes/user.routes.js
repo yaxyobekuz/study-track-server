@@ -16,22 +16,23 @@ const {
   getStudents,
   updateMe,
 } = require("../controllers/user.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
 // /students route is accessible to both owner and teacher
-router.get("/students", protect, authorize(ROLES.OWNER, ROLES.TEACHER), getStudents);
+router.get("/students", protect, authorizePermission(PERMISSIONS.USERS, ROLES.TEACHER), getStudents);
 
 // Own profile update - accessible to any authenticated user
 router.put("/me", protect, updateMe);
 
 // all-short - owner, teacher, reception uchun
-router.get("/all-short", protect, authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
+router.get("/all-short", protect, authorizePermission(PERMISSIONS.USERS, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
 
 // All routes below are protected and for owner only
 router.use(protect);
-router.use(authorize(ROLES.OWNER));
+router.use(authorizePermission(PERMISSIONS.USERS));
 
 router.get("/stats", getStats);
 router.get("/export", exportUsersToExcel);

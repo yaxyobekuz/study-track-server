@@ -7,7 +7,8 @@ const {
   exportWeeklyStatistics,
   getAllStudentWeeklyStats,
 } = require("../controllers/statistics.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -18,7 +19,7 @@ router.use(protect);
 router.get(
   "/weekly/current/:studentId",
   validateObjectId("studentId"),
-  authorize(ROLES.OWNER, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
   getStudentWeeklyStatistics
 );
 
@@ -26,21 +27,21 @@ router.get(
 router.get(
   "/weekly/class/:classId/rankings",
   validateObjectId("classId"),
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.STATISTICS),
   getClassRankings
 );
 
 // Maktab bo'yicha reytinglar (owner yoki student)
 router.get(
   "/weekly/school/rankings",
-  authorize(ROLES.OWNER, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
   getSchoolRankings
 );
 
 // Haftalik statistikani export qilish (faqat owner)
 router.get(
   "/weekly/export",
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.STATISTICS),
   exportWeeklyStatistics
 );
 
@@ -48,7 +49,7 @@ router.get(
 router.get(
   "/weekly/student/:studentId/all",
   validateObjectId("studentId"),
-  authorize(ROLES.OWNER, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
   getAllStudentWeeklyStats
 );
 

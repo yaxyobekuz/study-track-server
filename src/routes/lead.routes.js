@@ -34,7 +34,8 @@ const {
   updateCategory,
   deleteCategory,
 } = require("../controllers/leadCategory.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -44,67 +45,67 @@ router.use(protect);
 // --- Lead Sources (Owner + Reception) ---
 router
   .route("/sources")
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getAllSources)
-  .post(authorize(ROLES.OWNER, ROLES.RECEPTION), createSource);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getAllSources)
+  .post(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), createSource);
 
 router
   .route("/sources/:id")
   .all(validateObjectId("id"))
-  .put(authorize(ROLES.OWNER, ROLES.RECEPTION), updateSource)
-  .delete(authorize(ROLES.OWNER, ROLES.RECEPTION), deleteSource);
+  .put(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), updateSource)
+  .delete(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), deleteSource);
 
 // --- Lead Directions (Owner + Reception) ---
 router
   .route("/directions")
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getAllDirections)
-  .post(authorize(ROLES.OWNER, ROLES.RECEPTION), createDirection);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getAllDirections)
+  .post(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), createDirection);
 
 router
   .route("/directions/:id")
   .all(validateObjectId("id"))
-  .put(authorize(ROLES.OWNER, ROLES.RECEPTION), updateDirection)
-  .delete(authorize(ROLES.OWNER, ROLES.RECEPTION), deleteDirection);
+  .put(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), updateDirection)
+  .delete(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), deleteDirection);
 
 // --- Lead Categories (Owner + Reception) ---
 router
   .route("/categories")
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getAllCategories)
-  .post(authorize(ROLES.OWNER, ROLES.RECEPTION), createCategory);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getAllCategories)
+  .post(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), createCategory);
 
 router
   .route("/categories/:id")
   .all(validateObjectId("id"))
-  .put(authorize(ROLES.OWNER, ROLES.RECEPTION), updateCategory)
-  .delete(authorize(ROLES.OWNER, ROLES.RECEPTION), deleteCategory);
+  .put(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), updateCategory)
+  .delete(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), deleteCategory);
 
 // --- Analytics (Owner only) ---
-router.get("/analytics/overview", authorize(ROLES.OWNER), getAnalyticsOverview);
-router.get("/analytics/sources", authorize(ROLES.OWNER), getSourceAnalytics);
-router.get("/analytics/conversion", authorize(ROLES.OWNER), getConversionFunnel);
-router.get("/analytics/trends", authorize(ROLES.OWNER), getTrendAnalytics);
-router.get("/analytics/directions", authorize(ROLES.OWNER), getDirectionAnalytics);
-router.get("/analytics/categories", authorize(ROLES.OWNER), getCategoryAnalytics);
+router.get("/analytics/overview", authorizePermission(PERMISSIONS.LEADS), getAnalyticsOverview);
+router.get("/analytics/sources", authorizePermission(PERMISSIONS.LEADS), getSourceAnalytics);
+router.get("/analytics/conversion", authorizePermission(PERMISSIONS.LEADS), getConversionFunnel);
+router.get("/analytics/trends", authorizePermission(PERMISSIONS.LEADS), getTrendAnalytics);
+router.get("/analytics/directions", authorizePermission(PERMISSIONS.LEADS), getDirectionAnalytics);
+router.get("/analytics/categories", authorizePermission(PERMISSIONS.LEADS), getCategoryAnalytics);
 
 // --- Leads CRUD (Owner + Reception) ---
 router
   .route("/")
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getAllLeads)
-  .post(authorize(ROLES.OWNER, ROLES.RECEPTION), createLead);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getAllLeads)
+  .post(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), createLead);
 
 router
   .route("/:id")
   .all(validateObjectId("id"))
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getLeadById)
-  .put(authorize(ROLES.OWNER, ROLES.RECEPTION), updateLead)
-  .delete(authorize(ROLES.OWNER, ROLES.RECEPTION), deleteLead);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getLeadById)
+  .put(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), updateLead)
+  .delete(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), deleteLead);
 
-router.put("/:id/status", validateObjectId("id"), authorize(ROLES.OWNER, ROLES.RECEPTION), updateLeadStatus);
+router.put("/:id/status", validateObjectId("id"), authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), updateLeadStatus);
 
 // --- Lead Activities (Owner + Reception) ---
 router
   .route("/:id/activities")
   .all(validateObjectId("id"))
-  .get(authorize(ROLES.OWNER, ROLES.RECEPTION), getLeadActivities)
-  .post(authorize(ROLES.OWNER, ROLES.RECEPTION), createLeadActivity);
+  .get(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), getLeadActivities)
+  .post(authorizePermission(PERMISSIONS.LEADS, ROLES.RECEPTION), createLeadActivity);
 
 module.exports = router;

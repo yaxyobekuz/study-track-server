@@ -3,7 +3,8 @@ const express = require("express");
 const router = express.Router();
 
 // Middleware
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
@@ -28,14 +29,14 @@ router.get("/my", authorize(ROLES.STUDENT), getMyResults);
 // Admin (owner) - mavsumdagi o'quvchining natijalari va bitta natija (javoblar bilan)
 router.get(
   "/season/:seasonId/student/:studentId",
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("seasonId"),
   validateObjectId("studentId"),
   getStudentSeasonResults,
 );
 router.get(
   "/admin/:id",
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
   getResultForAdmin,
 );

@@ -10,7 +10,8 @@ const {
 } = require("../controllers/topic.controller");
 
 // Middleware
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
@@ -19,7 +20,7 @@ const { ROLES } = require("../utils/constants");
 router.post(
   "/upload",
   protect,
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.TOPICS),
   createSingleFileUpload({ categories: ["document"] }),
   handleFileUploadError,
   uploadTopics
@@ -27,6 +28,6 @@ router.post(
 
 router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 
-router.delete("/subject/:id", protect, authorize(ROLES.OWNER), validateObjectId("id"), deleteTopicsBySubject);
+router.delete("/subject/:id", protect, authorizePermission(PERMISSIONS.TOPICS), validateObjectId("id"), deleteTopicsBySubject);
 
 module.exports = router;

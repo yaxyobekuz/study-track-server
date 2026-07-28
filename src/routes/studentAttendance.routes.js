@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 const {
   mark,
   updateRecord,
@@ -13,15 +15,15 @@ const {
 } = require("../controllers/studentAttendance.controller");
 
 // Reception va owner: belgilash va ko'rish
-router.get("/classes", protect, authorize("owner", "reception"), getClasses);
-router.get("/today", protect, authorize("owner", "reception"), getTodayAllStudents);
-router.get("/today/:classId", protect, authorize("owner", "reception"), getTodayClass);
-router.post("/mark", protect, authorize("owner", "reception"), mark);
-router.put("/:id", protect, authorize("owner", "reception"), updateRecord);
+router.get("/classes", protect, authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), getClasses);
+router.get("/today", protect, authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), getTodayAllStudents);
+router.get("/today/:classId", protect, authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), getTodayClass);
+router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), mark);
+router.put("/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), updateRecord);
 
 // Faqat owner: hisobotlar
-router.get("/class/:classId", protect, authorize("owner"), getClassMonthRecords);
-router.get("/student/:studentId", protect, authorize("owner"), getStudentMonthRecords);
-router.get("/", protect, authorize("owner"), getAllRecords);
+router.get("/class/:classId", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getClassMonthRecords);
+router.get("/student/:studentId", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getStudentMonthRecords);
+router.get("/", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getAllRecords);
 
 module.exports = router;

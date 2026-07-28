@@ -24,7 +24,8 @@ const {
   deleteEmoji,
 } = require("../controllers/premium.controller");
 
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
 const { ROLES } = require("../utils/constants");
@@ -46,20 +47,20 @@ router.use(protect);
 router.get("/config", getConfig);
 
 // ─── Admin (owner) ──────────────────────────────────────────────────
-router.get("/admin/settings", authorize(ROLES.OWNER), getSettings);
-router.put("/admin/settings", authorize(ROLES.OWNER), updateSettings);
+router.get("/admin/settings", authorizePermission(PERMISSIONS.PREMIUM), getSettings);
+router.put("/admin/settings", authorizePermission(PERMISSIONS.PREMIUM), updateSettings);
 
-router.get("/admin/stats", authorize(ROLES.OWNER), getStats);
-router.get("/admin/subscriptions/export", authorize(ROLES.OWNER), exportSubscriptions);
-router.get("/admin/subscriptions", authorize(ROLES.OWNER), getSubscriptions);
+router.get("/admin/stats", authorizePermission(PERMISSIONS.PREMIUM), getStats);
+router.get("/admin/subscriptions/export", authorizePermission(PERMISSIONS.PREMIUM), exportSubscriptions);
+router.get("/admin/subscriptions", authorizePermission(PERMISSIONS.PREMIUM), getSubscriptions);
 
-router.post("/admin/grant", authorize(ROLES.OWNER), grantPremium);
-router.post("/admin/revoke", authorize(ROLES.OWNER), revokePremium);
+router.post("/admin/grant", authorizePermission(PERMISSIONS.PREMIUM), grantPremium);
+router.post("/admin/revoke", authorizePermission(PERMISSIONS.PREMIUM), revokePremium);
 
-router.get("/admin/emojis", authorize(ROLES.OWNER), getAllEmojis);
+router.get("/admin/emojis", authorizePermission(PERMISSIONS.PREMIUM), getAllEmojis);
 router.post(
   "/admin/emojis",
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.PREMIUM),
   uploadEmojiMiddleware,
   handleFileUploadError,
   createEmoji,
@@ -67,12 +68,12 @@ router.post(
 router.put(
   "/admin/emojis/:id",
   validateObjectId("id"),
-  authorize(ROLES.OWNER),
+  authorizePermission(PERMISSIONS.PREMIUM),
   uploadEmojiMiddleware,
   handleFileUploadError,
   updateEmoji,
 );
-router.delete("/admin/emojis/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteEmoji);
+router.delete("/admin/emojis/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PREMIUM), deleteEmoji);
 
 // ─── Student ────────────────────────────────────────────────────────
 router.post("/buy", authorize(ROLES.STUDENT), buyPremium);

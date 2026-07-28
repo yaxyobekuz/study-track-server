@@ -27,7 +27,8 @@ const {
   getGradePenaltySettings,
   updateGradePenaltySettings,
 } = require("../controllers/penalty.controller");
-const { protect, authorize } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const {
   createMultiFileUpload,
@@ -39,34 +40,34 @@ router.use(protect);
 
 // ─── Sozlamalar ─────────────────────────────────────────────────────
 router.get("/settings", getSettings);
-router.put("/settings", authorize(ROLES.OWNER), updateSettings);
+router.put("/settings", authorizePermission(PERMISSIONS.PENALTIES), updateSettings);
 
 // ─── Baho qo'ymaslik jarima sozlamalari ──────────────────────────
-router.get("/grade-settings", authorize(ROLES.OWNER), getGradePenaltySettings);
-router.put("/grade-settings", authorize(ROLES.OWNER), updateGradePenaltySettings);
+router.get("/grade-settings", authorizePermission(PERMISSIONS.PENALTIES), getGradePenaltySettings);
+router.put("/grade-settings", authorizePermission(PERMISSIONS.PENALTIES), updateGradePenaltySettings);
 
 // ─── Kamaytirish paketlari ─────────────────────────────────────────
 router.get("/reduction-packages", getReductionPackages);
-router.post("/reduction-packages", authorize(ROLES.OWNER), createReductionPackage);
+router.post("/reduction-packages", authorizePermission(PERMISSIONS.PENALTIES), createReductionPackage);
 router.post("/reduction-packages/purchase", authorize(ROLES.STUDENT), purchaseReductionPackage);
-router.put("/reduction-packages/:id", validateObjectId("id"), authorize(ROLES.OWNER), updateReductionPackage);
-router.delete("/reduction-packages/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteReductionPackage);
+router.put("/reduction-packages/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), updateReductionPackage);
+router.delete("/reduction-packages/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), deleteReductionPackage);
 
 // ─── Statistika (owner) ───────────────────────────────────────────
-router.get("/stats", authorize(ROLES.OWNER), getPenaltyStats);
+router.get("/stats", authorizePermission(PERMISSIONS.PENALTIES), getPenaltyStats);
 
 // ─── Kategoriyalar ─────────────────────────────────────────────────
-router.get("/categories", authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION), getCategories);
-router.post("/categories", authorize(ROLES.OWNER), createPenaltyCategory);
-router.put("/categories/:id", validateObjectId("id"), authorize(ROLES.OWNER), updateCategory);
-router.delete("/categories/:id", validateObjectId("id"), authorize(ROLES.OWNER), deleteCategory);
+router.get("/categories", authorizePermission(PERMISSIONS.PENALTIES, ROLES.TEACHER, ROLES.RECEPTION), getCategories);
+router.post("/categories", authorizePermission(PERMISSIONS.PENALTIES), createPenaltyCategory);
+router.put("/categories/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), updateCategory);
+router.delete("/categories/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), deleteCategory);
 
 // ─── Kamaytirish (owner, reception) ──────────────────────────────
-router.post("/reduce", authorize(ROLES.OWNER, ROLES.RECEPTION), reducePenalty);
-router.get("/reductions", authorize(ROLES.OWNER), getReductions);
+router.post("/reduce", authorizePermission(PERMISSIONS.PENALTIES, ROLES.RECEPTION), reducePenalty);
+router.get("/reductions", authorizePermission(PERMISSIONS.PENALTIES), getReductions);
 
 // ─── Pending (owner) ──────────────────────────────────────────────
-router.get("/pending", authorize(ROLES.OWNER), getPendingPenalties);
+router.get("/pending", authorizePermission(PERMISSIONS.PENALTIES), getPendingPenalties);
 
 // ─── O'z jarimalari (barcha authenticated userlar) ────────────────
 router.get("/my", getMyPenalties);
@@ -75,12 +76,12 @@ router.get("/my", getMyPenalties);
 router.get("/given", authorize(ROLES.TEACHER, ROLES.RECEPTION), getGivenPenalties);
 
 // ─── Foydalanuvchi jarimalari (owner) ─────────────────────────────
-router.get("/user/:userId", validateObjectId("userId"), authorize(ROLES.OWNER), getUserPenalties);
+router.get("/user/:userId", validateObjectId("userId"), authorizePermission(PERMISSIONS.PENALTIES), getUserPenalties);
 
 // ─── Jarima CRUD ──────────────────────────────────────────────────
 router.post(
   "/",
-  authorize(ROLES.OWNER, ROLES.TEACHER, ROLES.RECEPTION),
+  authorizePermission(PERMISSIONS.PENALTIES, ROLES.TEACHER, ROLES.RECEPTION),
   createMultiFileUpload({
     fieldName: "files",
     categories: ["image", "video", "document"],
@@ -90,9 +91,9 @@ router.post(
   createPenalty,
 );
 
-router.get("/", authorize(ROLES.OWNER), getPenalties);
-router.get("/:id", validateObjectId("id"), authorize(ROLES.OWNER, ROLES.TEACHER), getPenaltyById);
-router.put("/:id/review", validateObjectId("id"), authorize(ROLES.OWNER), reviewPenalty);
-router.delete("/:id", validateObjectId("id"), authorize(ROLES.OWNER), deletePenalty);
+router.get("/", authorizePermission(PERMISSIONS.PENALTIES), getPenalties);
+router.get("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES, ROLES.TEACHER), getPenaltyById);
+router.put("/:id/review", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), reviewPenalty);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.PENALTIES), deletePenalty);
 
 module.exports = router;
