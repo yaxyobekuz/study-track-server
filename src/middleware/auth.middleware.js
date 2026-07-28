@@ -3,6 +3,7 @@ const { verifyToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
+const { hasPermission, hasSection } = require("../utils/permissions");
 
 /**
  * JWT token orqali foydalanuvchini autentifikatsiya qiladi
@@ -76,16 +77,17 @@ const authorize = (...roles) => {
 };
 
 /**
- * Bo'lim darajasidagi ruxsatga asoslangan tekshiruv (additiv — hech kimning
- * mavjud ruxsatini kamaytirmaydi, faqat qo'shadi).
+ * Amal darajasidagi ruxsat tekshiruvi (additiv — hech kimning mavjud ruxsatini
+ * kamaytirmaydi, faqat qo'shadi).
  *
  * O'tkaziladi, agar:
  *   - foydalanuvchi owner bo'lsa (u doim hammaga ega), YOKI
  *   - roli `extraRoles` ichida bo'lsa (eski rol asosidagi kirish saqlanadi —
  *     boshqa panellar buzilmasligi uchun), YOKI
- *   - `permissions` massivida `permission` kaliti bo'lsa.
+ *   - `permissions` massivida `permission` kaliti bo'lsa (yoki eski, amalga
+ *     bo'linmagan bare bo'lim kaliti — `hasPermission` ga qarang).
  *
- * @param {string} permission - talab qilinadigan bo'lim kaliti (utils/permissions.js)
+ * @param {string} permission - talab qilinadigan kalit, "<bo'lim>.<amal>" (utils/permissions.js)
  * @param {...string} extraRoles - shu route'ga avvaldan ruxsati bor rollar (owner'dan tashqari)
  * @returns {Function} Express middleware
  */
@@ -95,10 +97,31 @@ const authorizePermission = (permission, ...extraRoles) => {
 
     if (role === ROLES.OWNER) return next();
     if (extraRoles.includes(role)) return next();
-    if (permission && userPermissions.includes(permission)) return next();
+    if (hasPermission(userPermissions, permission)) return next();
+
+    throw new ForbiddenError("Bu amal uchun ruxsatingiz yo'q");
+  };
+};
+
+/**
+ * Bo'limga umumiy darvoza: foydalanuvchida bo'limning hech bo'lmasa bitta amali
+ * bo'lsa o'tkazadi. `router.use(...)` uchun mo'ljallangan — aniq amal tekshiruvi
+ * har bir route'da `authorizePermission` bilan qilinadi.
+ *
+ * @param {string} section - bo'lim kaliti ("users")
+ * @param {...string} extraRoles - shu bo'limga avvaldan ruxsati bor rollar
+ * @returns {Function} Express middleware
+ */
+const authorizeSection = (section, ...extraRoles) => {
+  return (req, res, next) => {
+    const { role, permissions: userPermissions = [] } = req.user;
+
+    if (role === ROLES.OWNER) return next();
+    if (extraRoles.includes(role)) return next();
+    if (hasSection(userPermissions, section)) return next();
 
     throw new ForbiddenError("Bu bo'lim uchun ruxsatingiz yo'q");
   };
 };
 
-module.exports = { protect, authorize, authorizePermission };
+module.exports = { protect, authorize, authorizePermission, authorizeSection };
