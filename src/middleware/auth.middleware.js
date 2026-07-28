@@ -2,6 +2,7 @@ const prisma = require("../config/prisma");
 const { verifyToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
+const { ROLES } = require("../utils/constants");
 
 /**
  * JWT token orqali foydalanuvchini autentifikatsiya qiladi
@@ -74,4 +75,30 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { protect, authorize };
+/**
+ * Bo'lim darajasidagi ruxsatga asoslangan tekshiruv (additiv — hech kimning
+ * mavjud ruxsatini kamaytirmaydi, faqat qo'shadi).
+ *
+ * O'tkaziladi, agar:
+ *   - foydalanuvchi owner bo'lsa (u doim hammaga ega), YOKI
+ *   - roli `extraRoles` ichida bo'lsa (eski rol asosidagi kirish saqlanadi —
+ *     boshqa panellar buzilmasligi uchun), YOKI
+ *   - `permissions` massivida `permission` kaliti bo'lsa.
+ *
+ * @param {string} permission - talab qilinadigan bo'lim kaliti (utils/permissions.js)
+ * @param {...string} extraRoles - shu route'ga avvaldan ruxsati bor rollar (owner'dan tashqari)
+ * @returns {Function} Express middleware
+ */
+const authorizePermission = (permission, ...extraRoles) => {
+  return (req, res, next) => {
+    const { role, permissions: userPermissions = [] } = req.user;
+
+    if (role === ROLES.OWNER) return next();
+    if (extraRoles.includes(role)) return next();
+    if (permission && userPermissions.includes(permission)) return next();
+
+    throw new ForbiddenError("Bu bo'lim uchun ruxsatingiz yo'q");
+  };
+};
+
+module.exports = { protect, authorize, authorizePermission };

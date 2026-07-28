@@ -219,6 +219,8 @@ model User {
   lastName      String?   @map("last_name")
   telegramIds   String[]  @map("telegram_ids")
   role          String // Role.value ga ishora (FK emas, service validatsiya)
+  // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
+  permissions   String[]  @default([]) @map("permissions")
   isActive      Boolean   @default(true) @map("is_active")
   gender        Gender?
   coinBalance   Int       @default(0) @map("coin_balance")
