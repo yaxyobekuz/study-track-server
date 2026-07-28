@@ -1,16 +1,22 @@
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
-const { PERMISSION_CATALOG, PERMISSION_KEYS } = require("../utils/permissions");
+const {
+  PERMISSION_SECTIONS,
+  PERMISSION_KEYS,
+  expandLegacyKeys,
+  normalizePermissions,
+} = require("../utils/permissions");
 
 // Ruxsat berilishi mumkin bo'lgan xodimlar: owner ham, o'quvchi ham emas
 const STAFF_ROLE_FILTER = { notIn: [ROLES.OWNER, ROLES.STUDENT] };
 
 /**
- * Grant qilinadigan ruxsatlar katalogi (admin UI checkbox'lari uchun).
+ * Grant qilinadigan ruxsatlar katalogi (admin UI checkbox'lari uchun):
+ * bo'limlar, ularning guruhi va har birining amallari.
  */
 function getCatalog() {
-  return PERMISSION_CATALOG;
+  return PERMISSION_SECTIONS;
 }
 
 /**
@@ -27,6 +33,11 @@ async function getStaff() {
 
 /**
  * Foydalanuvchining ruxsatlar to'plamini butunlay almashtiradi (grant/revoke).
+ *
+ * Kalitlar `<bo'lim>.<amal>` ko'rinishida. Eski, amalga bo'linmagan bo'lim
+ * kaliti ("users") ham qabul qilinadi — u o'sha bo'limning barcha amallariga
+ * yoyiladi. Saqlashdan oldin har bir bo'lim uchun `.view` avtomatik qo'shiladi.
+ *
  * @param {string} userId - foydalanuvchi ID
  * @param {string[]} permissions - yangi ruxsat kalitlari to'plami
  */
@@ -35,12 +46,14 @@ async function setUserPermissions(userId, permissions) {
     throw new BadRequestError("permissions massiv bo'lishi kerak");
   }
 
-  // Noma'lum kalitlarni rad etamiz
-  const unique = [...new Set(permissions)];
-  const invalid = unique.filter((p) => !PERMISSION_KEYS.includes(p));
+  // Eski bo'lim kalitlarini amallarga yoyamiz, so'ng noma'lumlarini rad etamiz
+  const expanded = expandLegacyKeys(permissions);
+  const invalid = expanded.filter((p) => !PERMISSION_KEYS.includes(p));
   if (invalid.length > 0) {
     throw new BadRequestError(`Noma'lum ruxsat(lar): ${invalid.join(", ")}`);
   }
+
+  const unique = normalizePermissions(expanded);
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
