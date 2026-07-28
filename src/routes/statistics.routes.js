@@ -19,7 +19,7 @@ router.use(protect);
 router.get(
   "/weekly/current/:studentId",
   validateObjectId("studentId"),
-  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS_VIEW, ROLES.STUDENT),
   getStudentWeeklyStatistics
 );
 
@@ -27,21 +27,21 @@ router.get(
 router.get(
   "/weekly/class/:classId/rankings",
   validateObjectId("classId"),
-  authorizePermission(PERMISSIONS.STATISTICS),
+  authorizePermission(PERMISSIONS.STATISTICS_VIEW),
   getClassRankings
 );
 
 // Maktab bo'yicha reytinglar (owner yoki student)
 router.get(
   "/weekly/school/rankings",
-  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS_VIEW, ROLES.STUDENT),
   getSchoolRankings
 );
 
 // Haftalik statistikani export qilish (faqat owner)
 router.get(
   "/weekly/export",
-  authorizePermission(PERMISSIONS.STATISTICS),
+  authorizePermission(PERMISSIONS.STATISTICS_EXPORT),
   exportWeeklyStatistics
 );
 
@@ -49,7 +49,7 @@ router.get(
 router.get(
   "/weekly/student/:studentId/all",
   validateObjectId("studentId"),
-  authorizePermission(PERMISSIONS.STATISTICS, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.STATISTICS_VIEW, ROLES.STUDENT),
   getAllStudentWeeklyStats
 );
 

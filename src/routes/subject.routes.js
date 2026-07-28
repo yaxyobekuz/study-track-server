@@ -17,11 +17,11 @@ router.use(protect);
 
 // GET routes for everyone (teacher, student, owner)
 router.get("/", getAllSubjects);
-router.get("/export", authorizePermission(PERMISSIONS.SUBJECTS), exportSubjects);
+router.get("/export", authorizePermission(PERMISSIONS.SUBJECTS_EXPORT), exportSubjects);
 
-// CUD operations for owner only
-router.post("/", authorizePermission(PERMISSIONS.SUBJECTS), createSubject);
-router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.SUBJECTS), updateSubject);
-router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.SUBJECTS), deleteSubject);
+// CUD operations - amal darajasidagi ruxsat bilan
+router.post("/", authorizePermission(PERMISSIONS.SUBJECTS_CREATE), createSubject);
+router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.SUBJECTS_UPDATE), updateSubject);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.SUBJECTS_DELETE), deleteSubject);
 
 module.exports = router;

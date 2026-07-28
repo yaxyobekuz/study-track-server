@@ -33,7 +33,7 @@ router.get("/coins/balance/:studentId", verifyMonitor, validateObjectId("student
 router.get("/social-networks", verifyMonitor, getSocialNetworks);
 
 // Admin endpointlar (JWT bilan himoyalangan, faqat owner)
-router.get("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS), getMonitorSettings);
-router.put("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS), updateMonitorSettings);
+router.get("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS_VIEW), getMonitorSettings);
+router.put("/admin/settings", protect, authorizePermission(PERMISSIONS.MONITORS_UPDATE), updateMonitorSettings);
 
 module.exports = router;

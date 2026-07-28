@@ -8,7 +8,7 @@ const {
   getStaffReport,
 } = require("../controllers/attendanceReport.controller");
 
-router.use(protect, authorizePermission(PERMISSIONS.ATTENDANCE));
+router.use(protect, authorizePermission(PERMISSIONS.ATTENDANCE_REPORTS));
 
 router.get("/students", getStudentReport);
 router.get("/staff", getStaffReport);

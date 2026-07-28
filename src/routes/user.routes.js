@@ -16,35 +16,45 @@ const {
   getStudents,
   updateMe,
 } = require("../controllers/user.controller");
-const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
-const { PERMISSIONS } = require("../utils/permissions");
+const {
+  protect,
+  authorize,
+  authorizePermission,
+  authorizeSection,
+} = require("../middleware/auth.middleware");
+const { PERMISSIONS, SECTIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { ROLES } = require("../utils/constants");
 
 // /students route is accessible to both owner and teacher
-router.get("/students", protect, authorizePermission(PERMISSIONS.USERS, ROLES.TEACHER), getStudents);
+router.get("/students", protect, authorizePermission(PERMISSIONS.USERS_VIEW, ROLES.TEACHER), getStudents);
 
 // Own profile update - accessible to any authenticated user
 router.put("/me", protect, updateMe);
 
 // all-short - owner, teacher, reception uchun
-router.get("/all-short", protect, authorizePermission(PERMISSIONS.USERS, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
+router.get("/all-short", protect, authorizePermission(PERMISSIONS.USERS_VIEW, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
 
-// All routes below are protected and for owner only
+// Quyidagi route'lar: bo'limga umumiy kirish + har biriga aniq amal ruxsati
 router.use(protect);
-router.use(authorizePermission(PERMISSIONS.USERS));
+router.use(authorizeSection(SECTIONS.USERS));
 
-router.get("/stats", getStats);
-router.get("/export", exportUsersToExcel);
-router.route("/").get(getAllUsers).post(createUser);
+router.get("/stats", authorizePermission(PERMISSIONS.USERS_VIEW), getStats);
+router.get("/export", authorizePermission(PERMISSIONS.USERS_EXPORT), exportUsersToExcel);
 
-router.route("/:id").all(validateObjectId("id")).get(getUser).put(updateUser).delete(deleteUser);
+router.get("/", authorizePermission(PERMISSIONS.USERS_VIEW), getAllUsers);
+router.post("/", authorizePermission(PERMISSIONS.USERS_CREATE), createUser);
 
-router.put("/:id/reset-password", validateObjectId("id"), resetPassword);
-router.get("/:id/password", validateObjectId("id"), getUserPassword);
+router.get("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_VIEW), getUser);
+router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_UPDATE), updateUser);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_DELETE), deleteUser);
+
+// Parol — alohida ruxsat (plainPassword ochiladi)
+router.put("/:id/reset-password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), resetPassword);
+router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), getUserPassword);
 
 // Arxivlash / arxivdan qaytarish (faqat o'quvchilar uchun)
-router.put("/:id/archive", validateObjectId("id"), archiveStudent);
-router.put("/:id/restore", validateObjectId("id"), restoreStudent);
+router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), archiveStudent);
+router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restoreStudent);
 
 module.exports = router;

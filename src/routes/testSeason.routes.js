@@ -36,38 +36,38 @@ router.use(protect);
 // O'qituvchi va o'quvchi - faol mavsumlarni ko'rish
 router.get(
   "/active",
-  authorizePermission(PERMISSIONS.TESTS, ROLES.TEACHER, ROLES.STUDENT),
+  authorizePermission(PERMISSIONS.TESTS_VIEW, ROLES.TEACHER, ROLES.STUDENT),
   getActiveSeasons,
 );
 
 // Faqat owner uchun - CRUD
-router.get("/", authorizePermission(PERMISSIONS.TESTS), getSeasons);
-router.post("/", authorizePermission(PERMISSIONS.TESTS), createSeason);
+router.get("/", authorizePermission(PERMISSIONS.TESTS_VIEW), getSeasons);
+router.post("/", authorizePermission(PERMISSIONS.TESTS_CREATE), createSeason);
 router.get(
   "/:id",
-  authorizePermission(PERMISSIONS.TESTS, ROLES.TEACHER, ROLES.STUDENT),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_VIEW, ROLES.TEACHER, ROLES.STUDENT),
   getSeasonById,
 );
-router.put("/:id", authorizePermission(PERMISSIONS.TESTS), validateObjectId("id"), updateSeason);
+router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.TESTS_UPDATE), updateSeason);
 router.delete(
   "/:id",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_DELETE),
   deleteSeason,
 );
 
 // ───── Mavsum e'loni (bot orqali) ─────
 router.get(
   "/:id/announce/classes",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_ANNOUNCE),
   getSeasonAnnounceClasses,
 );
 router.post(
   "/:id/announce",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_ANNOUNCE),
   announceSeason,
 );
 
@@ -76,15 +76,15 @@ router.post(
 // Statistika: maktab va sinf darajasida - owner, o'qituvchi va o'quvchi ko'ra oladi
 router.get(
   "/:id/stats",
-  authorizePermission(PERMISSIONS.TESTS, ROLES.TEACHER, ROLES.STUDENT),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_VIEW, ROLES.TEACHER, ROLES.STUDENT),
   getStats,
 );
 router.get(
   "/:id/class/:classId/stats",
-  authorizePermission(PERMISSIONS.TESTS, ROLES.TEACHER, ROLES.STUDENT),
   validateObjectId("id"),
   validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.TESTS_VIEW, ROLES.TEACHER, ROLES.STUDENT),
   getClassStats,
 );
 router.get(
@@ -97,36 +97,36 @@ router.get(
 // Darajalar konfiguratsiyasi
 router.put(
   "/:id/school-tiers",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_DISTRIBUTE),
   setSchoolTiers,
 );
 router.put(
   "/:id/class-tiers",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_DISTRIBUTE),
   setClassTiers,
 );
 
 // Tarqatish
 router.get(
   "/:id/distribute/preview",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_DISTRIBUTE),
   previewDistribution,
 );
 router.post(
   "/:id/distribute",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_DISTRIBUTE),
   distributeCoins,
 );
 
 // To'liq yakunlash (coin tarqatish + o'quvchilarga bot orqali natija)
 router.post(
   "/:id/finalize",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_FINALIZE),
   finalizeSeason,
 );
 

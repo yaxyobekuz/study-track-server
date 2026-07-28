@@ -20,7 +20,7 @@ const { ROLES } = require("../utils/constants");
 router.post(
   "/upload",
   protect,
-  authorizePermission(PERMISSIONS.TOPICS),
+  authorizePermission(PERMISSIONS.TOPICS_IMPORT),
   createSingleFileUpload({ categories: ["document"] }),
   handleFileUploadError,
   uploadTopics
@@ -28,6 +28,6 @@ router.post(
 
 router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 
-router.delete("/subject/:id", protect, authorizePermission(PERMISSIONS.TOPICS), validateObjectId("id"), deleteTopicsBySubject);
+router.delete("/subject/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.TOPICS_DELETE), deleteTopicsBySubject);
 
 module.exports = router;

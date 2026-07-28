@@ -30,10 +30,10 @@ router.use(protect);
 
 // ─── Ro'yxat ──────────────────────────────────────────────────────
 router.get("/my", getMyTasks);
-router.get("/", authorizePermission(PERMISSIONS.TASKS), getTasks);
+router.get("/", authorizePermission(PERMISSIONS.TASKS_VIEW), getTasks);
 
-// ─── Yaratish (owner, multipart) ──────────────────────────────────
-router.post("/", authorizePermission(PERMISSIONS.TASKS), upload, handleFileUploadError, createTask);
+// ─── Yaratish (multipart) ─────────────────────────────────────────
+router.post("/", authorizePermission(PERMISSIONS.TASKS_CREATE), upload, handleFileUploadError, createTask);
 
 // ─── Bitta topshiriq ──────────────────────────────────────────────
 router.get("/:id", validateObjectId("id"), getTaskById);
@@ -41,10 +41,10 @@ router.get("/:id", validateObjectId("id"), getTaskById);
 // ─── Ijrochi amallari ─────────────────────────────────────────────
 router.put("/:id/submit", validateObjectId("id"), upload, handleFileUploadError, submitCompletion);
 
-// ─── Owner amallari ───────────────────────────────────────────────
-router.put("/:id/approve", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), approveTask);
-router.put("/:id/reject", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), rejectTask);
-router.put("/:id/stop", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), stopTask);
-router.put("/:id/extend", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS), extendDeadline);
+// ─── Boshqaruv amallari ───────────────────────────────────────────
+router.put("/:id/approve", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_REVIEW), approveTask);
+router.put("/:id/reject", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_REVIEW), rejectTask);
+router.put("/:id/stop", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_STOP), stopTask);
+router.put("/:id/extend", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_EXTEND), extendDeadline);
 
 module.exports = router;

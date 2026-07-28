@@ -11,7 +11,7 @@ const {
 
 router.use(protect);
 
-router.get("/", authorizePermission(PERMISSIONS.TESTS), getSettings);
-router.put("/", authorizePermission(PERMISSIONS.TESTS), updateSettings);
+router.get("/", authorizePermission(PERMISSIONS.TESTS_VIEW), getSettings);
+router.put("/", authorizePermission(PERMISSIONS.TESTS_SETTINGS), updateSettings);
 
 module.exports = router;

@@ -20,10 +20,10 @@ const {
 // Barcha autentifikatsiya qilingan foydalanuvchilar uchun - obuna tekshirish
 router.get("/check-subscription", protect, checkSubscription);
 
-// Faqat owner uchun - ro'yxat va CRUD
-router.get("/", protect, authorizePermission(PERMISSIONS.SOCIAL), getSocialNetworks);
-router.post("/", protect, authorizePermission(PERMISSIONS.SOCIAL), createSocialNetwork);
-router.put("/:id", protect, authorizePermission(PERMISSIONS.SOCIAL), validateObjectId("id"), updateSocialNetwork);
-router.delete("/:id", protect, authorizePermission(PERMISSIONS.SOCIAL), validateObjectId("id"), deleteSocialNetwork);
+// Ro'yxat va CRUD - amal darajasidagi ruxsat bilan
+router.get("/", protect, authorizePermission(PERMISSIONS.SOCIAL_VIEW), getSocialNetworks);
+router.post("/", protect, authorizePermission(PERMISSIONS.SOCIAL_CREATE), createSocialNetwork);
+router.put("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.SOCIAL_UPDATE), updateSocialNetwork);
+router.delete("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.SOCIAL_DELETE), deleteSocialNetwork);
 
 module.exports = router;

@@ -19,12 +19,12 @@ router.use(protect);
 router.get("/applicable", getApplicable);
 
 // Barcha aktiv sabablar - admin belgilash sahifasi uchun (rol bo'yicha filtrlash)
-router.get("/active", authorizePermission(PERMISSIONS.ATTENDANCE, ROLES.RECEPTION), getActive);
+router.get("/active", authorizePermission(PERMISSIONS.ATTENDANCE_VIEW, ROLES.RECEPTION), getActive);
 
-// Boshqaruv (owner)
-router.get("/", authorizePermission(PERMISSIONS.ATTENDANCE), getAll);
-router.post("/", authorizePermission(PERMISSIONS.ATTENDANCE), create);
-router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.ATTENDANCE), update);
-router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.ATTENDANCE), remove);
+// Boshqaruv — sabab turlarini o'zgartirish alohida ruxsat
+router.get("/", authorizePermission(PERMISSIONS.ATTENDANCE_REASONS), getAll);
+router.post("/", authorizePermission(PERMISSIONS.ATTENDANCE_REASONS), create);
+router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.ATTENDANCE_REASONS), update);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.ATTENDANCE_REASONS), remove);
 
 module.exports = router;

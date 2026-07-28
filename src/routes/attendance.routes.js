@@ -25,12 +25,12 @@ const {
   reviewExcuse,
 } = require("../controllers/attendance.controller");
 
-router.get("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getSettings);
-router.put("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE), updateSettings);
+router.get("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getSettings);
+router.put("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE_SETTINGS), updateSettings);
 
 router.get("/today", protect, getToday);
-router.get("/today/all", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getTodayAll);
-router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE), markStaff);
+router.get("/today/all", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getTodayAll);
+router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), markStaff);
 router.get("/my", protect, getMyHistory);
 router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);
@@ -38,20 +38,20 @@ router.post("/check-out", protect, checkOut);
 
 router.post("/excuse", protect, createExcuseRequest);
 router.get("/excuse/my", protect, getMyExcuses);
-router.get("/excuse/recent", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getRecentExcuses);
-router.get("/excuse", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getAllExcuses);
+router.get("/excuse/recent", protect, authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW), getRecentExcuses);
+router.get("/excuse", protect, authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW), getAllExcuses);
 router.delete("/excuse/:id", protect, cancelExcuseRequest);
-router.get("/excuse/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getExcuse);
-router.put("/excuse/:id/review", protect, authorizePermission(PERMISSIONS.ATTENDANCE), reviewExcuse);
+router.get("/excuse/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW), getExcuse);
+router.put("/excuse/:id/review", protect, authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW), reviewExcuse);
 
-router.get("/user/:userId", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getUserMonthRecords);
+router.get("/user/:userId", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getUserMonthRecords);
 router.get(
   "/user-schedule/:userId",
   protect,
-  authorizePermission(PERMISSIONS.ATTENDANCE),
+  authorizePermission(PERMISSIONS.ATTENDANCE_VIEW),
   getUserSchedule,
 );
-router.get("/", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getAllRecords);
-router.get("/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE), getRecord);
+router.get("/", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getAllRecords);
+router.get("/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getRecord);
 
 module.exports = router;

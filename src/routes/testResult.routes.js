@@ -29,15 +29,15 @@ router.get("/my", authorize(ROLES.STUDENT), getMyResults);
 // Admin (owner) - mavsumdagi o'quvchining natijalari va bitta natija (javoblar bilan)
 router.get(
   "/season/:seasonId/student/:studentId",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("seasonId"),
   validateObjectId("studentId"),
+  authorizePermission(PERMISSIONS.TESTS_VIEW),
   getStudentSeasonResults,
 );
 router.get(
   "/admin/:id",
-  authorizePermission(PERMISSIONS.TESTS),
   validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TESTS_VIEW),
   getResultForAdmin,
 );
 

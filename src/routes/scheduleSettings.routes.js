@@ -11,7 +11,7 @@ const {
 
 router.use(protect);
 
-router.get("/", authorizePermission(PERMISSIONS.SCHEDULES, ROLES.TEACHER), getSettings);
-router.put("/", authorizePermission(PERMISSIONS.SCHEDULES), updateSettings);
+router.get("/", authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER), getSettings);
+router.put("/", authorizePermission(PERMISSIONS.SCHEDULES_SETTINGS), updateSettings);
 
 module.exports = router;

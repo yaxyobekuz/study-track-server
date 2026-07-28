@@ -25,9 +25,9 @@ router.get("/check/:date", protect, checkDate);
 // Barcha autentifikatsiya qilingan foydalanuvchilar ko'rishi mumkin
 router.get("/", protect, getHolidays);
 
-// Faqat owner uchun - CRUD
-router.post("/", protect, authorizePermission(PERMISSIONS.HOLIDAYS), createHoliday);
-router.put("/:id", protect, authorizePermission(PERMISSIONS.HOLIDAYS), validateObjectId("id"), updateHoliday);
-router.delete("/:id", protect, authorizePermission(PERMISSIONS.HOLIDAYS), validateObjectId("id"), deleteHoliday);
+// CRUD - amal darajasidagi ruxsat bilan
+router.post("/", protect, authorizePermission(PERMISSIONS.HOLIDAYS_CREATE), createHoliday);
+router.put("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.HOLIDAYS_UPDATE), updateHoliday);
+router.delete("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.HOLIDAYS_DELETE), deleteHoliday);
 
 module.exports = router;

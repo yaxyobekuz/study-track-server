@@ -41,12 +41,12 @@ const uploadDeliveryImage = createSingleFileUpload({
 
 router.use(protect);
 
-router.get("/admin/products", authorizePermission(PERMISSIONS.MARKET), getAdminProducts);
-router.get("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), getProductById);
-router.get("/admin/products/:productId/stats", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), getProductStats);
+router.get("/admin/products", authorizePermission(PERMISSIONS.MARKET_VIEW), getAdminProducts);
+router.get("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET_VIEW), getProductById);
+router.get("/admin/products/:productId/stats", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET_VIEW), getProductStats);
 router.post(
   "/admin/products",
-  authorizePermission(PERMISSIONS.MARKET),
+  authorizePermission(PERMISSIONS.MARKET_CREATE),
   uploadProductImages,
   handleFileUploadError,
   createProduct,
@@ -54,18 +54,18 @@ router.post(
 router.put(
   "/admin/products/:productId",
   validateObjectId("productId"),
-  authorizePermission(PERMISSIONS.MARKET),
+  authorizePermission(PERMISSIONS.MARKET_UPDATE),
   uploadProductImages,
   handleFileUploadError,
   updateProduct,
 );
-router.delete("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET), deleteProduct);
+router.delete("/admin/products/:productId", validateObjectId("productId"), authorizePermission(PERMISSIONS.MARKET_DELETE), deleteProduct);
 
-router.get("/admin/orders", authorizePermission(PERMISSIONS.MARKET), getAdminOrders);
+router.get("/admin/orders", authorizePermission(PERMISSIONS.MARKET_ORDERS), getAdminOrders);
 router.patch(
   "/admin/orders/:orderId/status",
   validateObjectId("orderId"),
-  authorizePermission(PERMISSIONS.MARKET),
+  authorizePermission(PERMISSIONS.MARKET_FULFILL),
   uploadDeliveryImage,
   handleFileUploadError,
   updateOrderStatusByOwner,
@@ -74,7 +74,7 @@ router.patch(
 router.patch(
   "/admin/orders/:orderId/delivery-image",
   validateObjectId("orderId"),
-  authorizePermission(PERMISSIONS.MARKET),
+  authorizePermission(PERMISSIONS.MARKET_FULFILL),
   uploadDeliveryImage,
   handleFileUploadError,
   addDeliveryImage,
