@@ -267,10 +267,15 @@ model UserClass {
 }
 
 model Role {
-  id             String   @id @db.Char(24)
-  name           String   @unique
-  value          String   @unique
-  isSystem       Boolean  @default(false) @map("is_system")
+  id       String  @id @db.Char(24)
+  name     String  @unique
+  value    String  @unique
+  isSystem Boolean @default(false) @map("is_system")
+
+  // Shu rol bilan yangi foydalanuvchi yaratilganda unga beriladigan boshlang'ich
+  // ruxsat kalitlari (utils/permissions.js). Mavjud foydalanuvchilarga ta'sir qilmaydi.
+  permissions String[] @default([]) @map("permissions")
+
   workStartTime  String?  @map("work_start_time")
   workEndTime    String?  @map("work_end_time")
   workDays       Int[]    @default([1, 2, 3, 4, 5]) @map("work_days")

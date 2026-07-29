@@ -183,6 +183,9 @@ async function createUser(data) {
         workEndTime: workEndTime || null,
         workDays: workDays || [],
         weeklySchedule: weeklySchedule || {},
+        // Rolning boshlang'ich ruxsatlari (Rollar sahifasida sozlanadi).
+        // Keyinchalik rol o'zgarsa, mavjud foydalanuvchiga ta'sir qilmaydi.
+        permissions: roleExists.permissions || [],
       }),
     },
   });

@@ -1,5 +1,6 @@
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { validatePermissions } = require("./permission.service");
 
 // Prisma unique-constraint xatosini do'stona xabarga aylantiradi
 function handleUnique(error) {
@@ -53,7 +54,7 @@ async function getRoleOptions() {
  * Yangi rol yaratish.
  */
 async function createRole(data, createdBy) {
-  const { name, value } = data;
+  const { name, value, permissions } = data;
 
   if (!name || !value) {
     throw new BadRequestError("Rol nomi va qiymati majburiy");
@@ -61,7 +62,14 @@ async function createRole(data, createdBy) {
 
   try {
     return await prisma.role.create({
-      data: { name, value: value.toLowerCase().trim(), createdBy },
+      data: {
+        name,
+        value: value.toLowerCase().trim(),
+        createdBy,
+        ...(permissions !== undefined && {
+          permissions: validatePermissions(permissions),
+        }),
+      },
     });
   } catch (error) {
     handleUnique(error);
@@ -72,7 +80,15 @@ async function createRole(data, createdBy) {
  * Rolni yangilash. Tizim rollari yangilanmaydi.
  */
 async function updateRole(id, data) {
-  const { name, value, workStartTime, workEndTime, workDays, weeklySchedule } = data;
+  const {
+    name,
+    value,
+    permissions,
+    workStartTime,
+    workEndTime,
+    workDays,
+    weeklySchedule,
+  } = data;
 
   const role = await prisma.role.findUnique({ where: { id } });
 
@@ -96,6 +112,10 @@ async function updateRole(id, data) {
 
     if (name) update.name = name;
   }
+
+  // Boshlang'ich ruxsatlar tizim rollari uchun ham sozlanadi — bu nom/kalitdan
+  // farqli o'laroq faqat yangi foydalanuvchilarga ta'sir qiladi
+  if (permissions !== undefined) update.permissions = validatePermissions(permissions);
 
   if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
   if (workEndTime !== undefined) update.workEndTime = workEndTime || null;

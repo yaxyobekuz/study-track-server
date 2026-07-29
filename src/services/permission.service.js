@@ -32,16 +32,16 @@ async function getStaff() {
 }
 
 /**
- * Foydalanuvchining ruxsatlar to'plamini butunlay almashtiradi (grant/revoke).
+ * Ruxsat kalitlarini tekshirib, saqlashga tayyor ko'rinishga keltiradi.
  *
  * Kalitlar `<bo'lim>.<amal>` ko'rinishida. Eski, amalga bo'linmagan bo'lim
  * kaliti ("users") ham qabul qilinadi — u o'sha bo'limning barcha amallariga
- * yoyiladi. Saqlashdan oldin har bir bo'lim uchun `.view` avtomatik qo'shiladi.
+ * yoyiladi. Natijada har bir bo'lim uchun `.view` avtomatik qo'shiladi.
  *
- * @param {string} userId - foydalanuvchi ID
- * @param {string[]} permissions - yangi ruxsat kalitlari to'plami
+ * @param {string[]} permissions - ruxsat kalitlari
+ * @returns {string[]} normallashtirilgan kalitlar (katalog tartibida)
  */
-async function setUserPermissions(userId, permissions) {
+function validatePermissions(permissions) {
   if (!Array.isArray(permissions)) {
     throw new BadRequestError("permissions massiv bo'lishi kerak");
   }
@@ -53,7 +53,17 @@ async function setUserPermissions(userId, permissions) {
     throw new BadRequestError(`Noma'lum ruxsat(lar): ${invalid.join(", ")}`);
   }
 
-  const unique = normalizePermissions(expanded);
+  return normalizePermissions(expanded);
+}
+
+/**
+ * Foydalanuvchining ruxsatlar to'plamini butunlay almashtiradi (grant/revoke).
+ *
+ * @param {string} userId - foydalanuvchi ID
+ * @param {string[]} permissions - yangi ruxsat kalitlari to'plami
+ */
+async function setUserPermissions(userId, permissions) {
+  const unique = validatePermissions(permissions);
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -79,4 +89,9 @@ async function setUserPermissions(userId, permissions) {
   });
 }
 
-module.exports = { getCatalog, getStaff, setUserPermissions };
+module.exports = {
+  getCatalog,
+  getStaff,
+  validatePermissions,
+  setUserPermissions,
+};
