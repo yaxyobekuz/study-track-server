@@ -11,68 +11,107 @@
  * clientni oladi.
  */
 
-const { PrismaClient } = require("../generated/prisma");
+const { PrismaClient, Prisma } = require("../generated/prisma");
 const { generateId } = require("../utils/idGenerator");
 
-// ID auto-generatsiya kerak bo'lgan modellar (id maydoni String @db.Char(24)).
-// Singletonlar (id="singleton") va junction jadvallar (composite PK) bu ro'yxatda YO'Q.
-const AUTO_ID_MODELS = new Set([
-  "User", "Role", "Class", "Subject", "Topic", "Schedule", "ScheduleLesson",
-  "TeacherAssignment", "ClassSubjectProgress", "Attendance", "AbsenceReason",
-  "StudentAttendance", "ExcuseRequest", "Grade", "Task", "TaskStatusHistory",
-  "TaskDeadlineHistory", "Penalty", "PenaltyCategory", "PenaltyNotificationQueue",
-  "FineReductionPackage", "CoinTransaction", "DailyCoinStat", "MarketProduct",
-  "MarketOrder", "MarketOrderStatusHistory", "Lead", "LeadActivity", "LeadCategory",
-  "LeadDirection", "LeadSource", "Test", "Question", "QuestionOption", "TestBinding",
-  "TestBindingReopenGrant", "TestSession", "TestSessionQuestion",
-  "TestSessionQuestionOption", "TestSessionAnswer", "TestResult",
-  "TestResultExtraPoint", "TestResultPerQuestion", "TestSeason", "Message",
-  "MessageDeliveryStatus", "MessageQueue", "TgUser", "SocialNetwork", "WeeklyStats",
-  "Holiday", "Image", "Monitor", "Premium", "EmojiConfig",
-]);
+// Modellar schema'ning o'zidan (DMMF) o'qiladi — qo'lda ro'yxat yuritilmaydi,
+// shuning uchun yangi model qo'shilganda bu fayl eskirib qolmaydi.
+//
+// AUTO_ID_MODELS: `id` maydoni bor va @default'i YO'Q modellar. Singletonlar
+// (id @default("singleton")) va junction jadvallar (composite PK, id yo'q)
+// avtomatik ravishda tashqarida qoladi.
+const AUTO_ID_MODELS = new Set(
+  Prisma.dmmf.datamodel.models
+    .filter((m) =>
+      m.fields.some((f) => f.name === "id" && f.isId && !f.hasDefaultValue),
+    )
+    .map((m) => m.name),
+);
+
+// model nomi -> { relation maydoni: bog'langan model nomi }.
+// Nested yozuvda qaysi modelga id kerakligini nom bo'yicha taxmin qilmay,
+// aniq bilish uchun kerak.
+const RELATIONS = new Map(
+  Prisma.dmmf.datamodel.models.map((m) => [
+    m.name,
+    Object.fromEntries(
+      m.fields.filter((f) => f.kind === "object").map((f) => [f.name, f.type]),
+    ),
+  ]),
+);
 
 const basePrisma = new PrismaClient({
   log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
 });
 
-// Junction (M2M) relation nomlari — bu jadvallarda `id` yo'q (composite PK).
-// Nested create'da bularga id QO'SHILMAYDI.
-const JUNCTION_RELATIONS = new Set(["classes", "images"]);
+/**
+ * `payload` (obyekt yoki massiv) — `model` modelining create yozuv(lar)i.
+ * Kerak bo'lsa `id` qo'yadi va ichkariga rekursiv tushadi.
+ */
+function applyIds(model, payload) {
+  if (payload == null || typeof payload !== "object") return;
+
+  for (const row of Array.isArray(payload) ? payload : [payload]) {
+    if (row == null || typeof row !== "object") continue;
+    if (AUTO_ID_MODELS.has(model) && row.id == null) row.id = generateId();
+    ensureNestedIds(model, row);
+  }
+}
 
 /**
- * `data` obyekti ichidagi barcha nested create/createMany yozuvlariga
- * rekursiv ravishda `id` qo'shadi (junction relationlardan tashqari).
+ * `data` ichidagi barcha nested yozuvlarga rekursiv ravishda `id` qo'shadi:
+ * `create`, `createMany`, `connectOrCreate.create`, `upsert.create`.
  * Prisma extension query-hook faqat top-level modelga id qo'yadi; nested
  * yozuvlar (statusHistory, questions, answers, ...) shu funksiya bilan qamraladi.
  */
-function ensureNestedIds(data) {
-  if (data == null || typeof data !== "object") return;
+function ensureNestedIds(model, data) {
+  const relations = RELATIONS.get(model);
+  if (!relations || data == null || typeof data !== "object") return;
 
   for (const [key, value] of Object.entries(data)) {
-    if (value == null || typeof value !== "object") continue;
+    const target = relations[key];
+    if (!target || value == null || typeof value !== "object") continue;
 
-    // Relation yozuvi: { create: {...} } yoki { create: [...] } yoki { createMany: { data } }
-    const isJunction = JUNCTION_RELATIONS.has(key);
+    if (value.create !== undefined) applyIds(target, value.create);
 
-    if (value.create !== undefined) {
-      const rows = Array.isArray(value.create) ? value.create : [value.create];
-      for (const row of rows) {
-        if (row && typeof row === "object") {
-          if (!isJunction && row.id == null) row.id = generateId();
-          ensureNestedIds(row); // chuqurroq nested (masalan question.options)
-        }
+    // { connectOrCreate: { where, create } } va { upsert: { where, create, update } }
+    // — ikkalasi ham bitta obyekt yoki massiv bo'lishi mumkin.
+    for (const nested of [value.connectOrCreate, value.upsert]) {
+      if (nested == null || typeof nested !== "object") continue;
+      for (const entry of Array.isArray(nested) ? nested : [nested]) {
+        if (entry == null || typeof entry !== "object") continue;
+        applyIds(target, entry.create);
+        ensureNestedIds(target, entry.update);
       }
     }
-    if (value.createMany && value.createMany.data) {
+
+    // { update: { where, data } } ichida yana nested create bo'lishi mumkin
+    if (value.update !== undefined && !("upsert" in value)) {
+      for (const entry of Array.isArray(value.update)
+        ? value.update
+        : [value.update]) {
+        if (entry == null || typeof entry !== "object") continue;
+        ensureNestedIds(target, entry.data !== undefined ? entry.data : entry);
+      }
+    }
+
+    // createMany nested relation'larni qo'llab-quvvatlamaydi — faqat id kerak
+    if (value.createMany && value.createMany.data != null) {
       const rows = Array.isArray(value.createMany.data)
         ? value.createMany.data
         : [value.createMany.data];
       for (const row of rows) {
-        if (row && typeof row === "object" && !isJunction && row.id == null) {
-          row.id = generateId();
-        }
+        if (row == null || typeof row !== "object") continue;
+        if (AUTO_ID_MODELS.has(target) && row.id == null) row.id = generateId();
       }
     }
+  }
+}
+
+function ensureManyIds(model, data) {
+  if (!AUTO_ID_MODELS.has(model) || data == null) return;
+  for (const row of Array.isArray(data) ? data : [data]) {
+    if (row && typeof row === "object" && row.id == null) row.id = generateId();
   }
 }
 
@@ -104,8 +143,13 @@ const prisma = basePrisma
           if (args.data) ensureNestedIds(args.data);
           return query(args);
         },
-        async upsert({ args, query }) {
-          if (args.create) ensureNestedIds(args.create);
+        async upsert({ model, args, query }) {
+          if (args.create) {
+            if (AUTO_ID_MODELS.has(model) && args.create.id == null) {
+              args.create.id = generateId();
+            }
+            ensureNestedIds(args.create);
+          }
           if (args.update) ensureNestedIds(args.update);
           return query(args);
         },
