@@ -15,6 +15,41 @@ const LEAD_STATUSES = [
   "postponed",
 ];
 
+// Klient o'zgartira oladigan maydonlar. `status`/`lostReason` faqat
+// updateLeadStatus orqali, `createdBy`/`id`/`updatedAt` esa server tomonidan
+// belgilanadi. Mongoose ortiqcha maydonlarni jimgina tashlab yuborardi —
+// Prisma esa "Unknown argument" bilan yiqiladi, shuning uchun whitelist shart.
+const LEAD_EDITABLE_FIELDS = [
+  "firstName",
+  "lastName",
+  "phone",
+  "additionalPhone",
+  "source",
+  "direction",
+  "category",
+  "classInterest",
+  "parentName",
+  "parentPhone",
+  "address",
+  "notes",
+  "expectedEnrollDate",
+];
+
+/**
+ * `data`dan faqat ruxsat etilgan Lead maydonlarini ajratib oladi.
+ * Berilmagan (undefined) maydonlar tushirib qoldiriladi.
+ */
+function pickLeadFields(data) {
+  const fields = {};
+  for (const key of LEAD_EDITABLE_FIELDS) {
+    if (data[key] === undefined) continue;
+    fields[key] = key === "expectedEnrollDate" && data[key]
+      ? new Date(data[key])
+      : data[key];
+  }
+  return fields;
+}
+
 /**
  * source/direction/category/createdBy — Lead'da scalar ref (FK emas, populate yo'q).
  * Ularni qo'lda yuklab, populate shaklida ({ id, name } yoki { firstName, lastName })
@@ -201,7 +236,7 @@ async function createLead(data, userId) {
     throw new NotFoundError("Toifa topilmadi");
   }
 
-  const leadData = { ...data, createdBy: userId };
+  const leadData = { ...pickLeadFields(data), createdBy: userId };
   if (createdAt) leadData.createdAt = new Date(createdAt);
 
   const lead = await prisma.lead.create({ data: leadData });
@@ -232,11 +267,10 @@ async function updateLead(id, data) {
     throw new NotFoundError("Lead topilmadi");
   }
 
-  // Don't allow status change through this method
-  delete data.status;
-  delete data.createdBy;
-
-  if (data.createdAt) data.createdAt = new Date(data.createdAt);
+  // status faqat updateLeadStatus orqali o'zgaradi; createdBy — server maydoni.
+  // Whitelist ikkalasini ham avtomatik chetlab o'tadi.
+  const leadData = pickLeadFields(data);
+  if (data.createdAt) leadData.createdAt = new Date(data.createdAt);
 
   if (data.source) {
     const sourceExists = await prisma.leadSource.findUnique({ where: { id: data.source } });
@@ -259,7 +293,7 @@ async function updateLead(id, data) {
     }
   }
 
-  await prisma.lead.update({ where: { id }, data });
+  await prisma.lead.update({ where: { id }, data: leadData });
 
   const updated = await prisma.lead.findUnique({ where: { id } });
   return attachLeadRefs(updated);
