@@ -121,36 +121,26 @@ const prisma = basePrisma
     query: {
       $allModels: {
         async create({ model, args, query }) {
-          if (args.data) {
-            if (AUTO_ID_MODELS.has(model) && args.data.id == null) {
-              args.data.id = generateId();
-            }
-            ensureNestedIds(args.data);
-          }
+          applyIds(model, args.data);
           return query(args);
         },
         async createMany({ model, args, query }) {
-          if (AUTO_ID_MODELS.has(model) && args.data) {
-            const rows = Array.isArray(args.data) ? args.data : [args.data];
-            for (const row of rows) {
-              if (row.id == null) row.id = generateId();
-            }
-          }
+          ensureManyIds(model, args.data);
           return query(args);
         },
-        async update({ args, query }) {
+        async createManyAndReturn({ model, args, query }) {
+          ensureManyIds(model, args.data);
+          return query(args);
+        },
+        async update({ model, args, query }) {
           // update ichida nested create bo'lishi mumkin (masalan statusHistory qo'shish)
-          if (args.data) ensureNestedIds(args.data);
+          ensureNestedIds(model, args.data);
           return query(args);
         },
         async upsert({ model, args, query }) {
-          if (args.create) {
-            if (AUTO_ID_MODELS.has(model) && args.create.id == null) {
-              args.create.id = generateId();
-            }
-            ensureNestedIds(args.create);
-          }
-          if (args.update) ensureNestedIds(args.update);
+          // `create` — top-level yozuv: unga ham id kerak (nested emas!)
+          applyIds(model, args.create);
+          ensureNestedIds(model, args.update);
           return query(args);
         },
       },
