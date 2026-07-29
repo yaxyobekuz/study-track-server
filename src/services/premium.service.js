@@ -69,7 +69,7 @@ const purchasePremium = async (studentId) => {
 
   await prisma.coinTransaction.create({
     data: {
-      student: studentId,
+      studentId,
       amount: cost,
       type: "premium_purchase",
       description: `MBSI Premium - ${durationDays} kunlik obuna`,
