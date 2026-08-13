@@ -36,6 +36,8 @@ const testSessionRoutes = require("./testSession.routes");
 const testResultRoutes = require("./testResult.routes");
 const testSettingsRoutes = require("./testSettings.routes");
 const scheduleSettingsRoutes = require("./scheduleSettings.routes");
+const tariffRoutes = require("./tariff.routes");
+const studentTariffRoutes = require("./studentTariff.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -71,6 +73,8 @@ router.use("/test-sessions", testSessionRoutes);
 router.use("/test-results", testResultRoutes);
 router.use("/test-settings", testSettingsRoutes);
 router.use("/schedule-settings", scheduleSettingsRoutes);
+router.use("/tariffs", tariffRoutes);
+router.use("/student-tariffs", studentTariffRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
