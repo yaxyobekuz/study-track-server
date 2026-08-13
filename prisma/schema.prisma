@@ -1454,3 +1454,90 @@ model EmojiConfig {
 
   @@map("emoji_configs")
 }
+
+// ─────────────────────────────────────────────
+// MOLIYA — TARIFLAR VA NARXLAR
+// ─────────────────────────────────────────────
+//
+// OY — `Int` YYYYMM (202608 = 2026-avgust), inklyuziv. Bu domenda kun
+// darajasidagi koordinata umuman yo'q: "narx oshsa yangi oydan boshlab" talabi
+// shundan kelib chiqadi — 17-avgustda kiritilgan narx avgustga ta'sir qila
+// olmaydi, chunki uni ifodalaydigan maydonning o'zi yo'q. Taymzona butun
+// domenda bitta joyda: helpers/month.helpers.js dagi currentMonthKey().
+//
+// PUL — Decimal(14,2) (Postgres NUMERIC). Float ISHLATILMAYDI. Service'da
+// Prisma.Decimal (decimal.js) metodlari bilan hisoblanadi (`+` — string
+// konkatenatsiya, jim xatolik!), API'ga har doim 2 xonali string sifatida
+// chiqadi — helpers/money.helpers.js.
+
+model Tariff {
+  id          String    @id @db.Char(24)
+  name        String    @unique
+  description String    @default("")
+  // ISO-4217. Tarif butun umri davomida bitta valyutada — versiya faqat
+  // summani o'zgartiradi (service'da versiya paydo bo'lgach o'zgarmas).
+  currency    String    @default("UZS") @db.Char(3)
+  isActive    Boolean   @default(true) @map("is_active")
+  isArchived  Boolean   @default(false) @map("is_archived")
+  archivedAt  DateTime? @map("archived_at")
+  createdBy   String    @map("created_by") @db.Char(24)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  versions TariffVersion[]
+
+  // Katalogda narx maydoni YO'Q — versiyalashning butun mohiyati shu.
+  @@index([isArchived, isActive, name])
+  @@map("tariffs")
+}
+
+// Tarifning narx tarixi. Versiya — tarifning egalik ostidagi bolasi
+// (Topic→Subject kabi), shuning uchun haqiqiy relation + Cascade.
+model TariffVersion {
+  id            String   @id @db.Char(24)
+  tariffId      String   @map("tariff_id") @db.Char(24)
+  startMonth    Int      @map("start_month")
+  // null → ochiq versiya (hozircha oxirgi narx). Tarifda bittadan ortiq
+  // ochiq versiya bo'lishi mumkin emas (service tekshiradi).
+  endMonth      Int?     @map("end_month")
+  monthlyAmount Decimal  @map("monthly_amount") @db.Decimal(14, 2)
+  note          String   @default("")
+  createdBy     String   @map("created_by") @db.Char(24)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tariff Tariff @relation(fields: [tariffId], references: [id], onDelete: Cascade)
+
+  // Kesishuv tekshiruvi service'da, lekin poyga holatida haqiqiy kafolat — shu.
+  @@unique([tariffId, startMonth])
+  @@index([tariffId, startMonth(sort: Desc)])
+  @@map("tariff_versions")
+}
+
+// O'quvchiga tarif biriktirish. NARX USTUNI YO'Q — bu kelajakka qaragan
+// qoida, o'tgan fakt emas (MarketOrder.productSnapshot dan farqi shu).
+// Narx har safar TariffVersion'dan hal qilinadi, shuning uchun tarif narxi
+// oshganda birorta qatorga tegilmaydi.
+model StudentTariff {
+  // soft ref → User (role = "student"). FK YO'Q: moliyaviy tarix o'quvchi
+  // o'chirilsa ham qolishi kerak (StudentAttendance.studentId uslubi).
+  id         String   @id @db.Char(24)
+  studentId  String   @map("student_id") @db.Char(24)
+  // soft ref → Tariff. FK YO'Q — bu cross-entity bog'lanish, Tariff bu
+  // qatorning egasi emas (MarketOrder.productId uslubi).
+  tariffId   String   @map("tariff_id") @db.Char(24)
+  startMonth Int      @map("start_month")
+  // null → butun o'qish davri. startMonth === endMonth → faqat o'sha oy.
+  endMonth   Int?     @map("end_month")
+  note       String   @default("")
+  createdBy  String   @map("created_by") @db.Char(24)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // `status` enum YO'Q — davrning o'zi holat. Biriktirish tugatilsa endMonth
+  // qo'yiladi; xato kelajakdagi biriktirish o'chiriladi.
+  @@unique([studentId, startMonth])
+  @@index([studentId, startMonth(sort: Desc)])
+  @@index([tariffId])
+  @@map("student_tariffs")
+}
