@@ -105,6 +105,34 @@ function currentMonthKey() {
 }
 
 /**
+ * Bugungi kun raqami — TOSHKENT vaqti bo'yicha, `currentMonthKey()` bilan
+ * bitta manbadan. Hisob-faktura cron'i "bugun belgilangan kunmi?" degan
+ * savolga shu bilan javob beradi; `new Date().getDate()` server-local bo'lib,
+ * oy chegarasida bir kunga adashishi mumkin edi.
+ *
+ * @returns {number} 1..31
+ */
+function currentDayOfMonth() {
+  const now = new Date();
+  const tashkent = new Date(
+    now.getTime() + now.getTimezoneOffset() * 60000 + 5 * 3600000,
+  );
+  return tashkent.getDate();
+}
+
+/**
+ * Joriy oyda necha kun bor (Toshkent). `invoiceDayOfMonth` fevralda oy
+ * uzunligidan oshib ketmasligi uchun.
+ *
+ * @returns {number} 28..31
+ */
+function daysInCurrentMonth() {
+  const key = currentMonthKey();
+  // Keyingi oyning 0-kuni = joriy oyning oxirgi kuni
+  return new Date(Date.UTC(Math.trunc(key / 100), key % 100, 0)).getUTCDate();
+}
+
+/**
  * Keyingi oy. Narx o'zgartirishning standart boshlanish nuqtasi.
  * @param {number} monthKey
  * @returns {number}
@@ -238,6 +266,8 @@ module.exports = {
   parseMonthKey,
   parseOptionalMonthKey,
   currentMonthKey,
+  currentDayOfMonth,
+  daysInCurrentMonth,
   nextMonth,
   prevMonth,
   diffMonths,

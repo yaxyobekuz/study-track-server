@@ -46,6 +46,7 @@ const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
 const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job");
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
+const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
 
 // ================================
 
@@ -129,6 +130,7 @@ const bootstrap = async () => {
   startTestSessionExpiryCron();
   startSeasonStatusCron();
   startPremiumExpiryCron();
+  startInvoiceGenerationCron();
 
   const server = app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);
