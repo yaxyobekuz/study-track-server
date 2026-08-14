@@ -75,6 +75,18 @@ async function getPenaltySettings() {
   return settings;
 }
 
+/**
+ * Moliya sozlamalari — akademik davr (global) va hisob-faktura cron'i.
+ * Barcha maydonlarda @default bor, shuning uchun oddiy upsert yetarli.
+ */
+async function getFinanceSettings() {
+  return prisma.financeSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 // Premium uchun default ranglar (Mongoose modelidagi DEFAULT_NAME_COLORS)
 const DEFAULT_NAME_COLORS = [
   { key: "blue", label: "Ko'k", hex: "#3b82f6", isActive: true },
@@ -113,5 +125,6 @@ module.exports = {
   getTestSettings,
   getPenaltySettings,
   getPremiumSettings,
+  getFinanceSettings,
   DEFAULT_NAME_COLORS,
 };

@@ -38,6 +38,10 @@ const testSettingsRoutes = require("./testSettings.routes");
 const scheduleSettingsRoutes = require("./scheduleSettings.routes");
 const tariffRoutes = require("./tariff.routes");
 const studentTariffRoutes = require("./studentTariff.routes");
+const financeSettingsRoutes = require("./financeSettings.routes");
+const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
+const invoiceRoutes = require("./invoice.routes");
+const invoicePaymentRoutes = require("./invoicePayment.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -75,6 +79,10 @@ router.use("/test-settings", testSettingsRoutes);
 router.use("/schedule-settings", scheduleSettingsRoutes);
 router.use("/tariffs", tariffRoutes);
 router.use("/student-tariffs", studentTariffRoutes);
+router.use("/finance-settings", financeSettingsRoutes);
+router.use("/student-finance-statuses", studentFinanceStatusRoutes);
+router.use("/invoices", invoiceRoutes);
+router.use("/invoice-payments", invoicePaymentRoutes);
 
 // Health check
 router.get("/health", (req, res) => {
