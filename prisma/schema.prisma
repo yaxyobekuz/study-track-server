@@ -206,6 +206,35 @@ enum ScheduleDay {
   shanba
 }
 
+// Moliyaviy holat — StudentFinanceStatus DAVR jadvalining qiymati.
+// Model nomi bilan to'qnashmasligi uchun `Enum` qo'shimchasi
+// (MessageDeliveryStatus / MessageDeliveryStatusEnum uslubi).
+enum StudentFinanceStatusEnum {
+  active // Faol — hisob-faktura shakllanadi
+  frozen // Muzlatilgan — o'qimaydi, majburiyat yo'q
+  expelled // Chetlatilgan — o'qishdan chiqarilgan, majburiyat yo'q
+}
+
+enum InvoiceStatus {
+  unpaid // To'lanmagan (paidAmount = 0)
+  partial // Qisman to'langan (0 < paidAmount < amount)
+  paid // To'langan (paidAmount >= amount)
+  cancelled // Bekor qilingan — yagona "o'chirish" yo'li, sabab va aktyor bilan
+}
+
+// Majburiyatni kim shakllantirdi — auditda "qarz qayerdan paydo bo'ldi?".
+enum InvoiceSource {
+  cron // avtomatik oylik pass
+  manual // admin `POST /invoices/generate` orqali
+}
+
+enum PaymentMethod {
+  cash
+  card
+  transfer
+  other
+}
+
 // ─────────────────────────────────────────────
 // FOYDALANUVCHI VA ROLLAR
 // ─────────────────────────────────────────────
@@ -1501,7 +1530,6 @@ model TariffVersion {
   // ochiq versiya bo'lishi mumkin emas (service tekshiradi).
   endMonth      Int?     @map("end_month")
   monthlyAmount Decimal  @map("monthly_amount") @db.Decimal(14, 2)
-  note          String   @default("")
   createdBy     String   @map("created_by") @db.Char(24)
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -1540,4 +1568,195 @@ model StudentTariff {
   @@index([studentId, startMonth(sort: Desc)])
   @@index([tariffId])
   @@map("student_tariffs")
+}
+
+// ─────────────────────────────────────────────
+// MOLIYA — AKADEMIK DAVR, HOLAT VA HISOB-FAKTURALAR
+// ─────────────────────────────────────────────
+//
+// AKADEMIK DAVR — MAKTAB BO'YICHA GLOBAL: boshlanish oyi (1..12) + davomiyligi
+// (9 yoki 11). Katalog ham, o'quvchiga biriktiriladigan narsa ham emas. Har
+// qanday YYYYMM yo akademik oy, yo yo'q — hisob helpers/academicYear.helpers.js da.
+//
+// KUN KOORDINATASI bu domenda faqat IKKI joyda bor:
+//   1) FinanceSettings.invoiceDayOfMonth — cron qachon ishlashi (konfiguratsiya),
+//   2) InvoicePayment.paidAt — pul qachon olindi (hodisa, davr emas).
+// Hisob-fakturaning o'zida kun maydoni YO'Q: "o'quvchi oyda 1 kun o'qisa ham
+// to'liq oy" qoidasi tekshiruv bilan emas, proratsiyani ifodalaydigan
+// maydonning yo'qligi bilan kafolatlanadi.
+
+model FinanceSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // O'quv yili qaysi oydan boshlanadi (1..12; 9 = sentabr)
+  academicStartMonth Int @default(9) @map("academic_start_month")
+  // Nechta oy davom etadi — 9 yoki 11 (service qat'iy tekshiradi)
+  academicMonthCount Int @default(9) @map("academic_month_count")
+
+  // Oyning nechanchi kunida majburiyat shakllanadi. 1..28 bilan cheklanadi —
+  // 29-31 fevralda hech qachon kelmaydi. Cron IFODASIDA emas, HANDLER'da
+  // o'qiladi: sozlama bazada, cron ifodasi esa startup'da qotib qoladi.
+  invoiceDayOfMonth Int @default(1) @map("invoice_day_of_month")
+
+  // Avtomatik shakllantirishni butunlay o'chirish (migratsiya/sinov davri)
+  autoGenerateEnabled Boolean @default(true) @map("auto_generate_enabled")
+
+  // Har passda necha oy ORQAGA qayta urinilsin. Server oy chegarasidan oshib
+  // o'chib qolgan bo'lsa, yo'qolgan oy shu bilan tiklanadi. 0 = backfill yo'q.
+  catchUpMonths Int @default(1) @map("catch_up_months")
+
+  // Qattiq pol: bu oydan oldin hech qachon hisob-faktura shakllanmaydi —
+  // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
+  firstInvoiceMonth Int? @map("first_invoice_month")
+
+  // Cron watermark'i — FAQAT UI uchun. To'g'rilik bunga tayanmaydi:
+  // idempotentlik @@unique([studentId, month]) da.
+  lastRunAt          DateTime? @map("last_run_at")
+  lastGeneratedMonth Int?      @map("last_generated_month")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("finance_settings")
+}
+
+// O'quvchining moliyaviy holati — DAVR jadvali, StudentTariff bilan bir xil
+// shakl. QATOR YO'Q = FAOL: faqat istisnolar (muzlatish/chetlatish) yoziladi,
+// shuning uchun jadval kichik qoladi va cron'ning istisno so'rovi arzon.
+model StudentFinanceStatus {
+  id String @id @db.Char(24)
+  // soft ref → User (role = "student"). FK YO'Q — moliyaviy tarix o'quvchi
+  // arxivlansa/o'chirilsa ham qolishi kerak (StudentTariff uslubi).
+  studentId String @map("student_id") @db.Char(24)
+
+  status     StudentFinanceStatusEnum
+  startMonth Int                      @map("start_month")
+  // null → ochiq davr. startMonth === endMonth → faqat o'sha oy.
+  endMonth   Int?                     @map("end_month")
+
+  // "Nima uchun muzlatildi" — auditning yagona matnli manbasi
+  reason String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Kesishuv tekshiruvi service'da; poyga holatidagi HAQIQIY kafolat — shu.
+  @@unique([studentId, startMonth])
+  @@index([studentId, startMonth(sort: Desc)])
+  // Cron: "shu oyni qamragan barcha qatorlar" — butun maktab bo'yicha bitta so'rov
+  @@index([startMonth, endMonth])
+  @@map("student_finance_statuses")
+}
+
+// Oylik to'lov majburiyati. Bu YOZILGAN FAKT — StudentTariff'dan tubdan farq
+// qiladi: biriktirish kelajakka qaragan qoida (narx saqlamaydi), hisob-faktura
+// esa o'tgan fakt, shuning uchun SNAPSHOT aynan shu yerda olinadi
+// (MarketOrder.productSnapshot uslubi).
+//
+// QAYTARILMASLIK: `amount` ni o'zgartiradigan endpoint YO'Q. Narx keyin
+// to'g'rilansa bu qatorga tegilmaydi — tuzatish keyingi oydan amal qiladi.
+// Yagona "o'chirish" — `cancelled` holati, sababi va aktyori bilan.
+model MonthlyInvoice {
+  id String @id @db.Char(24)
+
+  // soft ref → User. FK YO'Q: arxivlangan/o'chirilgan o'quvchining qarzi
+  // hisobotda qolishi SHART.
+  studentId String @map("student_id") @db.Char(24)
+  month     Int // YYYYMM, inklyuziv
+
+  // Chiqarilgan paytdagi akademik qoida snapshot'i: sozlama keyin o'zgarsa
+  // (9 → 11 oy), eski hisob-fakturalar o'z yorlig'ini saqlaydi.
+  academicYear  Int @map("academic_year") // davr boshlangan kalendar yil
+  academicIndex Int @map("academic_index") // 1..N ("9 oydan 3-si")
+
+  // Narx provenansiyasi. Nullable: qo'lda yaratilgan hisob-fakturada tarif
+  // bo'lmasligi mumkin.
+  tariffId        String? @map("tariff_id") @db.Char(24)
+  tariffVersionId String? @map("tariff_version_id") @db.Char(24)
+  // Nomi ALOHIDA saqlanadi: tarif qayta nomlansa ham o'tgan hisob-faktura
+  // yorlig'i o'zgarmaydi.
+  tariffName      String  @default("") @map("tariff_name")
+
+  // MUHRLANGAN summa — hech qachon qayta hisoblanmaydi
+  amount     Decimal @db.Decimal(14, 2)
+  // To'lovlar yig'indisi (denormalizatsiya): ro'yxatni qarz bo'yicha
+  // saralash/filtrlash har qator uchun agregatsiyasiz ishlashi kerak.
+  // Faqat tranzaksiya ichida increment/decrement bilan yangilanadi.
+  paidAmount Decimal @default(0) @map("paid_amount") @db.Decimal(14, 2)
+
+  status InvoiceStatus @default(unpaid)
+  source InvoiceSource @default(cron)
+
+  // { firstName, lastName, username, classId, className } — chiqarilgan
+  // paytdagi holat. O'quvchi qatori umuman bo'lmasa ham hisobot ko'rsatiladi.
+  studentSnapshot Json @map("student_snapshot")
+
+  note String @default("")
+
+  cancelReason String    @default("") @map("cancel_reason")
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelledBy  String?   @map("cancelled_by") @db.Char(24)
+
+  // To'liq yopilgan payt
+  paidAt DateTime? @map("paid_at")
+
+  // null = tizim (cron); qiymat bo'lsa — qo'lda shakllantirgan admin
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  payments InvoicePayment[]
+
+  // IDEMPOTENTLIK: cron qayta ishga tushishi, ikkita instans, admin'ning qo'lda
+  // urinishi — hammasi shu bilan xavfsiz.
+  @@unique([studentId, month])
+  // "2026-09, to'lanmaganlar" — asosiy admin ekrani
+  @@index([month, status])
+  // O'quvchi kartasi va student self endpoint
+  @@index([studentId, month(sort: Desc)])
+  // "Barcha qarzdorlar" (oylar bo'ylab)
+  @@index([status, month])
+  // academicYear bo'yicha indeks YO'Q: o'quv yili oylari uzluksiz, ya'ni filtr
+  // `month: {gte, lte}` ga aylantiriladi va [month, status] ishlaydi.
+  // dueDate ham YO'Q: "muddati o'tgan" = month < currentMonthKey() && status != paid.
+  @@map("monthly_invoices")
+}
+
+// To'lov — hisob-fakturaning EGALIK OSTIDAGI bolasi (TariffVersion→Tariff
+// uslubi), shuning uchun haqiqiy relation + Cascade.
+//
+// Append-only: summa/sana O'ZGARMAS. Xato to'lov `isVoided` bilan bekor
+// qilinadi, o'chirilmaydi — moliyaviy log yo'qolmasligi kerak.
+model InvoicePayment {
+  id        String @id @db.Char(24)
+  invoiceId String @map("invoice_id") @db.Char(24)
+  // Denormalizatsiya: "o'quvchining to'lov tarixi" va kunlik kassa hisoboti
+  // uchun katta invoices jadvaliga join qilmaslik.
+  studentId String @map("student_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2)
+  // Pul qachon olindi — domenda kun koordinatasi qonuniy bo'lgan yagona joy
+  paidAt DateTime @map("paid_at")
+
+  method PaymentMethod @default(cash)
+  note   String        @default("")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  invoice MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, paidAt])
+  @@index([studentId, paidAt(sort: Desc)])
+  // Kunlik/oylik kassa hisoboti (sana oralig'i bo'yicha)
+  @@index([paidAt])
+  @@map("invoice_payments")
 }
