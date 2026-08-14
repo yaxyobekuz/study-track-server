@@ -121,20 +121,20 @@ const assertNoVersionOverlap = async (tx, tariffId, period, excludeId = null) =>
 
   if (!conflict) return;
 
-  // Ochiq versiya bilan to'qnashuv — eng ko'p uchraydigan holat, shuning
-  // uchun alohida, nima qilish kerakligini aytadigan xabar.
-  if (conflict.endMonth == null) {
+  // Bir oydan boshlanadigan ikkita narx bo'lishi mumkin emas — bu yerda
+  // yangi versiya emas, mavjudini tahrirlash kerak.
+  if (conflict.startMonth === period.startMonth) {
     throw new BadRequestError(
-      `Tarifda ${formatMonthKey(conflict.startMonth)} dan boshlanadigan ochiq versiya bor. ` +
-        "Avval uni yoping yoki avtomatik yopishni yoqing.",
+      `${formatMonthKey(period.startMonth)} oyidan boshlanadigan narx allaqachon bor — ` +
+        "yangi versiya qo'shish o'rniga o'shani tahrirlang",
     );
   }
 
   throw new BadRequestError(
-    `Bu davr uchun tarifda boshqa versiya mavjud (${formatMonthRange(
+    `Bu davr uchun tarifda boshqa narx belgilangan (${formatMonthRange(
       conflict.startMonth,
       conflict.endMonth,
-    )})`,
+    )}). Tugash oyini ko'rsating yoki o'sha versiyani tahrirlang.`,
   );
 };
 
@@ -449,12 +449,18 @@ const getVersions = async (tariffId, req) => {
 };
 
 /**
- * Yangi narx versiyasi.
+ * Yangi narx versiyasi. Ikki yo'nalishda ham ishlaydi:
  *
- * Standart ssenariy — narxni ko'tarish: `startMonth` berilmasa keyingi oy
- * olinadi, va `autoCloseCurrent` (default true) ochiq versiyani
- * `startMonth - 1` da yopadi. Ikkalasi bitta tranzaksiyada, chunki oraliqda
- * tarif ikkita amaldagi narx bilan qolib ketmasligi kerak.
+ *  - OLDINGA (narxni ko'tarish): `startMonth` berilmasa keyingi oy olinadi,
+ *    va `autoCloseCurrent` (default true) undan oldin ochiq turgan versiyani
+ *    `startMonth - 1` da yopadi.
+ *  - ORQAGA (o'tgan davr narxini kiritish): `endMonth` berilmasa, u keyingi
+ *    versiya boshlanishidan bir oy oldin qilib avtomatik hisoblanadi.
+ *    Aks holda har bir yangi versiya "ochiq" bo'lib, mavjud ochiq versiya
+ *    bilan to'qnashaverardi.
+ *
+ * Hammasi bitta tranzaksiyada — oraliqda tarif ikkita amaldagi narx bilan
+ * qolib ketmasligi kerak.
  *
  * @param {string} tariffId
  * @param {object} data - { startMonth, endMonth, monthlyAmount, note, autoCloseCurrent }
@@ -465,29 +471,49 @@ const addVersion = async (tariffId, data, userId) => {
   const tariff = await prisma.tariff.findUnique({ where: { id: tariffId } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
-  const period = parsePeriod(data.startMonth, data.endMonth, {
-    defaultStart: nextMonth(currentMonthKey()),
-  });
+  const startMonth =
+    data.startMonth == null || data.startMonth === ""
+      ? nextMonth(currentMonthKey())
+      : parseMonthKey(data.startMonth, "Boshlanish oyi");
+
+  const explicitEnd = parseOptionalMonthKey(data.endMonth, "Tugash oyi");
+  if (explicitEnd != null && explicitEnd < startMonth) {
+    throw new BadRequestError(
+      "Tugash oyi boshlanish oyidan oldin bo'lishi mumkin emas",
+    );
+  }
+
   const monthlyAmount = parseAmount(data.monthlyAmount, "Oylik summa");
   const autoClose = data.autoCloseCurrent !== false;
+
+  let period = { startMonth, endMonth: explicitEnd };
 
   try {
     return await prisma.$transaction(async (tx) => {
       if (autoClose) {
-        // Yangi davr boshlanishidan oldin ochiq turgan versiyani yopamiz.
+        // Yangi davrdan OLDIN boshlangan ochiq versiyani yopamiz.
         const openVersion = await tx.tariffVersion.findFirst({
-          where: {
-            tariffId,
-            endMonth: null,
-            startMonth: { lt: period.startMonth },
-          },
+          where: { tariffId, endMonth: null, startMonth: { lt: startMonth } },
         });
 
         if (openVersion) {
           await tx.tariffVersion.update({
             where: { id: openVersion.id },
-            data: { endMonth: prevMonth(period.startMonth) },
+            data: { endMonth: prevMonth(startMonth) },
           });
+        }
+      }
+
+      // Tugash oyi ko'rsatilmagan bo'lsa — keyingi versiyagacha davom etadi.
+      // Shu yerda o'tgan davr uchun narx kiritish imkoni paydo bo'ladi.
+      if (period.endMonth == null) {
+        const nextVersion = await tx.tariffVersion.findFirst({
+          where: { tariffId, startMonth: { gt: startMonth } },
+          orderBy: { startMonth: "asc" },
+        });
+
+        if (nextVersion) {
+          period = { startMonth, endMonth: prevMonth(nextVersion.startMonth) };
         }
       }
 
@@ -508,7 +534,7 @@ const addVersion = async (tariffId, data, userId) => {
   } catch (error) {
     return rethrowDuplicate(
       error,
-      `Tarifda ${formatMonthKey(period.startMonth)} dan boshlanadigan versiya allaqachon bor`,
+      `Tarifda ${formatMonthKey(startMonth)} oyidan boshlanadigan versiya allaqachon bor — uni tahrirlang`,
     );
   }
 };
