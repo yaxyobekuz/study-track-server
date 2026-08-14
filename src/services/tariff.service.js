@@ -295,7 +295,6 @@ const createTariff = async (data, userId) => {
         data.initialVersion.monthlyAmount,
         "Oylik summa",
       ),
-      note: data.initialVersion.note?.trim() || "",
       createdBy: userId,
     };
   }
@@ -463,7 +462,7 @@ const getVersions = async (tariffId, req) => {
  * qolib ketmasligi kerak.
  *
  * @param {string} tariffId
- * @param {object} data - { startMonth, endMonth, monthlyAmount, note, autoCloseCurrent }
+ * @param {object} data - { startMonth, endMonth, monthlyAmount, autoCloseCurrent }
  * @param {string} userId
  * @returns {Promise<object>}
  */
@@ -524,7 +523,6 @@ const addVersion = async (tariffId, data, userId) => {
           tariffId,
           ...period,
           monthlyAmount,
-          note: data.note?.trim() || "",
           createdBy: userId,
         },
       });
@@ -551,7 +549,7 @@ const addVersion = async (tariffId, data, userId) => {
  *
  * @param {string} tariffId
  * @param {string} versionId
- * @param {object} data - { startMonth, endMonth, monthlyAmount, note }
+ * @param {object} data - { startMonth, endMonth, monthlyAmount }
  * @param {{force?: boolean, userId: string}} options
  * @returns {Promise<object>}
  */
@@ -566,8 +564,6 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
   const now = currentMonthKey();
   const isInEffect = version.startMonth <= now;
   const payload = {};
-
-  if (data.note !== undefined) payload.note = data.note?.trim() || "";
 
   if (data.monthlyAmount !== undefined) {
     const amount = parseAmount(data.monthlyAmount, "Oylik summa");
