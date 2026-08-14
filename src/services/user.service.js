@@ -45,7 +45,11 @@ async function getAllUsers(query) {
   const { role, class: classId, page = 1, limit = 24, search, archived } = query;
 
   const where = {};
-  if (role) where.role = role;
+  // "staff" — rol emas, guruh: o'quvchilardan boshqa hamma (admin paneldagi
+  // "Xodimlar" tabi shu bilan ishlaydi). Owner ham xodim — ro'yxatdan
+  // yo'qolmasligi uchun chiqarib tashlanmaydi.
+  if (role === "staff") where.role = { not: "student" };
+  else if (role) where.role = role;
   if (classId) where.classes = { some: { classId } };
 
   // Arxivlangan tab faqat arxivlanganlarni, Asosiy tab esa qolganlarni ko'rsatadi
@@ -400,7 +404,11 @@ async function restoreStudent(id) {
  */
 async function getUsersForExport(role) {
   const where = {};
-  if (role) {
+  // `getAllUsers` bilan bir xil qoida — "staff" guruhi ham eksport qilinadi.
+  // "all" — filtr yo'qligini bildiradi (UI shu qiymatni yuboradi).
+  if (role === "staff") {
+    where.role = { notIn: ["student", "owner"] };
+  } else if (role && role !== "all") {
     where.role = role;
   } else {
     where.role = { not: "owner" };
