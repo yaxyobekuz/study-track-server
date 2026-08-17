@@ -17,14 +17,15 @@ const {
   getMyFinance,
   getInvoices,
   getSummary,
+  getStudentRegistry,
   getStudentInvoices,
   getInvoice,
   generateInvoices,
   updateInvoice,
   cancelInvoice,
+  regenerateInvoice,
   restoreInvoice,
-  createPayment,
-  getPayments,
+  getInvoicePayments,
 } = require("../controllers/invoice.controller");
 
 // DIQQAT: router darajasida `authorizeSection` QO'YILMAYDI — o'quvchida moliya
@@ -37,14 +38,20 @@ router.get("/my", protect, authorize(ROLES.STUDENT), getMyFinance);
 
 // Aniq yo'llar `/:id` dan OLDIN
 router.get("/summary", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getSummary);
+// Kassirning asosiy ekrani — `/student/:studentId` dan oldin bo'lishi shart emas,
+// lekin `/:id` dan OLDIN
+router.get("/students", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentRegistry);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.FINANCE_GENERATE), generateInvoices);
 router.get("/student/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentInvoices);
 
 router.get("/", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getInvoices);
 
-router.post("/:id/payments", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_PAY), createPayment);
-router.get("/:id/payments", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getPayments);
+// To'lov QABUL QILISH bu yerda emas — `POST /api/payments` (o'quvchiga
+// bitta summa, tizim oylarga taqsimlaydi).
+router.get("/:id/payments", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getInvoicePayments);
 router.post("/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_CANCEL), cancelInvoice);
+// Bekor qilib qayta yaratish — tarixni qayta yozish
+router.post("/:id/regenerate", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_ADJUST), regenerateInvoice);
 router.post("/:id/restore", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_ADJUST), restoreInvoice);
 
 router.get("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getInvoice);

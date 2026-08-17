@@ -1,7 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const invoiceService = require("../services/invoice.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
-const invoicePaymentService = require("../services/invoicePayment.service");
+const paymentService = require("../services/payment.service");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
@@ -34,6 +34,12 @@ const getInvoices = asyncHandler(async (req, res) => {
 const getSummary = asyncHandler(async (req, res) => {
   const data = await invoiceService.getSummary(req.query.month);
   res.json({ success: true, data });
+});
+
+/** Kassirning asosiy ekrani — o'quvchilar kesimida tarif, depozit va qarz. */
+const getStudentRegistry = asyncHandler(async (req, res) => {
+  const result = await invoiceService.getStudentRegistry(req);
+  res.json(result);
 });
 
 const getStudentInvoices = asyncHandler(async (req, res) => {
@@ -107,19 +113,27 @@ const restoreInvoice = asyncHandler(async (req, res) => {
   res.json({ success: true, data: invoice });
 });
 
-// ── To'lovlar (hisob-faktura ichida) ─────────
-
-const createPayment = asyncHandler(async (req, res) => {
-  const result = await invoicePaymentService.createPayment(
+/**
+ * Chegirma kech qo'shilganda yoki tarif narxi xato kiritilganda: summa
+ * muhrlangani uchun uni tahrirlab bo'lmaydi, shuning uchun bekor qilib
+ * qayta yaratiladi. Bu tarixni qayta yozish — `finance.adjust` talab qilinadi
+ * (route darajasida).
+ */
+const regenerateInvoice = asyncHandler(async (req, res) => {
+  const invoice = await invoiceService.regenerateInvoice(
     req.params.id,
-    req.body,
+    req.body.reason,
     req.user.id,
   );
-  res.status(201).json({ success: true, data: result });
+  res.json({ success: true, data: invoice });
 });
 
-const getPayments = asyncHandler(async (req, res) => {
-  const payments = await invoicePaymentService.getInvoicePayments(req.params.id, {
+// ── Hisob-fakturaga tushgan to'lovlar ────────
+// To'lov QABUL QILISH bu yerda emas: kassir o'quvchiga bitta summa
+// kiritadi va tizim uni oylarga taqsimlaydi → `POST /api/payments`.
+
+const getInvoicePayments = asyncHandler(async (req, res) => {
+  const payments = await paymentService.getInvoiceAllocations(req.params.id, {
     includeVoided: req.query.includeVoided === "true",
   });
   res.json({ success: true, data: payments });
@@ -129,12 +143,13 @@ module.exports = {
   getMyFinance,
   getInvoices,
   getSummary,
+  getStudentRegistry,
   getStudentInvoices,
   getInvoice,
   generateInvoices,
   updateInvoice,
   cancelInvoice,
+  regenerateInvoice,
   restoreInvoice,
-  createPayment,
-  getPayments,
+  getInvoicePayments,
 };
