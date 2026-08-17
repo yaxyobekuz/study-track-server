@@ -235,6 +235,22 @@ enum PaymentMethod {
   other
 }
 
+// Changelog yozuvi qaysi panelga tegishli — har biri o'z versiyasiga ega.
+enum ChangelogPanel {
+  admin
+  teacher
+  student
+  server
+  bot
+}
+
+// O'zgarishning kattaligi — versiya shu asosda oshadi.
+enum ChangelogBump {
+  major // katta — yirik o'zgarish
+  minor // o'rtacha — yangi imkoniyat
+  patch // kichik — tuzatish
+}
+
 // ─────────────────────────────────────────────
 // FOYDALANUVCHI VA ROLLAR
 // ─────────────────────────────────────────────
@@ -1759,4 +1775,138 @@ model InvoicePayment {
   // Kunlik/oylik kassa hisoboti (sana oralig'i bo'yicha)
   @@index([paidAt])
   @@map("invoice_payments")
+}
+
+// ─────────────────────────────────────────────
+// O'ZGARISHLAR TARIXI (release notes)
+// ─────────────────────────────────────────────
+// Bitta yozuv = bitta panel + bitta kun. Bir kunda admin va server ustida
+// ishlansa — IKKI yozuv bo'ladi (UI da sana bo'yicha guruhlanadi).
+//
+// Versiya har panel uchun MUSTAQIL o'sadi va monoton: o'tgan sanaga yozuv
+// qo'shilsa ham, keyingi versiya shu panelning ENG YUQORI versiyasidan olinadi
+// (sana bo'yicha oxirgisidan emas).
+model Changelog {
+  id String @id @db.Char(24)
+
+  panel ChangelogPanel
+  // Kun. Service UTC yarim tuniga normallashtiradi (soat saqlanmaydi) —
+  // @@unique([date, panel, seq]) shunga tayanadi.
+  date  DateTime
+  // Bir kun ichidagi reliz raqami. Odatda 1; o'sha kuni o'sha panelga
+  // ikkinchi marta reliz chiqarilsa 2, 3... Fayl nomida ham shunday:
+  // "2026-08-17-admin.md" → 1, "2026-08-17-admin-2.md" → 2.
+  seq   Int           @default(1)
+
+  // Ko'rsatiladigan qiymat ("1.4.2"). major/minor/patch — yagona haqiqat manbai;
+  // `version` denormalizatsiya (UI va unique cheklov uchun).
+  version String
+  // Alohida Int'lar tartiblash uchun shart: "0.10.0" satr sifatida "0.9.0" dan
+  // KICHIK chiqadi, ya'ni `version` bo'yicha ORDER BY noto'g'ri ishlaydi.
+  major   Int
+  minor   Int
+  patch   Int
+  // Qaysi darajada o'zgargani — auditda "versiya nega shunday sakradi".
+  bump    ChangelogBump @default(patch)
+
+  title String   @default("")
+  // Har element — bitta o'zgarish satri (markdown bullet'idan tozalangan).
+  items String[] @default([])
+  // "Nega kerak edi" izohi (ixtiyoriy).
+  notes String   @default("")
+
+  // Import qilingan fayl nomi ("2026-08-17-admin.md"). Qo'lda yaratilganda null.
+  // FAQAT audit uchun — kalit sifatida ISHLATILMAYDI (kalit: date + panel).
+  sourceFile String?  @map("source_file")
+  createdBy  String?  @map("created_by") @db.Char(24)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Import idempotentligining KAFOLATI — qayta yuklash dublikat yaratmaydi.
+  // `seq` bilan birga: bir kunda bir panelga bir nechta reliz chiqarish mumkin,
+  // lekin ayni reliz qayta yuklanganda mavjudi yangilanadi.
+  @@unique([date, panel, seq])
+  // Poyga holatida bir xil versiya ikki marta yozilishining oldini oladi.
+  @@unique([panel, version])
+  // "Shu panelning eng yuqori versiyasi" — bitta indeks o'qish.
+  @@index([panel, major(sort: Desc), minor(sort: Desc), patch(sort: Desc)])
+  @@index([date(sort: Desc)])
+  @@map("changelogs")
+}
+
+enum ChangelogNotificationKind {
+  daily // har kuni ertalab — kechagi kun hisoboti
+  weekly // dushanba — o'tgan hafta yig'masi
+  manual // admin paneldan qo'lda yuborilgan
+}
+
+enum ChangelogNotificationStatus {
+  sent
+  failed
+}
+
+// Changelog Telegram xabarnomalari — singleton sozlama.
+// HAR BIR maydonda @default bor: settings.service.js dagi yalang'och
+// upsert({ where:{id:"singleton"}, create:{id:"singleton"}, update:{} }) ishlashi uchun.
+// (config/prisma.js dagi auto-id extension id'si default'li modellarni o'tkazib yuboradi.)
+model ChangelogSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // Kunlik xabar. Standart false — chat qo'shilgach ataylab yoqiladi.
+  dailyEnabled Boolean @default(false) @map("daily_enabled")
+
+  // Asia/Tashkent devor soati, "HH:mm". Cron IFODASIDA emas, HANDLER'da
+  // o'qiladi: cron ifodasi startup'da qotib qoladi, sozlama esa o'zgaradi.
+  sendTime String @default("09:00") @map("send_time")
+
+  // Haftalik yig'ma (dushanba, o'sha sendTime da)
+  weeklyEnabled Boolean @default(false) @map("weekly_enabled")
+
+  // [{ chatId, label, isActive }] — ScheduleSettings.periods va
+  // PremiumSettings.allowedNameColors bilan bir xil naqsh: kichik, butunligicha
+  // o'qiladigan/yoziladigan ro'yxat, alohida jadval ortiqcha.
+  recipients Json @default("[]")
+
+  // IDEMPOTENTLIK KAFOLATI. Changelog.date bilan bir xil shakl (UTC yarim tuni),
+  // shuning uchun to'g'ridan-to'g'ri taqqoslanadi. Yuborishdan OLDIN shartli
+  // updateMany bilan "egallanadi" — ikkita instans bir kunni ikki marta yubormaydi.
+  lastDailySentDate DateTime? @map("last_daily_sent_date")
+  lastDailySentAt   DateTime? @map("last_daily_sent_at")
+  lastWeeklySentAt  DateTime? @map("last_weekly_sent_at")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("changelog_settings")
+}
+
+// Yuborish jurnali — har bir chat uchun alohida qator.
+// Busiz xatolar jimgina yo'qoladi (bot bloklangan, chatdan chiqarilgan va h.k.).
+model ChangelogNotification {
+  id String @id @db.Char(24)
+
+  kind   ChangelogNotificationKind   @default(daily)
+  status ChangelogNotificationStatus
+
+  // Kunlik/qo'lda → coverageDate; haftalik → coverageFrom/To
+  coverageDate DateTime? @map("coverage_date")
+  coverageFrom DateTime? @map("coverage_from")
+  coverageTo   DateTime? @map("coverage_to")
+
+  // Nom qatorning o'zida saqlanadi — qabul qiluvchi keyin o'chirilsa ham
+  // jurnal o'qiladigan bo'lib qoladi.
+  chatId String @map("chat_id")
+  label  String @default("")
+
+  entryCount   Int     @default(0) @map("entry_count")
+  messageCount Int     @default(0) @map("message_count")
+  errorMessage String? @map("error_message")
+
+  sentBy    String?  @map("sent_by") @db.Char(24) // qo'lda yuborilganda
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([kind, coverageDate])
+  @@map("changelog_notifications")
 }
