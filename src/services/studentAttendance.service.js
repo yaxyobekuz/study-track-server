@@ -318,18 +318,35 @@ async function getStudentMonthRecords(studentId, month, year) {
     orderBy: { date: "asc" },
   });
 
-  // class — soft ref, qo'lda yuklaymiz
+  // class va absenceReason — soft ref'lar, qo'lda yuklaymiz
   const classIds = [...new Set(rows.map((r) => r.classId).filter(Boolean))];
-  const classes = classIds.length
-    ? await prisma.class.findMany({
-        where: { id: { in: classIds } },
-        select: { id: true, name: true },
-      })
-    : [];
+  const reasonIds = [
+    ...new Set(rows.map((r) => r.absenceReason).filter(Boolean)),
+  ];
+
+  const [classes, reasons] = await Promise.all([
+    classIds.length
+      ? prisma.class.findMany({
+          where: { id: { in: classIds } },
+          select: { id: true, name: true },
+        })
+      : [],
+    reasonIds.length
+      ? prisma.absenceReason.findMany({
+          where: { id: { in: reasonIds } },
+          select: { id: true, title: true },
+        })
+      : [],
+  ]);
+
   const classMap = new Map(classes.map((c) => [c.id, c]));
+  const reasonMap = new Map(reasons.map((r) => [r.id, r]));
   const records = rows.map((r) => ({
     ...r,
     class: r.classId ? classMap.get(r.classId) || null : null,
+    absenceReason: r.absenceReason
+      ? reasonMap.get(r.absenceReason) || null
+      : null,
   }));
 
   const summary = { present: 0, late: 0, absent: 0, excused: 0 };

@@ -416,20 +416,37 @@ async function getMyHistory(userId, month, year) {
     orderBy: { date: "asc" },
   });
 
-  // penaltyRef — soft ref, qo'lda yuklaymiz
+  // penaltyRef va absenceReason — soft ref'lar, qo'lda yuklaymiz
   const penaltyIds = [
     ...new Set(records.map((r) => r.penaltyRef).filter(Boolean)),
   ];
-  const penalties = penaltyIds.length
-    ? await prisma.penalty.findMany({
-        where: { id: { in: penaltyIds } },
-        select: { id: true, title: true, points: true, status: true },
-      })
-    : [];
+  const reasonIds = [
+    ...new Set(records.map((r) => r.absenceReason).filter(Boolean)),
+  ];
+
+  const [penalties, reasons] = await Promise.all([
+    penaltyIds.length
+      ? prisma.penalty.findMany({
+          where: { id: { in: penaltyIds } },
+          select: { id: true, title: true, points: true, status: true },
+        })
+      : [],
+    reasonIds.length
+      ? prisma.absenceReason.findMany({
+          where: { id: { in: reasonIds } },
+          select: { id: true, title: true },
+        })
+      : [],
+  ]);
+
   const penaltyMap = new Map(penalties.map((p) => [p.id, p]));
+  const reasonMap = new Map(reasons.map((r) => [r.id, r]));
   const recordsWithPenalty = records.map((r) => ({
     ...r,
     penaltyRef: r.penaltyRef ? penaltyMap.get(r.penaltyRef) || null : null,
+    absenceReason: r.absenceReason
+      ? reasonMap.get(r.absenceReason) || null
+      : null,
   }));
 
   const summary = {
