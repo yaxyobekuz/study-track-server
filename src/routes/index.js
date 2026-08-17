@@ -41,7 +41,11 @@ const studentTariffRoutes = require("./studentTariff.routes");
 const financeSettingsRoutes = require("./financeSettings.routes");
 const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
 const invoiceRoutes = require("./invoice.routes");
-const invoicePaymentRoutes = require("./invoicePayment.routes");
+const paymentRoutes = require("./payment.routes");
+const paymentAccountRoutes = require("./paymentAccount.routes");
+const studentAccountRoutes = require("./studentAccount.routes");
+const discountRoutes = require("./discount.routes");
+const vacationMonthRoutes = require("./vacationMonth.routes");
 const changelogRoutes = require("./changelog.routes");
 const changelogSettingsRoutes = require("./changelogSettings.routes");
 
@@ -84,7 +88,11 @@ router.use("/student-tariffs", studentTariffRoutes);
 router.use("/finance-settings", financeSettingsRoutes);
 router.use("/student-finance-statuses", studentFinanceStatusRoutes);
 router.use("/invoices", invoiceRoutes);
-router.use("/invoice-payments", invoicePaymentRoutes);
+router.use("/payments", paymentRoutes);
+router.use("/payment-accounts", paymentAccountRoutes);
+router.use("/student-accounts", studentAccountRoutes);
+router.use("/discounts", discountRoutes);
+router.use("/vacation-months", vacationMonthRoutes);
 router.use("/changelogs", changelogRoutes);
 router.use("/changelog-settings", changelogSettingsRoutes);
 

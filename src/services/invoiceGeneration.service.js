@@ -26,10 +26,17 @@ const {
   nextMonth,
 } = require("../helpers/month.helpers");
 const { parseAmount, formatAmount, sumAmounts } = require("../helpers/money.helpers");
-const { describeAcademicMonth } = require("../helpers/academicYear.helpers");
+const {
+  describeAcademicMonth,
+  describeBillableMonth,
+} = require("../helpers/academicYear.helpers");
+const { applyDiscounts } = require("../helpers/discount.helpers");
 const { getFinanceSettings } = require("./settings.service");
 const { resolveManyForMonth, REASONS } = require("./tariffResolution.service");
 const { resolveStatusesForMonth, NON_BILLABLE } = require("./studentFinanceStatus.service");
+const { resolveDiscountsForMonth } = require("./studentDiscount.service");
+const { getVacationSet } = require("./vacationMonth.service");
+const { applyDepositsForStudents } = require("./studentAccount.service");
 
 // `details` ro'yxatlari cheksiz o'smasin — admin uchun 200 ta ism yetarli
 const DETAILS_LIMIT = 200;
@@ -40,6 +47,10 @@ const CHUNK_SIZE = 1000;
 const SKIP_REASONS = {
   NOT_ACADEMIC: "not_academic",
   BEFORE_FIRST_INVOICE_MONTH: "before_first_invoice_month",
+  // Ta'til — akademik oyna ICHIDAGI istisno, shuning uchun alohida sabab:
+  // admin ekranida "2027-01 akademik oy emas" emas, "2027-01 — ta'til"
+  // yozilishi kerak.
+  VACATION: "vacation",
 };
 
 const fullNameOf = (student) =>
@@ -64,6 +75,8 @@ const emptySummary = (month, settings, reason) => ({
   eligible: 0,
   created: 0,
   totalAmount: "0.00",
+  discountTotal: "0.00",
+  depositApplied: "0.00",
   skipped: { alreadyExists: 0, frozen: 0, expelled: 0, noTariff: 0, noPrice: 0 },
   details: { frozen: [], expelled: [], noTariff: [], noPrice: [], wouldCreate: [], truncated: false },
 });
@@ -108,6 +121,16 @@ const generateForMonth = async (monthInput, options = {}) => {
   if (settings.firstInvoiceMonth != null && month < settings.firstInvoiceMonth) {
     return emptySummary(month, settings, SKIP_REASONS.BEFORE_FIRST_INVOICE_MONTH);
   }
+
+  // Ta'til — butun maktabga: hech kimga majburiyat yozilmaydi
+  const vacationSet = await getVacationSet(academic.academicYear);
+  if (vacationSet.has(month)) {
+    return emptySummary(month, settings, SKIP_REASONS.VACATION);
+  }
+
+  // Ota-ona ko'radigan "8 oydan 5-si" — ta'til oylari chegirilgan holda,
+  // va u ham SNAPSHOT: keyin qo'shilgan ta'til bu yorliqni o'zgartirmaydi.
+  const billableMonth = describeBillableMonth(month, settings, vacationSet);
 
   // ── 1. O'quvchilar ────────────────────────
   // `isActive` ATAYLAB filtrlanmaydi: u login bayrog'i, o'qishga yozilish emas.
@@ -172,9 +195,10 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   const billableIds = billable.map((s) => s.id);
 
-  // ── 3. Narx va 4. mavjud hisob-fakturalar ─
-  const [{ byStudent }, existing] = await Promise.all([
+  // ── 3. Narx, chegirma va 4. mavjud hisob-fakturalar ─
+  const [{ byStudent }, discountsByStudent, existing] = await Promise.all([
     resolveManyForMonth(month, { studentIds: billableIds }),
+    resolveDiscountsForMonth(month, { studentIds: billableIds }),
     prisma.monthlyInvoice.findMany({
       where: { month, studentId: { in: billableIds } },
       select: { studentId: true },
@@ -187,6 +211,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   // ── 5. Qatorlarni yig'ish ─────────────────
   const rows = [];
   const amounts = [];
+  const discountAmounts = [];
 
   for (const student of billable) {
     if (existingIds.has(student.id)) {
@@ -216,13 +241,24 @@ const generateForMonth = async (monthInput, options = {}) => {
     }
 
     const item = resolved.items[0];
-    const amount = parseAmount(resolved.total, "Oylik summa");
+    const baseAmount = parseAmount(resolved.total, "Oylik summa");
+
+    // Chegirma AYNAN shu yerda qo'llanadi va natijasi muhrlanadi: keyin
+    // chegirma o'zgarsa ham bu oy summasi qimirlamaydi.
+    const discounted = applyDiscounts(baseAmount, discountsByStudent.get(student.id) ?? [], {
+      maxPercent: settings.maxDiscountPercent,
+    });
+
+    const amount = discounted.finalAmount;
     amounts.push(amount);
+    discountAmounts.push(discounted.discountAmount);
 
     const klass = student.classes[0]?.class ?? null;
 
-    // Nol summali grant tarifi darhol "to'langan" bo'ladi — qamrov to'liq
-    // qoladi, uydirma qarz yaralmaydi.
+    // Nol summali hisob-faktura darhol "to'langan" bo'ladi — qamrov to'liq
+    // qoladi, uydirma qarz yaralmaydi. Bu `noPrice` skip'idan TUBDAN farq
+    // qiladi: u yerda 0 yolg'on edi, bu yerda 0 (100% chegirma yoki grant
+    // tarifi) — haqiqat.
     const isZero = amount.isZero();
 
     rows.push({
@@ -230,9 +266,14 @@ const generateForMonth = async (monthInput, options = {}) => {
       month,
       academicYear: academic.academicYear,
       academicIndex: academic.academicIndex,
+      billableIndex: billableMonth.billableIndex,
+      billableMonthCount: billableMonth.billableMonthCount,
       tariffId: item.tariff.id,
       tariffVersionId: item.version.id,
       tariffName: item.tariff.name,
+      baseAmount,
+      discountAmount: discounted.discountAmount,
+      discountSnapshot: discounted.snapshot.length ? discounted.snapshot : null,
       amount,
       paidAmount: 0,
       status: isZero ? "paid" : "unpaid",
@@ -252,13 +293,17 @@ const generateForMonth = async (monthInput, options = {}) => {
       pushDetail("wouldCreate", {
         studentId: student.id,
         fullName: fullNameOf(student),
+        baseAmount: formatAmount(baseAmount),
+        discountAmount: formatAmount(discounted.discountAmount),
         amount: formatAmount(amount),
         tariffName: item.tariff.name,
+        discounts: discounted.snapshot.map((d) => d.name),
       });
     }
   }
 
   summary.totalAmount = formatAmount(sumAmounts(amounts));
+  summary.discountTotal = formatAmount(sumAmounts(discountAmounts));
 
   // ── 6. Yozish ─────────────────────────────
   if (!dryRun && rows.length > 0) {
@@ -271,6 +316,20 @@ const generateForMonth = async (monthInput, options = {}) => {
     }
   } else if (dryRun) {
     summary.created = rows.length;
+  }
+
+  // ── 7. Depozitni qo'llash ─────────────────
+  // Oldindan to'lab qo'ygan o'quvchining yangi hisob-fakturasi darhol
+  // yopiladi. ALOHIDA va IDEMPOTENT qadam: yarim bajarilgan pass qayta
+  // ishga tushirilsa ham dublikat bermaydi, chunki sharti "qoldiq > 0 va
+  // ochiq hisob-faktura bor".
+  if (!dryRun && summary.created > 0 && settings.depositAutoApply) {
+    const deposits = await applyDepositsForStudents(
+      rows.map((row) => row.studentId),
+    );
+    summary.depositApplied = deposits.applied;
+    summary.depositStudents = deposits.students;
+    if (deposits.failed.length) summary.depositFailed = deposits.failed;
   }
 
   summary.durationMs = Date.now() - startedAt;
