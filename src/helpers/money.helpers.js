@@ -16,7 +16,7 @@
  */
 
 const { Prisma } = require("../generated/prisma");
-const { BadRequestError } = require("../utils/errors");
+const { BadRequestError, InternalServerError } = require("../utils/errors");
 
 const { Decimal } = Prisma;
 
@@ -104,12 +104,98 @@ function applyPercent(amount, percent) {
     .toDecimalPlaces(AMOUNT_SCALE, Decimal.ROUND_HALF_UP);
 }
 
+/**
+ * Ishorali summa — kassa daftari (`AccountEntry.amount`) uchun: + kirim, − chiqim.
+ *
+ * `parseAmount` manfiyni rad etadi, shuning uchun daftarga yozadigan kod
+ * yo money helper'ini butunlay chetlab o'tardi (float qaytib keladigan
+ * birinchi joy), yo uni noqulay o'rab ishlatardi.
+ *
+ * @param {string|number|Prisma.Decimal} value
+ * @param {string} label
+ * @returns {Prisma.Decimal}
+ * @throws {BadRequestError}
+ */
+function parseSignedAmount(value, label = "Summa") {
+  if (value == null || value === "") {
+    throw new BadRequestError(`${label} kiritilmagan`);
+  }
+
+  let amount;
+  try {
+    amount = new Decimal(value);
+  } catch {
+    throw new BadRequestError(`${label} noto'g'ri formatda`);
+  }
+
+  if (!amount.isFinite()) {
+    throw new BadRequestError(`${label} noto'g'ri formatda`);
+  }
+  if (amount.decimalPlaces() > AMOUNT_SCALE) {
+    throw new BadRequestError(
+      `${label} ${AMOUNT_SCALE} xonagacha kasr bo'lishi kerak`,
+    );
+  }
+  if (amount.abs().greaterThan(MAX_AMOUNT)) {
+    throw new BadRequestError(`${label} juda katta`);
+  }
+
+  return amount;
+}
+
+/**
+ * Kassa daftaridagi ishora — KELISHUV emas, INVARIANT.
+ *
+ * `payment` musbat, `payment_void` manfiy bo'lishi tipdan kelib chiqadi;
+ * teskarisi yozilsa hisob qoldig'i jimgina buziladi va buni faqat
+ * financeReconcile job kechqurun topardi. Shuning uchun yozish paytida
+ * tekshiriladi.
+ *
+ * `adjustment` — yagona istisno: sanoq farqi ikkala tomonga ham bo'lishi mumkin.
+ */
+const ENTRY_SIGNS = {
+  payment: 1,
+  payment_void: -1,
+  transfer_in: 1,
+  transfer_out: -1,
+  refund: -1,
+  refund_void: 1,
+  adjustment: 0, // ± ikkalasi ham qonuniy
+};
+
+/**
+ * @param {string} type - AccountEntryType
+ * @param {Prisma.Decimal} amount - ishorali
+ * @throws {InternalServerError} - bu foydalanuvchi xatosi emas, kod xatosi
+ */
+function assertSignMatchesType(type, amount) {
+  const expected = ENTRY_SIGNS[type];
+
+  if (expected === undefined) {
+    throw new InternalServerError(`Kassa yozuvi turi noma'lum: ${type}`);
+  }
+  if (amount.isZero()) {
+    throw new InternalServerError("Kassa yozuvi summasi nol bo'lishi mumkin emas");
+  }
+  if (expected === 0) return;
+
+  const actual = amount.isNegative() ? -1 : 1;
+  if (actual !== expected) {
+    throw new InternalServerError(
+      `Kassa yozuvi ishorasi turiga mos emas: ${type} → ${amount.toFixed(AMOUNT_SCALE)}`,
+    );
+  }
+}
+
 module.exports = {
   Decimal,
   MAX_AMOUNT,
   AMOUNT_SCALE,
+  ENTRY_SIGNS,
   parseAmount,
+  parseSignedAmount,
   formatAmount,
   sumAmounts,
   applyPercent,
+  assertSignMatchesType,
 };
