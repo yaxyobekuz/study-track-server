@@ -47,6 +47,9 @@ const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
 const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
+const {
+  startChangelogNotificationCron,
+} = require("./src/jobs/changelogNotification.job");
 
 // ================================
 
@@ -131,6 +134,7 @@ const bootstrap = async () => {
   startSeasonStatusCron();
   startPremiumExpiryCron();
   startInvoiceGenerationCron();
+  startChangelogNotificationCron();
 
   const server = app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);

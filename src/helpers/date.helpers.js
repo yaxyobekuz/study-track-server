@@ -13,6 +13,29 @@ const getNowInUzbekistan = () => {
 };
 
 /**
+ * Toshkent devor-soati bo'yicha kunni UTC yarim tunidagi Date qilib qaytaradi.
+ *
+ * `Changelog.date` aynan shu shaklda saqlanadi (changelogMarkdown.helpers.js
+ * dagi `normalizeDate`), `@@unique([date, panel])` shunga tayanadi.
+ *
+ * DIQQAT — bu yerda ikkita tipik xato bor:
+ *  1. `Date.now() - 86400000` NOTO'G'RI: 09:00 Toshkent = 04:00 UTC, ya'ni
+ *     O'SHA kalendar kun. Bir sutka ayirish kunni ikki marta orqaga suradi.
+ *  2. `getDateRangeForDay()` ham to'g'ri kelmaydi: u `setHours` bilan
+ *     server-lokal ishlaydi va host UTC+5 bo'lmasa bir kunga adashadi.
+ *
+ * @param {number} offsetDays 0 = bugun, -1 = kecha
+ * @returns {Date} UTC yarim tuni
+ */
+const getTashkentDateUtc = (offsetDays = 0) => {
+  const nowUz = getNowInUzbekistan(); // lokal getterlari Toshkent soatini o'qiydi
+  // Date.UTC oy/yil chegarasini o'zi normallashtiradi (0 → oldingi oyning oxiri)
+  return new Date(
+    Date.UTC(nowUz.getFullYear(), nowUz.getMonth(), nowUz.getDate() + offsetDays),
+  );
+};
+
+/**
  * Bugungi kun nomini qaytaradi (o'zbek tilida)
  * @returns {string} Kun nomi (masalan: "dushanba")
  */
@@ -170,6 +193,7 @@ const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => 
 
 module.exports = {
   getNowInUzbekistan,
+  getTashkentDateUtc,
   getCurrentDayUz,
   getDayNameUz,
   getDateRangeForDay,
