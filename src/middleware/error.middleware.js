@@ -15,8 +15,13 @@ const errorHandler = (err, req, res, next) => {
     timestamp: new Date().toISOString(),
   });
 
-  // Mongoose validation error
-  if (err.name === "ValidationError") {
+  // Mongoose validation error.
+  // DIQQAT: `err.errors` sharti majburiy. Loyihaning o'z `ValidationError`
+  // sinfi (utils/errors.js) ham shu nomni ishlatadi, lekin unda `errors`
+  // maydoni yo'q — shartsiz `Object.values(err.errors)` bu yerda TypeError
+  // otib, xato ishlovchisining o'zini yiqitardi va mijoz 400 o'rniga bo'sh
+  // tanali 500 olardi (`validateObjectId` ishlatgan HAR BIR route'da).
+  if (err.name === "ValidationError" && err.errors) {
     const errors = Object.values(err.errors).map((e) => e.message);
     return res.status(400).json({
       success: false,
