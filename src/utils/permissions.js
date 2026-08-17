@@ -29,6 +29,7 @@ const SECTIONS = {
   PREMIUM: "premium",
   COINS: "coins",
   TARIFFS: "tariffs",
+  DISCOUNTS: "discounts",
   FINANCE: "finance",
   HOLIDAYS: "holidays",
   MONITORS: "monitors",
@@ -221,9 +222,27 @@ const PERMISSION_SECTIONS = [
     ],
   },
   {
+    // Chegirmalar tariflardan alohida: narx katalogini boshqaradigan xodim
+    // "kimga qancha chegirma" degan qarorni ham qabul qila olmasligi kerak.
+    key: SECTIONS.DISCOUNTS,
+    label: "Chegirmalar",
+    group: "Moliya",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      { key: "assign", label: "O'quvchiga biriktirish" },
+    ],
+  },
+  {
     // Tariflardan ALOHIDA bo'lim: narxlarni ko'rish huquqi butun qarzdorlik
     // registrini ochib bermasligi, kassir esa tarif katalogini boshqarish
     // huquqini olmasligi kerak.
+    //
+    // Amallar ATAYLAB mayda: kassir `pay` oladi, lekin `void`/`refund`/
+    // `transfer`/`accounts` OLMAYDI — bularning har biri pulni ota-onasiz
+    // harakatlantiradi.
     key: SECTIONS.FINANCE,
     label: "Hisob-fakturalar va to'lovlar",
     group: "Moliya",
@@ -231,9 +250,13 @@ const PERMISSION_SECTIONS = [
       A.view,
       { key: "generate", label: "Hisob-faktura shakllantirish" },
       { key: "pay", label: "To'lov qabul qilish" },
+      { key: "void", label: "To'lovni bekor qilish" },
+      { key: "refund", label: "Depozitni qaytarish" },
       { key: "status", label: "O'quvchi moliyaviy holati" },
       { key: "cancel", label: "Hisob-fakturani bekor qilish" },
       { key: "adjust", label: "Amaldagi yozuvni to'g'rilash" },
+      { key: "accounts", label: "Kassalarni boshqarish" },
+      { key: "transfer", label: "Hisoblar orasida o'tkazma" },
       A.export,
       A.settings,
     ],
