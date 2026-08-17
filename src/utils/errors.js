@@ -64,6 +64,23 @@ class BadRequestError extends Error {
 }
 
 /**
+ * Raqobat xatosi — yozuv o'qilgandan keyin boshqa tranzaksiya tomonidan
+ * o'zgartirilgan. Moliya modulidagi compare-and-swap yozuvlari shuni
+ * qaytaradi: mijoz uchun bu "qayta urinib ko'ring", 400 (kiritishda xato)
+ * ham, 500 (server buzildi) ham emas.
+ *
+ * HTTP status code: 409
+ */
+class ConflictError extends Error {
+  constructor(message = "Ma'lumot o'zgardi, qayta urinib ko'ring") {
+    super(message);
+    this.name = "ConflictError";
+    this.statusCode = 409;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
  * Server ichki xatosi uchun
  * HTTP status code: 500
  */
@@ -82,5 +99,6 @@ module.exports = {
   UnauthorizedError,
   ForbiddenError,
   BadRequestError,
+  ConflictError,
   InternalServerError,
 };
