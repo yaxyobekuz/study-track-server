@@ -339,9 +339,14 @@ async function deleteUser(id) {
 }
 
 /**
- * O'quvchini arxivlash (yumshoq o'chirish).
+ * Foydalanuvchini arxivlash (yumshoq o'chirish).
+ *
+ * O'quvchi ham, xodim ham arxivlanadi: qatori o'chmaydi, shuning uchun uning
+ * davomati, baholari va moliyaviy tarixi hisobotlarda qolaveradi. Arxivlangan
+ * foydalanuvchi tizimga kira olmaydi (`auth.service` va `auth.middleware`
+ * `isArchived` ni tekshiradi).
  */
-async function archiveStudent(id, options = {}) {
+async function archiveUser(id, options = {}) {
   const { resetCoins = false, resetPenalties = false } = options;
 
   const user = await prisma.user.findUnique({ where: { id } });
@@ -349,12 +354,12 @@ async function archiveStudent(id, options = {}) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
 
-  if (user.role !== "student") {
-    throw new BadRequestError("Faqat o'quvchini arxivlash mumkin");
+  if (user.role === "owner") {
+    throw new ForbiddenError("Egasi foydalanuvchisini arxivlash mumkin emas");
   }
 
   if (user.isArchived) {
-    throw new BadRequestError("O'quvchi allaqachon arxivlangan");
+    throw new BadRequestError("Foydalanuvchi allaqachon arxivlangan");
   }
 
   const update = {
@@ -370,6 +375,7 @@ async function archiveStudent(id, options = {}) {
   if (resetPenalties) update.penaltyPoints = 0;
 
   // Arxivlangan o'quvchi barcha sinflardan avtomatik chiqariladi
+  // (xodimda sinf biriktirmasi yo'q — u yerda bu amal bo'sh o'tadi)
   await prisma.$transaction([
     prisma.user.update({ where: { id }, data: update }),
     prisma.userClass.deleteMany({ where: { userId: id } }),
@@ -379,16 +385,17 @@ async function archiveStudent(id, options = {}) {
 }
 
 /**
- * Arxivlangan o'quvchini qaytarish.
+ * Arxivlangan foydalanuvchini qaytarish.
+ * Sinf biriktirmalari qaytarilmaydi — ular qo'lda belgilanadi.
  */
-async function restoreStudent(id) {
+async function restoreUser(id) {
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
 
   if (!user.isArchived) {
-    throw new BadRequestError("O'quvchi arxivlanmagan");
+    throw new BadRequestError("Foydalanuvchi arxivlanmagan");
   }
 
   await prisma.user.update({
@@ -540,8 +547,8 @@ module.exports = {
   resetPassword,
   getUserPassword,
   deleteUser,
-  archiveStudent,
-  restoreStudent,
+  archiveUser,
+  restoreUser,
   getUsersForExport,
   getAllUsersShort,
   getStudents,

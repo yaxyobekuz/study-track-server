@@ -92,29 +92,29 @@ const deleteUser = asyncHandler(async (req, res) => {
   });
 });
 
-// Archive student (Owner only)
-const archiveStudent = asyncHandler(async (req, res) => {
+// Archive user — student or staff (Owner only)
+const archiveUser = asyncHandler(async (req, res) => {
   const { resetCoins, resetPenalties } = req.body;
 
-  const user = await userService.archiveStudent(req.params.id, {
+  const user = await userService.archiveUser(req.params.id, {
     resetCoins: Boolean(resetCoins),
     resetPenalties: Boolean(resetPenalties),
   });
 
   res.json({
     success: true,
-    message: "O'quvchi muvaffaqiyatli arxivlandi",
+    message: "Foydalanuvchi muvaffaqiyatli arxivlandi",
     data: user,
   });
 });
 
-// Restore archived student (Owner only)
-const restoreStudent = asyncHandler(async (req, res) => {
-  const user = await userService.restoreStudent(req.params.id);
+// Restore archived user (Owner only)
+const restoreUser = asyncHandler(async (req, res) => {
+  const user = await userService.restoreUser(req.params.id);
 
   res.json({
     success: true,
-    message: "O'quvchi arxivdan qaytarildi",
+    message: "Foydalanuvchi arxivdan qaytarildi",
     data: user,
   });
 });
@@ -186,8 +186,8 @@ module.exports = {
   resetPassword,
   getUserPassword,
   deleteUser,
-  archiveStudent,
-  restoreStudent,
+  archiveUser,
+  restoreUser,
   getStats,
   exportUsersToExcel,
   getStudents,

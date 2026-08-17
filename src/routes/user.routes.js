@@ -9,8 +9,8 @@ const {
   resetPassword,
   getUserPassword,
   deleteUser,
-  archiveStudent,
-  restoreStudent,
+  archiveUser,
+  restoreUser,
   getStats,
   exportUsersToExcel,
   getStudents,
@@ -53,8 +53,8 @@ router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.US
 router.put("/:id/reset-password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), resetPassword);
 router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), getUserPassword);
 
-// Arxivlash / arxivdan qaytarish (faqat o'quvchilar uchun)
-router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), archiveStudent);
-router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restoreStudent);
+// Arxivlash / arxivdan qaytarish (o'quvchi ham, xodim ham — owner'dan tashqari)
+router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), archiveUser);
+router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restoreUser);
 
 module.exports = router;
