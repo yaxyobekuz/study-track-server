@@ -32,6 +32,7 @@ const SECTIONS = {
   FINANCE: "finance",
   HOLIDAYS: "holidays",
   MONITORS: "monitors",
+  CHANGELOG: "changelog",
   MESSAGES: "messages",
   SOCIAL: "social",
   LEADS: "leads",
@@ -248,6 +249,19 @@ const PERMISSION_SECTIONS = [
     label: "Monitorlar",
     group: "Boshqaruv",
     actions: [A.view, A.update],
+  },
+  {
+    key: SECTIONS.CHANGELOG,
+    label: "O'zgarishlar tarixi",
+    group: "Boshqaruv",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      { key: "send", label: "Qo'lda yuborish" },
+      A.settings,
+    ],
   },
   {
     key: SECTIONS.MESSAGES,
