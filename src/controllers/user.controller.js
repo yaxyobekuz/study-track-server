@@ -33,7 +33,9 @@ const createUser = asyncHandler(async (req, res) => {
 const getUser = asyncHandler(async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.params.id },
-    omit: { password: true },
+    // plainPassword ham yashiriladi — parolni ko'rish alohida ruxsatli
+    // endpoint orqali beriladi (`GET /:id/password`)
+    omit: { password: true, plainPassword: true },
     include: {
       classes: { include: { class: { select: { id: true, name: true } } } },
     },
