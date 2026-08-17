@@ -42,6 +42,8 @@ const financeSettingsRoutes = require("./financeSettings.routes");
 const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
 const invoiceRoutes = require("./invoice.routes");
 const invoicePaymentRoutes = require("./invoicePayment.routes");
+const changelogRoutes = require("./changelog.routes");
+const changelogSettingsRoutes = require("./changelogSettings.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -83,6 +85,8 @@ router.use("/finance-settings", financeSettingsRoutes);
 router.use("/student-finance-statuses", studentFinanceStatusRoutes);
 router.use("/invoices", invoiceRoutes);
 router.use("/invoice-payments", invoicePaymentRoutes);
+router.use("/changelogs", changelogRoutes);
+router.use("/changelog-settings", changelogSettingsRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

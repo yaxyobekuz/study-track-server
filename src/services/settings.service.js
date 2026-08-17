@@ -87,6 +87,14 @@ async function getFinanceSettings() {
   });
 }
 
+async function getChangelogSettings() {
+  return prisma.changelogSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 // Premium uchun default ranglar (Mongoose modelidagi DEFAULT_NAME_COLORS)
 const DEFAULT_NAME_COLORS = [
   { key: "blue", label: "Ko'k", hex: "#3b82f6", isActive: true },
@@ -126,5 +134,6 @@ module.exports = {
   getPenaltySettings,
   getPremiumSettings,
   getFinanceSettings,
+  getChangelogSettings,
   DEFAULT_NAME_COLORS,
 };
