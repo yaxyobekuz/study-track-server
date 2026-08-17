@@ -228,11 +228,41 @@ enum InvoiceSource {
   manual // admin `POST /invoices/generate` orqali
 }
 
-enum PaymentMethod {
-  cash
-  card
-  transfer
+// Chegirma qanday hisoblanadi. Foizlar QO'SHILADI (ikkita 20% = 40%, 36% emas)
+// va fixed'dan OLDIN qo'llanadi — helpers/discount.helpers.js.
+enum DiscountType {
+  percent // 0..100
+  fixed // qat'iy summa (so'm)
+}
+
+// Pul qayerga tushdi. `PaymentMethod` enumining o'rnini bosadi: "naqdmi?"
+// degan savolga yagona javob manbasi — hisobning turi.
+enum PaymentAccountType {
+  cash // naqd kassa
+  card // terminal / plastik
+  bank // bank hisob-raqami
+  online // Click, Payme
   other
+}
+
+// Kassa daftaridagi harakat turi. Ishora TIPGA BOG'LIQ va tekshiriladi
+// (money.helpers.js → assertSignMatchesType).
+enum AccountEntryType {
+  payment // + o'quvchidan to'lov
+  payment_void // − to'lov bekor qilindi
+  transfer_in // + boshqa hisobdan keldi
+  transfer_out // − boshqa hisobga ketdi
+  refund // − ota-onaga qaytarildi
+  refund_void // + qaytarish bekor qilindi
+  adjustment // ± qo'lda to'g'rilash (sanoq farqi)
+}
+
+// To'lov hisob-fakturaga QACHON tushdi. Depozit ALOHIDA mexanizm emas —
+// keyingi oy depozitdan yopilganda AYNAN shu jadvalga `deposit` manbali
+// yana bir qator yoziladi.
+enum AllocationSource {
+  payment // kassir to'lovni qabul qilgan payt
+  deposit // keyinroq, oldindan to'langan qoldiqdan
 }
 
 // Changelog yozuvi qaysi panelga tegishli — har biri o'z versiyasiga ega.
@@ -1587,6 +1617,66 @@ model StudentTariff {
 }
 
 // ─────────────────────────────────────────────
+// MOLIYA — CHEGIRMALAR
+// ─────────────────────────────────────────────
+
+// Chegirma turlari katalogi ("Aka-uka 10%", "Xodim farzandi 50%").
+// Tarif kabi — narx emas, QOIDA. Chegirmaning summasi hisob-fakturaga
+// yozilganda muhrlanadi (MonthlyInvoice.discountSnapshot).
+model Discount {
+  id          String       @id @db.Char(24)
+  name        String       @unique
+  description String       @default("")
+  type        DiscountType
+  // percent uchun 0..100, fixed uchun so'm. Ikkalasi ham Decimal(14,2):
+  // "12.5%" qonuniy, va bitta ustunda ikki xil o'lchov saqlash uchun
+  // eng katta aniqlik kerak.
+  value       Decimal      @db.Decimal(14, 2)
+  // Grant/homiylik: boshqa chegirmalar bilan QO'SHILMAYDI. Biriktirishda
+  // tekshiriladi — yig'ilib qolib bepul o'qishga aylanmasin.
+  isExclusive Boolean      @default(false) @map("is_exclusive")
+  isActive    Boolean      @default(true) @map("is_active")
+  isArchived  Boolean      @default(false) @map("is_archived")
+  archivedAt  DateTime?    @map("archived_at")
+  createdBy   String       @map("created_by") @db.Char(24)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  @@index([isArchived, isActive, name])
+  @@map("discounts")
+}
+
+// DIQQAT — StudentTariff bilan SHAKLI bir xil, MA'NOSI TESKARI:
+// tarifda kesishuv HAL QILINADI (eng kech boshlangani yutadi,
+// tariffResolution.service.js:68), chegirmada esa kesishuv QO'SHILADI.
+// Shuning uchun bu yerda service darajasidagi kesishuv tekshiruvi
+// MAJBURIY — tarif kodidagi "orderBy desc, birinchisi yutadi" naqshini
+// bu jadvalga KO'CHIRMANG.
+model StudentDiscount {
+  id         String   @id @db.Char(24)
+  // soft ref → User (role = "student"), StudentTariff uslubi
+  studentId  String   @map("student_id") @db.Char(24)
+  // soft ref → Discount — katalog bu qatorning egasi emas
+  discountId String   @map("discount_id") @db.Char(24)
+  startMonth Int      @map("start_month")
+  // null → ochiq davr. startMonth === endMonth → faqat o'sha oy.
+  endMonth   Int?     @map("end_month")
+  note       String   @default("")
+  createdBy  String   @map("created_by") @db.Char(24)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Poyga backstop, kesishuv KAFOLATI EMAS: [202609,202612] va [202610,null]
+  // ikkalasi ham o'tib ketadi — haqiqiy tekshiruv service'da.
+  @@unique([studentId, discountId, startMonth])
+  @@index([studentId, startMonth(sort: Desc)])
+  // Cron: "shu oyni qamragan barcha qatorlar" — butun maktab bo'yicha bitta so'rov
+  @@index([startMonth, endMonth])
+  @@index([discountId])
+  @@map("student_discounts")
+}
+
+// ─────────────────────────────────────────────
 // MOLIYA — AKADEMIK DAVR, HOLAT VA HISOB-FAKTURALAR
 // ─────────────────────────────────────────────
 //
@@ -1594,9 +1684,10 @@ model StudentTariff {
 // (9 yoki 11). Katalog ham, o'quvchiga biriktiriladigan narsa ham emas. Har
 // qanday YYYYMM yo akademik oy, yo yo'q — hisob helpers/academicYear.helpers.js da.
 //
-// KUN KOORDINATASI bu domenda faqat IKKI joyda bor:
+// KUN KOORDINATASI bu domenda faqat kassa tomonida bor:
 //   1) FinanceSettings.invoiceDayOfMonth — cron qachon ishlashi (konfiguratsiya),
-//   2) InvoicePayment.paidAt — pul qachon olindi (hodisa, davr emas).
+//   2) Payment.paidAt / AccountEntry.occurredAt — pul qachon harakatlandi
+//      (hodisa, davr emas).
 // Hisob-fakturaning o'zida kun maydoni YO'Q: "o'quvchi oyda 1 kun o'qisa ham
 // to'liq oy" qoidasi tekshiruv bilan emas, proratsiyani ifodalaydigan
 // maydonning yo'qligi bilan kafolatlanadi.
@@ -1625,6 +1716,15 @@ model FinanceSettings {
   // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
   firstInvoiceMonth Int? @map("first_invoice_month")
 
+  // Bir o'quvchidagi chegirmalar yig'indisi shu foizdan oshmaydi. Bitta
+  // butun son "40 ta o'quvchiga bexosdan bepul yil berib yubordik" ni
+  // rad etilgan biriktirishga aylantiradi.
+  maxDiscountPercent Int @default(100) @map("max_discount_percent")
+
+  // Yangi hisob-faktura chiqqanda o'quvchining oldindan to'langan qoldig'i
+  // avtomatik yechilsinmi. O'chirilsa — depozit qo'lda qo'llanadi.
+  depositAutoApply Boolean @default(true) @map("deposit_auto_apply")
+
   // Cron watermark'i — FAQAT UI uchun. To'g'rilik bunga tayanmaydi:
   // idempotentlik @@unique([studentId, month]) da.
   lastRunAt          DateTime? @map("last_run_at")
@@ -1635,6 +1735,28 @@ model FinanceSettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("finance_settings")
+}
+
+// Ta'til oyi — MAKTAB BO'YICHA. O'sha oyda hech kimga hisob-faktura
+// shakllanmaydi (o'quvchi bo'yicha to'xtatish — StudentFinanceStatus.frozen).
+//
+// Akademik oyning o'zi (sentabr..may) kalendar qoidasi bo'lsa, ta'til —
+// o'sha oyna ichidagi ISTISNO: "yanvarda o'qimaymiz, to'lov ham yo'q".
+model VacationMonth {
+  id    String @id @db.Char(24)
+  month Int    @unique // YYYYMM
+
+  // HOSILA, lekin SAQLANADI: academicStartMonth keyin o'zgarsa eski ta'til
+  // oylari jimgina boshqa o'quv yiliga ko'chib ketmasin. Bir o'quv yilining
+  // ta'tillari — bitta indeksli so'rov.
+  academicYear Int @map("academic_year")
+
+  title     String   @default("") // "Qishki ta'til"
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([academicYear])
+  @@map("vacation_months")
 }
 
 // O'quvchining moliyaviy holati — DAVR jadvali, StudentTariff bilan bir xil
@@ -1687,6 +1809,13 @@ model MonthlyInvoice {
   academicYear  Int @map("academic_year") // davr boshlangan kalendar yil
   academicIndex Int @map("academic_index") // 1..N ("9 oydan 3-si")
 
+  // Ta'tilni hisobga olgan IKKINCHI juftlik — ota-ona ko'radigan raqam
+  // ("8 oydan 5-si"). academicIndex KALENDAR koordinatasi bo'lib qoladi va
+  // to'g'ri; bu esa TO'LANADIGAN oylar ichidagi o'rin. U ham SNAPSHOT:
+  // martda qo'shilgan ta'til oktabrda muhrlangan yorliqni o'zgartira olmaydi.
+  billableIndex      Int @map("billable_index")
+  billableMonthCount Int @map("billable_month_count")
+
   // Narx provenansiyasi. Nullable: qo'lda yaratilgan hisob-fakturada tarif
   // bo'lmasligi mumkin.
   tariffId        String? @map("tariff_id") @db.Char(24)
@@ -1695,7 +1824,18 @@ model MonthlyInvoice {
   // yorlig'i o'zgarmaydi.
   tariffName      String  @default("") @map("tariff_name")
 
-  // MUHRLANGAN summa — hech qachon qayta hisoblanmaydi
+  // Chegirmagacha bo'lgan tarif narxi — "qancha chegirma berdik?" savoliga
+  // javob berish uchun saqlanadi (amount'dan hosila qilib bo'lmaydi).
+  baseAmount     Decimal @map("base_amount") @db.Decimal(14, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  // [{ discountId, name, type, value, nominalAmount, appliedAmount }] —
+  // chiqarilgan paytdagi chegirmalar. `appliedAmount`lar yig'indisi AYNAN
+  // discountAmount ga teng (oxirgisiga qoldiq beriladi), lekin ustunlar
+  // orasidagi hakam — discountAmount, snapshot esa taqsimot izohi.
+  discountSnapshot Json? @map("discount_snapshot")
+
+  // MUHRLANGAN summa = baseAmount − discountAmount. Hech qachon qayta
+  // hisoblanmaydi; keyingi to'g'rilash keyingi oydan amal qiladi.
   amount     Decimal @db.Decimal(14, 2)
   // To'lovlar yig'indisi (denormalizatsiya): ro'yxatni qarz bo'yicha
   // saralash/filtrlash har qator uchun agregatsiyasiz ishlashi kerak.
@@ -1715,6 +1855,10 @@ model MonthlyInvoice {
   cancelledAt  DateTime? @map("cancelled_at")
   cancelledBy  String?   @map("cancelled_by") @db.Char(24)
 
+  // Kech qo'shilgan chegirma / to'g'rilangan tarif: summa muhrlangani uchun
+  // yagona halol yo'l — bekor qilib qaytadan yaratish. Eskisi bilan bog'lanish.
+  replacesInvoiceId String? @map("replaces_invoice_id") @db.Char(24)
+
   // To'liq yopilgan payt
   paidAt DateTime? @map("paid_at")
 
@@ -1723,7 +1867,7 @@ model MonthlyInvoice {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  payments InvoicePayment[]
+  allocations PaymentAllocation[]
 
   // IDEMPOTENTLIK: cron qayta ishga tushishi, ikkita instans, admin'ning qo'lda
   // urinishi — hammasi shu bilan xavfsiz.
@@ -1740,25 +1884,175 @@ model MonthlyInvoice {
   @@map("monthly_invoices")
 }
 
-// To'lov — hisob-fakturaning EGALIK OSTIDAGI bolasi (TariffVersion→Tariff
-// uslubi), shuning uchun haqiqiy relation + Cascade.
+// ─────────────────────────────────────────────
+// MOLIYA — KASSA (to'lov hisoblari va daftari)
+// ─────────────────────────────────────────────
+
+// Pul qayerga tushadi: "Naqd kassa", "Uzcard terminal", "Ipoteka bank".
+// Dinamik katalog — `PaymentMethod` enumining o'rnini bosadi.
+model PaymentAccount {
+  id          String             @id @db.Char(24)
+  name        String             @unique
+  type        PaymentAccountType
+  description String             @default("")
+
+  // Tizimga o'tishdagi boshlang'ich qoldiq. balance = openingBalance + Σ entries
+  // (har kecha financeReconcile job tekshiradi).
+  openingBalance Decimal @default(0) @map("opening_balance") @db.Decimal(14, 2)
+  balance        Decimal @default(0) @db.Decimal(14, 2)
+
+  isActive   Boolean @default(true) @map("is_active")
+  // Hisob HECH QACHON o'chirilmaydi — arxivlanadi. Shu sababli unga
+  // ko'rsatgan FK'lar Restrict.
+  isArchived Boolean @default(false) @map("is_archived")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  entries       AccountEntry[]
+  payments      Payment[]
+  refunds       Refund[]
+  transfersFrom AccountTransfer[] @relation("TransferFrom")
+  transfersTo   AccountTransfer[] @relation("TransferTo")
+
+  @@index([isArchived, isActive, sortOrder])
+  @@map("payment_accounts")
+}
+
+// Hisoblar orasidagi o'tkazma — HUJJAT; postinglari ikkita AccountEntry
+// (Payment → PaymentAllocation bilan bir xil munosabat).
 //
-// Append-only: summa/sana O'ZGARMAS. Xato to'lov `isVoided` bilan bekor
-// qilinadi, o'chirilmaydi — moliyaviy log yo'qolmasligi kerak.
-model InvoicePayment {
-  id        String @id @db.Char(24)
-  invoiceId String @map("invoice_id") @db.Char(24)
-  // Denormalizatsiya: "o'quvchining to'lov tarixi" va kunlik kassa hisoboti
-  // uchun katta invoices jadvaliga join qilmaslik.
+// DEADLOCK: transfer(A→B) va transfer(B→A) parallel kelganda hisoblar
+// HAR DOIM `id` bo'yicha O'SISH tartibida lock qilinadi, yo'nalishdan
+// qat'i nazar — accountTransfer.service.js.
+model AccountTransfer {
+  id            String @id @db.Char(24)
+  fromAccountId String @map("from_account_id") @db.Char(24)
+  toAccountId   String @map("to_account_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2) // musbat
+  // Click → bank o'tkazmasi komissiyasi. Ikki simmetrik posting bilan
+  // buni ifodalab bo'lmaydi — shuning uchun hujjat modeli kerak.
+  fee    Decimal @default(0) @db.Decimal(14, 2)
+
+  occurredAt DateTime @map("occurred_at")
+  note       String   @default("")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  fromAccount PaymentAccount @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: Restrict)
+  toAccount   PaymentAccount @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: Restrict)
+  entries     AccountEntry[]
+
+  @@index([occurredAt(sort: Desc)])
+  @@map("account_transfers")
+}
+
+// Kassa daftari — QAT'IY APPEND-ONLY. Xato yozuv o'chirilmaydi ham,
+// tahrirlanmaydi ham: teskari (kompensatsiya) qatori yoziladi.
+model AccountEntry {
+  id String @id @db.Char(24)
+
+  // QO'SHILISH tartibi. balanceAfter AYNAN shunga bog'liq: kassir kechagi
+  // sana bilan to'lov kiritsa, qator `occurredAt` bo'yicha ro'yxatning
+  // O'RTASIGA tushadi va running balance ustuni ma'nosiz bo'lib qolardi.
+  // Registr `seq` bo'yicha, hisobot `occurredAt` bo'yicha.
+  seq BigInt @default(autoincrement())
+
+  accountId String           @map("account_id") @db.Char(24)
+  type      AccountEntryType
+  // ISHORALI: + kirim, − chiqim. SUM() hisobotlarni ahamiyatsiz qiladi.
+  // Ishora tipga mos kelishi assertSignMatchesType bilan tekshiriladi.
+  amount    Decimal          @db.Decimal(14, 2)
+  // "seq raqamli yozuvdan keyingi qoldiq" — nazoratchi ustunni pastga
+  // qarab o'qiy oladi. Qiymat `paymentAccount.update({increment})` dan
+  // QAYTGAN post-image'dan olinadi (o'qi→hisobla→yoz EMAS).
+  balanceAfter Decimal @map("balance_after") @db.Decimal(14, 2)
+
+  // BIZNES sanasi (to'lovda = payment.paidAt) — hisobot filtri shunga tayanadi
+  occurredAt DateTime @map("occurred_at")
+
+  paymentId  String? @map("payment_id") @db.Char(24)
+  transferId String? @map("transfer_id") @db.Char(24)
+  refundId   String? @map("refund_id") @db.Char(24)
+
+  note      String   @default("")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Restrict, Cascade EMAS: Cascade pul logini hisob bilan birga
+  // olib ketardi. AccountEntry — hisobning egalik ostidagi bolasi
+  // (TariffVersion→Tariff uslubi), shuning uchun soft ref emas, haqiqiy FK.
+  account  PaymentAccount   @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  payment  Payment?         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  transfer AccountTransfer? @relation(fields: [transferId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, seq(sort: Desc)]) // registr + running balance
+  @@index([accountId, occurredAt]) // "X–Y oralig'idagi kirim"
+  @@index([occurredAt])
+  @@index([transferId])
+  @@map("account_entries")
+}
+
+// ─────────────────────────────────────────────
+// MOLIYA — TO'LOV VA DEPOZIT
+// ─────────────────────────────────────────────
+//
+// DEPOZIT ALOHIDA "HAMYON" EMAS. U — aniq Payment qatorlarining
+// taqsimlanmagan qoldig'i. Agar depozit alohida pot bo'lganida, pul
+// hisob-fakturaga IKKI xil yo'l bilan tushardi (kassir taqsimoti va
+// "depozitdan yechish" qadami) va quyidagi holat hal qilib bo'lmas bo'lardi:
+//
+//   1-okt: 1 000 000 to'landi → sentabr (400k) yopildi, 600k depozit
+//   1-noy: noyabr depozitdan yopildi → qoldiq 200k
+//   5-noy: to'lov xato ekan, bekor qilinadi — 1 000 000 qaytarilishi kerak,
+//          lekin depozitda 200k bor
+//
+// Noyabrni yopish ham SHU to'lovning taqsimoti (source: deposit) bo'lgani
+// uchun bekor qilish qoidasi bitta: shu to'lovning barcha taqsimotlarini
+// qaytar. Noyabr qayta ochiladi, qoldiqdan faqat ushlanib turgan 200k
+// yechiladi, jami olib tashlangan = 1 000 000. Manfiy balans TUG'ILMAYDI.
+
+// Kassa cheki — pulni bir marta qabul qilish akti.
+model Payment {
+  id String @id @db.Char(24)
+
+  // Ota-onaga aytiladigan RAQAM. Hozir qo'shiladi: 3000 ta to'lovdan keyin
+  // retro-raqamlash imkonsiz. Bekor qilingan tranzaksiyalardan bo'shliq
+  // qolishi mumkin — chekni YO'QOTISHdan ko'ra yaxshiroq.
+  receiptNo Int @unique @default(autoincrement()) @map("receipt_no")
+
+  // soft ref → User: arxivlangan o'quvchining cheki qolishi SHART
   studentId String @map("student_id") @db.Char(24)
+  // FK: hisob o'chirilmaydi (arxivlanadi), dangling pointer qoldiqni buzardi
+  accountId String @map("account_id") @db.Char(24)
 
   amount Decimal @db.Decimal(14, 2)
-  // Pul qachon olindi — domenda kun koordinatasi qonuniy bo'lgan yagona joy
+  // HOSILA, tezlik uchun denormalizatsiya:
+  //   allocatedAmount = Σ (isVoided = false) allocations
+  //   depositAmount   = amount − allocatedAmount
+  // Ikkalasi ham lock ostida qayta hisoblanadi.
+  allocatedAmount Decimal @default(0) @map("allocated_amount") @db.Decimal(14, 2)
+  depositAmount   Decimal @default(0) @map("deposit_amount") @db.Decimal(14, 2)
+
+  // Pul qachon olindi. Orqaga sanash qonuniy: kassir kechagi to'lovni
+  // bugun kiritishi mumkin.
   paidAt DateTime @map("paid_at")
+  note   String   @default("")
+  // { firstName, lastName, username, classId, className } — hisobot
+  // o'quvchi qatori bo'lmasa ham ishlashi uchun
+  studentSnapshot Json @map("student_snapshot")
 
-  method PaymentMethod @default(cash)
-  note   String        @default("")
-
+  // QISMAN BEKOR QILISH YO'Q: xato summa → to'liq bekor + qayta kiritish.
+  // Qisman bekor qilish bu tizimlarni auditsiz qiladigan asosiy yo'l.
   isVoided   Boolean   @default(false) @map("is_voided")
   voidedAt   DateTime? @map("voided_at")
   voidedBy   String?   @map("voided_by") @db.Char(24)
@@ -1768,13 +2062,104 @@ model InvoicePayment {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  account     PaymentAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  allocations PaymentAllocation[]
+  entries     AccountEntry[]
+
+  @@index([studentId, paidAt(sort: Desc)])
+  @@index([accountId, paidAt(sort: Desc)])
+  @@index([paidAt])
+  @@map("payments")
+}
+
+// Chekning bitta hisob-fakturaga tushgan ulushi.
+model PaymentAllocation {
+  id        String @id @db.Char(24)
+  paymentId String @map("payment_id") @db.Char(24)
+  invoiceId String @map("invoice_id") @db.Char(24)
+  // Denormalizatsiya: o'quvchining balans harakatlari uchun
+  studentId String @map("student_id") @db.Char(24)
+
+  amount Decimal          @db.Decimal(14, 2)
+  source AllocationSource @default(payment)
+  // To'lov sanasidan FARQ QILADI: `deposit` manbali qator keyingi oy
+  // yaratiladi. Balans harakatlari tarixi shu bo'yicha tuziladi.
+  appliedAt DateTime @map("applied_at")
+
+  isVoided  Boolean   @default(false) @map("is_voided")
+  voidedAt  DateTime? @map("voided_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   invoice MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
-  @@index([invoiceId, paidAt])
-  @@index([studentId, paidAt(sort: Desc)])
-  // Kunlik/oylik kassa hisoboti (sana oralig'i bo'yicha)
-  @@index([paidAt])
-  @@map("invoice_payments")
+  @@index([invoiceId, isVoided])
+  @@index([paymentId, isVoided])
+  @@index([studentId, appliedAt(sort: Desc)])
+  @@map("payment_allocations")
+}
+
+// O'quvchining oldindan to'langan qoldig'i.
+//
+// `version` — LOCK USTUNI. O'quvchining puliga tegadigan HAR QANDAY
+// tranzaksiyaning BIRINCHI operatori shu qatorni increment qiladi va
+// commit'gacha eksklyuziv row-lock ushlaydi. Butun modul bo'yicha
+// o'zgarmas LOCK TARTIBI:
+//     StudentAccount → MonthlyInvoice (month asc, id asc) → PaymentAccount
+// O'quvchilar bir-biri bilan to'qnashmagani uchun deadlock imkonsiz.
+model StudentAccount {
+  id String @id @db.Char(24)
+  // soft ref → User
+  studentId String @unique @map("student_id") @db.Char(24)
+
+  // HOSILA (Σ payment.amount − Σ allocation − Σ refund + Σ adjustment),
+  // tezlik uchun denormalizatsiya; financeReconcile job tasdiqlaydi.
+  balance Decimal @default(0) @db.Decimal(14, 2)
+  version Int     @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("student_accounts")
+}
+
+// Qo'lda tuzatish — faqat audit izi bilan (sanoq farqi, eski qarzni yopish).
+model StudentBalanceAdjustment {
+  id        String  @id @db.Char(24)
+  studentId String  @map("student_id") @db.Char(24)
+  amount    Decimal @db.Decimal(14, 2) // ISHORALI
+  reason    String
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([studentId, createdAt(sort: Desc)])
+  @@map("student_balance_adjustments")
+}
+
+// Ota-onaga pul qaytarish (o'qishdan ketdi, depoziti ortib qoldi).
+model Refund {
+  id        String  @id @db.Char(24)
+  studentId String  @map("student_id") @db.Char(24)
+  accountId String  @map("account_id") @db.Char(24)
+  amount    Decimal @db.Decimal(14, 2) // musbat
+  reason    String
+
+  refundedAt DateTime @map("refunded_at")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account PaymentAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+
+  @@index([studentId, refundedAt(sort: Desc)])
+  @@index([accountId, refundedAt(sort: Desc)])
+  @@map("refunds")
 }
 
 // ─────────────────────────────────────────────
