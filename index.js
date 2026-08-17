@@ -47,6 +47,7 @@ const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
 const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
+const { startFinanceReconcileCron } = require("./src/jobs/financeReconcile.job");
 const {
   startChangelogNotificationCron,
 } = require("./src/jobs/changelogNotification.job");
@@ -134,6 +135,7 @@ const bootstrap = async () => {
   startSeasonStatusCron();
   startPremiumExpiryCron();
   startInvoiceGenerationCron();
+  startFinanceReconcileCron();
   startChangelogNotificationCron();
 
   const server = app.listen(config.port, () => {
