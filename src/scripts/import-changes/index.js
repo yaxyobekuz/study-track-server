@@ -33,7 +33,8 @@ const {
 // server/src/scripts/import-changes → monorepo ildizi
 const CHANGES_DIR = path.resolve(__dirname, "../../../../changes");
 
-const FILE_RE = /^\d{4}-\d{2}-\d{2}-[a-z]+\.md$/;
+// "2026-08-17-admin.md" va bir kundagi keyingi relizlar: "2026-08-17-admin-2.md"
+const FILE_RE = /^\d{4}-\d{2}-\d{2}-[a-z]+(?:-\d+)?\.md$/;
 
 // ─────────────────────────────────────────────
 // Argumentlar
@@ -133,6 +134,16 @@ function collectFiles(options) {
     selected.push({ name, fullPath, parsed, skip: false });
   }
 
+  // Fayl nomi bo'yicha saralash YETARLI EMAS: "admin-2.md" alifboda
+  // "admin.md" dan oldin turadi ("-" < "."), ya'ni 2-reliz 1-relizdan oldin
+  // yuklanib, undan past versiya olib qolardi. Sana → panel → reliz raqami.
+  selected.sort(
+    (a, b) =>
+      a.parsed.dateKey.localeCompare(b.parsed.dateKey) ||
+      a.parsed.panel.localeCompare(b.parsed.panel) ||
+      a.parsed.seq - b.parsed.seq,
+  );
+
   return { selected, failed };
 }
 
@@ -152,8 +163,11 @@ async function main() {
   console.log(`Yuklanadi: ${pending.length} ta fayl` + (options.dryRun ? "  [--dry-run]" : ""));
 
   for (const item of pending) {
-    const { panel, dateKey, bump, title, items } = item.parsed;
-    console.log(`  ${dateKey}  ${panel.padEnd(8)} ${bump.padEnd(5)} ${items.length} ta o'zgarish  ${title}`);
+    const { panel, seq, dateKey, bump, title, items } = item.parsed;
+    const label = seq > 1 ? `${panel} #${seq}` : panel;
+    console.log(
+      `  ${dateKey}  ${label.padEnd(11)} ${bump.padEnd(5)} ${items.length} ta o'zgarish  ${title}`,
+    );
   }
 
   for (const item of skipped) {

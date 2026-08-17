@@ -86,6 +86,27 @@ async function computeNextVersion(panel, bump, client = prisma) {
   return { ...next, version: formatVersion(next) };
 }
 
+/**
+ * O'sha kun + panel uchun keyingi reliz raqami.
+ *
+ * Bir kunda bir panelga bir nechta reliz chiqarish mumkin: birinchisi 1,
+ * keyingisi 2 va h.k. Qo'lda yaratishda mijoz raqamni o'ylab o'tirmaydi.
+ *
+ * @param {Date} date
+ * @param {string} panel
+ * @param {object} client
+ * @returns {Promise<number>}
+ */
+async function nextSeq(date, panel, client = prisma) {
+  const top = await client.changelog.findFirst({
+    where: { date, panel },
+    orderBy: { seq: "desc" },
+    select: { seq: true },
+  });
+
+  return (top?.seq || 0) + 1;
+}
+
 // Prisma unique cheklov xatosini aniqlaydi
 function isUniqueError(error, field) {
   if (error?.code !== "P2002") return false;
@@ -115,7 +136,7 @@ async function createWithVersionRetry(buildData) {
       }
 
       if (isUniqueError(error, "date")) {
-        throw new ValidationError("Bu sana uchun ushbu panelda yozuv allaqachon mavjud");
+        throw new ValidationError("Bu reliz allaqachon mavjud");
       }
 
       throw error;
@@ -228,20 +249,24 @@ async function createChangelog(data, createdBy) {
     throw new ValidationError("Sarlavha yoki o'zgarishlar ro'yxati kiritilishi kerak");
   }
 
+  // Reliz raqami: berilmasa o'sha kun+panel uchun keyingisi olinadi.
+  // Ya'ni bir kunda ikkinchi marta yozuv qo'shsangiz xato emas — 2-reliz bo'ladi.
+  const seq = data.seq ? Number(data.seq) : await nextSeq(normalizedDate, panel);
+
   // Qo'lda berilgan versiya bo'lsa qayta urinishning ma'nosi yo'q
   if (version) {
     const explicit = resolveExplicitVersion(version);
 
     try {
       return await prisma.changelog.create({
-        data: { ...fields, panel, date: normalizedDate, bump, ...explicit, createdBy },
+        data: { ...fields, panel, seq, date: normalizedDate, bump, ...explicit, createdBy },
       });
     } catch (error) {
       if (isUniqueError(error, "version")) {
         throw new ValidationError(`"${explicit.version}" versiyasi bu panelda allaqachon bor`);
       }
       if (isUniqueError(error, "date")) {
-        throw new ValidationError("Bu sana uchun ushbu panelda yozuv allaqachon mavjud");
+        throw new ValidationError("Bu reliz allaqachon mavjud");
       }
       throw error;
     }
@@ -249,7 +274,7 @@ async function createChangelog(data, createdBy) {
 
   return createWithVersionRetry(async () => {
     const computed = await computeNextVersion(panel, bump);
-    return { ...fields, panel, date: normalizedDate, bump, ...computed, createdBy };
+    return { ...fields, panel, seq, date: normalizedDate, bump, ...computed, createdBy };
   });
 }
 
@@ -294,7 +319,11 @@ async function deleteChangelog(id) {
 }
 
 /**
- * CLI import uchun: `(date, panel)` bo'yicha yaratadi yoki yangilaydi.
+ * CLI import uchun: `(date, panel, seq)` bo'yicha yaratadi yoki yangilaydi.
+ *
+ * `seq` fayl nomidan keladi: "2026-08-17-admin.md" → 1,
+ * "2026-08-17-admin-2.md" → 2. Ya'ni bir kunda bir panelga bir nechta reliz
+ * chiqarish mumkin, lekin ayni fayl qayta yuklanganda dublikat yaratilmaydi.
  *
  * Mavjud yozuv topilsa MATN yangilanadi, VERSIYA saqlanadi — shu sababli
  * `/changelog` ni necha marta ishga tushirsangiz ham natija bir xil bo'ladi.
@@ -308,13 +337,13 @@ async function deleteChangelog(id) {
  * @returns {Promise<{action: "created"|"updated", entry: object}>}
  */
 async function upsertFromFile(parsed, createdBy = null) {
-  const { panel, date, bump, title, items, notes, version, sourceFile } = parsed;
+  const { panel, seq = 1, date, bump, title, items, notes, version, sourceFile } = parsed;
 
   assertPanel(panel);
   assertBump(bump);
 
   const existing = await prisma.changelog.findUnique({
-    where: { date_panel: { date, panel } },
+    where: { date_panel_seq: { date, panel, seq } },
   });
 
   if (existing) {
@@ -329,7 +358,7 @@ async function upsertFromFile(parsed, createdBy = null) {
     return { action: "updated", entry };
   }
 
-  const fields = { panel, date, bump, title, items, notes, sourceFile, createdBy };
+  const fields = { panel, seq, date, bump, title, items, notes, sourceFile, createdBy };
 
   if (version) {
     const entry = await prisma.changelog.create({

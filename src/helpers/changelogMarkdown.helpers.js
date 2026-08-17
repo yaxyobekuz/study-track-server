@@ -32,8 +32,10 @@ const PANELS = ["admin", "teacher", "student", "server", "bot"];
 
 const STATUSES = ["draft", "published"];
 
-// "2026-08-17-admin.md" → ["2026-08-17", "admin"]
-const FILE_NAME_RE = /^(\d{4}-\d{2}-\d{2})-([a-z]+)\.md$/;
+// "2026-08-17-admin.md"   → ["2026-08-17", "admin", undefined]  → seq 1
+// "2026-08-17-admin-2.md" → ["2026-08-17", "admin", "2"]        → seq 2
+// Bir kunda o'sha panelga ikkinchi reliz chiqarilganda tartib raqami qo'yiladi.
+const FILE_NAME_RE = /^(\d{4}-\d{2}-\d{2})-([a-z]+)(?:-(\d+))?\.md$/;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -198,11 +200,17 @@ function parseChangelogFile(fileName, content) {
   const nameMatch = FILE_NAME_RE.exec(fileName);
   if (!nameMatch) {
     throw new ValidationError(
-      "Fayl nomi YYYY-MM-DD-<panel>.md ko'rinishida bo'lishi kerak",
+      "Fayl nomi YYYY-MM-DD-<panel>.md ko'rinishida bo'lishi kerak " +
+        "(bir kundagi ikkinchi reliz uchun YYYY-MM-DD-<panel>-2.md)",
     );
   }
 
-  const [, nameDate, namePanel] = nameMatch;
+  const [, nameDate, namePanel, nameSeq] = nameMatch;
+
+  const seq = nameSeq ? Number(nameSeq) : 1;
+  if (seq < 1) {
+    throw new ValidationError("Reliz raqami 1 dan kichik bo'lmasligi kerak");
+  }
 
   const frontmatterMatch = FRONTMATTER_RE.exec(String(content ?? "").trimStart());
   if (!frontmatterMatch) {
@@ -256,6 +264,7 @@ function parseChangelogFile(fileName, content) {
 
   return {
     panel,
+    seq,
     date: normalizeDate(dateKey),
     dateKey,
     bump,
