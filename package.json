@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "db:migrate-from-mongo": "node src/scripts/migrate-mongo-to-postgres/index.js",
-    "db:expand-permissions": "node src/scripts/expand-permissions.js"
+    "db:expand-permissions": "node src/scripts/expand-permissions.js",
+    "changes:import": "node src/scripts/import-changes/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",

@@ -8,5 +8,6 @@ uploads
 !src/scripts/
 src/scripts/*
 !src/scripts/migrate-mongo-to-postgres/
+!src/scripts/import-changes/
 # Prisma Client (generatsiya artifakti — `prisma generate` qayta yaratadi)
 src/generated
