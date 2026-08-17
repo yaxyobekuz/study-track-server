@@ -146,6 +146,77 @@ function academicYearMonths(academicYear, settings) {
   return months;
 }
 
+/**
+ * O'quv yilining TO'LANADIGAN oylari — ta'til oylari chiqarib tashlangan.
+ *
+ * IKKI XIL RAQAM, ikkalasi ham kerak:
+ *   - `academicIndex` — KALENDAR o'rni (sentabrdan sanaganda nechanchi oy).
+ *     Ta'tildan qat'i nazar o'zgarmaydi va hisob-fakturada shu bo'yicha
+ *     muhrlangan.
+ *   - `billableIndex` — ota-ona ko'radigan raqam ("8 oydan 5-si").
+ *     Faqat to'lanadigan oylar sanaladi.
+ *
+ * Yanvar ta'til bo'lsa: fevral → academicIndex 6, billableIndex 5.
+ *
+ * Sof funksiya: ta'til to'plami PARAMETR sifatida uzatiladi (`settings`
+ * bugun uzatilganidek), DB'ga murojaat service qatlamida qoladi.
+ *
+ * @param {number} academicYear - davr boshlangan kalendar yil
+ * @param {{academicStartMonth: number, academicMonthCount: number}} settings
+ * @param {Set<number>|number[]} [vacationMonths] - YYYYMM to'plami
+ * @returns {{
+ *   months: Array<{month: number, academicIndex: number, billableIndex: number|null, isVacation: boolean}>,
+ *   billableMonthCount: number
+ * }}
+ */
+function billableMonthsOfYear(academicYear, settings, vacationMonths = []) {
+  const vacationSet =
+    vacationMonths instanceof Set ? vacationMonths : new Set(vacationMonths);
+
+  let billableIndex = 0;
+  const months = academicYearMonths(academicYear, settings).map((entry) => {
+    const isVacation = vacationSet.has(entry.month);
+    if (!isVacation) billableIndex += 1;
+
+    return {
+      month: entry.month,
+      academicIndex: entry.academicIndex,
+      billableIndex: isVacation ? null : billableIndex,
+      isVacation,
+    };
+  });
+
+  return { months, billableMonthCount: billableIndex };
+}
+
+/**
+ * Bitta oyning to'lanadigan davr ichidagi o'rni — hisob-fakturaga
+ * snapshot sifatida yoziladi.
+ *
+ * Ta'til oyi uchun `billableIndex: null` qaytadi; chaqiruvchi bunday oyda
+ * hisob-faktura umuman yaratmaydi.
+ *
+ * @param {number} monthKey - YYYYMM
+ * @param {{academicStartMonth: number, academicMonthCount: number}} settings
+ * @param {Set<number>|number[]} [vacationMonths]
+ * @returns {{billableIndex: number|null, billableMonthCount: number, isVacation: boolean}}
+ */
+function describeBillableMonth(monthKey, settings, vacationMonths = []) {
+  const academicYear = academicYearOf(monthKey, settings);
+  const { months, billableMonthCount } = billableMonthsOfYear(
+    academicYear,
+    settings,
+    vacationMonths,
+  );
+  const entry = months.find((m) => m.month === monthKey);
+
+  return {
+    billableIndex: entry?.billableIndex ?? null,
+    billableMonthCount,
+    isVacation: entry?.isVacation ?? false,
+  };
+}
+
 module.exports = {
   ACADEMIC_MONTH_COUNTS,
   assertAcademicSettings,
@@ -155,4 +226,6 @@ module.exports = {
   describeAcademicMonth,
   academicYearBounds,
   academicYearMonths,
+  billableMonthsOfYear,
+  describeBillableMonth,
 };
