@@ -47,7 +47,7 @@ const {
   serializeAccount,
 } = require("./paymentAccount.service");
 
-// 20 oylik qarzi bor o'quvchi + oy boshidagi kassa navbati Prisma'ning
+// 20 oylik qarzi bor o'quvchi + oy boshidagi to'lov navbati Prisma'ning
 // standart 5 soniyasiga sig'maydi.
 const TX_OPTIONS = { timeout: 15000, maxWait: 10000 };
 
@@ -316,7 +316,7 @@ const createPayment = async (data, userId) => {
       });
     }
 
-    // 8 ── KASSA — HAR DOIM OXIRGI (lock tartibi)
+    // 8 ── TO'LOV TURI — HAR DOIM OXIRGI (lock tartibi)
     await postEntry(tx, {
       accountId: account.id,
       type: "payment",
@@ -470,8 +470,8 @@ const voidPayment = async (id, reason, userId) => {
       });
     }
 
-    // 7 ── KASSA — oxirgi. `occurredAt` = HOZIR, `payment.paidAt` EMAS:
-    //      pul kassadan BUGUN chiqadi va kunlik hisobot shunga tayanadi.
+    // 7 ── TO'LOV TURI — oxirgi. `occurredAt` = HOZIR, `payment.paidAt` EMAS:
+    //      pul BUGUN chiqadi va kunlik hisobot shunga tayanadi.
     await postEntry(tx, {
       accountId: payment.accountId,
       type: "payment_void",
@@ -527,7 +527,7 @@ const loadStudentMap = async (rows) => {
 };
 
 /**
- * To'lovlar registri — kassaning kunlik/oylik hisoboti.
+ * To'lovlar registri — kunlik/oylik tushum hisoboti.
  *
  * @param {object} req - query: page, limit, studentId, accountId, from, to, includeVoided, search
  * @returns {Promise<object>}

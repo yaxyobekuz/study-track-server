@@ -1,5 +1,5 @@
 /**
- * Hisoblar orasida pul o'tkazish — inkassatsiya (naqd kassadan bankka),
+ * To'lov turlari orasida pul o'tkazish — inkassatsiya (naqd puldan bankka),
  * Click hamyonidan hisob-raqamga va h.k.
  *
  * O'tkazma — HUJJAT, postinglari esa ikkita `AccountEntry`. Bu `Payment` →
@@ -13,7 +13,7 @@
  *
  * ⚠️ DEADLOCK. transfer(A→B) va transfer(B→A) bir vaqtda kelsa, har biri
  * o'z manbasini lock qilib, ikkinchisining manzilini kutardi. Shuning uchun
- * hisoblar HAR DOIM `id` bo'yicha O'SISH tartibida lock qilinadi —
+ * to'lov turlari HAR DOIM `id` bo'yicha O'SISH tartibida lock qilinadi —
  * yo'nalishdan qat'i nazar.
  */
 
@@ -47,7 +47,7 @@ const assertAccount = async (id, label) => {
 };
 
 /**
- * Ikki hisob ustidagi amallarni `id` bo'yicha o'sish tartibida bajaradi.
+ * Ikki to'lov turi ustidagi amallarni `id` bo'yicha o'sish tartibida bajaradi.
  * Deadlock'ning oldini oladigan yagona qoida — shu funksiya.
  *
  * @param {Array<{accountId: string, run: () => Promise<any>}>} operations
@@ -120,7 +120,7 @@ const getTransfers = async (req) => {
  */
 const createTransfer = async (data, userId) => {
   if (data.fromAccountId === data.toAccountId) {
-    throw new BadRequestError("Bitta hisobning o'ziga o'tkazma qilib bo'lmaydi");
+    throw new BadRequestError("Bitta turning o'ziga o'tkazma qilib bo'lmaydi");
   }
 
   const amount = parseAmount(data.amount, "O'tkazma summasi");
@@ -134,8 +134,8 @@ const createTransfer = async (data, userId) => {
   }
 
   const [from, to] = await Promise.all([
-    assertAccount(data.fromAccountId, "Manba hisob"),
-    assertAccount(data.toAccountId, "Manzil hisob"),
+    assertAccount(data.fromAccountId, "Manba to'lov turi"),
+    assertAccount(data.toAccountId, "Manzil to'lov turi"),
   ]);
 
   const occurredAt = data.occurredAt ? new Date(data.occurredAt) : new Date();
@@ -156,7 +156,7 @@ const createTransfer = async (data, userId) => {
       },
     });
 
-    // Qoldiq tekshiruvi lock ostida: chiqim qilinadigan hisobda pul
+    // Qoldiq tekshiruvi lock ostida: chiqim qilinadigan turda pul
     // yetarlimi. Lock'dan oldin o'qilgan qiymat ishonchsiz.
     await inLockOrder([
       {
@@ -165,7 +165,7 @@ const createTransfer = async (data, userId) => {
           const fresh = await tx.paymentAccount.findUnique({ where: { id: from.id } });
           if (new Decimal(fresh.balance).lessThan(amount)) {
             throw new BadRequestError(
-              `"${from.name}" hisobida ${formatAmount(fresh.balance)} so'm bor — ` +
+              `"${from.name}" turida ${formatAmount(fresh.balance)} so'm bor — ` +
                 `${formatAmount(amount)} so'm o'tkazib bo'lmaydi`,
             );
           }
@@ -235,7 +235,7 @@ const voidTransfer = async (id, reason, userId) => {
   const occurredAt = new Date();
 
   logger.warn(
-    `[kassa] O'tkazma bekor qilindi: transfer=${id} ` +
+    `[accounts] O'tkazma bekor qilindi: transfer=${id} ` +
       `${transfer.fromAccount.name} → ${transfer.toAccount.name} ` +
       `summa=${amount.toFixed(2)} actor=${userId} sabab="${trimmed}"`,
   );
@@ -260,7 +260,7 @@ const voidTransfer = async (id, reason, userId) => {
           });
           if (new Decimal(fresh.balance).lessThan(received)) {
             throw new BadRequestError(
-              `"${transfer.toAccount.name}" hisobida ${formatAmount(fresh.balance)} so'm bor — ` +
+              `"${transfer.toAccount.name}" turida ${formatAmount(fresh.balance)} so'm bor — ` +
                 "o'tkazmani qaytarish uchun yetarli emas",
             );
           }

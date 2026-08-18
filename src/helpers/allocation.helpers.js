@@ -20,7 +20,7 @@
  * `UPDATE` commit'gacha eksklyuziv row-lock oladi. O'quvchilar bir-biri bilan
  * hech qachon to'qnashmaydi, shuning uchun deadlock imkonsiz.
  *
- * Kassa yozuvi HAR DOIM oxirgi. Ikki hisob orasidagi o'tkazmada esa hisoblar
+ * To'lov turi yozuvi HAR DOIM oxirgi. Ikki tur orasidagi o'tkazmada esa ular
  * `id` bo'yicha O'SISH tartibida lock qilinadi — yo'nalishdan qat'i nazar.
  * ═════════════════════════════════════════════
  */

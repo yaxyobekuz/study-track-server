@@ -1,9 +1,9 @@
 /**
- * To'lov hisoblari (kassa) — "Naqd kassa", "Uzcard terminal", "Ipoteka bank".
+ * To'lov turlari — pul qayerga tushadi: "Naqd", "Uzcard terminal", "Ipoteka bank".
  *
  * Dinamik katalog: `PaymentMethod` enumi shu bilan almashtirildi.
  *
- * KASSA DAFTARI QAT'IY APPEND-ONLY. Qator tahrirlanmaydi ham, o'chirilmaydi
+ * HARAKATLAR DAFTARI QAT'IY APPEND-ONLY. Qator tahrirlanmaydi ham, o'chirilmaydi
  * ham; xato yozuv teskari (kompensatsiya) qatori bilan yopiladi. Shuning
  * uchun daftarga yozadigan YAGONA nuqta — `postEntry()`.
  *
@@ -63,7 +63,7 @@ const serializeEntry = (row, { account } = {}) => ({
 // ─────────────────────────────────────────────
 
 /**
- * Kassa daftariga bitta qator yozadi va hisob qoldig'ini yangilaydi.
+ * Harakatlar daftariga bitta qator yozadi va qoldiqni yangilaydi.
  *
  * HAR DOIM tranzaksiya ichida chaqiriladi va LOCK TARTIBIDA OXIRGI bo'ladi
  * (StudentAccount → MonthlyInvoice → PaymentAccount).
@@ -84,7 +84,7 @@ const serializeEntry = (row, { account } = {}) => ({
 const postEntry = async (tx, params) => {
   const { accountId, type, amount, occurredAt, createdBy } = params;
 
-  // Ishora tipga mos kelishi — INVARIANT, kelishuv emas
+  // Ishora turga mos kelishi — INVARIANT, kelishuv emas
   assertSignMatchesType(type, amount);
 
   // 1) increment BIRINCHI: qator lock'ini oladi va post-image qaytaradi
@@ -111,18 +111,18 @@ const postEntry = async (tx, params) => {
 };
 
 /**
- * Hisob mavjud va faolligini tekshiradi (to'lov qabul qilishdan oldin).
+ * To'lov turi mavjud va faolligini tekshiradi (to'lov qabul qilishdan oldin).
  * @param {string} accountId
  * @returns {Promise<object>}
  */
 const assertActiveAccount = async (accountId) => {
-  if (!accountId) throw new BadRequestError("To'lov hisobi tanlanmagan");
+  if (!accountId) throw new BadRequestError("To'lov turi tanlanmagan");
 
   const account = await prisma.paymentAccount.findUnique({ where: { id: accountId } });
-  if (!account) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!account) throw new NotFoundError("To'lov turi topilmadi");
 
   if (account.isArchived || !account.isActive) {
-    throw new BadRequestError(`"${account.name}" hisobi faol emas`);
+    throw new BadRequestError(`"${account.name}" faol emas`);
   }
 
   return account;
@@ -133,7 +133,7 @@ const assertActiveAccount = async (accountId) => {
 // ─────────────────────────────────────────────
 
 /**
- * Hisoblar ro'yxati (sahifalanmaydi — ular o'nlab, yuzlab emas).
+ * To'lov turlari ro'yxati (sahifalanmaydi — ular o'nlab, yuzlab emas).
  * @param {object} query - { status }
  * @returns {Promise<{items: object[], totals: object}>}
  */
@@ -161,7 +161,7 @@ const getAccounts = async (query = {}) => {
 
 const getAccountById = async (id) => {
   const row = await prisma.paymentAccount.findUnique({ where: { id } });
-  if (!row) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!row) throw new NotFoundError("To'lov turi topilmadi");
 
   return serializeAccount(row);
 };
@@ -172,7 +172,7 @@ const rethrowDuplicate = (error, message) => {
 };
 
 /**
- * Yangi hisob.
+ * Yangi to'lov turi.
  *
  * `openingBalance` yozilganda daftarga `adjustment` qatori YOZILMAYDI:
  * u boshlang'ich holat, harakat emas. Qoldiq = openingBalance + Σ entries,
@@ -184,7 +184,7 @@ const rethrowDuplicate = (error, message) => {
  */
 const createAccount = async (data, userId) => {
   const name = data.name?.trim();
-  if (!name) throw new BadRequestError("Hisob nomi kiritilmagan");
+  if (!name) throw new BadRequestError("To'lov turi nomi kiritilmagan");
 
   const opening = data.openingBalance
     ? parseAmount(data.openingBalance, "Boshlang'ich qoldiq")
@@ -204,12 +204,12 @@ const createAccount = async (data, userId) => {
 
     return serializeAccount(row);
   } catch (error) {
-    return rethrowDuplicate(error, "Bu nomdagi hisob allaqachon mavjud");
+    return rethrowDuplicate(error, "Bu nomdagi to'lov turi allaqachon mavjud");
   }
 };
 
 /**
- * Hisobni tahrirlaydi.
+ * To'lov turini tahrirlaydi.
  *
  * `openingBalance` HARAKAT BO'LGANDAN KEYIN o'zgarmaydi — u butun daftarni
  * qayta hisoblashga majbur qilardi. Farqni to'g'rilash uchun `adjustment`
@@ -221,13 +221,13 @@ const createAccount = async (data, userId) => {
  */
 const updateAccount = async (id, data) => {
   const row = await prisma.paymentAccount.findUnique({ where: { id } });
-  if (!row) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!row) throw new NotFoundError("To'lov turi topilmadi");
 
   const payload = {};
 
   if (data.name !== undefined) {
     const name = data.name?.trim();
-    if (!name) throw new BadRequestError("Hisob nomi kiritilmagan");
+    if (!name) throw new BadRequestError("To'lov turi nomi kiritilmagan");
     payload.name = name;
   }
   if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
@@ -237,7 +237,7 @@ const updateAccount = async (id, data) => {
     const entryCount = await prisma.accountEntry.count({ where: { accountId: id } });
     if (entryCount > 0) {
       throw new BadRequestError(
-        "Harakatlar boshlangan hisobning boshlang'ich qoldig'ini o'zgartirib bo'lmaydi. " +
+        "Harakatlar boshlangan to'lov turining boshlang'ich qoldig'ini o'zgartirib bo'lmaydi. " +
           "Farqni to'g'rilash yozuvi bilan kiriting.",
       );
     }
@@ -253,15 +253,15 @@ const updateAccount = async (id, data) => {
     const updated = await prisma.paymentAccount.update({ where: { id }, data: payload });
     return serializeAccount(updated);
   } catch (error) {
-    return rethrowDuplicate(error, "Bu nomdagi hisob allaqachon mavjud");
+    return rethrowDuplicate(error, "Bu nomdagi to'lov turi allaqachon mavjud");
   }
 };
 
 /**
- * Arxivlaydi/tiklaydi. Hisob HECH QACHON o'chirilmaydi — unga to'lovlar va
- * daftar qatorlari FK bilan bog'langan (Restrict).
+ * Arxivlaydi/tiklaydi. To'lov turi HECH QACHON o'chirilmaydi — unga to'lovlar
+ * va daftar qatorlari FK bilan bog'langan (Restrict).
  *
- * Qoldig'i bor hisobni arxivlash rad etiladi: "yopilgan kassada pul qoldi"
+ * Qoldig'i bor turni arxivlash rad etiladi: "yopilgan turda pul qoldi"
  * hisobotni jimgina buzardi.
  *
  * @param {string} id
@@ -270,12 +270,12 @@ const updateAccount = async (id, data) => {
  */
 const setAccountArchived = async (id, isArchived) => {
   const row = await prisma.paymentAccount.findUnique({ where: { id } });
-  if (!row) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!row) throw new NotFoundError("To'lov turi topilmadi");
 
   if (isArchived && !new Decimal(row.balance).isZero()) {
     throw new BadRequestError(
-      `Hisobda ${formatAmount(row.balance)} so'm qoldiq bor. ` +
-        "Avval pulni boshqa hisobga o'tkazing yoki to'g'rilash yozuvi kiriting.",
+      `Bu turda ${formatAmount(row.balance)} so'm qoldiq bor. ` +
+        "Avval pulni boshqa turga o'tkazing yoki to'g'rilash yozuvi kiriting.",
     );
   }
 
@@ -299,7 +299,7 @@ const setAccountArchived = async (id, isArchived) => {
  */
 const adjustBalance = async (id, data, userId) => {
   const account = await prisma.paymentAccount.findUnique({ where: { id } });
-  if (!account) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!account) throw new NotFoundError("To'lov turi topilmadi");
 
   const amount = parseSignedAmount(data.amount, "To'g'rilash summasi");
   if (amount.isZero()) {
@@ -315,7 +315,7 @@ const adjustBalance = async (id, data, userId) => {
   }
 
   logger.warn(
-    `[kassa] Qo'lda to'g'rilash: account=${id} (${account.name}) ` +
+    `[accounts] Qo'lda to'g'rilash: account=${id} (${account.name}) ` +
       `summa=${amount.toFixed(2)} actor=${userId} sabab="${reason}"`,
   );
 
@@ -358,7 +358,7 @@ const parseDateRange = (query) => {
 };
 
 /**
- * Bitta hisobning daftari.
+ * Bitta to'lov turining daftari.
  *
  * `seq` bo'yicha tartiblanadi, `occurredAt` bo'yicha EMAS: `balanceAfter`
  * ustuni qo'shilish tartibiga bog'liq va orqaga sanalgan to'lov ro'yxat
@@ -370,7 +370,7 @@ const parseDateRange = (query) => {
  */
 const getAccountEntries = async (accountId, req) => {
   const account = await prisma.paymentAccount.findUnique({ where: { id: accountId } });
-  if (!account) throw new NotFoundError("To'lov hisobi topilmadi");
+  if (!account) throw new NotFoundError("To'lov turi topilmadi");
 
   const { page, limit, skip } = getPaginationParams(req);
   const { query } = req;
@@ -417,7 +417,7 @@ const getAccountEntries = async (accountId, req) => {
 };
 
 /**
- * Kassa hisoboti — "qaysi hisobga qancha tushdi" (sana oralig'ida).
+ * Tushum hisoboti — "qaysi to'lov turiga qancha tushdi" (sana oralig'ida).
  *
  * Kassir smena yopishda naqd pulni shu bilan solishtiradi.
  *

@@ -78,7 +78,7 @@ const getBalances = async (studentIds = []) => {
  * Shuning uchun uni generatsiya ham, cron ham, admin tugmasi ham bir xil
  * chaqira oladi.
  *
- * ⚠️ Bu yerda KASSA YOZUVI YOZILMAYDI. Pul kassaga to'lov qabul qilinganda
+ * ⚠️ Bu yerda DAFTAR YOZUVI YOZILMAYDI. Pul to'lov turiga qabul qilinganda
  * kirgan; bu faqat ICHKI taqsimot. Yozilsa daromad ikki marta hisoblanardi.
  *
  * Pul ham FIFO sarflanadi (eng eski to'lovning qoldig'i birinchi), shunda
@@ -195,7 +195,7 @@ const applyDepositsForStudent = async (studentId) => {
       });
     }
 
-    // 7 ── Qoldiqni kamaytirish (kassaga TEGILMAYDI)
+    // 7 ── Qoldiqni kamaytirish (to'lov turiga TEGILMAYDI)
     await tx.studentAccount.update({
       where: { studentId },
       data: { balance: { decrement: allocated } },
@@ -324,7 +324,7 @@ const releaseInvoiceAllocations = async (tx, invoice) => {
 // ─────────────────────────────────────────────
 
 /**
- * Depozitni ota-onaga qaytaradi — pul kassadan chiqadi.
+ * Depozitni ota-onaga qaytaradi — pul to'lov turidan chiqadi.
  *
  * @param {string} studentId
  * @param {object} data - { amount, accountId, reason, refundedAt }
@@ -348,7 +348,7 @@ const refundDeposit = async (studentId, data, userId) => {
 
   logger.warn(
     `[deposit] Depozit qaytarildi: student=${studentId} summa=${amount.toFixed(2)} ` +
-      `hisob=${account.name} actor=${userId} sabab="${reason}"`,
+      `tur=${account.name} actor=${userId} sabab="${reason}"`,
   );
 
   const refund = await prisma.$transaction(async (tx) => {
@@ -399,7 +399,7 @@ const refundDeposit = async (studentId, data, userId) => {
       data: { balance: { decrement: amount } },
     });
 
-    // 2 ── KASSA — oxirgi
+    // 2 ── TO'LOV TURI — oxirgi
     await postEntry(tx, {
       accountId: account.id,
       type: "refund",
@@ -423,7 +423,7 @@ const refundDeposit = async (studentId, data, userId) => {
 /**
  * Qoldiqni qo'lda to'g'rilash — eski qarzni ko'chirish, sanoq farqi.
  *
- * Kassaga TEGILMAYDI: bu pul harakati emas, hisob tuzatishi. Kassa
+ * To'lov turiga TEGILMAYDI: bu pul harakati emas, hisob tuzatishi. To'lov turi
  * qoldig'ini to'g'rilash uchun `paymentAccount.adjustBalance` bor.
  *
  * @param {string} studentId

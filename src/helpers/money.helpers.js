@@ -105,7 +105,7 @@ function applyPercent(amount, percent) {
 }
 
 /**
- * Ishorali summa — kassa daftari (`AccountEntry.amount`) uchun: + kirim, − chiqim.
+ * Ishorali summa — harakatlar daftari (`AccountEntry.amount`) uchun: + kirim, − chiqim.
  *
  * `parseAmount` manfiyni rad etadi, shuning uchun daftarga yozadigan kod
  * yo money helper'ini butunlay chetlab o'tardi (float qaytib keladigan
@@ -144,7 +144,7 @@ function parseSignedAmount(value, label = "Summa") {
 }
 
 /**
- * Kassa daftaridagi ishora — KELISHUV emas, INVARIANT.
+ * Daftardagi ishora — KELISHUV emas, INVARIANT.
  *
  * `payment` musbat, `payment_void` manfiy bo'lishi tipdan kelib chiqadi;
  * teskarisi yozilsa hisob qoldig'i jimgina buziladi va buni faqat
@@ -172,17 +172,17 @@ function assertSignMatchesType(type, amount) {
   const expected = ENTRY_SIGNS[type];
 
   if (expected === undefined) {
-    throw new InternalServerError(`Kassa yozuvi turi noma'lum: ${type}`);
+    throw new InternalServerError(`Daftar yozuvi turi noma'lum: ${type}`);
   }
   if (amount.isZero()) {
-    throw new InternalServerError("Kassa yozuvi summasi nol bo'lishi mumkin emas");
+    throw new InternalServerError("Daftar yozuvi summasi nol bo'lishi mumkin emas");
   }
   if (expected === 0) return;
 
   const actual = amount.isNegative() ? -1 : 1;
   if (actual !== expected) {
     throw new InternalServerError(
-      `Kassa yozuvi ishorasi turiga mos emas: ${type} → ${amount.toFixed(AMOUNT_SCALE)}`,
+      `Daftar yozuvi ishorasi turiga mos emas: ${type} → ${amount.toFixed(AMOUNT_SCALE)}`,
     );
   }
 }

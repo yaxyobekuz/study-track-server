@@ -12,7 +12,7 @@
  * narsani TUZATMAYDI — u faqat baqiradi. Avtomatik tuzatish haqiqiy sababni
  * yashirardi va keyingi safar pul jimgina yo'qolardi.
  *
- * 03:00 — 06:00 dagi hisob-faktura passidan oldin, kunduzgi kassa
+ * 03:00 — 06:00 dagi hisob-faktura passidan oldin, kunduzgi to'lov
  * ishidan keyin.
  */
 
@@ -28,7 +28,7 @@ const { Decimal, formatAmount } = require("../helpers/money.helpers");
 async function runFinanceReconcilePass() {
   const problems = [];
 
-  // ── 1. Kassa qoldiqlari ───────────────────
+  // ── 1. To'lov turlari qoldiqlari ───────────────────
   const accounts = await prisma.paymentAccount.findMany();
   const entrySums = await prisma.accountEntry.groupBy({
     by: ["accountId"],
@@ -130,7 +130,7 @@ async function runFinanceReconcilePass() {
 
   if (problems.length === 0) {
     logger.info(
-      `[FinanceReconcile] Invariantlar joyida — ${checked.accounts} kassa, ` +
+      `[FinanceReconcile] Invariantlar joyida — ${checked.accounts} to'lov turi, ` +
         `${checked.studentAccounts} depozit, ${checked.invoices} hisob-faktura`,
     );
   } else {

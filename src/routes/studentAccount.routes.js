@@ -22,7 +22,7 @@ router.get("/:studentId/movements", protect, validateObjectId("studentId"), auth
 
 // Depozitni qo'llash — pul yaratmaydi, faqat ichki taqsimot
 router.post("/:studentId/apply", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_PAY), applyDeposit);
-// Qaytarish — pul kassadan chiqadi
+// Qaytarish — pul to'lov turidan chiqadi
 router.post("/:studentId/refund", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_REFUND), refundDeposit);
 // Qo'lda to'g'rilash — sababsiz pul yaratadi/yo'q qiladi
 router.post("/:studentId/adjust", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_ADJUST), adjustBalance);

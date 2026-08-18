@@ -25,7 +25,7 @@ const {
 // Aniq yo'llar `/:id` dan OLDIN
 router.get("/report", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getReport);
 
-// O'tkazmalar — kassalarni boshqarishdan ALOHIDA ruxsat: pul harakati
+// O'tkazmalar — to'lov turlarini boshqarishdan ALOHIDA ruxsat: pul harakati
 router.get("/transfers", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getTransfers);
 router.post("/transfers", protect, authorizePermission(PERMISSIONS.FINANCE_TRANSFER), createTransfer);
 router.post("/transfers/:id/void", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_TRANSFER), voidTransfer);
