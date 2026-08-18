@@ -211,8 +211,12 @@ enum ScheduleDay {
 // (MessageDeliveryStatus / MessageDeliveryStatusEnum uslubi).
 enum StudentFinanceStatusEnum {
   active // Faol — hisob-faktura shakllanadi
-  frozen // Muzlatilgan — o'qimaydi, majburiyat yo'q
-  expelled // Chetlatilgan — o'qishdan chiqarilgan, majburiyat yo'q
+  frozen // Muzlatilgan — DAVR ICHIDAGI vaqtinchalik istisno, majburiyat yo'q
+  // `expelled` OLIB TASHLANDI: maktabdan ketish endi StudentEnrollment
+  // davrini yopish bilan qayd etiladi — kun aniqligida, sababi toifasi bilan
+  // (`StudentEnrollmentEndReason.expelled`). Ikki joyda bir narsani
+  // belgilash "qaysi ekran ochilganiga qarab boshqa narx" degan holatga
+  // olib kelardi.
 }
 
 enum InvoiceStatus {
@@ -1607,6 +1611,67 @@ model StudentTariff {
 }
 
 // ─────────────────────────────────────────────
+// O'QISH DAVRLARI
+// ─────────────────────────────────────────────
+
+// Nima uchun ketgani — erkin izoh emas, TOIFA: "bu yil nechta o'quvchi
+// chetlatildi, nechtasi bitirdi" degan savolga hisobot javob bera olishi
+// uchun. Yoniga `reason` matni ham yoziladi.
+enum StudentEnrollmentEndReason {
+  left // o'z ixtiyori bilan ketdi
+  expelled // intizomiy chetlatish
+  graduated // bitirdi
+  transferred // boshqa filialga o'tdi
+}
+
+// O'QISH DAVRI — moliya domenidagi YAGONA kun aniqligidagi davr jadvali.
+//
+// NIMA UCHUN KUN, OY EMAS: kirish proratsiyasi aynan shu jadvalning mavjudlik
+// sababi. Chiqishda kun hisobga olinmaydi (yuqoridagi doktrinaga qarang).
+//
+// QATOR YO'Q = ABADIY O'QIYDI. Bu orqaga moslik uchun: tizimga o'tishdan
+// oldingi o'quvchilar hozirgidek to'liq oy to'lashda davom etadi.
+// ⚠️ "Qator yo'q" degani o'quvchida BITTA HAM qator yo'q degani — shu oyni
+// qamragan qator yo'q degani EMAS. Resolver davrlarni butun tarix bo'yicha
+// o'qiydi va oy oralig'i bo'yicha FILTRLAMAYDI: aks holda o'tgan yili ketgan
+// o'quvchi ham bo'sh ro'yxat berib, unga abadiy hisob-faktura yozilardi.
+//
+// ⚠️ KESISHUV: `tariffResolution.service.js` dagi "eng kech boshlangani
+// yutadi" (`orderBy: startMonth desc`, birinchisini olish) naqshini bu
+// jadvalga KO'CHIRMANG. Bir oyda bir nechta davr bo'lishi mumkin va
+// HAMMASI muhim: ulardan BIRORTASI oyning 1-kunini qamrasa — to'liq oy,
+// aks holda ENG ERTA kirish kuni olinadi.
+//
+// `endDate` INKLYUZIV — oxirgi o'qigan kun. Shu sababli [.., 09-30] va
+// [10-01, ..] KESISHMAYDI: o'quvchi ertasiga qayta yozilishi mumkin.
+model StudentEnrollment {
+  id String @id @db.Char(24)
+  // soft ref → User (role = "student"), StudentTariff uslubi. FK YO'Q:
+  // arxivlangan o'quvchining o'qish tarixi ham qolishi kerak.
+  studentId String @map("student_id") @db.Char(24)
+
+  // @db.Date — vaqt komponenti STRUKTURA BO'YICHA yo'q. Oy jadvallaridagi
+  // `Int YYYYMM` bilan bir xil g'oya: taymzona ma'lumotdan chiqib ketadi.
+  startDate DateTime  @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date // null = hozir o'qiyapti
+
+  endReason StudentEnrollmentEndReason? @map("end_reason")
+  reason    String                      @default("")
+  note      String                      @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Poyga backstop, kesishuv KAFOLATI EMAS: [09-01, 12-31] va [10-01, null]
+  // ikkalasi ham o'tib ketadi — haqiqiy tekshiruv service'da, tranzaksiya ichida.
+  @@unique([studentId, startDate])
+  @@index([studentId, startDate(sort: Desc)])
+  @@index([startDate, endDate])
+  @@map("student_enrollments")
+}
+
+// ─────────────────────────────────────────────
 // MOLIYA — CHEGIRMALAR
 // ─────────────────────────────────────────────
 
@@ -1674,13 +1739,22 @@ model StudentDiscount {
 // (9 yoki 11). Katalog ham, o'quvchiga biriktiriladigan narsa ham emas. Har
 // qanday YYYYMM yo akademik oy, yo yo'q — hisob helpers/academicYear.helpers.js da.
 //
-// KUN KOORDINATASI bu domenda faqat kassa tomonida bor:
+// KUN KOORDINATASI bu domenda uch joyda bor, boshqa hech qayerda emas:
 //   1) FinanceSettings.invoiceDayOfMonth — cron qachon ishlashi (konfiguratsiya),
 //   2) Payment.paidAt / AccountEntry.occurredAt — pul qachon harakatlandi
-//      (hodisa, davr emas).
-// Hisob-fakturaning o'zida kun maydoni YO'Q: "o'quvchi oyda 1 kun o'qisa ham
-// to'liq oy" qoidasi tekshiruv bilan emas, proratsiyani ifodalaydigan
-// maydonning yo'qligi bilan kafolatlanadi.
+//      (hodisa, davr emas),
+//   3) StudentEnrollment.startDate — o'quvchi maktabga kelgan kun, va uning
+//      hisob-fakturaga muhrlangan izi (billableDays / monthDays).
+//
+// KIRISHDA kun bor, CHIQISHDA yo'q. Oy o'rtasida KELGAN o'quvchi o'sha oyni
+// ulushga to'laydi (20-kunda keldi → 12/31). Oy o'rtasida KETGAN o'quvchi esa
+// o'sha oyni TO'LIQ to'laydi — "oyda 1 kun o'qisa ham to'liq oy" qoidasi
+// kuchda qoladi va `endDate` faqat hisob-faktura BOR-YO'QLIGINI hal qiladi,
+// SUMMASINI emas.
+//
+// Taymzona ma'lumotdan `@db.Date` bilan chiqarib tashlangan: sana ustunida
+// vaqt komponenti saqlanmaydi. Kun qiymatlari FAQAT `getUTC*` bilan o'qiladi
+// (helpers/month.helpers.js) va faqat `parseDayDate` orqali kiritiladi.
 
 model FinanceSettings {
   id String @id @default("singleton") @db.VarChar(24)
@@ -1714,6 +1788,14 @@ model FinanceSettings {
   // Yangi hisob-faktura chiqqanda o'quvchining oldindan to'langan qoldig'i
   // avtomatik yechilsinmi. O'chirilsa — depozit qo'lda qo'llanadi.
   depositAutoApply Boolean @default(true) @map("deposit_auto_apply")
+
+  // Kirish proratsiyasi yoqilganmi (autoGenerateEnabled uslubidagi kill switch).
+  prorationEnabled Boolean @default(true) @map("proration_enabled")
+  // Proratsiya natijasi shu birlikka PASTGA yaxlitlanadi — ATAYLAB maktab
+  // zarariga (367 712 → 367 000). 0 yoki 1 = yaxlitlash yo'q. Faqat tarif
+  // narxi birlikdan katta bo'lganda qo'llanadi, aks holda kichik tarif
+  // nolga tushib "to'langan" bo'lib qolardi.
+  roundingUnit     Int     @default(1000) @map("rounding_unit")
 
   // Cron watermark'i — FAQAT UI uchun. To'g'rilik bunga tayanmaydi:
   // idempotentlik @@unique([studentId, month]) da.
@@ -1814,9 +1896,22 @@ model MonthlyInvoice {
   // yorlig'i o'zgarmaydi.
   tariffName      String  @default("") @map("tariff_name")
 
-  // Chegirmagacha bo'lgan tarif narxi — "qancha chegirma berdik?" savoliga
-  // javob berish uchun saqlanadi (amount'dan hosila qilib bo'lmaydi).
-  baseAmount     Decimal @map("base_amount") @db.Decimal(14, 2)
+  // Chegirmagacha VA proratsiyagacha bo'lgan to'liq tarif narxi — "qancha
+  // chegirma/proratsiya berdik?" savoliga javob berish uchun saqlanadi.
+  baseAmount Decimal @map("base_amount") @db.Decimal(14, 2)
+
+  // KIRISH PRORATSIYASI koordinatasi — snapshot. null = proratsiya yo'q
+  // (to'liq oy), shu jumladan bu maydonlardan oldin chiqarilgan qatorlar.
+  billableDays Int? @map("billable_days")
+  monthDays    Int? @map("month_days")
+  roundingUnit Int? @map("rounding_unit") // amaldagi sozlama snapshot'i
+
+  // floor(baseAmount × billableDays / monthDays, roundingUnit).
+  // Proratsiya bo'lmasa = baseAmount. CHEGIRMA AYNAN SHUNGA qo'llanadi —
+  // to'liq narxga emas. Aks holda `discountSnapshot` dagi ulushlar yig'indisi
+  // `discountAmount` ga teng bo'lmay qolardi (discount.helpers.js).
+  proratedAmount Decimal @map("prorated_amount") @db.Decimal(14, 2)
+
   discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
   // [{ discountId, name, type, value, nominalAmount, appliedAmount }] —
   // chiqarilgan paytdagi chegirmalar. `appliedAmount`lar yig'indisi AYNAN
@@ -1824,8 +1919,10 @@ model MonthlyInvoice {
   // orasidagi hakam — discountAmount, snapshot esa taqsimot izohi.
   discountSnapshot Json? @map("discount_snapshot")
 
-  // MUHRLANGAN summa = baseAmount − discountAmount. Hech qachon qayta
-  // hisoblanmaydi; keyingi to'g'rilash keyingi oydan amal qiladi.
+  // MUHRLANGAN summa = proratedAmount − discountAmount.
+  // (Proratsiyagacha bu `baseAmount − discountAmount` edi.)
+  // Hech qachon qayta hisoblanmaydi; keyingi to'g'rilash keyingi oydan
+  // amal qiladi. Invariantni financeReconcile job har kecha tekshiradi.
   amount     Decimal @db.Decimal(14, 2)
   // To'lovlar yig'indisi (denormalizatsiya): ro'yxatni qarz bo'yicha
   // saralash/filtrlash har qator uchun agregatsiyasiz ishlashi kerak.
