@@ -128,7 +128,7 @@ async function updateSettings(data = {}, userId = null) {
 async function collectEntries(from, to) {
   return prisma.changelog.findMany({
     where: { date: { gte: from, lte: to } },
-    orderBy: [{ date: "desc" }, { panel: "asc" }],
+    orderBy: [{ date: "desc" }, { panel: "asc" }, { seq: "desc" }],
   });
 }
 

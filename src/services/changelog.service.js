@@ -175,7 +175,7 @@ async function getChangelogs(req) {
   const [data, total] = await Promise.all([
     prisma.changelog.findMany({
       where: filter,
-      orderBy: [{ date: "desc" }, { panel: "asc" }],
+      orderBy: [{ date: "desc" }, { panel: "asc" }, { seq: "desc" }],
       skip,
       take: limit,
     }),
