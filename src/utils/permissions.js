@@ -15,6 +15,7 @@
 // Bo'lim kalitlari — route fayllarida `authorizeSection` uchun.
 const SECTIONS = {
   USERS: "users",
+  ENROLLMENT: "enrollment",
   STATISTICS: "statistics",
   ATTENDANCE: "attendance",
   GRADES: "grades",
@@ -65,6 +66,15 @@ const PERMISSION_SECTIONS = [
       { key: "password", label: "Parolni ko'rish / tiklash" },
       A.export,
     ],
+  },
+  {
+    // O'qish davri PULNI harakatlantiradi (proratsiya va hisob-fakturaning
+    // bor-yo'qligi), lekin uni qabulxona kiritadi — moliyachi emas. Shuning
+    // uchun tariflardan ham, hisob-fakturalardan ham ALOHIDA bo'lim.
+    key: SECTIONS.ENROLLMENT,
+    label: "O'qish davrlari",
+    group: "Asosiy",
+    actions: [A.view, A.create, A.update, A.delete],
   },
   {
     key: SECTIONS.STATISTICS,
