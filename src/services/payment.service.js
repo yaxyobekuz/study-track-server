@@ -720,7 +720,7 @@ const getInvoiceAllocations = async (invoiceId, { includeVoided = false } = {}) 
     receiptLabel: `#${String(row.payment.receiptNo).padStart(6, "0")}`,
     paidAt: row.payment.paidAt,
     account: row.payment.account
-      ? { id: row.payment.account.id, name: row.payment.account.name, type: row.payment.account.type }
+      ? { id: row.payment.account.id, name: row.payment.account.name }
       : null,
   }));
 };

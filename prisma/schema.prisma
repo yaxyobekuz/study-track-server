@@ -235,16 +235,6 @@ enum DiscountType {
   fixed // qat'iy summa (so'm)
 }
 
-// Pul qayerga tushdi. `PaymentMethod` enumining o'rnini bosadi: "naqdmi?"
-// degan savolga yagona javob manbasi — hisobning turi.
-enum PaymentAccountType {
-  cash // naqd kassa
-  card // terminal / plastik
-  bank // bank hisob-raqami
-  online // Click, Payme
-  other
-}
-
 // Kassa daftaridagi harakat turi. Ishora TIPGA BOG'LIQ va tekshiriladi
 // (money.helpers.js → assertSignMatchesType).
 enum AccountEntryType {
@@ -1891,10 +1881,8 @@ model MonthlyInvoice {
 // Pul qayerga tushadi: "Naqd kassa", "Uzcard terminal", "Ipoteka bank".
 // Dinamik katalog — `PaymentMethod` enumining o'rnini bosadi.
 model PaymentAccount {
-  id          String             @id @db.Char(24)
-  name        String             @unique
-  type        PaymentAccountType
-  description String             @default("")
+  id   String @id @db.Char(24)
+  name String @unique
 
   // Tizimga o'tishdagi boshlang'ich qoldiq. balance = openingBalance + Σ entries
   // (har kecha financeReconcile job tekshiradi).

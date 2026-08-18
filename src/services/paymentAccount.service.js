@@ -1,8 +1,7 @@
 /**
  * To'lov hisoblari (kassa) — "Naqd kassa", "Uzcard terminal", "Ipoteka bank".
  *
- * Dinamik katalog: `PaymentMethod` enumi shu bilan almashtirildi. "Bu to'lov
- * naqdmi?" degan savolga yagona javob manbasi — `account.type`.
+ * Dinamik katalog: `PaymentMethod` enumi shu bilan almashtirildi.
  *
  * KASSA DAFTARI QAT'IY APPEND-ONLY. Qator tahrirlanmaydi ham, o'chirilmaydi
  * ham; xato yozuv teskari (kompensatsiya) qatori bilan yopiladi. Shuning
@@ -31,16 +30,6 @@ const {
   assertSignMatchesType,
 } = require("../helpers/money.helpers");
 
-const ACCOUNT_TYPES = ["cash", "card", "bank", "online", "other"];
-
-const TYPE_LABELS = {
-  cash: "Naqd",
-  card: "Plastik / terminal",
-  bank: "Bank hisob-raqami",
-  online: "Onlayn to'lov",
-  other: "Boshqa",
-};
-
 const ENTRY_TYPE_LABELS = {
   payment: "To'lov",
   payment_void: "To'lov bekor qilindi",
@@ -51,21 +40,10 @@ const ENTRY_TYPE_LABELS = {
   adjustment: "Qo'lda to'g'rilash",
 };
 
-const parseAccountType = (value) => {
-  const type = String(value || "").trim();
-  if (!ACCOUNT_TYPES.includes(type)) {
-    throw new BadRequestError(
-      `Hisob turi noto'g'ri. Mumkin: ${ACCOUNT_TYPES.map((t) => TYPE_LABELS[t]).join(", ")}`,
-    );
-  }
-  return type;
-};
-
 const serializeAccount = (row, extra = {}) => ({
   ...row,
   openingBalance: formatAmount(row.openingBalance),
   balance: formatAmount(row.balance),
-  typeLabel: TYPE_LABELS[row.type] ?? row.type,
   ...extra,
 });
 
@@ -77,7 +55,7 @@ const serializeEntry = (row, { account } = {}) => ({
   balanceAfter: formatAmount(row.balanceAfter),
   typeLabel: ENTRY_TYPE_LABELS[row.type] ?? row.type,
   isIncome: new Decimal(row.amount).greaterThan(0),
-  account: account ? { id: account.id, name: account.name, type: account.type } : null,
+  account: account ? { id: account.id, name: account.name } : null,
 });
 
 // ─────────────────────────────────────────────
@@ -156,7 +134,7 @@ const assertActiveAccount = async (accountId) => {
 
 /**
  * Hisoblar ro'yxati (sahifalanmaydi — ular o'nlab, yuzlab emas).
- * @param {object} query - { status, type }
+ * @param {object} query - { status }
  * @returns {Promise<{items: object[], totals: object}>}
  */
 const getAccounts = async (query = {}) => {
@@ -167,7 +145,6 @@ const getAccounts = async (query = {}) => {
     if (query.status === "active") filter.isActive = true;
     if (query.status === "inactive") filter.isActive = false;
   }
-  if (query.type) filter.type = parseAccountType(query.type);
 
   const rows = await prisma.paymentAccount.findMany({
     where: filter,
@@ -201,7 +178,7 @@ const rethrowDuplicate = (error, message) => {
  * u boshlang'ich holat, harakat emas. Qoldiq = openingBalance + Σ entries,
  * shuning uchun `balance` boshidanoq `openingBalance` ga tenglashtiriladi.
  *
- * @param {object} data - { name, type, description, openingBalance, sortOrder }
+ * @param {object} data - { name, openingBalance, sortOrder }
  * @param {string} userId
  * @returns {Promise<object>}
  */
@@ -209,7 +186,6 @@ const createAccount = async (data, userId) => {
   const name = data.name?.trim();
   if (!name) throw new BadRequestError("Hisob nomi kiritilmagan");
 
-  const type = parseAccountType(data.type);
   const opening = data.openingBalance
     ? parseAmount(data.openingBalance, "Boshlang'ich qoldiq")
     : new Decimal(0);
@@ -218,8 +194,6 @@ const createAccount = async (data, userId) => {
     const row = await prisma.paymentAccount.create({
       data: {
         name,
-        type,
-        description: data.description?.trim() || "",
         openingBalance: opening,
         balance: opening,
         sortOrder: Number.isInteger(Number(data.sortOrder)) ? Number(data.sortOrder) : 0,
@@ -256,8 +230,6 @@ const updateAccount = async (id, data) => {
     if (!name) throw new BadRequestError("Hisob nomi kiritilmagan");
     payload.name = name;
   }
-  if (data.description !== undefined) payload.description = data.description?.trim() || "";
-  if (data.type !== undefined) payload.type = parseAccountType(data.type);
   if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
   if (data.sortOrder !== undefined) payload.sortOrder = Number(data.sortOrder) || 0;
 
@@ -522,10 +494,7 @@ const getAccountsReport = async (query = {}) => {
 };
 
 module.exports = {
-  ACCOUNT_TYPES,
-  TYPE_LABELS,
   ENTRY_TYPE_LABELS,
-  parseAccountType,
   serializeAccount,
   serializeEntry,
   postEntry,
