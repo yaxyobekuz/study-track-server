@@ -30,15 +30,20 @@ const {
   overlappingPeriodWhere,
 } = require("../helpers/month.helpers");
 
-const STATUSES = ["active", "frozen", "expelled"];
+const STATUSES = ["active", "frozen"];
 
-// Hisob-faktura shakllanmaydigan holatlar
-const NON_BILLABLE = new Set(["frozen", "expelled"]);
+// Hisob-faktura shakllanmaydigan holatlar.
+//
+// "Chetlatilgan" OLIB TASHLANDI: maktabdan ketish endi StudentEnrollment
+// davrini yopish bilan qayd etiladi (kun aniqligida, sababi toifasi bilan).
+// Bu yerdagi `frozen` esa DAVR ICHIDAGI vaqtinchalik istisno: o'quvchi
+// ro'yxatda qoladi, lekin o'sha oyga majburiyat yozilmaydi va qaytganda
+// proratsiya QILINMAYDI.
+const NON_BILLABLE = new Set(["frozen"]);
 
 const STATUS_LABELS = {
   active: "Faol",
   frozen: "Muzlatilgan",
-  expelled: "Chetlatilgan",
 };
 
 const STUDENT_SELECT = {
@@ -171,7 +176,7 @@ const serializeStatus = (row, { student } = {}) => ({
  * Bir nechta o'quvchining berilgan oydagi amaldagi holati.
  *
  * Hisob-faktura generatori shu bilan filtrlaydi. BARCHA qamragan qatorlar
- * olinadi (faqat frozen/expelled emas): aks holda kechroq boshlangan `active`
+ * olinadi (faqat frozen emas): aks holda kechroq boshlangan `active`
  * qator e'tiborsiz qolib, o'quvchi noto'g'ri bloklanardi.
  *
  * @param {number} month - YYYYMM
