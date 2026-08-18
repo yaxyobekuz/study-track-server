@@ -1,12 +1,14 @@
 /**
  * Moliyaviy invariantlarni har kecha tekshiradi.
  *
- * Modulda uchta denormalizatsiya bor — ular tezlik uchun saqlanadi, lekin
- * ularning to'g'riligi kodning to'g'riligiga bog'liq:
+ * Modulda uchta denormalizatsiya va bitta muhrlangan identitet bor — ular
+ * tezlik uchun saqlanadi, lekin to'g'riligi kodning to'g'riligiga bog'liq:
  *
  *   1. PaymentAccount.balance     = openingBalance + Σ AccountEntry.amount
  *   2. StudentAccount.balance     = Σ Payment.depositAmount
  *   3. MonthlyInvoice.paidAmount  = Σ (isVoided=false) PaymentAllocation.amount
+ *   4. MonthlyInvoice.amount      = proratedAmount − discountAmount
+ *                                   (va proratedAmount <= baseAmount)
  *
  * ARZON REKONSILER HAR QANDAY DIZAYN ISHONCHIDAN QIMMATROQ. Bu job hech
  * narsani TUZATMAYDI — u faqat baqiradi. Avtomatik tuzatish haqiqiy sababni
@@ -122,16 +124,76 @@ async function runFinanceReconcilePass() {
     }
   }
 
+  // ── 4. Muhrlangan summa identiteti ────────
+  // amount = proratedAmount − discountAmount, va proratedAmount <= baseAmount.
+  //
+  // Bu tekshiruv proratsiya bilan birga qo'shildi: summani ikkita mustaqil
+  // joyda hisoblash xavfi paydo bo'ldi (oylik pass va qayta shakllantirish).
+  // Bitta quruvchiga o'tkazilgan bo'lsa-da, invariantni tekshirib turish
+  // drift'ni uch hafta keyin hisobotda emas, ertasi kuni topadi.
+  const sealed = await prisma.monthlyInvoice.findMany({
+    select: {
+      id: true,
+      month: true,
+      studentId: true,
+      amount: true,
+      baseAmount: true,
+      proratedAmount: true,
+      discountAmount: true,
+      billableDays: true,
+      monthDays: true,
+    },
+  });
+
+  for (const invoice of sealed) {
+    const expected = new Decimal(invoice.proratedAmount).minus(invoice.discountAmount);
+    if (!expected.equals(invoice.amount)) {
+      problems.push({
+        kind: "invoice_amount",
+        id: invoice.id,
+        label: `${invoice.month} / student=${invoice.studentId}`,
+        stored: formatAmount(invoice.amount),
+        expected: formatAmount(expected),
+      });
+    }
+
+    if (new Decimal(invoice.proratedAmount).greaterThan(invoice.baseAmount)) {
+      problems.push({
+        kind: "invoice_prorated",
+        id: invoice.id,
+        label: `${invoice.month} / student=${invoice.studentId}`,
+        stored: formatAmount(invoice.proratedAmount),
+        expected: `<= ${formatAmount(invoice.baseAmount)}`,
+      });
+    }
+
+    const days = invoice.billableDays;
+    if (
+      days != null &&
+      (invoice.monthDays == null || days < 1 || days > invoice.monthDays)
+    ) {
+      problems.push({
+        kind: "invoice_days",
+        id: invoice.id,
+        label: `${invoice.month} / student=${invoice.studentId}`,
+        stored: `${days}/${invoice.monthDays}`,
+        expected: "1..monthDays",
+      });
+    }
+
+  }
+
   const checked = {
     accounts: accounts.length,
     studentAccounts: studentAccounts.length,
     invoices: invoices.length,
+    sealed: sealed.length,
   };
 
   if (problems.length === 0) {
     logger.info(
       `[FinanceReconcile] Invariantlar joyida — ${checked.accounts} to'lov turi, ` +
-        `${checked.studentAccounts} depozit, ${checked.invoices} hisob-faktura`,
+        `${checked.studentAccounts} depozit, ${checked.sealed} hisob-faktura`,
     );
   } else {
     logger.error(
