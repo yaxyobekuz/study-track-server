@@ -161,9 +161,19 @@ function parseBody(body) {
   const items = [];
   const notes = [];
   let inNotes = false;
+  // Bir necha satrga cho'zilgan band shu buferda yig'iladi
+  let current = null;
+
+  const flush = () => {
+    if (current == null) return;
+    const text = current.trim();
+    if (text) items.push(decodeEntities(text));
+    current = null;
+  };
 
   for (const line of String(body ?? "").split(/\r?\n/)) {
     if (NOTES_HEADING_RE.test(line.trim())) {
+      flush();
       inNotes = true;
       continue;
     }
@@ -174,10 +184,26 @@ function parseBody(body) {
     }
 
     if (BULLET_RE.test(line)) {
-      const item = line.replace(BULLET_RE, "").trim();
-      if (item) items.push(decodeEntities(item));
+      flush();
+      current = line.replace(BULLET_RE, "");
+      continue;
     }
+
+    // Bo'sh satr bandni yopadi
+    if (!line.trim()) {
+      flush();
+      continue;
+    }
+
+    // Qolgan har qanday satr — oldingi bandning DAVOMI.
+    //
+    // Ilgari bunday satrlar JIMGINA TASHLAB YUBORILARDI: matn tahrirlagichda
+    // 80 belgida ko'chirilgani uchun har bir uzun band yarmidan uzilib
+    // bazaga tushardi va tizim egasi yarim jumla o'qirdi.
+    if (current != null) current += ` ${line.trim()}`;
   }
+
+  flush();
 
   return { items, notes: decodeEntities(notes.join("\n").trim()) };
 }
