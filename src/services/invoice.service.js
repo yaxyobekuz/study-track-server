@@ -52,6 +52,19 @@ const {
 const { getVacationSet } = require("./vacationMonth.service");
 const { getInvoiceAllocations, TX_OPTIONS } = require("./payment.service");
 const {
+  getPeriodsForStudent,
+  resolveEnrollmentsForStudents,
+} = require("./studentEnrollment.service");
+const {
+  buildInvoiceRow,
+  computeMonthlyAmount,
+  prorationGap,
+} = require("./invoiceBuilder.service");
+const {
+  resolveEnrollmentForMonth,
+  describeEnrollment,
+} = require("../helpers/enrollment.helpers");
+const {
   releaseInvoiceAllocations,
   getBalance,
   getBalances,
@@ -85,6 +98,16 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
   return {
     ...rest,
     baseAmount: formatAmount(invoice.baseAmount),
+    // Kirish proratsiyasi: baza → ulush → chegirma → summa
+    proratedAmount: formatAmount(invoice.proratedAmount ?? invoice.baseAmount),
+    prorationAmount: formatAmount(
+      prorationGap(invoice.baseAmount, invoice.proratedAmount ?? invoice.baseAmount),
+    ),
+    isProrated: invoice.billableDays != null,
+    prorationLabel:
+      invoice.billableDays != null
+        ? `${invoice.billableDays}/${invoice.monthDays} kun`
+        : null,
     discountAmount: formatAmount(discount),
     hasDiscount: discount.greaterThan(0),
     amount: formatAmount(invoice.amount),
@@ -302,15 +325,22 @@ const getStudentInvoices = async (studentId, options = {}) => {
     ...(options.includeCancelled ? {} : { status: { not: "cancelled" } }),
   };
 
-  const [rows, agg, statusInfo, vacationSet, balance] = await Promise.all([
+  const [rows, agg, statusInfo, vacationSet, balance, periods] = await Promise.all([
     prisma.monthlyInvoice.findMany({ where, orderBy: { month: "desc" } }),
     prisma.monthlyInvoice.aggregate({
       where,
-      _sum: { amount: true, paidAmount: true, baseAmount: true, discountAmount: true },
+      _sum: {
+        amount: true,
+        paidAmount: true,
+        baseAmount: true,
+        proratedAmount: true,
+        discountAmount: true,
+      },
     }),
     resolveStatusForStudent(studentId, month),
     getVacationSet(academicYear),
     getBalance(studentId),
+    getPeriodsForStudent(studentId),
   ]);
 
   // To'lovlar chek raqami bilan — har bir hisob-faktura uchun alohida
@@ -353,8 +383,29 @@ const getStudentInvoices = async (studentId, options = {}) => {
     vacationSet,
   );
 
+  // O'quvchining O'ZI uchun hisob: u yanvardan kelgan bo'lsa "8 oydan 5-si"
+  // emas, "5 oydan 3-si" ko'rishi kerak. Bu JONLI hisoblanadi (snapshot
+  // emas): davr keyin to'g'rilansa yorliq ham to'g'rilanadi — u pul emas,
+  // shuning uchun muhrlash talab qilinmaydi.
+  //
+  // ⚠️ `MonthlyInvoice.billableIndex` esa O'ZGARMAYDI — u maktab bo'yicha
+  // snapshot va audit haqiqati.
+  let enrolledIndex = 0;
+
   const timeline = months.map((entry) => {
     const invoice = invoiceByMonth.get(entry.month);
+    const enrollment = resolveEnrollmentForMonth(periods, entry.month);
+    const isEnrolled = !entry.isVacation && enrollment.enrolled;
+
+    if (isEnrolled) enrolledIndex += 1;
+
+    const skipReason = entry.isVacation
+      ? "vacation"
+      : !enrollment.enrolled
+        ? "not_enrolled"
+        : settings.firstInvoiceMonth != null && entry.month < settings.firstInvoiceMonth
+          ? "before_first_invoice_month"
+          : null;
 
     return {
       month: entry.month,
@@ -362,6 +413,12 @@ const getStudentInvoices = async (studentId, options = {}) => {
       academicIndex: entry.academicIndex,
       billableIndex: entry.billableIndex,
       isVacation: entry.isVacation,
+      isEnrolled,
+      enrolledIndex: isEnrolled ? enrolledIndex : null,
+      skipReason,
+      isProrated: invoice?.billableDays != null,
+      billableDays: invoice?.billableDays ?? null,
+      monthDays: invoice?.monthDays ?? null,
       isFuture: entry.month > month,
       invoice: invoice
         ? serializeInvoice(invoice, { payments: paymentsByInvoice.get(invoice.id) ?? [] })
@@ -369,6 +426,7 @@ const getStudentInvoices = async (studentId, options = {}) => {
     };
   });
 
+  const enrolledMonthCount = enrolledIndex;
   const paidMonths = rows.filter((r) => r.status === "paid").length;
 
   return {
@@ -391,15 +449,25 @@ const getStudentInvoices = async (studentId, options = {}) => {
       reason: statusInfo.row?.reason ?? "",
     },
     balance: formatAmount(balance),
+    enrolledMonthCount,
+    enrollment: describeEnrollmentForStudent(periods),
     totals: {
       baseAmount: formatAmount(new Decimal(agg._sum.baseAmount ?? 0)),
+      // Kirish proratsiyasi tufayli hisoblanmagan summa — aks holda
+      // "baza 600 000 · chegirma 6 000 · summa 54 000" da 540 000
+      // yorliqsiz g'oyib bo'lardi
+      prorationAmount: formatAmount(
+        prorationGap(agg._sum.baseAmount ?? 0, agg._sum.proratedAmount ?? 0),
+      ),
       discountAmount: formatAmount(new Decimal(agg._sum.discountAmount ?? 0)),
       invoiced: formatAmount(invoiced),
       paid: formatAmount(paid),
       debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
       unpaidCount: rows.filter((r) => r.status !== "paid").length,
       paidMonths,
+      // Maktab bo'yicha (audit) va o'quvchi bo'yicha (ko'rsatiladigan)
       billableMonths: billableMonthCount,
+      enrolledMonths: enrolledMonthCount,
     },
     timeline,
     invoices: rows.map((row) =>
@@ -432,19 +500,26 @@ const getMyFinance = async (studentId, options = {}) => {
 
   // Joriy oydagi tarif, chegirma va narx — hisob-faktura hali shakllanmagan
   // bo'lsa ham o'quvchi nimaga qarzdor bo'lishini ko'rishi kerak.
-  const [resolved, discounts, movements, years] = await Promise.all([
+  const [resolved, discounts, movements, years, periods] = await Promise.all([
     resolveForStudentMonth(studentId, data.currentMonth),
     resolveDiscountsForStudent(studentId, data.currentMonth),
     getMovements(studentId),
     getStudentAcademicYears(studentId),
+    getPeriodsForStudent(studentId),
   ]);
 
   const item = resolved.items[0] ?? null;
   const settings = await getFinanceSettings();
 
+  // Joriy oy proratsiya bilan — o'quvchi ekranida ko'rinadigan summa
+  // hisob-faktura bilan mos kelishi shart
   const effective = item
-    ? applyDiscounts(new Decimal(item.amount), discounts, {
-        maxPercent: settings.maxDiscountPercent,
+    ? computeMonthlyAmount({
+        baseAmount: item.amount,
+        discounts,
+        periods,
+        month: data.currentMonth,
+        settings,
       })
     : null;
 
@@ -470,12 +545,29 @@ const getMyFinance = async (studentId, options = {}) => {
               d.type === "percent" ? `${Number(d.value)}%` : `${formatAmount(d.value)} so'm`,
           })),
           discountAmount: formatAmount(effective.discountAmount),
-          effectiveMonthly: formatAmount(effective.finalAmount),
+          effectiveMonthly: formatAmount(effective.amount),
+          isProrated: effective.isProrated,
+          billableDays: effective.isProrated ? effective.enrollment.billableDays : null,
+          monthDays: effective.isProrated ? effective.enrollment.monthDays : null,
         }
       : null,
     tariffReason: resolved.reason,
+    enrollment: describeEnrollmentForStudent(periods),
     movements: movements.items,
     ...data,
+  };
+};
+
+/** O'quvchi paneliga chiqadigan qisqa holat. */
+const describeEnrollmentForStudent = (periods) => {
+  const state = describeEnrollment(periods);
+  const toDay = (d) => (d ? d.toISOString().slice(0, 10) : null);
+
+  return {
+    isStudying: state.isStudying,
+    hasPeriods: state.hasPeriods,
+    since: toDay(state.since),
+    until: toDay(state.until),
   };
 };
 
@@ -572,10 +664,11 @@ const getStudentRegistry = async (req) => {
 
   const ids = students.map((s) => s.id);
 
-  const [{ byStudent }, discountsByStudent, balances, debtRows, statuses] =
+  const [{ byStudent }, discountsByStudent, periodsByStudent, balances, debtRows, statuses] =
     await Promise.all([
       resolveManyForMonth(month, { studentIds: ids }),
       resolveDiscountsForMonth(month, { studentIds: ids }),
+      resolveEnrollmentsForStudents(ids),
       getBalances(ids),
       prisma.monthlyInvoice.groupBy({
         by: ["studentId"],
@@ -603,10 +696,22 @@ const getStudentRegistry = async (req) => {
     const debt = debtByStudent.get(student.id) ?? new Decimal(0);
     const status = statuses.get(student.id)?.status ?? "active";
 
+    const periods = periodsByStudent.get(student.id) ?? [];
+    const enrollment = resolveEnrollmentForMonth(periods, month);
+
     const base = resolved?.total != null ? new Decimal(resolved.total) : null;
+    // ⚠️ Proratsiya bilan hisoblanadi — aks holda kassir ekrani 600 000
+    // ko'rsatib, hisob-fakturada 240 000 turardi va kassir ortiqcha pul
+    // qabul qilib, farqni depozitga tushirib yuborardi.
     const priced =
-      base != null
-        ? applyDiscounts(base, discounts, { maxPercent: settings.maxDiscountPercent })
+      base != null && enrollment.enrolled
+        ? computeMonthlyAmount({
+            baseAmount: base,
+            discounts,
+            periods,
+            month,
+            settings,
+          })
         : null;
 
     totalDebt = totalDebt.plus(debt);
@@ -635,7 +740,12 @@ const getStudentRegistry = async (req) => {
       })),
       baseAmount: base != null ? formatAmount(base) : null,
       discountAmount: priced ? formatAmount(priced.discountAmount) : null,
-      monthlyAmount: priced ? formatAmount(priced.finalAmount) : null,
+      monthlyAmount: priced ? formatAmount(priced.amount) : null,
+      // Kirish proratsiyasi — UI da "20-yanvardan · 12/31 kun" deb ko'rinadi
+      isEnrolled: enrollment.enrolled,
+      isProrated: priced?.isProrated ?? false,
+      billableDays: priced?.isProrated ? enrollment.billableDays : null,
+      monthDays: priced?.isProrated ? enrollment.monthDays : null,
       balance: formatAmount(balance),
       debt: formatAmount(debt),
       hasDebt: debt.greaterThan(0),
@@ -688,7 +798,7 @@ const getSummary = async (monthInput) => {
     prisma.studentAccount.aggregate({ _sum: { balance: true } }),
     prisma.monthlyInvoice.aggregate({
       where: { month, status: { not: "cancelled" } },
-      _sum: { baseAmount: true, discountAmount: true },
+      _sum: { baseAmount: true, proratedAmount: true, discountAmount: true },
     }),
   ]);
 
@@ -724,6 +834,13 @@ const getSummary = async (monthInput) => {
     counts: { ...counts, invoiced: invoicedCount },
     totals: {
       baseAmount: formatAmount(new Decimal(discountAgg._sum.baseAmount ?? 0)),
+      // amount = baseAmount − proration − discount
+      prorationAmount: formatAmount(
+        prorationGap(
+          discountAgg._sum.baseAmount ?? 0,
+          discountAgg._sum.proratedAmount ?? 0,
+        ),
+      ),
       discountAmount: formatAmount(new Decimal(discountAgg._sum.discountAmount ?? 0)),
       amount: formatAmount(totalAmount),
       paid: formatAmount(totalPaid),
@@ -865,60 +982,66 @@ const regenerateInvoice = async (id, reason, userId) => {
   }
 
   const settings = await getFinanceSettings();
-  const [resolved, discounts, vacationSet] = await Promise.all([
+  const [resolved, discounts, vacationSet, periods] = await Promise.all([
     resolveForStudentMonth(invoice.studentId, invoice.month),
     resolveDiscountsForStudent(invoice.studentId, invoice.month),
     getVacationSet(invoice.academicYear),
+    getPeriodsForStudent(invoice.studentId),
   ]);
 
-  const item = resolved.items[0];
-  if (!item) {
+  const billable = describeBillableMonth(invoice.month, settings, vacationSet);
+
+  // ⚠️ Summa AYNAN oylik pass bilan bir xil quruvchi orqali hisoblanadi.
+  // Ilgari bu yerda mustaqil hisob bor edi va u proratsiyani bilmasdi:
+  // kech qo'shilgan chegirmani qayta shakllantirish oy o'rtasida kelgan
+  // o'quvchining hisobini 240 000 dan 540 000 ga ko'tarib yuborardi.
+  const { row, skip, computed } = buildInvoiceRow({
+    student: { id: invoice.studentId },
+    month: invoice.month,
+    settings,
+    academic: {
+      academicYear: invoice.academicYear,
+      academicIndex: invoice.academicIndex,
+    },
+    billableMonth: {
+      billableIndex: billable.billableIndex ?? invoice.billableIndex,
+      billableMonthCount: billable.billableMonthCount,
+    },
+    resolved,
+    discounts,
+    periods,
+    source: "manual",
+    actorId: userId,
+    studentSnapshot: invoice.studentSnapshot,
+  });
+
+  if (skip === "notEnrolled") {
+    throw new BadRequestError(
+      "O'quvchi bu oyda o'qimagan — qayta shakllantirmang, hisob-fakturani bekor qiling",
+    );
+  }
+  if (skip) {
     throw new BadRequestError(
       "O'quvchida bu oy uchun tarif yoki narx yo'q — qayta shakllantirib bo'lmaydi",
     );
   }
 
-  const base = new Decimal(item.amount);
-  const discounted = applyDiscounts(base, discounts, {
-    maxPercent: settings.maxDiscountPercent,
-  });
-  const billable = describeBillableMonth(invoice.month, settings, vacationSet);
-
   logger.warn(
     `[invoices] Hisob-faktura qayta shakllantirildi: invoice=${id} ` +
       `student=${invoice.studentId} month=${invoice.month} ` +
-      `eski=${invoice.amount.toFixed(2)} yangi=${discounted.finalAmount.toFixed(2)} ` +
+      `eski=${invoice.amount.toFixed(2)} yangi=${computed.amount.toFixed(2)} ` +
+      `${computed.isProrated ? `(${row.billableDays}/${row.monthDays} kun) ` : ""}` +
       `actor=${userId} sabab="${trimmed}"`,
   );
 
   const created = await prisma.$transaction(async (tx) => {
     await tx.monthlyInvoice.delete({ where: { id } });
 
-    const isZero = discounted.finalAmount.isZero();
-
     return tx.monthlyInvoice.create({
       data: {
-        studentId: invoice.studentId,
-        month: invoice.month,
-        academicYear: invoice.academicYear,
-        academicIndex: invoice.academicIndex,
-        billableIndex: billable.billableIndex ?? invoice.billableIndex,
-        billableMonthCount: billable.billableMonthCount,
-        tariffId: item.tariff.id,
-        tariffVersionId: item.version.id,
-        tariffName: item.tariff.name,
-        baseAmount: base,
-        discountAmount: discounted.discountAmount,
-        discountSnapshot: discounted.snapshot.length ? discounted.snapshot : null,
-        amount: discounted.finalAmount,
-        paidAmount: 0,
-        status: isZero ? "paid" : "unpaid",
-        paidAt: isZero ? new Date() : null,
-        source: "manual",
-        studentSnapshot: invoice.studentSnapshot,
+        ...row,
         note: invoice.note,
         replacesInvoiceId: invoice.id,
-        createdBy: userId,
       },
     });
   }, TX_OPTIONS);

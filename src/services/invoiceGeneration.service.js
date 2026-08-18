@@ -25,18 +25,19 @@ const {
   formatMonthKey,
   nextMonth,
 } = require("../helpers/month.helpers");
-const { parseAmount, formatAmount, sumAmounts } = require("../helpers/money.helpers");
+const { formatAmount, sumAmounts } = require("../helpers/money.helpers");
 const {
   describeAcademicMonth,
   describeBillableMonth,
 } = require("../helpers/academicYear.helpers");
-const { applyDiscounts } = require("../helpers/discount.helpers");
 const { getFinanceSettings } = require("./settings.service");
-const { resolveManyForMonth, REASONS } = require("./tariffResolution.service");
+const { resolveManyForMonth } = require("./tariffResolution.service");
 const { resolveStatusesForMonth, NON_BILLABLE } = require("./studentFinanceStatus.service");
 const { resolveDiscountsForMonth } = require("./studentDiscount.service");
+const { resolveEnrollmentsForStudents } = require("./studentEnrollment.service");
 const { getVacationSet } = require("./vacationMonth.service");
 const { applyDepositsForStudents } = require("./studentAccount.service");
+const { buildInvoiceRow, prorationGap } = require("./invoiceBuilder.service");
 
 // `details` ro'yxatlari cheksiz o'smasin — admin uchun 200 ta ism yetarli
 const DETAILS_LIMIT = 200;
@@ -76,9 +77,30 @@ const emptySummary = (month, settings, reason) => ({
   created: 0,
   totalAmount: "0.00",
   discountTotal: "0.00",
+  // Kirish proratsiyasi tufayli hisoblanmagan summa — admin kartasida
+  // `baseAmount − amount` farqi yorliqsiz g'oyib bo'lmasligi uchun
+  prorationTotal: "0.00",
+  prorated: 0,
+  // Qat'iy chegirma proratsiya qilingan oyni nolga tushirgan hollar
+  wipedByDiscount: 0,
   depositApplied: "0.00",
-  skipped: { alreadyExists: 0, frozen: 0, expelled: 0, noTariff: 0, noPrice: 0 },
-  details: { frozen: [], expelled: [], noTariff: [], noPrice: [], wouldCreate: [], truncated: false },
+  skipped: {
+    alreadyExists: 0,
+    notEnrolled: 0,
+    frozen: 0,
+    noTariff: 0,
+    noTariffNewlyEnrolled: 0,
+    noPrice: 0,
+  },
+  details: {
+    notEnrolled: [],
+    frozen: [],
+    noTariff: [],
+    noTariffNewlyEnrolled: [],
+    noPrice: [],
+    wouldCreate: [],
+    truncated: false,
+  },
 });
 
 /**
@@ -168,6 +190,10 @@ const generateForMonth = async (monthInput, options = {}) => {
   });
 
   const pushDetail = (bucket, item) => {
+    // Sanoqchi kaliti ish vaqtida hosil bo'ladi — oldindan e'lon qilinmagan
+    // bucket `undefined + 1 = NaN` berib, butun hisobotni buzardi.
+    summary.details[bucket] ??= [];
+
     if (summary.details[bucket].length < DETAILS_LIMIT) {
       summary.details[bucket].push(item);
     } else {
@@ -180,7 +206,7 @@ const generateForMonth = async (monthInput, options = {}) => {
     const status = statusByStudent.get(student.id)?.status ?? "active";
 
     if (NON_BILLABLE.has(status)) {
-      summary.skipped[status] += 1;
+      summary.skipped[status] = (summary.skipped[status] ?? 0) + 1;
       pushDetail(status, { studentId: student.id, fullName: fullNameOf(student) });
       continue;
     }
@@ -195,23 +221,30 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   const billableIds = billable.map((s) => s.id);
 
-  // ── 3. Narx, chegirma va 4. mavjud hisob-fakturalar ─
-  const [{ byStudent }, discountsByStudent, existing] = await Promise.all([
-    resolveManyForMonth(month, { studentIds: billableIds }),
-    resolveDiscountsForMonth(month, { studentIds: billableIds }),
-    prisma.monthlyInvoice.findMany({
-      where: { month, studentId: { in: billableIds } },
-      select: { studentId: true },
-    }),
-  ]);
+  // ── 3. Narx, chegirma, o'qish davri va 4. mavjud hisob-fakturalar ─
+  // Hammasi `billableIds` bo'yicha — passga qo'shimcha aylanish qo'shilmaydi.
+  const [{ byStudent }, discountsByStudent, periodsByStudent, existing] =
+    await Promise.all([
+      resolveManyForMonth(month, { studentIds: billableIds }),
+      resolveDiscountsForMonth(month, { studentIds: billableIds }),
+      resolveEnrollmentsForStudents(billableIds),
+      prisma.monthlyInvoice.findMany({
+        where: { month, studentId: { in: billableIds } },
+        select: { studentId: true },
+      }),
+    ]);
 
   // Bekor qilingan hisob-faktura ham "mavjud" hisoblanadi: u qaror, bo'shliq emas.
   const existingIds = new Set(existing.map((e) => e.studentId));
 
   // ── 5. Qatorlarni yig'ish ─────────────────
+  // Summa mantig'i `invoiceBuilder.service.js` da — qayta shakllantirish
+  // ham AYNAN shuni chaqiradi. Ikkita mustaqil quruvchi bo'lsa, proratsiya
+  // faqat bittasiga qo'shilib qolardi.
   const rows = [];
   const amounts = [];
   const discountAmounts = [];
+  const prorationGaps = [];
 
   for (const student of billable) {
     if (existingIds.has(student.id)) {
@@ -219,66 +252,19 @@ const generateForMonth = async (monthInput, options = {}) => {
       continue;
     }
 
-    const resolved = byStudent.get(student.id);
-
-    if (!resolved || resolved.reason === REASONS.NO_ASSIGNMENT) {
-      summary.skipped.noTariff += 1;
-      pushDetail("noTariff", { studentId: student.id, fullName: fullNameOf(student) });
-      continue;
-    }
-
-    if (resolved.reason === REASONS.NO_PRICE) {
-      // Konfiguratsiya xatosi — ochiq ko'rsatiladi. Nol summali hisob-faktura
-      // yaratilmaydi: 0 qarz — yolg'on, hisob-fakturaning yo'qligi esa
-      // "narx belgilanmagan" degan haqiqatni to'g'ri ifodalaydi.
-      summary.skipped.noPrice += 1;
-      pushDetail("noPrice", {
-        studentId: student.id,
-        fullName: fullNameOf(student),
-        tariffId: resolved.assignment?.tariffId ?? null,
-      });
-      continue;
-    }
-
-    const item = resolved.items[0];
-    const baseAmount = parseAmount(resolved.total, "Oylik summa");
-
-    // Chegirma AYNAN shu yerda qo'llanadi va natijasi muhrlanadi: keyin
-    // chegirma o'zgarsa ham bu oy summasi qimirlamaydi.
-    const discounted = applyDiscounts(baseAmount, discountsByStudent.get(student.id) ?? [], {
-      maxPercent: settings.maxDiscountPercent,
-    });
-
-    const amount = discounted.finalAmount;
-    amounts.push(amount);
-    discountAmounts.push(discounted.discountAmount);
-
     const klass = student.classes[0]?.class ?? null;
 
-    // Nol summali hisob-faktura darhol "to'langan" bo'ladi — qamrov to'liq
-    // qoladi, uydirma qarz yaralmaydi. Bu `noPrice` skip'idan TUBDAN farq
-    // qiladi: u yerda 0 yolg'on edi, bu yerda 0 (100% chegirma yoki grant
-    // tarifi) — haqiqat.
-    const isZero = amount.isZero();
-
-    rows.push({
-      studentId: student.id,
+    const { row, skip, computed } = buildInvoiceRow({
+      student,
       month,
-      academicYear: academic.academicYear,
-      academicIndex: academic.academicIndex,
-      billableIndex: billableMonth.billableIndex,
-      billableMonthCount: billableMonth.billableMonthCount,
-      tariffId: item.tariff.id,
-      tariffVersionId: item.version.id,
-      tariffName: item.tariff.name,
-      baseAmount,
-      discountAmount: discounted.discountAmount,
-      discountSnapshot: discounted.snapshot.length ? discounted.snapshot : null,
-      amount,
-      paidAmount: 0,
-      status: isZero ? "paid" : "unpaid",
-      paidAt: isZero ? new Date() : null,
+      settings,
+      academic,
+      billableMonth,
+      resolved: byStudent.get(student.id),
+      discounts: discountsByStudent.get(student.id) ?? [],
+      periods: periodsByStudent.get(student.id) ?? [],
       source,
+      actorId,
       studentSnapshot: {
         firstName: student.firstName,
         lastName: student.lastName ?? "",
@@ -286,24 +272,51 @@ const generateForMonth = async (monthInput, options = {}) => {
         classId: klass?.id ?? null,
         className: klass?.name ?? null,
       },
-      createdBy: actorId,
     });
+
+    if (skip) {
+      summary.skipped[skip] = (summary.skipped[skip] ?? 0) + 1;
+      pushDetail(skip, {
+        studentId: student.id,
+        fullName: fullNameOf(student),
+        ...(skip === "noPrice"
+          ? { tariffId: byStudent.get(student.id)?.assignment?.tariffId ?? null }
+          : {}),
+      });
+      continue;
+    }
+
+    amounts.push(computed.amount);
+    discountAmounts.push(computed.discountAmount);
+    prorationGaps.push(prorationGap(computed.baseAmount, computed.proratedAmount));
+
+    if (computed.isProrated) summary.prorated += 1;
+    // Qat'iy chegirma proratsiya qilingan oyni butunlay yeb qo'ydi — bu
+    // ongli qabul qilingan qoida, lekin JIM qolmasligi kerak.
+    if (computed.wipedByDiscount) summary.wipedByDiscount += 1;
+
+    rows.push(row);
 
     if (dryRun) {
       pushDetail("wouldCreate", {
         studentId: student.id,
         fullName: fullNameOf(student),
-        baseAmount: formatAmount(baseAmount),
-        discountAmount: formatAmount(discounted.discountAmount),
-        amount: formatAmount(amount),
-        tariffName: item.tariff.name,
-        discounts: discounted.snapshot.map((d) => d.name),
+        baseAmount: formatAmount(computed.baseAmount),
+        proratedAmount: formatAmount(computed.proratedAmount),
+        isProrated: computed.isProrated,
+        billableDays: row.billableDays,
+        monthDays: row.monthDays,
+        discountAmount: formatAmount(computed.discountAmount),
+        amount: formatAmount(computed.amount),
+        tariffName: row.tariffName,
+        discounts: computed.snapshot.map((d) => d.name),
       });
     }
   }
 
   summary.totalAmount = formatAmount(sumAmounts(amounts));
   summary.discountTotal = formatAmount(sumAmounts(discountAmounts));
+  summary.prorationTotal = formatAmount(sumAmounts(prorationGaps));
 
   // ── 6. Yozish ─────────────────────────────
   if (!dryRun && rows.length > 0) {

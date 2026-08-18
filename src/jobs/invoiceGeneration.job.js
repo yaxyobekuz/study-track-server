@@ -86,7 +86,7 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
         logger.info(
           `[InvoiceCron] ${summary.monthLabel}: ${summary.created} ta yaratildi, ` +
             `mavjud ${summary.skipped.alreadyExists}, muzlatilgan ${summary.skipped.frozen}, ` +
-            `chetlatilgan ${summary.skipped.expelled}, tarifsiz ${summary.skipped.noTariff}, ` +
+            `o'qimaydi ${summary.skipped.notEnrolled}, tarifsiz ${summary.skipped.noTariff}, ` +
             `narxsiz ${summary.skipped.noPrice}, summa ${summary.totalAmount}, ` +
             `chegirma ${summary.discountTotal}, depozitdan ${summary.depositApplied}`,
         );

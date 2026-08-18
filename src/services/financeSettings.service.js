@@ -112,6 +112,18 @@ const updateSettings = async (data, userId) => {
     payload.autoGenerateEnabled = Boolean(data.autoGenerateEnabled);
   }
 
+  if (data.prorationEnabled !== undefined) {
+    payload.prorationEnabled = Boolean(data.prorationEnabled);
+  }
+
+  if (data.roundingUnit !== undefined) {
+    const unit = Number(data.roundingUnit);
+    if (!Number.isInteger(unit) || unit < 0 || unit > 1000000) {
+      throw new BadRequestError("Yaxlitlash birligi 0 dan 1 000 000 gacha butun son bo'lishi kerak");
+    }
+    payload.roundingUnit = unit;
+  }
+
   if (data.catchUpMonths !== undefined) {
     const months = Number(data.catchUpMonths);
     if (!Number.isInteger(months) || months < 0 || months > MAX_CATCH_UP_MONTHS) {
@@ -119,6 +131,21 @@ const updateSettings = async (data, userId) => {
         `Orqaga qaytish oylari 0 dan ${MAX_CATCH_UP_MONTHS} gacha bo'lishi kerak`,
       );
     }
+
+    // Proratsiya yoqilgan bo'lsa 0 xavfli: oy o'rtasida kelgan o'quvchining
+    // birinchi oyi cron passiga ULGURMAYDI (davr keyinroq kiritiladi) va
+    // orqaga qaytish bo'lmasa u oy umuman hisoblanmay qolardi. Davr
+    // ochilganda darhol shakllantirish bor, lekin bu ikkinchi himoya qavati.
+    const proration =
+      payload.prorationEnabled ?? current.prorationEnabled;
+
+    if (months === 0 && proration) {
+      throw new BadRequestError(
+        "Kirish proratsiyasi yoqilganda orqaga qaytish 0 bo'lishi mumkin emas — " +
+          "oy o'rtasida kelgan o'quvchining birinchi oyi hisoblanmay qoladi",
+      );
+    }
+
     payload.catchUpMonths = months;
   }
 
