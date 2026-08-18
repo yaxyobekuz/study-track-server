@@ -105,6 +105,27 @@ function applyPercent(amount, percent) {
 }
 
 /**
+ * Summani birlikkacha PASTGA yaxlitlaydi (proratsiya uchun).
+ *
+ * ATAYLAB PASTGA: 367 712 → 367 000. Farq maktab zarariga ketadi — bu
+ * biznes qarori, texnik emas. Proratsiya o'quvchi hayotida BIR MARTA
+ * (kirishda) ishlagani uchun maksimal yo'qotish har kirish uchun
+ * (unit − 1) so'm, har oy uchun EMAS.
+ *
+ * `unit <= 1` bo'lsa yaxlitlash yo'q — faqat 2 xonaga qisqartiriladi.
+ *
+ * @param {Prisma.Decimal} amount
+ * @param {number} unit - masalan 1000
+ * @returns {Prisma.Decimal}
+ */
+function floorToUnit(amount, unit) {
+  const exact = amount.toDecimalPlaces(AMOUNT_SCALE, Decimal.ROUND_DOWN);
+  if (!Number.isInteger(unit) || unit <= 1) return exact;
+
+  return exact.div(unit).floor().times(unit);
+}
+
+/**
  * Ishorali summa — harakatlar daftari (`AccountEntry.amount`) uchun: + kirim, − chiqim.
  *
  * `parseAmount` manfiyni rad etadi, shuning uchun daftarga yozadigan kod
@@ -197,5 +218,6 @@ module.exports = {
   formatAmount,
   sumAmounts,
   applyPercent,
+  floorToUnit,
   assertSignMatchesType,
 };
