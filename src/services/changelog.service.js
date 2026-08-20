@@ -166,9 +166,20 @@ async function getChangelogs(req) {
   }
 
   if (search) {
+    // `items` — String[]. Prisma unda QISM satr bo'yicha qidira olmaydi
+    // (`has` aniq tenglikni tekshiradi va yozib qidirishda hech qachon
+    // topmaydi). Shuning uchun mos keladigan id'lar oldindan raw so'rov
+    // bilan olinadi — yozuvlar kam, bu arzon.
+    const pattern = `%${search}%`;
+    const hits = await prisma.$queryRaw`
+      SELECT id FROM changelogs
+      WHERE EXISTS (SELECT 1 FROM unnest(items) AS i WHERE i ILIKE ${pattern})
+    `;
+
     filter.OR = [
       { title: { contains: search, mode: "insensitive" } },
-      { items: { has: search } },
+      { notes: { contains: search, mode: "insensitive" } },
+      { id: { in: hits.map((row) => row.id) } },
     ];
   }
 
