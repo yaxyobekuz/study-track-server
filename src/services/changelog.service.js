@@ -196,6 +196,25 @@ async function getChangelogs(req) {
   return formatPaginationResponse(data, total, page, limit);
 }
 
+/**
+ * Yozuv bo'lgan oylar ro'yxati — "Barchasi" tabidagi oy tanlash uchun.
+ *
+ * Bo'sh oylar ko'rsatilmaydi: ro'yxatda faqat haqiqatan yozuv bor oylar
+ * turadi, shuning uchun tanlov hech qachon bo'sh natija bermaydi.
+ *
+ * @returns {Promise<{month: string, count: number}[]>} yangi oy birinchi
+ */
+async function getAvailableMonths() {
+  const rows = await prisma.$queryRaw`
+    SELECT to_char(date, 'YYYY-MM') AS month, COUNT(*)::int AS count
+    FROM changelogs
+    GROUP BY 1
+    ORDER BY 1 DESC
+  `;
+
+  return rows.map((row) => ({ month: row.month, count: row.count }));
+}
+
 async function getChangelogById(id) {
   const entry = await prisma.changelog.findUnique({ where: { id } });
   if (!entry) throw new NotFoundError("O'zgarish yozuvi topilmadi");
@@ -388,6 +407,7 @@ async function upsertFromFile(parsed, createdBy = null) {
 
 module.exports = {
   getChangelogs,
+  getAvailableMonths,
   getChangelogById,
   getPanelVersions,
   computeNextVersion,

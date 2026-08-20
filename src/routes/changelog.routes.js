@@ -7,6 +7,7 @@ const { ROLES } = require("../utils/constants");
 const {
   getAll,
   getVersions,
+  getMonths,
   getOne,
   create,
   update,
@@ -18,6 +19,7 @@ router.use(protect);
 // DIQQAT: "/versions" "/:id" DAN OLDIN turishi shart — aks holda `validateObjectId`
 // "versions" ni ObjectId deb parse qilib, chalkash 400 qaytaradi.
 router.get("/versions", authorizePermission(PERMISSIONS.CHANGELOG_VIEW, ROLES.DEVELOPER), getVersions);
+router.get("/months", authorizePermission(PERMISSIONS.CHANGELOG_VIEW, ROLES.DEVELOPER), getMonths);
 
 router.get("/", authorizePermission(PERMISSIONS.CHANGELOG_VIEW, ROLES.DEVELOPER), getAll);
 router.get(

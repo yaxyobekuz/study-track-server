@@ -12,6 +12,12 @@ const getVersions = asyncHandler(async (req, res) => {
   res.json({ success: true, data: versions });
 });
 
+// Yozuv bo'lgan oylar — "Barchasi" tabidagi oy tanlash uchun
+const getMonths = asyncHandler(async (req, res) => {
+  const months = await changelogService.getAvailableMonths();
+  res.json({ success: true, data: months });
+});
+
 const getOne = asyncHandler(async (req, res) => {
   const entry = await changelogService.getChangelogById(req.params.id);
   res.json({ success: true, data: entry });
@@ -35,6 +41,7 @@ const remove = asyncHandler(async (req, res) => {
 module.exports = {
   getAll,
   getVersions,
+  getMonths,
   getOne,
   create,
   update,
