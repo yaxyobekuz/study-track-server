@@ -1,4 +1,6 @@
 const prisma = require("../config/prisma");
+// Rollar katalogi PLATFORMADA — ish vaqti default'lari barcha filiallarga umumiy
+const platformPrisma = require("../config/platformPrisma");
 const { getAttendanceSettings } = require("./settings.service");
 const { checkOfficeLocation } = require("../helpers/geolocation.helpers");
 const {
@@ -84,7 +86,7 @@ async function getEffectiveSchedule(user, forDate) {
   }
 
   // Roldan olish
-  const role = await prisma.role.findFirst({ where: { value: user.role } });
+  const role = await platformPrisma.role.findFirst({ where: { value: user.role } });
 
   let startTime = role?.workStartTime ?? null;
   let endTime = role?.workEndTime ?? null;

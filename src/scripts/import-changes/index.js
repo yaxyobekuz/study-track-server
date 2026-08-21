@@ -69,12 +69,35 @@ function describeDatabase(url) {
   }
 }
 
+/**
+ * O'zgarishlar tarixi endi PLATFORMA schema'sida (barcha filiallarga umumiy —
+ * bitta reliz hamma joyga bir vaqtda yetib boradi). Shuning uchun tanlangan
+ * ulanish satrining `schema` parametri `platform` ga o'rnatiladi: sozlamada
+ * `?schema=public` turgan bo'lsa ham yozuv to'g'ri joyga tushadi.
+ */
+function withPlatformSchema(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("schema", process.env.PLATFORM_SCHEMA || "platform");
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function resolveDatabaseUrl() {
   const override = process.env.CHANGELOG_DATABASE_URL;
-  if (override) return { url: override, source: "CHANGELOG_DATABASE_URL" };
+  if (override) {
+    return {
+      url: withPlatformSchema(override),
+      source: "CHANGELOG_DATABASE_URL",
+    };
+  }
 
   const fallback = process.env.DATABASE_URL;
-  if (fallback) return { url: fallback, source: "DATABASE_URL" };
+  if (fallback) {
+    return { url: withPlatformSchema(fallback), source: "DATABASE_URL" };
+  }
 
   return null;
 }
@@ -211,9 +234,12 @@ async function main() {
     }
   }
 
-  // PrismaClient tanlangan manzil bilan
-  process.env.DATABASE_URL = database.url;
-  const prisma = require("../../config/prisma");
+  // PrismaClient tanlangan manzil bilan. `changelog.service.js` PLATFORMA
+  // client'ini ishlatadi, u esa `config.platformDatabaseUrl` ni REQUIRE
+  // PAYTIDA o'qiydi — shuning uchun env o'zgaruvchisi require'dan OLDIN
+  // qo'yiladi.
+  process.env.PLATFORM_DATABASE_URL = database.url;
+  const platformPrisma = require("../../config/platformPrisma");
   const changelogService = require("../../services/changelog.service");
 
   const report = [];
@@ -236,7 +262,7 @@ async function main() {
     }
   }
 
-  await prisma.$disconnect();
+  await platformPrisma.$disconnect();
 
   // Hisobot
   console.log("");

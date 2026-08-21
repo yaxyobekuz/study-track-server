@@ -9,7 +9,12 @@
  * unga `discountId` bilan ishora qiladi.
  */
 
-const prisma = require("../config/prisma");
+// KATALOG PLATFORMADA — barcha filiallarga umumiy. Biriktirishlar
+// (`StudentDiscount`) esa har filialning o'z schema'sida, shuning uchun
+// "nechta o'quvchida ishlatilgan" savoli `catalogUsage.service.js` orqali,
+// filiallar bo'ylab hisoblanadi.
+const platformPrisma = require("../config/platformPrisma");
+const catalogUsage = require("./catalogUsage.service");
 const {
   getPaginationParams,
   formatPaginationResponse,
@@ -64,26 +69,21 @@ const getDiscounts = async (req) => {
   }
 
   const [rows, total] = await Promise.all([
-    prisma.discount.findMany({
+    platformPrisma.discount.findMany({
       where: filter,
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
       skip,
       take: limit,
     }),
-    prisma.discount.count({ where: filter }),
+    platformPrisma.discount.count({ where: filter }),
   ]);
 
   let usage = new Map();
   if (query.withUsage === "true" && rows.length) {
-    const grouped = await prisma.studentDiscount.groupBy({
-      by: ["discountId"],
-      where: {
-        discountId: { in: rows.map((r) => r.id) },
-        ...coveringMonthWhere(currentMonthKey()),
-      },
-      _count: { _all: true },
-    });
-    usage = new Map(grouped.map((g) => [g.discountId, g._count._all]));
+    usage = await catalogUsage.countDiscountAssignments(
+      rows.map((r) => r.id),
+      coveringMonthWhere(currentMonthKey()),
+    );
   }
 
   const items = rows.map((row) =>
@@ -99,15 +99,13 @@ const getDiscounts = async (req) => {
  * @returns {Promise<object>}
  */
 const getDiscountById = async (id) => {
-  const row = await prisma.discount.findUnique({ where: { id } });
+  const row = await platformPrisma.discount.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Chegirma topilmadi");
 
   const month = currentMonthKey();
   const [activeCount, totalCount] = await Promise.all([
-    prisma.studentDiscount.count({
-      where: { discountId: id, ...coveringMonthWhere(month) },
-    }),
-    prisma.studentDiscount.count({ where: { discountId: id } }),
+    catalogUsage.countDiscountAssignment(id, coveringMonthWhere(month)),
+    catalogUsage.countDiscountAssignment(id),
   ]);
 
   return serializeDiscount(row, { studentCount: activeCount, totalAssignments: totalCount });
@@ -132,12 +130,14 @@ const createDiscount = async (data, userId) => {
   const value = parseDiscountValue(data.value, type);
 
   try {
-    const row = await prisma.discount.create({
+    const row = await platformPrisma.discount.create({
       data: {
         name,
         description: data.description?.trim() || "",
         type,
-        value,
+        // STRING: qator PLATFORMA client'i orqali yoziladi, parseDiscountValue
+        // esa FILIAL client'ining Decimal klassini qaytaradi (ikki xil runtime).
+        value: formatAmount(value),
         isExclusive: data.isExclusive === true || data.isExclusive === "true",
         isActive: data.isActive === undefined ? true : Boolean(data.isActive),
         createdBy: userId,
@@ -163,7 +163,7 @@ const createDiscount = async (data, userId) => {
  * @returns {Promise<object>}
  */
 const updateDiscount = async (id, data) => {
-  const row = await prisma.discount.findUnique({ where: { id } });
+  const row = await platformPrisma.discount.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Chegirma topilmadi");
 
   const payload = {};
@@ -182,9 +182,7 @@ const updateDiscount = async (id, data) => {
   const wantsValueChange = data.type !== undefined || data.value !== undefined;
 
   if (wantsValueChange) {
-    const assignmentCount = await prisma.studentDiscount.count({
-      where: { discountId: id },
-    });
+    const assignmentCount = await catalogUsage.countDiscountAssignment(id);
 
     if (assignmentCount > 0) {
       throw new BadRequestError(
@@ -195,16 +193,16 @@ const updateDiscount = async (id, data) => {
 
     const type = data.type !== undefined ? parseDiscountType(data.type) : row.type;
     payload.type = type;
-    payload.value = parseDiscountValue(
-      data.value !== undefined ? data.value : row.value,
-      type,
+    // STRING — platformaga yozilyapti (yuqoridagi izohga qarang)
+    payload.value = formatAmount(
+      parseDiscountValue(data.value !== undefined ? data.value : row.value, type),
     );
   }
 
   if (Object.keys(payload).length === 0) return serializeDiscount(row);
 
   try {
-    const updated = await prisma.discount.update({ where: { id }, data: payload });
+    const updated = await platformPrisma.discount.update({ where: { id }, data: payload });
     return serializeDiscount(updated);
   } catch (error) {
     return rethrowDuplicate(error, "Bu nomdagi chegirma allaqachon mavjud");
@@ -221,10 +219,10 @@ const updateDiscount = async (id, data) => {
  * @returns {Promise<object>}
  */
 const setDiscountArchived = async (id, isArchived) => {
-  const row = await prisma.discount.findUnique({ where: { id } });
+  const row = await platformPrisma.discount.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Chegirma topilmadi");
 
-  const updated = await prisma.discount.update({
+  const updated = await platformPrisma.discount.update({
     where: { id },
     data: {
       isArchived,
@@ -242,17 +240,17 @@ const setDiscountArchived = async (id, isArchived) => {
  * @returns {Promise<{message: string}>}
  */
 const deleteDiscount = async (id) => {
-  const row = await prisma.discount.findUnique({ where: { id } });
+  const row = await platformPrisma.discount.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Chegirma topilmadi");
 
-  const used = await prisma.studentDiscount.count({ where: { discountId: id } });
+  const used = await catalogUsage.countDiscountAssignment(id);
   if (used > 0) {
     throw new BadRequestError(
       `Bu chegirma ${used} ta biriktirishda ishlatilgan — o'chirib bo'lmaydi. Arxivlang.`,
     );
   }
 
-  await prisma.discount.delete({ where: { id } });
+  await platformPrisma.discount.delete({ where: { id } });
 
   return { message: "Chegirma o'chirildi" };
 };

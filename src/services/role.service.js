@@ -1,4 +1,18 @@
-const prisma = require("../config/prisma");
+/**
+ * ROLLAR — PLATFORMA darajasida, barcha filiallarga umumiy.
+ *
+ * `User.role` filial schema'sidagi oddiy String (FK YO'Q), shuning uchun
+ * katalogni ko'chirish birorta bog'lanishni buzmadi.
+ *
+ * ⚠️ "Bu rolda nechta foydalanuvchi bor?" savoli endi BUTUN TIZIM bo'yicha
+ * javob beradi va `UserDirectory` (platforma indeksi) orqali hisoblanadi,
+ * filial bazasiga bormasdan. Bu shunchaki optimizatsiya emas, TO'G'RILIK
+ * masalasi: rol umumiy bo'lgani uchun uni o'chirish "Chilonzorda bu rolda
+ * hech kim yo'q" degan asosda emas, HECH BIR filialda yo'qligi asosida
+ * taqiqlanishi kerak.
+ */
+
+const platformPrisma = require("../config/platformPrisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { validatePermissions } = require("./permission.service");
 
@@ -15,36 +29,52 @@ function handleUnique(error) {
 }
 
 /**
+ * Rol qiymati bo'yicha BARCHA filiallardagi foydalanuvchilar soni.
+ * @param {string} value
+ * @returns {Promise<number>}
+ */
+async function countUsersWithRole(value) {
+  return platformPrisma.userDirectory.count({ where: { role: value } });
+}
+
+/**
  * Barcha rollarni foydalanuvchilar soni bilan olish.
  */
 async function getAllRoles() {
-  const roles = await prisma.role.findMany({
+  const roles = await platformPrisma.role.findMany({
     orderBy: [{ isSystem: "desc" }, { createdAt: "asc" }],
   });
 
-  // createdBy — soft ref (FK emas), qo'lda yuklaymiz
+  // createdBy — soft ref (FK emas). Yaratuvchi qaysi filialda ekani noma'lum,
+  // shuning uchun ism yo'naltirgichdan (denormalizatsiya) o'qiladi.
   const creatorIds = [...new Set(roles.map((r) => r.createdBy).filter(Boolean))];
-  const creators = await prisma.user.findMany({
-    where: { id: { in: creatorIds } },
-    select: { id: true, firstName: true, lastName: true },
-  });
+  const creators = creatorIds.length
+    ? await platformPrisma.userDirectory.findMany({
+        where: { id: { in: creatorIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
   const creatorMap = new Map(creators.map((c) => [c.id, c]));
 
-  const rolesWithCounts = await Promise.all(
-    roles.map(async (role) => {
-      const usersCount = await prisma.user.count({ where: { role: role.value } });
-      return { ...role, createdBy: creatorMap.get(role.createdBy) || null, usersCount };
-    }),
-  );
+  // Bitta groupBy — rol soniga qarab N ta count so'rovi EMAS.
+  const counts = await platformPrisma.userDirectory.groupBy({
+    by: ["role"],
+    _count: { _all: true },
+  });
+  const countMap = new Map(counts.map((c) => [c.role, c._count._all]));
 
-  return rolesWithCounts;
+  return roles.map((role) => ({
+    ...role,
+    createdBy: creatorMap.get(role.createdBy) || null,
+    usersCount: countMap.get(role.value) ?? 0,
+  }));
 }
 
 /**
  * Select/dropdown uchun rol variantlarini olish.
  */
 async function getRoleOptions() {
-  return prisma.role.findMany({
+  return platformPrisma.role.findMany({
     select: { id: true, name: true, value: true, isSystem: true },
     orderBy: [{ isSystem: "desc" }, { name: "asc" }],
   });
@@ -61,7 +91,7 @@ async function createRole(data, createdBy) {
   }
 
   try {
-    return await prisma.role.create({
+    return await platformPrisma.role.create({
       data: {
         name,
         value: value.toLowerCase().trim(),
@@ -90,7 +120,7 @@ async function updateRole(id, data) {
     weeklySchedule,
   } = data;
 
-  const role = await prisma.role.findUnique({ where: { id } });
+  const role = await platformPrisma.role.findUnique({ where: { id } });
 
   if (!role) {
     throw new NotFoundError("Rol topilmadi");
@@ -101,7 +131,7 @@ async function updateRole(id, data) {
   // Tizim rollarining nomi va kaliti o'zgartirilmaydi, faqat ish vaqti sozlanadi
   if (!role.isSystem) {
     if (value && value !== role.value) {
-      const usersCount = await prisma.user.count({ where: { role: role.value } });
+      const usersCount = await countUsersWithRole(role.value);
       if (usersCount > 0) {
         throw new BadRequestError(
           "Bu rol qiymatini o'zgartirib bo'lmaydi, chunki foydalanuvchilar mavjud",
@@ -123,7 +153,7 @@ async function updateRole(id, data) {
   if (weeklySchedule !== undefined) update.weeklySchedule = weeklySchedule || {};
 
   try {
-    return await prisma.role.update({ where: { id }, data: update });
+    return await platformPrisma.role.update({ where: { id }, data: update });
   } catch (error) {
     handleUnique(error);
   }
@@ -133,7 +163,7 @@ async function updateRole(id, data) {
  * Rolni o'chirish. Tizim rollari va foydalanuvchilari bor rollar o'chirilmaydi.
  */
 async function deleteRole(id) {
-  const role = await prisma.role.findUnique({ where: { id } });
+  const role = await platformPrisma.role.findUnique({ where: { id } });
 
   if (!role) {
     throw new NotFoundError("Rol topilmadi");
@@ -143,14 +173,15 @@ async function deleteRole(id) {
     throw new BadRequestError("Tizim rollarini o'chirib bo'lmaydi");
   }
 
-  const usersCount = await prisma.user.count({ where: { role: role.value } });
+  const usersCount = await countUsersWithRole(role.value);
   if (usersCount > 0) {
     throw new BadRequestError(
-      `Bu rolni o'chirib bo'lmaydi, chunki ${usersCount} ta foydalanuvchi mavjud`,
+      `Bu rolni o'chirib bo'lmaydi, chunki ${usersCount} ta foydalanuvchi mavjud ` +
+        `(barcha filiallar bo'yicha)`,
     );
   }
 
-  await prisma.role.delete({ where: { id } });
+  await platformPrisma.role.delete({ where: { id } });
 }
 
 module.exports = {
@@ -159,4 +190,5 @@ module.exports = {
   createRole,
   updateRole,
   deleteRole,
+  countUsersWithRole,
 };

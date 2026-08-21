@@ -1,7 +1,8 @@
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const penaltyService = require("../services/penalty.service");
-const prisma = require("../config/prisma");
+// Rollar katalogi PLATFORMADA (barcha filiallarga umumiy)
+const platformPrisma = require("../config/platformPrisma");
 const { ROLES } = require("../utils/constants");
 
 // ─── KATEGORIYA ────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ exports.createPenaltyCategory = asyncHandler(async (req, res) => {
     throw new BadRequestError("Owner uchun kategoriya yaratib bo'lmaydi");
   }
 
-  const roleExists = await prisma.role.findUnique({ where: { value: targetRole } });
+  const roleExists = await platformPrisma.role.findUnique({ where: { value: targetRole } });
   if (!roleExists) {
     throw new BadRequestError("Maqsadli rol topilmadi");
   }

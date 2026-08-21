@@ -23,6 +23,8 @@
  */
 
 const prisma = require("../config/prisma");
+// Chegirma KATALOGI platformada, biriktirishlar shu filialda.
+const platformPrisma = require("../config/platformPrisma");
 const {
   getPaginationParams,
   formatPaginationResponse,
@@ -66,7 +68,7 @@ const assertStudent = async (studentId) => {
 };
 
 const assertDiscount = async (discountId, { forAssign = false } = {}) => {
-  const discount = await prisma.discount.findUnique({ where: { id: discountId } });
+  const discount = await platformPrisma.discount.findUnique({ where: { id: discountId } });
   if (!discount) throw new NotFoundError("Chegirma topilmadi");
 
   if (forAssign && (discount.isArchived || !discount.isActive)) {
@@ -146,7 +148,10 @@ const assertExclusivity = async (tx, studentId, discount, period, excludeId = nu
     );
   }
 
-  const catalog = await tx.discount.findMany({
+  // Katalog PLATFORMADA — filial tranzaksiyasi (tx) unga kira olmaydi va
+  // kirishi SHART EMAS: bu o'zgarmas qoidalar ro'yxatini o'qish, biriktirish
+  // qatorining o'zi bilan bir xil izolyatsiyani talab qilmaydi.
+  const catalog = await platformPrisma.discount.findMany({
     where: { id: { in: others.map((o) => o.discountId) }, isExclusive: true },
     select: { name: true },
   });
@@ -189,7 +194,7 @@ const resolveDiscountsForMonth = async (month, { studentIds } = {}) => {
   const byStudent = new Map();
   if (rows.length === 0) return byStudent;
 
-  const catalog = await prisma.discount.findMany({
+  const catalog = await platformPrisma.discount.findMany({
     where: { id: { in: [...new Set(rows.map((r) => r.discountId))] } },
   });
   const catalogMap = new Map(catalog.map((d) => [d.id, d]));
@@ -280,7 +285,7 @@ const getAssignments = async (req) => {
         })
       : [],
     rows.length
-      ? prisma.discount.findMany({
+      ? platformPrisma.discount.findMany({
           where: { id: { in: [...new Set(rows.map((r) => r.discountId))] } },
         })
       : [],
@@ -314,7 +319,7 @@ const getStudentDiscounts = async (studentId) => {
   });
 
   const discounts = rows.length
-    ? await prisma.discount.findMany({
+    ? await platformPrisma.discount.findMany({
         where: { id: { in: [...new Set(rows.map((r) => r.discountId))] } },
       })
     : [];
@@ -339,7 +344,7 @@ const getAssignmentById = async (id) => {
 
   const [student, discount] = await Promise.all([
     prisma.user.findUnique({ where: { id: row.studentId }, select: STUDENT_SELECT }),
-    prisma.discount.findUnique({ where: { id: row.discountId } }),
+    platformPrisma.discount.findUnique({ where: { id: row.discountId } }),
   ]);
 
   return serializeAssignment(row, { student, discount });
@@ -503,7 +508,7 @@ const updateAssignment = async (id, data, { allowPast = false } = {}) => {
 
         await assertNoDiscountOverlap(tx, row.studentId, discountId, period, id);
 
-        const discount = await tx.discount.findUnique({ where: { id: discountId } });
+        const discount = await platformPrisma.discount.findUnique({ where: { id: discountId } });
         await assertExclusivity(tx, row.studentId, discount, period, id);
       }
 

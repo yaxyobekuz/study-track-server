@@ -10,6 +10,9 @@
  */
 
 const prisma = require("../config/prisma");
+// Tarif KATALOGI platformada (barcha filiallarga umumiy), BIRIKTIRISH esa
+// shu filialda. Ikkalasi xotirada Map orqali birlashtiriladi — SQL join yo'q.
+const platformPrisma = require("../config/platformPrisma");
 const {
   getPaginationParams,
   formatPaginationResponse,
@@ -67,7 +70,7 @@ const assertStudent = async (studentId) => {
 
 /** Tarif mavjudmi? (soft ref — FK tekshirmaydi.) */
 const assertTariff = async (tariffId, { forAssignment = false } = {}) => {
-  const tariff = await prisma.tariff.findUnique({
+  const tariff = await platformPrisma.tariff.findUnique({
     where: { id: tariffId },
     select: TARIFF_SELECT,
   });
@@ -128,7 +131,7 @@ const rethrowDuplicate = (error, message) => {
  * ogohlantirish qaytaradi. Narxdan oldin biriktirish qonuniy tartib.
  */
 const collectWarnings = async (tariffId, startMonth) => {
-  const version = await prisma.tariffVersion.findFirst({
+  const version = await platformPrisma.tariffVersion.findFirst({
     where: { tariffId, ...coveringMonthWhere(startMonth) },
   });
 
@@ -237,7 +240,7 @@ const getAssignments = async (req) => {
         })
       : [],
     tariffIds.length
-      ? prisma.tariff.findMany({
+      ? platformPrisma.tariff.findMany({
           where: { id: { in: tariffIds } },
           select: TARIFF_SELECT,
         })
@@ -282,7 +285,7 @@ const getStudentHistory = async (studentId) => {
 
   const tariffIds = [...new Set(rows.map((r) => r.tariffId))];
   const tariffs = tariffIds.length
-    ? await prisma.tariff.findMany({
+    ? await platformPrisma.tariff.findMany({
         where: { id: { in: tariffIds } },
         select: TARIFF_SELECT,
       })
@@ -293,7 +296,7 @@ const getStudentHistory = async (studentId) => {
   // ichida narx bir necha marta o'zgargan bo'lishi mumkin — tarix shuni
   // ko'rsatishi kerak).
   const versions = tariffIds.length
-    ? await prisma.tariffVersion.findMany({
+    ? await platformPrisma.tariffVersion.findMany({
         where: { tariffId: { in: tariffIds } },
         orderBy: { startMonth: "asc" },
       })
@@ -340,7 +343,7 @@ const getAssignmentById = async (id) => {
       where: { id: assignment.studentId },
       select: STUDENT_SELECT,
     }),
-    prisma.tariff.findUnique({
+    platformPrisma.tariff.findUnique({
       where: { id: assignment.tariffId },
       select: TARIFF_SELECT,
     }),

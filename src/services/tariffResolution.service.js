@@ -16,6 +16,9 @@
  */
 
 const prisma = require("../config/prisma");
+// TariffVersion PLATFORMADA, StudentTariff esa FILIALDA. Ikki client, ikki
+// so'rov, keyin xotirada join — pastdagi resolveManyForMonth shu shaklda edi.
+const platformPrisma = require("../config/platformPrisma");
 const { ROLES } = require("../utils/constants");
 const { NotFoundError } = require("../utils/errors");
 const {
@@ -74,7 +77,7 @@ const resolveForStudentMonth = async (studentId, month) => {
     return emptyResult(studentId, month, REASONS.NO_ASSIGNMENT);
   }
 
-  const version = await prisma.tariffVersion.findFirst({
+  const version = await platformPrisma.tariffVersion.findFirst({
     where: { tariffId: assignment.tariffId, ...coveringMonthWhere(month) },
     orderBy: { startMonth: "desc" },
     include: { tariff: { select: { id: true, name: true } } },
@@ -160,7 +163,7 @@ const resolveManyForMonth = async (month, { studentIds } = {}) => {
   const tariffIds = [...new Set(assignments.map((a) => a.tariffId))];
 
   const versions = tariffIds.length
-    ? await prisma.tariffVersion.findMany({
+    ? await platformPrisma.tariffVersion.findMany({
         where: { tariffId: { in: tariffIds }, ...coveringMonthWhere(month) },
         orderBy: { startMonth: "desc" },
         include: { tariff: { select: { id: true, name: true } } },

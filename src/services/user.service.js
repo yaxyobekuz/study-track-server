@@ -1,4 +1,7 @@
 const prisma = require("../config/prisma");
+// Rollar katalogi PLATFORMADA — barcha filiallarga umumiy
+const platformPrisma = require("../config/platformPrisma");
+const { getBranch } = require("../config/branchContext");
 const {
   NotFoundError,
   ForbiddenError,
@@ -6,6 +9,8 @@ const {
 } = require("../utils/errors");
 const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
+const { generateId } = require("../utils/idGenerator");
+const userDirectory = require("./userDirectory.service");
 
 // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
 function flattenClasses(user) {
@@ -15,6 +20,45 @@ function flattenClasses(user) {
     out.classes = user.classes.map((uc) => (uc.class ? uc.class : uc));
   }
   return out;
+}
+
+/**
+ * Filialdagi `User` qatorini platformadagi login yo'naltirgichi bilan
+ * moslashtiradi.
+ *
+ * Yo'naltirgichda `username` (global unique kalit) va bir nechta
+ * denormalizatsiya ustuni bor: `role`, ism, `isActive`, `isArchived`. Ular
+ * yig'ma hisobot va "bu rolda nechta odam bor" savoli uchun ishlatiladi,
+ * ya'ni filial qatori o'zgargan har safar yangilanishi kerak.
+ *
+ * @param {string} id
+ */
+async function syncDirectory(id) {
+  const branch = getBranch();
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      username: true,
+      role: true,
+      firstName: true,
+      lastName: true,
+      isActive: true,
+      isArchived: true,
+    },
+  });
+  if (!user) return;
+
+  await userDirectory.sync({
+    id: user.id,
+    username: user.username,
+    branchId: branch.id,
+    role: user.role,
+    firstName: user.firstName,
+    lastName: user.lastName ?? "",
+    isActive: user.isActive,
+    isArchived: user.isArchived,
+  });
 }
 
 // classes junction bilan user'ni yuklab, password'siz tekislangan shaklda qaytaradi
@@ -85,7 +129,7 @@ async function getAllUsers(query) {
   ]);
 
   // Har bir foydalanuvchi uchun effektiv default ish vaqti (rol → user merosi).
-  const roles = await prisma.role.findMany({
+  const roles = await platformPrisma.role.findMany({
     select: { value: true, workStartTime: true, workEndTime: true },
   });
   const roleMap = {};
@@ -154,7 +198,7 @@ async function createUser(data) {
     throw new BadRequestError("Owner rolini yaratish mumkin emas");
   }
 
-  const roleExists = await prisma.role.findUnique({ where: { value: role } });
+  const roleExists = await platformPrisma.role.findUnique({ where: { value: role } });
   if (!roleExists) {
     throw new BadRequestError("Noto'g'ri rol");
   }
@@ -169,30 +213,57 @@ async function createUser(data) {
   }
 
   const hashed = await hashPassword(password);
+  const branch = getBranch();
+  const normalizedUsername = username.toLowerCase().trim();
 
-  const created = await prisma.user.create({
-    data: {
-      username: username.toLowerCase(),
-      password: hashed,
-      plainPassword: password,
-      firstName,
-      lastName,
-      role,
-      gender: gender || null,
-      ...(role === "student" && userClasses && userClasses.length > 0
-        ? { classes: { create: userClasses.map((classId) => ({ classId })) } }
-        : {}),
-      ...(role !== "student" && {
-        workStartTime: workStartTime || null,
-        workEndTime: workEndTime || null,
-        workDays: workDays || [],
-        weeklySchedule: weeklySchedule || {},
-        // Rolning boshlang'ich ruxsatlari (Rollar sahifasida sozlanadi).
-        // Keyinchalik rol o'zgarsa, mavjud foydalanuvchiga ta'sir qilmaydi.
-        permissions: roleExists.permissions || [],
-      }),
-    },
+  // ⚠️ IKKI SCHEMA — BITTA TRANZAKSIYA YO'Q.
+  // Username butun tizim bo'ylab yagona bo'lishi kerak (login qaysi filialga
+  // borishni platformadagi yo'naltirgichdan biladi), lekin `platform.user_directory`
+  // va `br_x.users` alohida ulanishlarda. Shuning uchun tartib qat'iy:
+  // AVVAL platformada band qilinadi, KEYIN filialda yoziladi, xato bo'lsa
+  // band qilish orqaga olinadi. Teskari tartibda ikki filialda bir xil
+  // username paydo bo'lishi mumkin edi.
+  const id = generateId();
+
+  await userDirectory.claim({
+    id,
+    username: normalizedUsername,
+    branchId: branch.id,
+    role,
+    firstName,
+    lastName,
   });
+
+  let created;
+  try {
+    created = await prisma.user.create({
+      data: {
+        id,
+        username: normalizedUsername,
+        password: hashed,
+        plainPassword: password,
+        firstName,
+        lastName,
+        role,
+        gender: gender || null,
+        ...(role === "student" && userClasses && userClasses.length > 0
+          ? { classes: { create: userClasses.map((classId) => ({ classId })) } }
+          : {}),
+        ...(role !== "student" && {
+          workStartTime: workStartTime || null,
+          workEndTime: workEndTime || null,
+          workDays: workDays || [],
+          weeklySchedule: weeklySchedule || {},
+          // Rolning boshlang'ich ruxsatlari (Rollar sahifasida sozlanadi).
+          // Keyinchalik rol o'zgarsa, mavjud foydalanuvchiga ta'sir qilmaydi.
+          permissions: roleExists.permissions || [],
+        }),
+      },
+    });
+  } catch (error) {
+    await userDirectory.release(id);
+    throw error;
+  }
 
   return loadUser(created.id);
 }
@@ -272,6 +343,10 @@ async function updateUser(id, data) {
     }
   });
 
+  // Yo'naltirgichdagi denormalizatsiyani yangilaymiz (ism/holat qidiruvda
+  // va yig'ma hisobotda platformadan o'qiladi).
+  await syncDirectory(id);
+
   return loadUser(id);
 }
 
@@ -336,6 +411,10 @@ async function deleteUser(id) {
   }
 
   await prisma.user.delete({ where: { id } });
+
+  // Yo'naltirgichdan ham olib tashlaymiz — aks holda username abadiy band
+  // bo'lib qolardi va o'sha odamni qayta kiritib bo'lmasdi.
+  await userDirectory.remove(id);
 }
 
 /**
@@ -381,6 +460,10 @@ async function archiveUser(id, options = {}) {
     prisma.userClass.deleteMany({ where: { userId: id } }),
   ]);
 
+  // Arxivlangan foydalanuvchi login qila olmaydi — yo'naltirgich ham shuni
+  // bilishi kerak (yig'ma sanoqlar arxivlanganlarni chiqarib tashlaydi).
+  await syncDirectory(id);
+
   return loadUser(id);
 }
 
@@ -402,6 +485,8 @@ async function restoreUser(id) {
     where: { id },
     data: { isArchived: false, archivedAt: null },
   });
+
+  await syncDirectory(id);
 
   return loadUser(id);
 }
@@ -427,7 +512,7 @@ async function getUsersForExport(role) {
     orderBy: [{ role: "asc" }, { firstName: "asc" }],
   });
 
-  const allRoles = await prisma.role.findMany();
+  const allRoles = await platformPrisma.role.findMany();
   const roleMap = {};
   allRoles.forEach((r) => {
     roleMap[r.value] = r.name;
@@ -505,16 +590,14 @@ async function updateSelfProfile(userId, data) {
   if (firstName !== undefined) update.firstName = firstName;
   if (lastName !== undefined) update.lastName = lastName;
 
-  // Username o'zgartirish - unikallik tekshiruvi bilan
+  // Username o'zgartirish — unikallik BUTUN TIZIM bo'yicha tekshiriladi.
+  // Filial ichida tekshirish yetarli emas: login qaysi filialga borishni
+  // platformadagi yo'naltirgichdan biladi, ya'ni ikki filialda bir xil
+  // username bo'lsa ulardan biri kira olmay qolardi.
   if (username !== undefined) {
     const normalizedUsername = String(username).toLowerCase().trim();
     if (normalizedUsername !== user.username) {
-      const usernameTaken = await prisma.user.findFirst({
-        where: { username: normalizedUsername, id: { not: userId } },
-      });
-      if (usernameTaken) {
-        throw new BadRequestError("Bu username allaqachon band");
-      }
+      await userDirectory.assertUsernameFree(normalizedUsername, userId);
       update.username = normalizedUsername;
     }
   }
@@ -536,6 +619,8 @@ async function updateSelfProfile(userId, data) {
 
   await prisma.user.update({ where: { id: userId }, data: update });
 
+  await syncDirectory(userId);
+
   return loadUser(userId);
 }
 
@@ -553,4 +638,7 @@ module.exports = {
   getAllUsersShort,
   getStudents,
   updateSelfProfile,
+  // Bir martalik migratsiya skripti (branch-bootstrap) yo'naltirgichni shu
+  // bilan to'ldiradi.
+  syncDirectory,
 };

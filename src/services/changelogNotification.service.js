@@ -7,7 +7,9 @@
 // har biridan keyin pauza, xatoda `warn` yozadi va HECH QACHON throw qilmaydi
 // — bitta chat xato bersa qolganlari ketaveradi.
 
-const prisma = require("../config/prisma");
+// Sozlamalar ham, jurnal ham PLATFORMADA: xabarnoma dasturiy ta'minot
+// relizi haqida, filial ishi haqida emas — `changelog.service.js` izohiga qarang.
+const platformPrisma = require("../config/platformPrisma");
 const telegramService = require("./telegram.service");
 const logger = require("../utils/logger");
 const { config } = require("../config/env.config");
@@ -109,7 +111,7 @@ async function updateSettings(data = {}, userId = null) {
 
   await getChangelogSettings(); // singleton mavjudligiga kafolat
 
-  const settings = await prisma.changelogSettings.update({
+  const settings = await platformPrisma.changelogSettings.update({
     where: { id: SINGLETON },
     data: payload,
   });
@@ -126,7 +128,7 @@ async function updateSettings(data = {}, userId = null) {
  * `Changelog.date` bilan bir xil shakl.
  */
 async function collectEntries(from, to) {
-  return prisma.changelog.findMany({
+  return platformPrisma.changelog.findMany({
     where: { date: { gte: from, lte: to } },
     orderBy: [{ date: "desc" }, { panel: "asc" }, { seq: "desc" }],
   });
@@ -144,7 +146,7 @@ async function collectEntries(from, to) {
  * @returns {Promise<boolean>} egallandimi
  */
 async function claimDaily(target) {
-  const claimed = await prisma.changelogSettings.updateMany({
+  const claimed = await platformPrisma.changelogSettings.updateMany({
     where: {
       id: SINGLETON,
       OR: [{ lastDailySentDate: null }, { lastDailySentDate: { lt: target } }],
@@ -157,7 +159,7 @@ async function claimDaily(target) {
 
 /** Haftalik yig'ma yuborilganini belgilaydi. */
 async function markWeeklySent() {
-  return prisma.changelogSettings.update({
+  return platformPrisma.changelogSettings.update({
     where: { id: SINGLETON },
     data: { lastWeeklySentAt: new Date() },
   });
@@ -226,7 +228,7 @@ async function deliver({ messages, recipients, kind, coverage, entryCount, sentB
 
     results.push({ ...recipient, success: !error, error });
 
-    await prisma.changelogNotification.create({
+    await platformPrisma.changelogNotification.create({
       data: {
         kind,
         status: error ? "failed" : "sent",
@@ -325,12 +327,12 @@ async function listNotifications(req) {
   const { page, limit, skip } = getPaginationParams(req, 20);
 
   const [data, total] = await Promise.all([
-    prisma.changelogNotification.findMany({
+    platformPrisma.changelogNotification.findMany({
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
     }),
-    prisma.changelogNotification.count(),
+    platformPrisma.changelogNotification.count(),
   ]);
 
   return formatPaginationResponse(data, total, page, limit);

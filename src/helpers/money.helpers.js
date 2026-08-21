@@ -13,12 +13,41 @@
  *     qiladi — lekin `450000.00` ni `"450000"` ga aylantiradi. Global JSON
  *     replacer qo'yish (42 ta service'ga ko'rinmas ta'sir) o'rniga har bir
  *     javob shu yerdagi `formatAmount()` dan o'tadi.
+ *
+ * ── IKKI CLIENT, IKKI DECIMAL KLASSI ─────────
+ *
+ * Filiallashtirishdan keyin ikkita generatsiya qilingan Prisma client bor
+ * (filial va platforma) va HAR BIRI o'z `runtime/library.js` nusxasini olib
+ * yuradi. Ya'ni `platformDecimal instanceof Decimal` → `false`, garchi
+ * qiymat butunlay to'g'ri bo'lsa ham.
+ *
+ * O'QISH xavfsiz: `new Decimal(foreignDecimal)` ishlaydi (ichki shakl bir xil)
+ * va `toDecimal()` shuni aniq qilib turadi.
+ *
+ * ⚠️ YOZISH: bu yerdan chiqqan `Decimal` ni to'g'ridan-to'g'ri PLATFORMA
+ * modeliga (`TariffVersion.monthlyAmount`, `Discount.value`) BERMANG — avval
+ * `formatAmount()` bilan STRING'ga aylantiring. Prisma string'ni ikkala
+ * tomonda ham qabul qiladi.
  */
 
 const { Prisma } = require("../generated/prisma");
 const { BadRequestError, InternalServerError } = require("../utils/errors");
 
 const { Decimal } = Prisma;
+
+/**
+ * Har qanday summani SHU client'ning Decimal'iga keltiradi.
+ *
+ * `x instanceof Decimal ? x : new Decimal(x)` naqshining nomlangan shakli —
+ * boshqa client'dan kelgan Decimal ham to'g'ri o'tishi uchun (yuqoridagi
+ * izohga qarang).
+ *
+ * @param {Prisma.Decimal|string|number} value
+ * @returns {Prisma.Decimal}
+ */
+function toDecimal(value) {
+  return value instanceof Decimal ? value : new Decimal(value);
+}
 
 // Decimal(14,2) — 999 999 999 999.99 gacha.
 const MAX_AMOUNT = new Decimal("999999999999.99");
@@ -71,8 +100,7 @@ function parseAmount(value, label = "Summa") {
  */
 function formatAmount(value) {
   if (value == null) return null;
-  const amount = value instanceof Decimal ? value : new Decimal(value);
-  return amount.toFixed(AMOUNT_SCALE);
+  return toDecimal(value).toFixed(AMOUNT_SCALE);
 }
 
 /**
@@ -83,10 +111,7 @@ function formatAmount(value) {
  * @returns {Prisma.Decimal}
  */
 function sumAmounts(values = []) {
-  return values.reduce(
-    (acc, value) => acc.plus(value instanceof Decimal ? value : new Decimal(value)),
-    new Decimal(0),
-  );
+  return values.reduce((acc, value) => acc.plus(toDecimal(value)), new Decimal(0));
 }
 
 /**
@@ -210,6 +235,7 @@ function assertSignMatchesType(type, amount) {
 
 module.exports = {
   Decimal,
+  toDecimal,
   MAX_AMOUNT,
   AMOUNT_SCALE,
   ENTRY_SIGNS,

@@ -7,7 +7,12 @@
  * biriktirishlariga umuman tegilmaydi (qarang: tariffResolution.service.js).
  */
 
-const prisma = require("../config/prisma");
+// KATALOG PLATFORMADA — barcha filiallarga umumiy (prisma/platform/schema.prisma).
+// Biriktirishlar (`StudentTariff`) esa har filialning o'z schema'sida qoladi,
+// shuning uchun "nechta o'quvchiga biriktirilgan" savoli filiallar bo'ylab
+// hisoblanadi — `catalogUsage.service.js`.
+const platformPrisma = require("../config/platformPrisma");
+const catalogUsage = require("./catalogUsage.service");
 const {
   getPaginationParams,
   formatPaginationResponse,
@@ -179,47 +184,39 @@ const getTariffs = async (req) => {
     : currentMonthKey();
 
   const [rows, total] = await Promise.all([
-    prisma.tariff.findMany({
+    platformPrisma.tariff.findMany({
       where: filter,
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
       skip,
       take: limit,
     }),
-    prisma.tariff.count({ where: filter }),
+    platformPrisma.tariff.count({ where: filter }),
   ]);
 
   const tariffIds = rows.map((t) => t.id);
 
-  const [currentVersions, versionCounts, assignmentCounts] = await Promise.all([
+  const [currentVersions, versionCounts, assignmentCountMap] = await Promise.all([
     tariffIds.length
-      ? prisma.tariffVersion.findMany({
+      ? platformPrisma.tariffVersion.findMany({
           where: { tariffId: { in: tariffIds }, ...coveringMonthWhere(month) },
         })
       : [],
     tariffIds.length
-      ? prisma.tariffVersion.groupBy({
+      ? platformPrisma.tariffVersion.groupBy({
           by: ["tariffId"],
           where: { tariffId: { in: tariffIds } },
           _count: { _all: true },
         })
       : [],
-    tariffIds.length
-      ? prisma.studentTariff.groupBy({
-          by: ["tariffId"],
-          where: { tariffId: { in: tariffIds } },
-          _count: { _all: true },
-        })
-      : [],
+    // BARCHA filiallar bo'yicha: katalog umumiy bo'lgani uchun bitta
+    // filialdagi "biriktirilmagan" hech narsani anglatmaydi.
+    catalogUsage.countTariffAssignments(tariffIds),
   ]);
 
   const versionMap = new Map(currentVersions.map((v) => [v.tariffId, v]));
   const versionCountMap = new Map(
     versionCounts.map((v) => [v.tariffId, v._count._all]),
   );
-  const assignmentCountMap = new Map(
-    assignmentCounts.map((a) => [a.tariffId, a._count._all]),
-  );
-
   const items = rows.map((tariff) => ({
     ...serializeTariff(tariff),
     month,
@@ -240,16 +237,14 @@ const getTariffs = async (req) => {
 const getTariffById = async (id, month = null) => {
   const targetMonth = month == null ? currentMonthKey() : month;
 
-  const tariff = await prisma.tariff.findUnique({
+  const tariff = await platformPrisma.tariff.findUnique({
     where: { id },
     include: { versions: { orderBy: { startMonth: "desc" } } },
   });
 
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
-  const assignedStudentCount = await prisma.studentTariff.count({
-    where: { tariffId: id },
-  });
+  const assignedStudentCount = await catalogUsage.countTariffAssignment(id);
 
   const currentVersion =
     tariff.versions.find(
@@ -291,16 +286,19 @@ const createTariff = async (data, userId) => {
     );
     versionCreate = {
       ...period,
-      monthlyAmount: parseAmount(
-        data.initialVersion.monthlyAmount,
-        "Oylik summa",
+      // formatAmount() → STRING. Sabab: bu qator PLATFORMA client'i orqali
+      // yoziladi, parseAmount esa FILIAL client'ining Decimal klassini
+      // qaytaradi — ikki client ikki xil runtime nusxasini olib yuradi.
+      // String ikkalasi uchun ham xavfsiz kirish shakli.
+      monthlyAmount: formatAmount(
+        parseAmount(data.initialVersion.monthlyAmount, "Oylik summa"),
       ),
       createdBy: userId,
     };
   }
 
   try {
-    const tariff = await prisma.tariff.create({
+    const tariff = await platformPrisma.tariff.create({
       data: {
         name,
         description: data.description?.trim() || "",
@@ -324,7 +322,7 @@ const createTariff = async (data, userId) => {
  * @returns {Promise<object>}
  */
 const updateTariff = async (id, data) => {
-  const tariff = await prisma.tariff.findUnique({ where: { id } });
+  const tariff = await platformPrisma.tariff.findUnique({ where: { id } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
   const payload = {};
@@ -336,7 +334,7 @@ const updateTariff = async (id, data) => {
   if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
 
   try {
-    const updated = await prisma.tariff.update({ where: { id }, data: payload });
+    const updated = await platformPrisma.tariff.update({ where: { id }, data: payload });
     return serializeTariff(updated);
   } catch (error) {
     return rethrowDuplicate(error, "Bu nomli tarif allaqachon mavjud");
@@ -353,10 +351,10 @@ const updateTariff = async (id, data) => {
  * @returns {Promise<object>}
  */
 const setTariffArchived = async (id, isArchived) => {
-  const tariff = await prisma.tariff.findUnique({ where: { id } });
+  const tariff = await platformPrisma.tariff.findUnique({ where: { id } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
-  const updated = await prisma.tariff.update({
+  const updated = await platformPrisma.tariff.update({
     where: { id },
     data: {
       isArchived: Boolean(isArchived),
@@ -376,12 +374,10 @@ const setTariffArchived = async (id, isArchived) => {
  * @returns {Promise<{message: string}>}
  */
 const deleteTariff = async (id) => {
-  const tariff = await prisma.tariff.findUnique({ where: { id } });
+  const tariff = await platformPrisma.tariff.findUnique({ where: { id } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
-  const assignmentCount = await prisma.studentTariff.count({
-    where: { tariffId: id },
-  });
+  const assignmentCount = await catalogUsage.countTariffAssignment(id);
 
   if (assignmentCount > 0) {
     throw new BadRequestError(
@@ -389,7 +385,7 @@ const deleteTariff = async (id) => {
     );
   }
 
-  await prisma.tariff.delete({ where: { id } });
+  await platformPrisma.tariff.delete({ where: { id } });
 
   return { message: "Tarif o'chirildi" };
 };
@@ -400,7 +396,7 @@ const deleteTariff = async (id) => {
  * @returns {Promise<object>}
  */
 const getTariffTimeline = async (id) => {
-  const tariff = await prisma.tariff.findUnique({
+  const tariff = await platformPrisma.tariff.findUnique({
     where: { id },
     include: { versions: { orderBy: { startMonth: "desc" } } },
   });
@@ -431,17 +427,17 @@ const getTariffTimeline = async (id) => {
 const getVersions = async (tariffId, req) => {
   const { page, limit, skip } = getPaginationParams(req);
 
-  const tariff = await prisma.tariff.findUnique({ where: { id: tariffId } });
+  const tariff = await platformPrisma.tariff.findUnique({ where: { id: tariffId } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
   const [rows, total] = await Promise.all([
-    prisma.tariffVersion.findMany({
+    platformPrisma.tariffVersion.findMany({
       where: { tariffId },
       orderBy: { startMonth: "desc" },
       skip,
       take: limit,
     }),
-    prisma.tariffVersion.count({ where: { tariffId } }),
+    platformPrisma.tariffVersion.count({ where: { tariffId } }),
   ]);
 
   return formatPaginationResponse(rows.map(serializeVersion), total, page, limit);
@@ -467,7 +463,7 @@ const getVersions = async (tariffId, req) => {
  * @returns {Promise<object>}
  */
 const addVersion = async (tariffId, data, userId) => {
-  const tariff = await prisma.tariff.findUnique({ where: { id: tariffId } });
+  const tariff = await platformPrisma.tariff.findUnique({ where: { id: tariffId } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
 
   const startMonth =
@@ -488,7 +484,7 @@ const addVersion = async (tariffId, data, userId) => {
   let period = { startMonth, endMonth: explicitEnd };
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await platformPrisma.$transaction(async (tx) => {
       if (autoClose) {
         // Yangi davrdan OLDIN boshlangan ochiq versiyani yopamiz.
         const openVersion = await tx.tariffVersion.findFirst({
@@ -522,7 +518,8 @@ const addVersion = async (tariffId, data, userId) => {
         data: {
           tariffId,
           ...period,
-          monthlyAmount,
+          // STRING — platformaga yozilyapti (yuqoridagi izohga qarang)
+          monthlyAmount: formatAmount(monthlyAmount),
           createdBy: userId,
         },
       });
@@ -556,7 +553,7 @@ const addVersion = async (tariffId, data, userId) => {
 const updateVersion = async (tariffId, versionId, data, options = {}) => {
   const { force = false, userId } = options;
 
-  const version = await prisma.tariffVersion.findFirst({
+  const version = await platformPrisma.tariffVersion.findFirst({
     where: { id: versionId, tariffId },
   });
   if (!version) throw new NotFoundError("Tarif versiyasi topilmadi");
@@ -572,7 +569,7 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
         "Amaldagi tarif versiyasi narxini o'zgartirib bo'lmaydi. Yangi versiya qo'shing.",
       );
     }
-    payload.monthlyAmount = amount;
+    payload.monthlyAmount = formatAmount(amount);
   }
 
   const wantsPeriodChange =
@@ -611,20 +608,15 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
   if (force && isInEffect) {
     logger.warn(
       `[tariffs] Amaldagi versiya majburiy tahrirlandi: version=${versionId} tariff=${tariffId} ` +
-        `actor=${userId} oldingi=${version.monthlyAmount.toFixed(2)}/${formatMonthRange(
+        `actor=${userId} oldingi=${formatAmount(version.monthlyAmount)}/${formatMonthRange(
           version.startMonth,
           version.endMonth,
-        )} yangi=${JSON.stringify({
-          ...payload,
-          monthlyAmount: payload.monthlyAmount
-            ? payload.monthlyAmount.toFixed(2)
-            : undefined,
-        })}`,
+        )} yangi=${JSON.stringify(payload)}`,
     );
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    return await platformPrisma.$transaction(async (tx) => {
       if (payload.startMonth !== undefined || payload.endMonth !== undefined) {
         await assertNoVersionOverlap(
           tx,
@@ -662,7 +654,7 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
  * @returns {Promise<{message: string}>}
  */
 const deleteVersion = async (tariffId, versionId) => {
-  const version = await prisma.tariffVersion.findFirst({
+  const version = await platformPrisma.tariffVersion.findFirst({
     where: { id: versionId, tariffId },
   });
   if (!version) throw new NotFoundError("Tarif versiyasi topilmadi");
@@ -673,7 +665,7 @@ const deleteVersion = async (tariffId, versionId) => {
     );
   }
 
-  await prisma.tariffVersion.delete({ where: { id: versionId } });
+  await platformPrisma.tariffVersion.delete({ where: { id: versionId } });
 
   return { message: "Versiya o'chirildi" };
 };

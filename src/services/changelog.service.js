@@ -1,4 +1,10 @@
-const prisma = require("../config/prisma");
+// O'ZGARISHLAR TARIXI — PLATFORMA darajasida, filialda emas.
+//
+// Bitta reliz barcha filiallarga bir vaqtda yetib boradi, ya'ni yozuvni har
+// filialda takrorlash noto'g'ri bo'lardi: versiya raqami filialma-filial
+// ajralib ketardi va tizim egasi "qaysi filialning 1.4.2 si?" degan savolga
+// duch kelardi. Shuning uchun `platformPrisma`.
+const platformPrisma = require("../config/platformPrisma");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const { NotFoundError, ValidationError } = require("../utils/errors");
 const {
@@ -129,7 +135,7 @@ function isUniqueError(error, field) {
 async function createWithVersionRetry(buildData) {
   for (let attempt = 0; attempt < VERSION_RETRY_ATTEMPTS; attempt++) {
     try {
-      return await prisma.changelog.create({ data: await buildData() });
+      return await platformPrisma.changelog.create({ data: await buildData() });
     } catch (error) {
       if (isUniqueError(error, "version") && attempt < VERSION_RETRY_ATTEMPTS - 1) {
         continue;
@@ -171,7 +177,7 @@ async function getChangelogs(req) {
     // topmaydi). Shuning uchun mos keladigan id'lar oldindan raw so'rov
     // bilan olinadi — yozuvlar kam, bu arzon.
     const pattern = `%${search}%`;
-    const hits = await prisma.$queryRaw`
+    const hits = await platformPrisma.$queryRaw`
       SELECT id FROM changelogs
       WHERE EXISTS (SELECT 1 FROM unnest(items) AS i WHERE i ILIKE ${pattern})
     `;
@@ -184,13 +190,13 @@ async function getChangelogs(req) {
   }
 
   const [data, total] = await Promise.all([
-    prisma.changelog.findMany({
+    platformPrisma.changelog.findMany({
       where: filter,
       orderBy: [{ date: "desc" }, { panel: "asc" }, { seq: "desc" }],
       skip,
       take: limit,
     }),
-    prisma.changelog.count({ where: filter }),
+    platformPrisma.changelog.count({ where: filter }),
   ]);
 
   return formatPaginationResponse(data, total, page, limit);
@@ -205,7 +211,7 @@ async function getChangelogs(req) {
  * @returns {Promise<{month: string, count: number}[]>} yangi oy birinchi
  */
 async function getAvailableMonths() {
-  const rows = await prisma.$queryRaw`
+  const rows = await platformPrisma.$queryRaw`
     SELECT to_char(date, 'YYYY-MM') AS month, COUNT(*)::int AS count
     FROM changelogs
     GROUP BY 1
@@ -216,7 +222,7 @@ async function getAvailableMonths() {
 }
 
 async function getChangelogById(id) {
-  const entry = await prisma.changelog.findUnique({ where: { id } });
+  const entry = await platformPrisma.changelog.findUnique({ where: { id } });
   if (!entry) throw new NotFoundError("O'zgarish yozuvi topilmadi");
 
   return entry;
@@ -232,14 +238,14 @@ async function getPanelVersions() {
   const [tops, counts] = await Promise.all([
     Promise.all(
       PANELS.map((panel) =>
-        prisma.changelog.findFirst({
+        platformPrisma.changelog.findFirst({
           where: { panel },
           orderBy: [{ major: "desc" }, { minor: "desc" }, { patch: "desc" }],
           select: { version: true, major: true, minor: true, patch: true, date: true, title: true },
         }),
       ),
     ),
-    prisma.changelog.groupBy({ by: ["panel"], _count: { _all: true } }),
+    platformPrisma.changelog.groupBy({ by: ["panel"], _count: { _all: true } }),
   ]);
 
   const countByPanel = Object.fromEntries(
@@ -288,7 +294,7 @@ async function createChangelog(data, createdBy) {
     const explicit = resolveExplicitVersion(version);
 
     try {
-      return await prisma.changelog.create({
+      return await platformPrisma.changelog.create({
         data: { ...fields, panel, seq, date: normalizedDate, bump, ...explicit, createdBy },
       });
     } catch (error) {
@@ -330,7 +336,7 @@ async function updateChangelog(id, data) {
   }
 
   try {
-    return await prisma.changelog.update({ where: { id }, data: fields });
+    return await platformPrisma.changelog.update({ where: { id }, data: fields });
   } catch (error) {
     if (isUniqueError(error, "version")) {
       throw new ValidationError("Bu versiya ushbu panelda allaqachon bor");
@@ -345,7 +351,7 @@ async function updateChangelog(id, data) {
 // Qattiq o'chirish — bu yozuvlarga hech narsa bog'lanmagan
 async function deleteChangelog(id) {
   await getChangelogById(id);
-  return prisma.changelog.delete({ where: { id } });
+  return platformPrisma.changelog.delete({ where: { id } });
 }
 
 /**
@@ -372,7 +378,7 @@ async function upsertFromFile(parsed, createdBy = null) {
   assertPanel(panel);
   assertBump(bump);
 
-  const existing = await prisma.changelog.findUnique({
+  const existing = await platformPrisma.changelog.findUnique({
     where: { date_panel_seq: { date, panel, seq } },
   });
 
@@ -384,14 +390,14 @@ async function upsertFromFile(parsed, createdBy = null) {
       Object.assign(fields, resolveExplicitVersion(version));
     }
 
-    const entry = await prisma.changelog.update({ where: { id: existing.id }, data: fields });
+    const entry = await platformPrisma.changelog.update({ where: { id: existing.id }, data: fields });
     return { action: "updated", entry };
   }
 
   const fields = { panel, seq, date, bump, title, items, notes, sourceFile, createdBy };
 
   if (version) {
-    const entry = await prisma.changelog.create({
+    const entry = await platformPrisma.changelog.create({
       data: { ...fields, ...resolveExplicitVersion(version) },
     });
     return { action: "created", entry };

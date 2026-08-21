@@ -3,9 +3,24 @@
  *
  * Mongoose'dagi `Model.getSettings()` static'lari o'rnini bosadi. Har biri
  * upsert bilan (yo'q bo'lsa yaratadi) — idempotent, id har doim "singleton".
+ *
+ * ── FILIAL VA PLATFORMA ──────────────────────
+ *
+ * Bu yerdagi sozlamalarning deyarli hammasi HAR FILIALDA ALOHIDA: har filialda
+ * o'z ofis koordinatasi (davomat), o'z o'quv yili va hisob-faktura kuni
+ * (moliya), o'z tanga qoidasi. Ular filial schema'sida yashaydi, ya'ni
+ * `prisma` (filial Proxy'si) orqali o'qiladi.
+ *
+ * YAGONA ISTISNO — `getChangelogSettings`: o'zgarishlar tarixi dasturiy
+ * ta'minot darajasida, shuning uchun platformada.
+ *
+ * ⚠️ Aynan shu funksiyalar YANGI FILIAL OCHILGANDA seed sifatida chaqiriladi
+ * (`branchProvision.service.js`) — alohida seed fayli YO'Q va bo'lmasligi
+ * kerak: default qiymatlar yagona manbada, schema'ning o'zida.
  */
 
 const prisma = require("../config/prisma");
+const platformPrisma = require("../config/platformPrisma");
 
 const SINGLETON = "singleton";
 
@@ -87,8 +102,9 @@ async function getFinanceSettings() {
   });
 }
 
+// PLATFORMADA — yuqoridagi izohga qarang (yagona istisno).
 async function getChangelogSettings() {
-  return prisma.changelogSettings.upsert({
+  return platformPrisma.changelogSettings.upsert({
     where: { id: SINGLETON },
     create: { id: SINGLETON },
     update: {},
