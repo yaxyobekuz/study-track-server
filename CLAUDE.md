@@ -16,9 +16,13 @@
 ```
 server/
 ├── prisma/
-│   └── schema.prisma  # Single source of truth for the DB schema
+│   ├── schema.prisma        # per-branch schema (public, br_*)
+│   ├── migrations/
+│   └── platform/
+│       ├── schema.prisma    # shared schema (platform): Branch, Role, Tariff, Changelog…
+│       └── migrations/
 └── src/
-    ├── config/        # prisma.js (PrismaClient singleton + extensions), env validation
+    ├── config/        # prisma.js (branch Proxy), platformPrisma.js, branchContext/Registry, env
     ├── controllers/   # Route handlers (thin, delegate to services)
     ├── generated/     # Prisma Client (generated — do not edit)
     ├── middleware/    # Auth, error, validation, upload
@@ -30,9 +34,29 @@ server/
     └── scripts/       # One-time migration/setup scripts (incl. migrate-mongo-to-postgres)
 ```
 
+## Branches (multi-tenant) — read this before touching data access
+
+The system is **multi-branch**: one PostgreSQL database, one schema per branch,
+plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
+
+- `config/prisma.js` is a **Proxy** — it resolves the current branch's client
+  from `config/branchContext.js` (AsyncLocalStorage). Import it exactly as
+  before; never add a `branchId` filter to a query.
+- `config/platformPrisma.js` is for the shared models only: `Branch`,
+  `UserDirectory`, `TelegramDirectory`, `Role`, `Tariff`, `TariffVersion`,
+  `Discount`, `Changelog*`.
+- Outside a request (cron, scripts, detached work) you MUST wrap the work in
+  `helpers/branchIterator.js` (`forEachBranch` / `mapBranches` / `branchCron`)
+  or `runWithBranch` — otherwise the first query throws.
+- Migrations: `npm run branch:migrate` applies to platform **and every branch**.
+  `npm run prisma:migrate` alone only touches whatever `DATABASE_URL` points at.
+
 ## Data model (Prisma)
 
-- The schema lives in `prisma/schema.prisma`. After editing it, run `npm run prisma:generate` (and `prisma migrate dev` in development) — never hand-edit `src/generated/`.
+- Two schemas: `prisma/schema.prisma` (per-branch) and
+  `prisma/platform/schema.prisma` (shared). After editing either, run
+  `npm run prisma:generate` (it generates both clients) — never hand-edit
+  `src/generated/`.
 - IDs are `String @id @db.Char(24)` — 24-hex, ObjectId-compatible (preserved from the old MongoDB data). New rows get an auto-generated id from the `auto-id` extension in `config/prisma.js`; do not set `id` manually.
 - Prisma model fields are camelCase; PostgreSQL columns/tables use snake_case via `@map`/`@@map`.
 - Sensitive fields (`password`, `plainPassword`) must be excluded from reads with Prisma `omit`, never returned to clients.
