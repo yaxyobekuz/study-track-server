@@ -3,6 +3,7 @@ const { BadRequestError, NotFoundError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
 const prisma = require("../config/prisma");
+const { findInBranches } = require("../helpers/branchIterator");
 
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
 const statisticsService = require("../services/statistics.service");
@@ -76,11 +77,14 @@ const verifyCode = asyncHandler(async (req, res) => {
     throw new BadRequestError("Monitor kodi 6 xonali raqam bo'lishi kerak");
   }
 
-  const monitor = await prisma.monitor.findFirst({
-    where: { code, isActive: true },
-  });
+  // Monitorda token yo'q, ya'ni filial ham noma'lum: kod BARCHA filiallar
+  // bo'ylab qidiriladi. Keyingi so'rovlarda `monitor.middleware` shu natijani
+  // keshdan oladi.
+  const hit = await findInBranches(() =>
+    prisma.monitor.findFirst({ where: { code, isActive: true } }),
+  );
 
-  if (!monitor) {
+  if (!hit) {
     const { UnauthorizedError } = require("../utils/errors");
     throw new UnauthorizedError("Monitor kodi noto'g'ri");
   }
@@ -90,9 +94,16 @@ const verifyCode = asyncHandler(async (req, res) => {
     data: {
       verified: true,
       monitor: {
-        id: monitor.id,
-        name: monitor.name,
-        code: monitor.code,
+        id: hit.value.id,
+        name: hit.value.name,
+        code: hit.value.code,
+      },
+      // Monitor ekranida filial nomi ko'rinishi kerak — bir binoda bir nechta
+      // filial ekrani turishi mumkin.
+      branch: {
+        id: hit.branch.id,
+        code: hit.branch.code,
+        name: hit.branch.name,
       },
     },
   });

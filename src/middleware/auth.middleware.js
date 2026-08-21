@@ -1,13 +1,23 @@
 const prisma = require("../config/prisma");
+const { runWithBranch } = require("../config/branchContext");
 const { verifyToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
 const { hasPermission, hasSection } = require("../utils/permissions");
+const branchService = require("../services/branch.service");
 
 /**
- * JWT token orqali foydalanuvchini autentifikatsiya qiladi
- * Token headerdan olinadi va req.user ga foydalanuvchi biriktiriladi
+ * JWT token orqali foydalanuvchini autentifikatsiya qiladi.
+ *
+ * FILIAL KONTEKSTI SHU YERDA YOQILADI. Token ichida `branchId` bor va
+ * `runWithBranch()` qolgan butun so'rov zanjiriga o'sha filialni tarqatadi —
+ * shundan keyin `prisma.<model>` avtomatik ravishda o'sha filialning
+ * schema'siga boradi (config/prisma.js).
+ *
+ * ⚠️ `next()` ATAYLAB `runWithBranch` ICHIDA chaqiriladi: undan tashqarida
+ * chaqirilsa kontekst tarqamaydi va birinchi service so'rovi
+ * "Filial konteksti yo'q" xatosi bilan yiqiladi.
  */
 const protect = asyncHandler(async (req, res, next) => {
   let token;
@@ -29,37 +39,53 @@ const protect = asyncHandler(async (req, res, next) => {
     throw new UnauthorizedError("Noto'g'ri yoki muddati o'tgan token");
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: decoded.id },
-    omit: { password: true, plainPassword: true },
-    include: { classes: { include: { class: true } } },
+  // ORQAGA MOSLIK: filiallashtirishdan oldin berilgan tokenlarda `branchId`
+  // yo'q. Ularni default filialga yo'naltiramiz — joriy etish paytida hech
+  // kim tizimdan chiqib ketmaydi.
+  const branch = decoded.branchId
+    ? await branchService.getUsableById(decoded.branchId)
+    : await branchService.getDefaultBranch();
+
+  if (!branch) {
+    throw new UnauthorizedError("Filial aniqlanmadi — administratorga murojaat qiling");
+  }
+
+  return runWithBranch(branch, async () => {
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      omit: { password: true, plainPassword: true },
+      include: { classes: { include: { class: true } } },
+    });
+
+    if (!user) {
+      // Owner boshqa filialga o'tgan, lekin u yerda profili yo'q — token
+      // hali ham amal qiladi, faqat bu filialga kira olmaydi.
+      throw new UnauthorizedError("Foydalanuvchi topilmadi");
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedError("Sizning hisobingiz faol emas");
+    }
+
+    if (user.isArchived) {
+      throw new UnauthorizedError("Sizning hisobingiz arxivlangan");
+    }
+
+    // Lazy premium expiry check
+    if (user.premiumIsActive && user.premiumExpiresAt && user.premiumExpiresAt < new Date()) {
+      prisma.user
+        .update({ where: { id: user.id }, data: { premiumIsActive: false } })
+        .catch(() => {});
+      user.premiumIsActive = false;
+    }
+
+    // Junction M2M → eski `classes: [Class]` shakliga flatten (frontend mosligi)
+    user.classes = (user.classes || []).map((uc) => uc.class);
+
+    req.user = user;
+    req.branch = branch;
+    next();
   });
-
-  if (!user) {
-    throw new UnauthorizedError("Foydalanuvchi topilmadi");
-  }
-
-  if (!user.isActive) {
-    throw new UnauthorizedError("Sizning hisobingiz faol emas");
-  }
-
-  if (user.isArchived) {
-    throw new UnauthorizedError("Sizning hisobingiz arxivlangan");
-  }
-
-  // Lazy premium expiry check
-  if (user.premiumIsActive && user.premiumExpiresAt && user.premiumExpiresAt < new Date()) {
-    prisma.user
-      .update({ where: { id: user.id }, data: { premiumIsActive: false } })
-      .catch(() => {});
-    user.premiumIsActive = false;
-  }
-
-  // Junction M2M → eski `classes: [Class]` shakliga flatten (frontend mosligi)
-  user.classes = (user.classes || []).map((uc) => uc.class);
-
-  req.user = user;
-  next();
 });
 
 /**

@@ -14,7 +14,7 @@ const login = asyncHandler(async (req, res) => {
 
 // Get current user data
 const getMe = asyncHandler(async (req, res) => {
-  const user = await authService.getMe(req.user.id);
+  const user = await authService.getMe(req.user.id, req.branch);
 
   res.json({
     success: true,
@@ -22,4 +22,16 @@ const getMe = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { login, getMe };
+// Filial almashtirish — yangi token qaytaradi (owner / branches.switch)
+const switchBranch = asyncHandler(async (req, res) => {
+  const { branchId } = req.body;
+  const data = await authService.switchBranch(req.user, branchId);
+
+  res.json({
+    success: true,
+    message: `"${data.branch.name}" filialiga o'tildi`,
+    data,
+  });
+});
+
+module.exports = { login, getMe, switchBranch };

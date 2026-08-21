@@ -1,19 +1,23 @@
-const prisma = require("../config/prisma");
+const platformPrisma = require("../config/platformPrisma");
 const logger = require("./logger");
 
 /**
- * Default tizim rollarini yaratadi (agar mavjud bo'lmasa)
- * Mavjud rollarni o'zgartirmaydi
+ * Default tizim rollarini yaratadi (agar mavjud bo'lmasa).
+ * Mavjud rollarni o'zgartirmaydi.
+ *
+ * ROLLAR PLATFORMADA — barcha filiallarga umumiy. `User.role` filial
+ * schema'sidagi oddiy String (FK emas), shuning uchun rollar ro'yxati bir
+ * marta, markazda yuritiladi.
+ *
+ * `createdBy` — owner'ning ID'si; owner hali yaratilmagan bo'lsa (birinchi
+ * ishga tushish) `null` qoladi. Avval rollar, keyin owner: `initOwner` yangi
+ * foydalanuvchiga rolning boshlang'ich ruxsatlarini beradi, ya'ni rollar
+ * OLDIN bo'lishi kerak.
+ *
+ * @param {string|null} ownerId
  */
-const initRoles = async () => {
+const initRoles = async (ownerId = null) => {
   try {
-    const owner = await prisma.user.findFirst({ where: { role: "owner" } });
-
-    if (!owner) {
-      logger.error("Owner topilmadi. Default rollarni yaratib bo'lmaydi.");
-      return;
-    }
-
     const defaultRoles = [
       { name: "Ega", value: "owner" },
       { name: "O'qituvchi", value: "teacher" },
@@ -25,17 +29,19 @@ const initRoles = async () => {
     let created = 0;
     for (const role of defaultRoles) {
       // $setOnInsert semantikasi: mavjud bo'lsa o'zgartirmaydi
-      const existing = await prisma.role.findUnique({ where: { value: role.value } });
+      const existing = await platformPrisma.role.findUnique({
+        where: { value: role.value },
+      });
       if (!existing) {
-        await prisma.role.create({
-          data: { ...role, isSystem: true, createdBy: owner.id },
+        await platformPrisma.role.create({
+          data: { ...role, isSystem: true, createdBy: ownerId ?? "" },
         });
         created++;
       }
     }
 
     if (created > 0) {
-      logger.info(`${created} ta default rol yaratildi`);
+      logger.info(`${created} ta default rol yaratildi (platforma)`);
     }
   } catch (error) {
     logger.error("Default rollarni yaratishda xato:", error.message);
