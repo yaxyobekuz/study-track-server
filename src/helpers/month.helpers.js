@@ -160,6 +160,26 @@ function daysInMonth(monthKey) {
 }
 
 /**
+ * Bugungi kun — UTC yarim tunidagi `Date`, TOSHKENT kalendari bo'yicha.
+ *
+ * O'quvchi yaratilganda unga avtomatik ochiladigan o'qish davri shu sanadan
+ * boshlanadi. `new Date()` ni to'g'ridan-to'g'ri yozib bo'lmaydi: unda vaqt
+ * komponenti bor va `@db.Date` ustuniga tushganda host taymzonasiga qarab
+ * bir kun oldinga/orqaga siljib ketishi mumkin edi.
+ *
+ * @returns {Date} UTC yarim tun
+ */
+function currentDayDate() {
+  const now = new Date();
+  const tashkent = new Date(
+    now.getTime() + now.getTimezoneOffset() * 60000 + 5 * 3600000,
+  );
+  return new Date(
+    Date.UTC(tashkent.getFullYear(), tashkent.getMonth(), tashkent.getDate()),
+  );
+}
+
+/**
  * "YYYY-MM-DD" → UTC yarim tunidagi Date.
  *
  * `parseMonthKey` kabi QAT'IY: `Date` obyekti ham, vaqtli satr ham qabul
@@ -385,6 +405,7 @@ module.exports = {
   currentDayOfMonth,
   daysInCurrentMonth,
   daysInMonth,
+  currentDayDate,
   parseDayDate,
   parseOptionalDayDate,
   monthKeyOfDate,
