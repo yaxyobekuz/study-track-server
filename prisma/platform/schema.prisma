@@ -80,6 +80,7 @@ model Branch {
 
   users         UserDirectory[]
   telegramLinks TelegramDirectory[]
+  staffAccess   UserBranchAccess[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("branches")
@@ -119,6 +120,8 @@ model UserDirectory {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  // Qaysi filiallarda ishlay oladi (uy filiali ham shu ro'yxatda)
+  branchAccess UserBranchAccess[]
 
   @@index([branchId, role])
   @@index([branchId, isArchived])
@@ -339,4 +342,44 @@ model ChangelogNotification {
   @@index([createdAt(sort: Desc)])
   @@index([kind, coverageDate])
   @@map("changelog_notifications")
+}
+
+// XODIM QAYSI FILIALLARDA ISHLAY OLADI.
+//
+// `UserDirectory` — login yo'naltirgichi: "bu username qaysi filialga
+// tegishli" (UY filiali). Bu jadval esa undan kengroq savolga javob beradi:
+// "bu odam yana qaysi filiallarga kira oladi".
+//
+// NIMA UCHUN ALOHIDA JADVAL: ruxsatlar HAR FILIALDA BOSHQA bo'lishi kerak
+// (Chilonzorda kassir, Yunusobodda o'qituvchi). Ruxsatlar esa filial
+// schema'sidagi `User.permissions` da yotadi — ya'ni odamning har filialda
+// o'z qatori bor va u qator o'z ruxsatini olib yuradi. Bu jadval faqat
+// "kirishga ruxsat berilganmi" degan reyestr.
+//
+// OWNER BU YERDA YO'Q: u har filialda avtomatik mavjud (filial ochilganda
+// aynan o'sha `id` bilan seed qilinadi), shuning uchun unga biriktirish
+// yozuvi kerak emas — `auth.service.js` uni rol bo'yicha o'tkazadi.
+model UserBranchAccess {
+  userId   String @map("user_id") @db.Char(24)
+  branchId String @map("branch_id") @db.Char(24)
+
+  // Shu FILIALDAGI roli — uy filialidagidan farq qilishi mumkin.
+  // Denormalizatsiya: ro'yxatni chizish uchun N ta filial bazasiga
+  // bormaslik kerak.
+  role String
+
+  // Uy filiali — `UserDirectory.branchId` bilan bir xil qator.
+  // Login har doim shu yerga tushadi va uni yechib bo'lmaydi.
+  isHome Boolean @default(false) @map("is_home")
+
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   UserDirectory @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@id([userId, branchId])
+  @@index([branchId, role])
+  @@map("user_branch_access")
 }
