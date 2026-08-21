@@ -55,10 +55,14 @@ const A = {
 const PERMISSION_SECTIONS = [
   {
     // Filiallar — `branches.create` PostgreSQL schema'si yaratadi va
-    // migratsiya yugurtiradi, `branches.switch` esa foydalanuvchini butun
-    // BOSHQA bazaga olib o'tadi. Ikkalasi ham amalda owner darajasidagi
-    // huquq, lekin katalogda turishi kerak — aks holda ularni hech kimga
-    // berib bo'lmasdi.
+    // migratsiya yugurtiradi, `branches.assign` esa odamni butun BOSHQA
+    // bazaga kiritadi. Ikkalasi ham amalda owner darajasidagi huquq, lekin
+    // katalogda turishi kerak — aks holda ularni hech kimga berib bo'lmasdi.
+    //
+    // ⚠️ "Filial almashtirish" ruxsat EMAS: xodim o'zi biriktirilgan
+    // filiallar orasida erkin harakatlanadi. Ro'yxatning o'zi — grant
+    // (`platform.user_branch_access`), shuning uchun alohida kalit ortiqcha
+    // bo'lardi va ikkita haqiqat manbai paydo bo'lardi.
     key: SECTIONS.BRANCHES,
     label: "Filiallar",
     group: "Asosiy",
@@ -67,7 +71,7 @@ const PERMISSION_SECTIONS = [
       A.create,
       A.update,
       { key: "archive", label: "Arxivlash" },
-      { key: "switch", label: "Filial almashtirish" },
+      { key: "assign", label: "Xodimni filialga biriktirish" },
     ],
   },
   {
