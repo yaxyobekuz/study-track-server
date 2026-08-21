@@ -35,9 +35,12 @@ const getStaff = asyncHandler(async (req, res) => {
  * @access Owner only
  */
 const updateUserPermissions = asyncHandler(async (req, res) => {
+  // `branchId` ixtiyoriy: berilmasa joriy filial olinadi. Ruxsatlar HAR
+  // FILIALDA alohida, shuning uchun "qaysi filial" savoli aniq bo'lishi kerak.
   const user = await permissionService.setUserPermissions(
     req.params.id,
     req.body.permissions,
+    req.body.branchId,
   );
 
   res.json({
