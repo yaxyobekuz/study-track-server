@@ -15,6 +15,9 @@ const {
   exportUsersToExcel,
   getStudents,
   updateMe,
+  getUserBranches,
+  attachUserToBranch,
+  detachUserFromBranch,
 } = require("../controllers/user.controller");
 const {
   protect,
@@ -56,5 +59,14 @@ router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSI
 // Arxivlash / arxivdan qaytarish (o'quvchi ham, xodim ham — owner'dan tashqari)
 router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), archiveUser);
 router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restoreUser);
+
+// Xodimni filiallarga biriktirish.
+//
+// Ko'rish `users.view` bilan — xodim kartasida "qayerda ishlaydi" ko'rinishi
+// kerak. BIRIKTIRISH esa `branches.assign` bilan: bu odamni butun boshqa
+// bazaga kiritadi, ya'ni oddiy tahrirlashdan tubdan farq qiladi.
+router.get("/:id/branches", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_VIEW), getUserBranches);
+router.post("/:id/branches", validateObjectId("id"), authorizePermission(PERMISSIONS.BRANCHES_ASSIGN), attachUserToBranch);
+router.delete("/:id/branches/:branchId", validateObjectId("id"), validateObjectId("branchId"), authorizePermission(PERMISSIONS.BRANCHES_ASSIGN), detachUserFromBranch);
 
 module.exports = router;

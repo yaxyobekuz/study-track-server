@@ -84,6 +84,16 @@ const claim = async (entry) => {
         lastName: entry.lastName ?? "",
         isActive: entry.isActive ?? true,
         isArchived: entry.isArchived ?? false,
+        // Uy filialiga biriktirish yozuvi DARHOL yaratiladi: "qaysi
+        // filiallarga kira oladi" savoliga javob beradigan yagona jadval shu,
+        // uy filiali esa ro'yxatdan tashqarida qolmasligi kerak.
+        branchAccess: {
+          create: {
+            branchId: entry.branchId,
+            role: entry.role,
+            isHome: true,
+          },
+        },
       },
     });
   } catch (error) {
@@ -129,11 +139,27 @@ const sync = async (entry) => {
   };
 
   try {
-    return await platformPrisma.userDirectory.upsert({
+    const row = await platformPrisma.userDirectory.upsert({
       where: { id: entry.id },
       create: { id: entry.id, ...data },
       update: data,
     });
+
+    // Uy filiali biriktirishi ham yangilanadi. Upsert, chunki
+    // filiallashtirishdan OLDIN yaratilgan foydalanuvchilarda bu qator
+    // bo'lmasligi mumkin (lazy migratsiya).
+    await platformPrisma.userBranchAccess.upsert({
+      where: { userId_branchId: { userId: row.id, branchId: data.branchId } },
+      create: {
+        userId: row.id,
+        branchId: data.branchId,
+        role: data.role,
+        isHome: true,
+      },
+      update: { role: data.role, isHome: true },
+    });
+
+    return row;
   } catch (error) {
     if (error.code === "P2002") {
       throw new ConflictError("Bu username allaqachon band");
@@ -175,6 +201,84 @@ const requireByUsername = async (username) => {
   return entry;
 };
 
+
+// ─────────────────────────────────────────────
+// FILIALGA BIRIKTIRISH
+// ─────────────────────────────────────────────
+//
+// "Bu odam qaysi filiallarga kira oladi" — YAGONA manba. Ruxsatlarning o'zi
+// bu yerda emas: ular har filialning `users.permissions` ustunida yotadi,
+// ya'ni bir odam Chilonzorda kassir, Yunusobodda o'qituvchi bo'la oladi.
+
+/**
+ * Foydalanuvchi kira oladigan filiallar (uy filiali ham ro'yxatda).
+ * @param {string} userId
+ * @returns {Promise<Array<{branchId: string, role: string, isHome: boolean}>>}
+ */
+const listAccess = async (userId) =>
+  platformPrisma.userBranchAccess.findMany({
+    where: { userId },
+    orderBy: [{ isHome: "desc" }, { createdAt: "asc" }],
+  });
+
+/**
+ * Shu filialga kirish huquqi bormi?
+ * @param {string} userId
+ * @param {string} branchId
+ * @returns {Promise<object|null>}
+ */
+const findAccess = async (userId, branchId) =>
+  platformPrisma.userBranchAccess.findUnique({
+    where: { userId_branchId: { userId, branchId } },
+  });
+
+/**
+ * Filialga biriktiradi (yoki mavjud biriktirishning rolini yangilaydi).
+ *
+ * Bu FAQAT reyestr yozuvi — filial bazasidagi `User` qatorini
+ * `user.service.js` yaratadi. Ikkalasi doim birga chaqiriladi.
+ *
+ * @param {{userId: string, branchId: string, role: string, actorId?: string}} params
+ */
+const grantAccess = async ({ userId, branchId, role, actorId = null }) =>
+  platformPrisma.userBranchAccess.upsert({
+    where: { userId_branchId: { userId, branchId } },
+    create: { userId, branchId, role, isHome: false, createdBy: actorId },
+    update: { role },
+  });
+
+/**
+ * Biriktirishni bekor qiladi.
+ *
+ * UY filialini yechib bo'lmaydi: login aynan o'sha yerga tushadi, ya'ni
+ * uni olib tashlash odamni tizimdan butunlay chiqarib yuborardi.
+ *
+ * @param {string} userId
+ * @param {string} branchId
+ */
+const revokeAccess = async (userId, branchId) => {
+  const access = await findAccess(userId, branchId);
+  if (!access) return null;
+
+  if (access.isHome) {
+    throw new ConflictError(
+      "Asosiy filialdan chiqarib bo'lmaydi — foydalanuvchi tizimga aynan o'sha filial orqali kiradi",
+    );
+  }
+
+  await platformPrisma.userBranchAccess.delete({
+    where: { userId_branchId: { userId, branchId } },
+  });
+  return access;
+};
+
+/**
+ * Filialga biriktirilgan xodimlar (filial arxivlanayotganda ogohlantirish uchun).
+ * @param {string} branchId
+ */
+const countAccessByBranch = async (branchId) =>
+  platformPrisma.userBranchAccess.count({ where: { branchId } });
+
 module.exports = {
   normalize,
   findByUsername,
@@ -186,4 +290,9 @@ module.exports = {
   sync,
   remove,
   countByRole,
+  listAccess,
+  findAccess,
+  grantAccess,
+  revokeAccess,
+  countAccessByBranch,
 };

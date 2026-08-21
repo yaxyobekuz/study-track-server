@@ -177,6 +177,53 @@ const updateMe = asyncHandler(async (req, res) => {
   });
 });
 
+// ─── FILIALGA BIRIKTIRISH ──────────────────────────────────────────
+
+/**
+ * Xodim qaysi filiallarda ishlaydi — har birida o'z roli va ruxsatlari bilan.
+ * @route GET /api/users/:id/branches
+ */
+const getUserBranches = asyncHandler(async (req, res) => {
+  const data = await userService.getUserBranches(req.params.id);
+
+  res.json({ success: true, data });
+});
+
+/**
+ * Xodimni boshqa filialga biriktirish.
+ * @route POST /api/users/:id/branches
+ */
+const attachUserToBranch = asyncHandler(async (req, res) => {
+  const data = await userService.attachToBranch(req.params.id, {
+    branchId: req.body.branchId,
+    role: req.body.role,
+    actorId: req.user.id,
+  });
+
+  res.json({
+    success: true,
+    message: "Xodim filialga biriktirildi",
+    data,
+  });
+});
+
+/**
+ * Xodimni filialdan chiqarish (asosiy filialdan chiqarib bo'lmaydi).
+ * @route DELETE /api/users/:id/branches/:branchId
+ */
+const detachUserFromBranch = asyncHandler(async (req, res) => {
+  const data = await userService.detachFromBranch(
+    req.params.id,
+    req.params.branchId,
+  );
+
+  res.json({
+    success: true,
+    message: "Xodim filialdan chiqarildi",
+    data,
+  });
+});
+
 module.exports = {
   getAllUsers,
   getAllUsersShort,
@@ -192,4 +239,7 @@ module.exports = {
   exportUsersToExcel,
   getStudents,
   updateMe,
+  getUserBranches,
+  attachUserToBranch,
+  detachUserFromBranch,
 };

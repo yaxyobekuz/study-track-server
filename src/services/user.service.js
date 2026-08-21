@@ -1,7 +1,8 @@
 const prisma = require("../config/prisma");
 // Rollar katalogi PLATFORMADA — barcha filiallarga umumiy
 const platformPrisma = require("../config/platformPrisma");
-const { getBranch } = require("../config/branchContext");
+const { getBranch, runWithBranch } = require("../config/branchContext");
+const branchService = require("./branch.service");
 const {
   NotFoundError,
   ForbiddenError,
@@ -60,6 +61,74 @@ async function syncDirectory(id) {
     isActive: user.isActive,
     isArchived: user.isArchived,
   });
+}
+
+
+// ─────────────────────────────────────────────
+// KO'P FILIALLI XODIM
+// ─────────────────────────────────────────────
+//
+// Xodim bir nechta filialda ishlashi mumkin. Uning har filialda O'Z `User`
+// qatori bor va shu qator o'z `permissions` ini olib yuradi — aynan
+// shuning uchun "Chilonzorda kassir, Yunusobodda o'qituvchi" ifodalanadi.
+//
+// Lekin ba'zi maydonlar ODAMNING O'ZIGA tegishli, filialga emas: login,
+// parol, ism va login bayroqlari. Ular hamma qatorda BIR XIL bo'lishi shart,
+// aks holda odam bir filialda kira olib, boshqasida kira olmay qolardi.
+//
+// ⚠️ Bu maydonlarga yozadigan har qanday kod `propagateIdentity()` dan
+// o'tishi kerak. To'g'ridan-to'g'ri `prisma.user.update` faqat JORIY
+// filialga yozadi va qolgan nusxalar jimgina eskirib qoladi.
+const IDENTITY_FIELDS = [
+  "username",
+  "password",
+  "plainPassword",
+  "firstName",
+  "lastName",
+  "gender",
+  "isActive",
+  "isArchived",
+];
+
+/**
+ * Odamga tegishli maydonlarni uning BARCHA filiallaridagi qatorlariga yozadi.
+ *
+ * Joriy filial ham shu ro'yxatda — alohida yozish shart emas.
+ *
+ * @param {string} userId
+ * @param {object} data - faqat `IDENTITY_FIELDS` dagi kalitlar olinadi
+ * @returns {Promise<number>} nechta filialda yangilandi
+ */
+async function propagateIdentity(userId, data) {
+  const patch = Object.fromEntries(
+    Object.entries(data).filter(([key]) => IDENTITY_FIELDS.includes(key)),
+  );
+  if (Object.keys(patch).length === 0) return 0;
+
+  const access = await userDirectory.listAccess(userId);
+  let updated = 0;
+
+  for (const row of access) {
+    const branch = await branchService.findById(row.branchId);
+    if (!branch) continue;
+
+    try {
+      await runWithBranch(branch, () =>
+        prisma.user.update({ where: { id: userId }, data: patch }),
+      );
+      updated += 1;
+    } catch (error) {
+      // Qator yo'q bo'lishi mumkin (biriktirish bor, profil hali
+      // yaratilmagan) — bu xato emas, o'tkazib yuboramiz.
+      if (error.code !== "P2025") {
+        logger.warn(
+          `[user] "${branch.name}" filialida identifikatsiya yangilanmadi (${userId}): ${error.message}`,
+        );
+      }
+    }
+  }
+
+  return updated;
 }
 
 // classes junction bilan user'ni yuklab, password'siz tekislangan shaklda qaytaradi
@@ -397,6 +466,11 @@ async function updateUser(id, data) {
     }
   });
 
+  // Ism, jins va login bayrog'i — odamga tegishli, ya'ni barcha
+  // filiallardagi qatorlariga yoziladi. Ish jadvali va sinflar esa ATAYLAB
+  // faqat joriy filialda qoladi: ular filialga xos.
+  await propagateIdentity(id, update);
+
   // Yo'naltirgichdagi denormalizatsiyani yangilaymiz (ism/holat qidiruvda
   // va yig'ma hisobotda platformadan o'qiladi).
   await syncDirectory(id);
@@ -424,10 +498,10 @@ async function resetPassword(id, newPassword) {
   }
 
   const hashed = await hashPassword(newPassword);
-  await prisma.user.update({
-    where: { id },
-    data: { password: hashed, plainPassword: newPassword },
-  });
+
+  // BARCHA filiallarga: parol odamga tegishli, filialga emas. Faqat joriy
+  // filialga yozilsa, xodim boshqa filialda eski parol bilan qolib ketardi.
+  await propagateIdentity(id, { password: hashed, plainPassword: newPassword });
 }
 
 /**
@@ -514,6 +588,12 @@ async function archiveUser(id, options = {}) {
     prisma.userClass.deleteMany({ where: { userId: id } }),
   ]);
 
+  // `isArchived` — LOGIN bayrog'i, ya'ni odamga tegishli: arxivlangan xodim
+  // HECH BIR filialga kira olmasligi kerak. Bitta filialdan chiqarish uchun
+  // arxivlash emas, biriktirishni bekor qilish ishlatiladi
+  // (`detachFromBranch`).
+  await propagateIdentity(id, { isArchived: true });
+
   // Arxivlangan foydalanuvchi login qila olmaydi — yo'naltirgich ham shuni
   // bilishi kerak (yig'ma sanoqlar arxivlanganlarni chiqarib tashlaydi).
   await syncDirectory(id);
@@ -539,6 +619,8 @@ async function restoreUser(id) {
     where: { id },
     data: { isArchived: false, archivedAt: null },
   });
+
+  await propagateIdentity(id, { isArchived: false });
 
   await syncDirectory(id);
 
@@ -671,11 +753,242 @@ async function updateSelfProfile(userId, data) {
     update.plainPassword = newPassword;
   }
 
-  await prisma.user.update({ where: { id: userId }, data: update });
+  // Ism, username va parol — odamning o'zi haqidagi ma'lumot: barcha
+  // filiallardagi qatorlariga yoziladi.
+  await propagateIdentity(userId, update);
 
   await syncDirectory(userId);
 
   return loadUser(userId);
+}
+
+// ─────────────────────────────────────────────
+// XODIMNI FILIALGA BIRIKTIRISH
+// ─────────────────────────────────────────────
+
+/**
+ * Xodimning barcha filiallari — har birida O'Z roli va O'Z ruxsatlari bilan.
+ *
+ * Ruxsatlar filial bazasidan o'qiladi (`User.permissions`), chunki aynan
+ * shu narsa har filialda boshqacha bo'lishi kerak: Chilonzorda kassir,
+ * Yunusobodda o'qituvchi.
+ *
+ * @param {string} userId
+ * @returns {Promise<object[]>}
+ */
+async function getUserBranches(userId) {
+  const access = await userDirectory.listAccess(userId);
+
+  const rows = await Promise.all(
+    access.map(async (row) => {
+      const branch = await branchService.findById(row.branchId);
+      if (!branch) return null;
+
+      // Profil o'sha filialda yo'q bo'lishi mumkin (biriktirish qolib
+      // ketgan) — bu holat `profileMissing` bilan OCHIQ ko'rsatiladi,
+      // jimgina "ruxsati yo'q" sifatida emas.
+      const profile = await runWithBranch(branch, () =>
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            role: true,
+            permissions: true,
+            isActive: true,
+            workStartTime: true,
+            workEndTime: true,
+            workDays: true,
+          },
+        }),
+      );
+
+      return {
+        branch: {
+          id: branch.id,
+          code: branch.code,
+          name: branch.name,
+          shortName: branch.shortName || branch.name,
+          isArchived: branch.isArchived,
+        },
+        isHome: row.isHome,
+        role: profile?.role ?? row.role,
+        permissions: profile?.permissions ?? [],
+        isActive: profile?.isActive ?? true,
+        effectiveSchedule: profile
+          ? {
+              workStartTime: profile.workStartTime,
+              workEndTime: profile.workEndTime,
+              workDays: profile.workDays,
+            }
+          : null,
+        profileMissing: !profile,
+      };
+    }),
+  );
+
+  return rows.filter(Boolean);
+}
+
+/**
+ * Xodimni BOSHQA filialga biriktiradi.
+ *
+ * Ikki qadam, ikki schema (tranzaksiya bo'lishi mumkin emas):
+ *   1) maqsad filialda `User` qatori yaratiladi — AYNAN O'SHA `id` bilan
+ *      (owner naqshi: `utils/initOwner.js`),
+ *   2) platformada biriktirish yozuvi qo'yiladi.
+ *
+ * Tartib shunday: qator AVVAL yaratiladi, biriktirish esa oxirida — aks
+ * holda "kira olaman deb yozilgan, lekin profili yo'q" holati paydo bo'lardi.
+ *
+ * RUXSATLAR yangi filialda ROLNING standart ruxsatlaridan boshlanadi
+ * (Rollar sahifasida sozlanadi) — yangi xodim yaratilgandagi bilan bir xil
+ * mantiq. Boshqa filialdagi ruxsatlar KO'CHIRILMAYDI: kassa huquqi
+ * tasodifan ikkinchi filialga o'tib ketmasligi kerak.
+ *
+ * @param {string} userId
+ * @param {{branchId: string, role?: string, actorId?: string}} params
+ */
+async function attachToBranch(userId, { branchId, role, actorId = null }) {
+  const entry = await userDirectory.findByUserId(userId);
+  if (!entry) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  if (entry.role === "student") {
+    throw new BadRequestError(
+      "O'quvchini bir nechta filialga biriktirib bo'lmaydi — o'quvchi bitta filialda o'qiydi",
+    );
+  }
+
+  const target = await branchService.getUsableById(branchId);
+
+  if (await userDirectory.findAccess(userId, branchId)) {
+    throw new BadRequestError(
+      `Xodim "${target.name}" filialiga allaqachon biriktirilgan`,
+    );
+  }
+
+  // Manba profil — UY filialidan (login, parol, ism shu yerdan olinadi).
+  const home = await branchService.findById(entry.branchId);
+  if (!home) throw new NotFoundError("Xodimning asosiy filiali topilmadi");
+
+  const source = await runWithBranch(home, () =>
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        username: true,
+        password: true,
+        plainPassword: true,
+        firstName: true,
+        lastName: true,
+        gender: true,
+        isActive: true,
+        isArchived: true,
+      },
+    }),
+  );
+
+  if (!source) throw new NotFoundError("Xodim profili topilmadi");
+  if (source.isArchived) {
+    throw new BadRequestError(
+      "Arxivlangan xodimni filialga biriktirib bo'lmaydi",
+    );
+  }
+
+  const nextRole = role || entry.role;
+
+  const roleRow = await platformPrisma.role.findUnique({
+    where: { value: nextRole },
+  });
+  if (!roleRow) throw new BadRequestError("Noto'g'ri rol");
+
+  // ── 1. Maqsad filialda profil ──
+  await runWithBranch(target, () =>
+    prisma.user.upsert({
+      where: { id: userId },
+      create: {
+        id: source.id,
+        username: source.username,
+        password: source.password,
+        plainPassword: source.plainPassword,
+        firstName: source.firstName,
+        lastName: source.lastName,
+        gender: source.gender,
+        role: nextRole,
+        isActive: source.isActive,
+        permissions: roleRow.permissions || [],
+        workStartTime: roleRow.workStartTime,
+        workEndTime: roleRow.workEndTime,
+        workDays: roleRow.workDays || [],
+        weeklySchedule: roleRow.weeklySchedule || {},
+      },
+      // Qator allaqachon bor bo'lsa (ilgari chiqarilgan xodim qaytdi) —
+      // RUXSATLARGA TEGMAYMIZ, faqat identifikatsiyani tiklaymiz.
+      update: {
+        username: source.username,
+        password: source.password,
+        plainPassword: source.plainPassword,
+        firstName: source.firstName,
+        lastName: source.lastName,
+        isActive: source.isActive,
+        isArchived: false,
+      },
+      select: { id: true },
+    }),
+  );
+
+  // ── 2. Biriktirish yozuvi ──
+  await userDirectory.grantAccess({
+    userId,
+    branchId,
+    role: nextRole,
+    actorId,
+  });
+
+  logger.info(
+    `[user] ${source.username} → "${target.name}" filialiga biriktirildi (${nextRole})`,
+  );
+
+  return getUserBranches(userId);
+}
+
+/**
+ * Xodimni filialdan chiqaradi.
+ *
+ * Profil qatori O'CHIRILMAYDI, faqat `isActive: false` qilinadi: o'sha
+ * filialdagi davomat, jarima va topshiriqlar unga ishora qiladi va
+ * hisobotlardan yo'qolmasligi kerak (`User` soft-ref naqshi).
+ *
+ * UY filialidan chiqarib bo'lmaydi — login aynan o'sha yerga tushadi
+ * (`userDirectory.revokeAccess` tekshiradi).
+ *
+ * @param {string} userId
+ * @param {string} branchId
+ */
+async function detachFromBranch(userId, branchId) {
+  const access = await userDirectory.revokeAccess(userId, branchId);
+  if (!access) {
+    throw new NotFoundError("Bu filialga biriktirish topilmadi");
+  }
+
+  const branch = await branchService.findById(branchId);
+  if (branch) {
+    await runWithBranch(branch, () =>
+      prisma.user
+        .update({
+          where: { id: userId },
+          // Ruxsatlar ham tozalanadi: biriktirish qaytarilsa ular rolning
+          // standartidan qayta boshlanishi kerak, eskisi tirilib qolmasin.
+          data: { isActive: false, permissions: [] },
+        })
+        .catch(() => {}),
+    );
+  }
+
+  logger.info(
+    `[user] ${userId} → "${branch?.name ?? branchId}" filialidan chiqarildi`,
+  );
+
+  return getUserBranches(userId);
 }
 
 module.exports = {
@@ -695,4 +1008,9 @@ module.exports = {
   // Bir martalik migratsiya skripti (branch-bootstrap) yo'naltirgichni shu
   // bilan to'ldiradi.
   syncDirectory,
+  // Ko'p filialli xodim
+  getUserBranches,
+  attachToBranch,
+  detachFromBranch,
+  propagateIdentity,
 };
