@@ -414,7 +414,11 @@ const getStudentInvoices = async (studentId, options = {}) => {
     const skipReason = entry.isVacation
       ? "vacation"
       : !enrollment.enrolled
-        ? "not_enrolled"
+        ? // "davri umuman yo'q" ni "bu oyda o'qimagan" dan ajratamiz: birinchisi
+          // to'ldirilishi kerak bo'lgan MA'LUMOT KAMCHILIGI, ikkinchisi esa fakt.
+          enrollment.reason === "no_periods"
+          ? "no_periods"
+          : "not_enrolled"
         : settings.firstInvoiceMonth != null && entry.month < settings.firstInvoiceMonth
           ? "before_first_invoice_month"
           : null;
