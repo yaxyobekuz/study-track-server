@@ -22,7 +22,8 @@ const getMe = asyncHandler(async (req, res) => {
   });
 });
 
-// Filial almashtirish — yangi token qaytaradi (owner / branches.switch)
+// Filial almashtirish — yangi token qaytaradi. Xodim faqat O'ZI
+// BIRIKTIRILGAN filiallarga o'ta oladi (owner esa hammasiga).
 const switchBranch = asyncHandler(async (req, res) => {
   const { branchId } = req.body;
   const data = await authService.switchBranch(req.user, branchId);

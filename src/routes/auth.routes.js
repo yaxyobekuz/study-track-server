@@ -14,9 +14,9 @@ router.post("/login", login);
 // Protected routes
 router.get("/me", protect, getMe);
 
-// Filial almashtirish — ruxsat tekshiruvi service ichida (owner yoki
-// `branches.switch`), chunki qoida `getMe` javobidagi `canSwitchBranch`
-// bilan bir manbadan kelishi kerak.
+// Filial almashtirish — tekshiruv service ichida: xodim faqat O'ZI
+// BIRIKTIRILGAN filiallarga o'ta oladi (owner esa hammasiga). Ro'yxatning
+// o'zi grant bo'lgani uchun alohida ruxsat kaliti yo'q.
 router.post("/switch-branch", protect, switchBranch);
 
 module.exports = router;
