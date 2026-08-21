@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
 const logger = require("../utils/logger");
@@ -17,7 +18,7 @@ const logger = require("../utils/logger");
 function startTopicIncrementCron() {
   cron.schedule(
     "* * * * *",
-    async () => {
+    branchCron("[TopicCron]", async (branch) => {
       try {
         // Yakshanba kuni dars yo'q
         if (isSunday()) return;
@@ -81,7 +82,7 @@ function startTopicIncrementCron() {
       } catch (error) {
         logger.error(`[TopicCron] Error: ${error.message}`);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { finalizeExpiredSession } = require("../services/testSession.service");
 const logger = require("../utils/logger");
@@ -14,7 +15,7 @@ const logger = require("../utils/logger");
 function startTestSessionExpiryCron() {
   cron.schedule(
     "* * * * *",
-    async () => {
+    branchCron("[TestSessionCron]", async (branch) => {
       try {
         const now = new Date();
         const expiredSessions = await prisma.testSession.findMany({
@@ -54,7 +55,7 @@ function startTestSessionExpiryCron() {
       } catch (error) {
         logger.error("Test session expiry cron job xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

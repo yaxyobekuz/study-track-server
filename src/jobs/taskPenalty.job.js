@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
 
@@ -81,30 +82,29 @@ async function runPenaltyPass(ownerUser) {
 }
 
 async function startTaskPenaltyCron() {
-  let ownerUser;
-
-  try {
-    ownerUser = await prisma.user.findFirst({
-      where: { role: "owner" },
-      select: { id: true },
-    });
-    if (!ownerUser) {
-      logger.warn("[TaskPenaltyCron] Owner topilmadi - cron ishlaydi lekin jarimalar qo'llanilmaydi");
-    }
-  } catch (error) {
-    logger.error("[TaskPenaltyCron] Owner yuklashda xato:", error);
-  }
-
   cron.schedule(
     "0 * * * *",
-    async () => {
-      logger.info("[TaskPenaltyCron] Muddati o'tgan topshiriqlar tekshirilmoqda...");
-      try {
-        await runPenaltyPass(ownerUser);
-      } catch (error) {
-        logger.error("[TaskPenaltyCron] Cron xatosi:", error);
+    branchCron("[TaskPenaltyCron]", async (branch) => {
+      logger.info(
+        `[TaskPenaltyCron] ${branch.name}: muddati o'tgan topshiriqlar tekshirilmoqda...`,
+      );
+
+      // Owner HAR FILIALDA alohida o'qiladi va startup'da EMAS, pass ichida:
+      // filiallashtirishdan keyin "owner" har schema'da o'z qatoriga ega
+      // (aynan o'sha `id` bilan), startup esa filial kontekstidan tashqarida
+      // — u yerda `prisma` umuman ishlamaydi.
+      const ownerUser = await prisma.user.findFirst({
+        where: { role: "owner" },
+        select: { id: true },
+      });
+      if (!ownerUser) {
+        logger.warn(
+          `[TaskPenaltyCron] ${branch.name}: owner topilmadi — jarimalar qo'llanilmaydi`,
+        );
       }
-    },
+
+      await runPenaltyPass(ownerUser);
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

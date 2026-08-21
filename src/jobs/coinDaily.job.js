@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const { distributeDailyCoins } = require("../services/coin.service");
 const logger = require("../utils/logger");
 
@@ -34,14 +35,14 @@ async function runDistributionForDate(date, reason) {
 function startDailyCoinCron() {
   cron.schedule(
     "30 23 * * *",
-    async () => {
+    branchCron("[CoinCron]", async (branch) => {
       try {
         const today = getTashkentNow();
         await runDistributionForDate(today, "Jadval bo'yicha");
       } catch (error) {
         logger.error("[CoinCron] Kunlik coin cron job xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",
@@ -52,21 +53,21 @@ function startDailyCoinCron() {
     "Kunlik coin cron job belgilandi: Har kuni soat 23:30 da (Asia/Tashkent)",
   );
 
-  setImmediate(async () => {
-    try {
+  // Startup recovery ham FILIALLAR BO'YLAB: `runDistributionForDate` bazaga
+  // boradi, ya'ni filial kontekstisiz ishlay olmaydi.
+  setImmediate(
+    branchCron("[CoinCron]", async (branch) => {
       const now = getTashkentNow();
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
 
-      await runDistributionForDate(yesterday, "Recovery (kechagi kun)");
+      await runDistributionForDate(yesterday, `${branch.name} — recovery (kechagi kun)`);
 
       if (isAfterDailyRunTime(now)) {
-        await runDistributionForDate(now, "Recovery (bugungi kun)");
+        await runDistributionForDate(now, `${branch.name} — recovery (bugungi kun)`);
       }
-    } catch (error) {
-      logger.error("[CoinCron] Startup recovery xatosi:", error);
-    }
-  });
+    }),
+  );
 }
 
 module.exports = { startDailyCoinCron };

@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { isHoliday } = require("../services/holiday.service");
 const { getGradePenaltySettings } = require("../services/settings.service");
@@ -180,21 +181,21 @@ async function runGradePenaltyPass(ownerUser) {
 async function startGradePenaltyCron() {
   cron.schedule(
     "0 20 * * *",
-    async () => {
-      logger.info("[GradePenaltyCron] Baho qo'ymaslik tekshiruvi boshlandi...");
+    branchCron("[GradePenaltyCron]", async (branch) => {
+      logger.info(`[GradePenaltyCron] ${branch.name}: baho qo'ymaslik tekshiruvi boshlandi...`);
       try {
         const ownerUser = await prisma.user.findFirst({
           where: { role: "owner" },
           select: { id: true },
         });
         if (!ownerUser) {
-          logger.warn("[GradePenaltyCron] Owner topilmadi - jarimalar qo'llanilmaydi");
+          logger.warn(`[GradePenaltyCron] ${branch.name}: owner topilmadi — jarimalar qo'llanilmaydi`);
         }
         await runGradePenaltyPass(ownerUser);
       } catch (error) {
         logger.error("[GradePenaltyCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

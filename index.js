@@ -119,9 +119,17 @@ app.use(errorHandler);
  * DB ulanish → Owner init → Roles init → Cron jobs → HTTP server
  */
 const bootstrap = async () => {
+  // `connectDB` platformaga ulanadi, filiallar reyestrini o'qiydi va har bir
+  // filial schema'sida migratsiyalar qo'llanganini tekshiradi.
   await connectDB();
-  await initOwner();
+
+  // TARTIB: avval rollar (platformada), keyin owner — `initOwner` yangi
+  // foydalanuvchiga rolning boshlang'ich ruxsatlarini beradi.
   await initRoles();
+
+  const branchService = require("./src/services/branch.service");
+  const defaultBranch = await branchService.getDefaultBranch();
+  await initOwner(defaultBranch);
 
   // Cron job'larni faqat DB ulanganidan keyin ishga tushirish
   startWeeklyStatsCron();
@@ -137,6 +145,12 @@ const bootstrap = async () => {
   startInvoiceGenerationCron();
   startFinanceReconcileCron();
   startChangelogNotificationCron();
+
+  // Navbatlar: modul yuklanganda filial konteksti yo'q, shuning uchun
+  // "qotib qolgan" yozuvlarni tiklash va navbatni uyg'otish BOOTSTRAP'da,
+  // filiallar bo'ylab bajariladi.
+  await require("./src/services/messageQueue.service").recoverAll();
+  await require("./src/services/penaltyNotificationQueue.service").recoverAll();
 
   const server = app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);
@@ -159,12 +173,16 @@ const bootstrap = async () => {
     process.exit(1);
   });
 
-  // Graceful shutdown — Prisma ulanishini yopish
-  const prisma = require("./src/config/prisma");
+  // Graceful shutdown — platforma VA barcha ochiq filial ulanishlarini yopish.
+  // `config/prisma.js` endi Proxy: unda `$disconnect` yo'q, chunki u joriy
+  // filialga bog'liq. Reyestr esa hammasini biladi.
+  const platformPrisma = require("./src/config/platformPrisma");
+  const branchRegistry = require("./src/config/branchRegistry");
   const shutdown = async (signal) => {
     logger.info(`${signal} qabul qilindi, server yopilmoqda...`);
     server.close(async () => {
-      await prisma.$disconnect();
+      await branchRegistry.disconnectAll();
+      await platformPrisma.$disconnectBase();
       process.exit(0);
     });
   };

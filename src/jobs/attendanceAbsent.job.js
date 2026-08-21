@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
@@ -131,21 +132,21 @@ async function runAbsentMarking(ownerUser) {
 async function startAttendanceAbsentCron() {
   cron.schedule(
     "45 23 * * *",
-    async () => {
-      logger.info("[AttendanceCron] Davomatsiz xodimlarni belgilash boshlandi...");
+    branchCron("[AttendanceCron]", async (branch) => {
+      logger.info(`[AttendanceCron] ${branch.name}: davomatsiz xodimlarni belgilash boshlandi...`);
       try {
         const ownerUser = await prisma.user.findFirst({
           where: { role: "owner" },
           select: { id: true },
         });
         if (!ownerUser) {
-          logger.warn("[AttendanceCron] Owner topilmadi - jarimalar qo'llanilmaydi");
+          logger.warn(`[AttendanceCron] ${branch.name}: owner topilmadi — jarimalar qo'llanilmaydi`);
         }
         await runAbsentMarking(ownerUser);
       } catch (error) {
         logger.error("[AttendanceCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

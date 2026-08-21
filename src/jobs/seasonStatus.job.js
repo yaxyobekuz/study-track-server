@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { computeSeasonStatus } = require("../helpers/seasonStatus.helper");
 const logger = require("../utils/logger");
@@ -41,21 +42,23 @@ async function syncSeasonStatuses() {
 function startSeasonStatusCron() {
   cron.schedule(
     "* * * * *",
-    async () => {
+    branchCron("[SeasonStatusCron]", async (branch) => {
       try {
         await syncSeasonStatuses();
       } catch (error) {
         logger.error("[SeasonStatusCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",
     },
   );
 
-  // Startup paytida bir marta darhol moslashtirish
-  syncSeasonStatuses().catch((error) =>
+  // Startup paytida bir marta darhol moslashtirish — HAR FILIALDA.
+  // `branchCron` bu yerda ham kerak: `syncSeasonStatuses` bazaga boradi va
+  // filial kontekstisiz ishlay olmaydi.
+  branchCron("[SeasonStatusCron]", () => syncSeasonStatuses())().catch((error) =>
     logger.error("[SeasonStatusCron] Startup sync xatosi:", error),
   );
 

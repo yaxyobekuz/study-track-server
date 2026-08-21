@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { notifyPremiumEvent } = require("../services/premiumNotification.service");
 const logger = require("../utils/logger");
@@ -60,14 +61,14 @@ async function runPremiumExpiryPass() {
 function startPremiumExpiryCron() {
   cron.schedule(
     "0 * * * *",
-    async () => {
+    branchCron("[PremiumExpiryCron]", async (branch) => {
       logger.info("[PremiumExpiryCron] Premium muddati tekshiruvi boshlandi...");
       try {
         await runPremiumExpiryPass();
       } catch (error) {
         logger.error("[PremiumExpiryCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

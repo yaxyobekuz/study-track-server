@@ -1,5 +1,6 @@
 // Prisma
 const prisma = require("../config/prisma");
+const { getBranch, runWithBranch } = require("../config/branchContext");
 
 // Services
 const telegramService = require("./telegram.service");
@@ -9,7 +10,10 @@ const logger = require("../utils/logger");
 
 class MessageQueueService {
   constructor() {
-    this.isProcessing = false;
+    // ⚠️ FILIAL BO'YICHA, global emas. Navbat har filialning o'z schema'sida
+    // yashaydi: bitta global bayroq bir filial ishlayotganda qolganlarini
+    // bloklab qo'yardi va xabarlar "pending" da qotib qolardi.
+    this.processing = new Map(); // schemaName -> true
     const { config } = require("../config/env.config");
     this.rateLimit = config.messageRateLimitMs;
   }
@@ -25,8 +29,8 @@ class MessageQueueService {
       logger.info(`Xabar navbatga qo'shildi: ${queueItem.id}`);
 
       // Start processing queue if not already processing
-      if (!this.isProcessing) {
-        this.processQueue();
+      if (!this.isBusy()) {
+        this.startProcessing();
       }
 
       return queueItem;
@@ -49,8 +53,8 @@ class MessageQueueService {
       logger.info(`${queueItems.length} ta xabar navbatga qo'shildi`);
 
       // Start processing queue if not already processing
-      if (!this.isProcessing) {
-        this.processQueue();
+      if (!this.isBusy()) {
+        this.startProcessing();
       }
 
       return queueItems;
@@ -63,12 +67,38 @@ class MessageQueueService {
   /**
    * Process queue items
    */
+  /** Joriy filialning kaliti; kontekst yo'q bo'lsa `null`. */
+  branchKey() {
+    const branch = getBranch();
+    return branch ? branch.schemaName : null;
+  }
+
+  /** Shu filialda navbat allaqachon qayta ishlanyaptimi? */
+  isBusy() {
+    const key = this.branchKey();
+    return key ? this.processing.get(key) === true : false;
+  }
+
+  /**
+   * Navbatni JORIY FILIAL kontekstida fonda ishga tushiradi.
+   *
+   * Kontekst ATAYLAB aniq uzatiladi: chaqiruv "detached" (javob kutilmaydi)
+   * va so'rov tugagandan keyin ham davom etadi — `prisma` qaysi filialga
+   * borishini bilishi kerak.
+   */
+  startProcessing() {
+    const branch = getBranch();
+    if (!branch) return;
+    runWithBranch(branch, () => this.processQueue());
+  }
+
   async processQueue() {
-    if (this.isProcessing) {
+    const key = this.branchKey();
+    if (!key || this.processing.get(key)) {
       return;
     }
 
-    this.isProcessing = true;
+    this.processing.set(key, true);
     logger.info("Queue qayta ishlanmoqda...");
 
     try {
@@ -100,7 +130,7 @@ class MessageQueueService {
     } catch (error) {
       logger.error(`Queue qayta ishlashda xato: ${error.message}`);
     } finally {
-      this.isProcessing = false;
+      this.processing.delete(key);
       logger.info("Queue qayta ishlash tugadi");
     }
   }
@@ -275,4 +305,27 @@ class MessageQueueService {
   }
 }
 
-module.exports = new MessageQueueService();
+const instance = new MessageQueueService();
+
+/**
+ * Server ishga tushganda BARCHA filiallarda navbatni qayta ishga tushiradi.
+ *
+ * Ilgari navbat faqat unga yangi element qo'shilganda uyg'onardi, ya'ni
+ * qayta ishga tushirishdan oldin qolgan "pending" xabarlar keyingi
+ * yuborishgacha kutib turardi. Endi har filial uchun bir marta turtki
+ * beriladi.
+ *
+ * `index.js` bootstrap'idan chaqiriladi — konstruktorda EMAS: modul
+ * yuklanganda filial konteksti hali yo'q va `prisma` xato berardi.
+ */
+instance.recoverAll = async () => {
+  const { forEachBranch } = require("../helpers/branchIterator");
+  await forEachBranch(
+    async () => {
+      if (!instance.isBusy()) instance.startProcessing();
+    },
+    { label: "[Queue]" },
+  );
+};
+
+module.exports = instance;

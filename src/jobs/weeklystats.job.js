@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const { distributeWeeklyBonusCoins } = require("../services/coin.service");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const logger = require("../utils/logger");
@@ -12,9 +13,9 @@ const logger = require("../utils/logger");
 function startWeeklyStatsCron() {
   cron.schedule(
     "1 0 * * 0",
-    async () => {
+    branchCron("[WeeklyBonusCron]", async (branch) => {
       try {
-        logger.info("=== Weekly Bonus Cron Job Started ===");
+        logger.info(`[WeeklyBonusCron] ${branch.name}: haftalik bonus boshlandi`);
 
         // Yakshanba 00:01 da joriy hafta oralig'i = endigina tugagan hafta (Du–Sha)
         const range = getCurrentWeekRange();
@@ -26,7 +27,7 @@ function startWeeklyStatsCron() {
       } catch (error) {
         logger.error("Error in weekly bonus cron job:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

@@ -1,4 +1,5 @@
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
@@ -95,14 +96,14 @@ async function runStudentAbsentMarking() {
 async function startStudentAttendanceAbsentCron() {
   cron.schedule(
     "55 23 * * *",
-    async () => {
+    branchCron("[StudentAttendanceCron]", async (branch) => {
       logger.info("[StudentAttendanceCron] O'quvchilar absent belgilash boshlandi...");
       try {
         await runStudentAbsentMarking();
       } catch (error) {
         logger.error("[StudentAttendanceCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

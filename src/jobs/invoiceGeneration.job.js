@@ -24,6 +24,7 @@
  */
 
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
 const { getFinanceSettings } = require("../services/settings.service");
@@ -115,14 +116,14 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
 function startInvoiceGenerationCron() {
   cron.schedule(
     "0 6 * * *",
-    async () => {
-      logger.info("[InvoiceCron] Hisob-faktura tekshiruvi boshlandi...");
+    branchCron("[InvoiceCron]", async (branch) => {
+      logger.info(`[InvoiceCron] ${branch.name}: hisob-faktura tekshiruvi boshlandi...`);
       try {
         await runInvoiceGenerationPass();
       } catch (error) {
         logger.error("[InvoiceCron] Cron xatosi:", error);
       }
-    },
+    }),
     {
       scheduled: true,
       timezone: "Asia/Tashkent",

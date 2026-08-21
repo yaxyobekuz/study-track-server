@@ -19,7 +19,9 @@
  */
 
 const cron = require("node-cron");
+const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
+const { getBranch } = require("../config/branchContext");
 const logger = require("../utils/logger");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 
@@ -29,6 +31,11 @@ const { Decimal, formatAmount } = require("../helpers/money.helpers");
  */
 async function runFinanceReconcilePass() {
   const problems = [];
+
+  // Filial nomi HAR BIR log satrida: bu job pul invariantlari haqida
+  // baqiradi va "qaysi filialda?" degan savol javobsiz qolmasligi kerak.
+  const branch = getBranch();
+  const tag = `[FinanceReconcile] ${branch ? branch.name : "?"}`;
 
   // ── 1. To'lov turlari qoldiqlari ───────────────────
   const accounts = await prisma.paymentAccount.findMany();
@@ -192,17 +199,17 @@ async function runFinanceReconcilePass() {
 
   if (problems.length === 0) {
     logger.info(
-      `[FinanceReconcile] Invariantlar joyida — ${checked.accounts} to'lov turi, ` +
+      `${tag} Invariantlar joyida — ${checked.accounts} to'lov turi, ` +
         `${checked.studentAccounts} depozit, ${checked.sealed} hisob-faktura`,
     );
   } else {
     logger.error(
-      `[FinanceReconcile] ⚠️ ${problems.length} ta nomuvofiqlik topildi ` +
+      `${tag} ⚠️ ${problems.length} ta nomuvofiqlik topildi ` +
         "(avtomatik TUZATILMAYDI — sababi tekshirilishi kerak)",
     );
     for (const problem of problems) {
       logger.error(
-        `[FinanceReconcile] ${problem.kind}: ${problem.label} — ` +
+        `${tag} ${problem.kind}: ${problem.label} — ` +
           `saqlangan ${problem.stored}, kutilgan ${problem.expected}`,
       );
     }
@@ -217,13 +224,13 @@ async function runFinanceReconcilePass() {
 function startFinanceReconcileCron() {
   cron.schedule(
     "0 3 * * *",
-    async () => {
+    branchCron("[FinanceReconcileCron]", async (branch) => {
       try {
         await runFinanceReconcilePass();
       } catch (error) {
-        logger.error("[FinanceReconcile] Cron xatosi:", error);
+        logger.error(`[FinanceReconcile] ${branch.name}: cron xatosi`, error);
       }
-    },
+    }),
     { scheduled: true, timezone: "Asia/Tashkent" },
   );
 
