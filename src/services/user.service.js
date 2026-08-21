@@ -11,6 +11,7 @@ const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
+const { currentDayDate } = require("../helpers/month.helpers");
 
 // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
 function flattenClasses(user) {
@@ -65,8 +66,12 @@ async function syncDirectory(id) {
 async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
   const user = await prisma.user.findUnique({
     where: { id },
-    include: { classes: { include: { class: { select: { id: true, name: true } } } } },
-    ...(withPassword ? {} : { omit: { password: true, plainPassword: !withPlain } }),
+    include: {
+      classes: { include: { class: { select: { id: true, name: true } } } },
+    },
+    ...(withPassword
+      ? {}
+      : { omit: { password: true, plainPassword: !withPlain } }),
   });
   return flattenClasses(user);
 }
@@ -86,7 +91,14 @@ async function getStats() {
  * Barcha foydalanuvchilarni sahifalangan holda olish.
  */
 async function getAllUsers(query) {
-  const { role, class: classId, page = 1, limit = 24, search, archived } = query;
+  const {
+    role,
+    class: classId,
+    page = 1,
+    limit = 24,
+    search,
+    archived,
+  } = query;
 
   const where = {};
   // "staff" — rol emas, guruh: o'quvchilardan boshqa hamma (admin paneldagi
@@ -121,7 +133,9 @@ async function getAllUsers(query) {
     prisma.user.findMany({
       where,
       omit: { password: true, plainPassword: true },
-      include: { classes: { include: { class: { select: { id: true, name: true } } } } },
+      include: {
+        classes: { include: { class: { select: { id: true, name: true } } } },
+      },
       orderBy: { createdAt: "desc" },
       skip,
       take: limitNum,
@@ -174,8 +188,17 @@ async function getAllUsers(query) {
 
 /**
  * Yangi foydalanuvchi yaratish.
+ *
+ * O'QUVCHI uchun shu yerda O'QISH DAVRI ham ochiladi — bugungi sanadan,
+ * ochiq (tugash sanasiz). Bu ixtiyoriy qadam EMAS: "davri yo'q = o'qimaydi"
+ * qoidasi tufayli davrsiz o'quvchiga hisob-faktura umuman yozilmaydi.
+ * Shuning uchun ikkalasi BITTA TRANZAKSIYADA yoziladi — yarim yaratilgan
+ * o'quvchi (bor, lekin to'lov yozilmaydi) paydo bo'lishi mumkin emas.
+ *
+ * @param {object} data
+ * @param {string} [actorId] - kim yaratdi (o'qish davri auditi uchun)
  */
-async function createUser(data) {
+async function createUser(data, actorId) {
   const {
     username,
     password,
@@ -198,14 +221,18 @@ async function createUser(data) {
     throw new BadRequestError("Owner rolini yaratish mumkin emas");
   }
 
-  const roleExists = await platformPrisma.role.findUnique({ where: { value: role } });
+  const roleExists = await platformPrisma.role.findUnique({
+    where: { value: role },
+  });
   if (!roleExists) {
     throw new BadRequestError("Noto'g'ri rol");
   }
 
   if (role === "student" && userClasses && userClasses.length > 0) {
     for (const classId of userClasses) {
-      const classExists = await prisma.class.findUnique({ where: { id: classId } });
+      const classExists = await prisma.class.findUnique({
+        where: { id: classId },
+      });
       if (!classExists) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
@@ -236,29 +263,50 @@ async function createUser(data) {
 
   let created;
   try {
-    created = await prisma.user.create({
-      data: {
-        id,
-        username: normalizedUsername,
-        password: hashed,
-        plainPassword: password,
-        firstName,
-        lastName,
-        role,
-        gender: gender || null,
-        ...(role === "student" && userClasses && userClasses.length > 0
-          ? { classes: { create: userClasses.map((classId) => ({ classId })) } }
-          : {}),
-        ...(role !== "student" && {
-          workStartTime: workStartTime || null,
-          workEndTime: workEndTime || null,
-          workDays: workDays || [],
-          weeklySchedule: weeklySchedule || {},
-          // Rolning boshlang'ich ruxsatlari (Rollar sahifasida sozlanadi).
-          // Keyinchalik rol o'zgarsa, mavjud foydalanuvchiga ta'sir qilmaydi.
-          permissions: roleExists.permissions || [],
-        }),
-      },
+    created = await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          id,
+          username: normalizedUsername,
+          password: hashed,
+          plainPassword: password,
+          firstName,
+          lastName,
+          role,
+          gender: gender || null,
+          ...(role === "student" && userClasses && userClasses.length > 0
+            ? {
+                classes: {
+                  create: userClasses.map((classId) => ({ classId })),
+                },
+              }
+            : {}),
+          ...(role !== "student" && {
+            workStartTime: workStartTime || null,
+            workEndTime: workEndTime || null,
+            workDays: workDays || [],
+            weeklySchedule: weeklySchedule || {},
+            // Rolning boshlang'ich ruxsatlari (Rollar sahifasida sozlanadi).
+            // Keyinchalik rol o'zgarsa, mavjud foydalanuvchiga ta'sir qilmaydi.
+            permissions: roleExists.permissions || [],
+          }),
+        },
+      });
+
+      // Davr yo'q = o'qimaydi. Yangi o'quvchi darhol o'qiy boshlaydi,
+      // shuning uchun davr bugundan ochiladi va yopilmaydi.
+      if (role === "student") {
+        await tx.studentEnrollment.create({
+          data: {
+            studentId: user.id,
+            startDate: currentDayDate(),
+            createdBy: actorId ?? user.id,
+            reason: "O'quvchi yaratilganda avtomatik ochildi",
+          },
+        });
+      }
+
+      return user;
     });
   } catch (error) {
     await userDirectory.release(id);
@@ -293,7 +341,9 @@ async function updateUser(id, data) {
   }
 
   if (user.role === "owner") {
-    throw new ForbiddenError("Egasi foydalanuvchisini o'zgartirish mumkin emas");
+    throw new ForbiddenError(
+      "Egasi foydalanuvchisini o'zgartirish mumkin emas",
+    );
   }
 
   const update = {};
@@ -304,10 +354,12 @@ async function updateUser(id, data) {
 
   // Ish jadvali override (davomat uchun)
   if (user.role !== "student") {
-    if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
+    if (workStartTime !== undefined)
+      update.workStartTime = workStartTime || null;
     if (workEndTime !== undefined) update.workEndTime = workEndTime || null;
     if (workDays !== undefined) update.workDays = workDays || [];
-    if (weeklySchedule !== undefined) update.weeklySchedule = weeklySchedule || {};
+    if (weeklySchedule !== undefined)
+      update.weeklySchedule = weeklySchedule || {};
   }
 
   let classesChanged = false;
@@ -319,7 +371,9 @@ async function updateUser(id, data) {
       );
     }
     for (const classId of userClasses) {
-      const classExists = await prisma.class.findUnique({ where: { id: classId } });
+      const classExists = await prisma.class.findUnique({
+        where: { id: classId },
+      });
       if (!classExists) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }

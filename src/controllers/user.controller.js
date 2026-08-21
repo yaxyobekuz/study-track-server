@@ -20,7 +20,7 @@ const getAllUsers = asyncHandler(async (req, res) => {
 
 // Create new user (Owner only)
 const createUser = asyncHandler(async (req, res) => {
-  const user = await userService.createUser(req.body);
+  const user = await userService.createUser(req.body, req.user?.id);
 
   res.status(201).json({
     success: true,
