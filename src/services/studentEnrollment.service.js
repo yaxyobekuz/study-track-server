@@ -37,6 +37,7 @@ const {
   resolveEnrollmentForMonth,
   describeEnrollment,
 } = require("../helpers/enrollment.helpers");
+const { resolveStatusForStudent } = require("./studentFinanceStatus.service");
 
 const END_REASONS = ["left", "expelled", "graduated", "transferred"];
 
@@ -204,8 +205,16 @@ const serializeEnrollment = (row, { student } = {}) => ({
  */
 const getStudentEnrollments = async (studentId) => {
   const student = await assertStudent(studentId);
-  const rows = await getPeriodsForStudent(studentId);
   const month = currentMonthKey();
+
+  // Muzlatish MOLIYA holati, o'qish davri emas — lekin ekranda ikkalasi
+  // bitta qatorda ko'rinadi ("O'qiyapti / Muzlatilgan / O'qimayapti").
+  // Shu yerda qo'shilishi admin panelida ikkinchi so'rovni va
+  // feature'lararo bog'liqlikni keraksiz qiladi.
+  const [rows, financeStatus] = await Promise.all([
+    getPeriodsForStudent(studentId),
+    resolveStatusForStudent(studentId, month),
+  ]);
 
   const state = describeEnrollment(rows);
   const current = resolveEnrollmentForMonth(rows, month);
@@ -214,6 +223,9 @@ const getStudentEnrollments = async (studentId) => {
     student,
     isStudying: state.isStudying,
     hasPeriods: state.hasPeriods,
+    isFrozen: financeStatus.status === "frozen",
+    financeStatus: financeStatus.status,
+    financeStatusLabel: financeStatus.statusLabel,
     since: formatDay(state.since) === "—" ? null : formatDay(state.since),
     until: formatDay(state.until) === "—" ? null : formatDay(state.until),
     // Joriy oyda qanday hisoblanadi — "20-yanvardan · 12/31 kun"
