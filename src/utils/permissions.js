@@ -14,6 +14,7 @@
 
 // Bo'lim kalitlari — route fayllarida `authorizeSection` uchun.
 const SECTIONS = {
+  BRANCHES: "branches",
   USERS: "users",
   ENROLLMENT: "enrollment",
   STATISTICS: "statistics",
@@ -52,6 +53,23 @@ const A = {
 
 // Katalog — bo'lim → amallar. Admin UI shu ro'yxatdan chiziladi.
 const PERMISSION_SECTIONS = [
+  {
+    // Filiallar — `branches.create` PostgreSQL schema'si yaratadi va
+    // migratsiya yugurtiradi, `branches.switch` esa foydalanuvchini butun
+    // BOSHQA bazaga olib o'tadi. Ikkalasi ham amalda owner darajasidagi
+    // huquq, lekin katalogda turishi kerak — aks holda ularni hech kimga
+    // berib bo'lmasdi.
+    key: SECTIONS.BRANCHES,
+    label: "Filiallar",
+    group: "Asosiy",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      { key: "archive", label: "Arxivlash" },
+      { key: "switch", label: "Filial almashtirish" },
+    ],
+  },
   {
     key: SECTIONS.USERS,
     label: "Foydalanuvchilar",
