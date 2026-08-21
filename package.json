@@ -6,13 +6,16 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "postinstall": "prisma generate",
-    "prisma:generate": "prisma generate",
+    "postinstall": "npm run prisma:generate",
+    "prisma:generate": "prisma generate && prisma generate --schema=prisma/platform/schema.prisma",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "db:migrate-from-mongo": "node src/scripts/migrate-mongo-to-postgres/index.js",
     "db:expand-permissions": "node src/scripts/expand-permissions.js",
-    "changes:import": "node src/scripts/import-changes/index.js"
+    "changes:import": "node src/scripts/import-changes/index.js",
+    "platform:migrate": "prisma migrate deploy --schema=prisma/platform/schema.prisma",
+    "branch:migrate": "node src/scripts/branch-migrate/index.js",
+    "branch:bootstrap": "node src/scripts/branch-bootstrap/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
@@ -30,6 +33,7 @@
     "node-cron": "^3.0.3",
     "node-telegram-bot-api": "^0.67.0",
     "openai": "^6.39.1",
+    "prisma": "^6.19.3",
     "sharp": "^0.34.4",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.19.0",
@@ -38,8 +42,7 @@
     "xss-clean": "^0.1.4"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "prisma": "^6.19.3"
+    "nodemon": "^3.0.1"
   },
   "keywords": [],
   "author": "",

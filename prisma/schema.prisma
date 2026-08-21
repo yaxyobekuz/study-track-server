@@ -1,13 +1,33 @@
-// Study-Track — PostgreSQL (Prisma) schema.
+// Study-Track — FILIAL schema'si (bitta filialning butun ma'lumoti).
 //
-// Migratsiya: MongoDB (Mongoose) → PostgreSQL.
+// ── FILIALLASHTIRISH ─────────────────────────
+//
+// Bu schema HAR FILIAL uchun alohida nusxada mavjud. Bitta PostgreSQL baza,
+// ichida:
+//
+//     platform        → prisma/platform/schema.prisma
+//                       filiallar reyestri, login yo'naltirgichi va
+//                       UMUMIY kataloglar (Role, Tariff, Discount, Changelog)
+//     public          → "Bosh filial" (tizimning birinchi bazasi)
+//     br_chilonzor    → yangi filial (CREATE SCHEMA + migrate deploy)
+//     br_yunusobod    → ...
+//
+// Ajratish so'rov shartida EMAS, ULANISH darajasida: `config/prisma.js`
+// joriy filial kontekstiga qarab (`config/branchContext.js`) o'sha
+// schema'ning client'ini qaytaradi. Shu sababli birorta service'da
+// `branchId` filtri yozilmaydi va uni unutib qoldirish IMKONSIZ.
+//
+// Bu yerda `branchId` ustuni YO'Q va bo'lishi ham kerak emas: schema'ning
+// o'zi filial.
+//
+// ── MIGRATSIYA: MongoDB (Mongoose) → PostgreSQL ──
 //  - ID: String @db.Char(24) — eski MongoDB ObjectId hex qiymatlari saqlanadi.
-//    Yangi yozuvlar uchun ID config/prisma.js dagi Client Extension bilan generatsiya qilinadi.
+//    Yangi yozuvlar uchun ID config/prismaExtensions.js dagi Client Extension
+//    bilan generatsiya qilinadi.
 //  - Naming: model field'lari camelCase; PostgreSQL ustunlari snake_case (@map),
 //    jadvallar snake_case ko'plik (@@map).
-//  - User.role oddiy String (Role.value ga ishora qiladi, lekin FK emas —
-//    User↔Role doiraviy bog'liqligi va seed tartibini soddalashtirish uchun;
-//    validatsiya service qatlamida).
+//  - User.role oddiy String (platformadagi Role.value ga ishora qiladi, lekin
+//    FK emas — validatsiya service qatlamida).
 //  - Embedded arraylar: query/update qilinadiganlar alohida jadval;
 //    faqat o'qiladigan snapshot/log/Map → Json (JSONB).
 
@@ -16,6 +36,8 @@ generator client {
   output   = "../src/generated/prisma"
 }
 
+// `DATABASE_URL` dagi `?schema=` filialni tanlaydi. Client har filial uchun
+// alohida ochiladi — config/branchRegistry.js.
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -234,10 +256,6 @@ enum InvoiceSource {
 
 // Chegirma qanday hisoblanadi. Foizlar QO'SHILADI (ikkita 20% = 40%, 36% emas)
 // va fixed'dan OLDIN qo'llanadi — helpers/discount.helpers.js.
-enum DiscountType {
-  percent // 0..100
-  fixed // qat'iy summa (so'm)
-}
 
 // Kassa daftaridagi harakat turi. Ishora TIPGA BOG'LIQ va tekshiriladi
 // (money.helpers.js → assertSignMatchesType).
@@ -260,24 +278,21 @@ enum AllocationSource {
 }
 
 // Changelog yozuvi qaysi panelga tegishli — har biri o'z versiyasiga ega.
-enum ChangelogPanel {
-  admin
-  teacher
-  student
-  server
-  bot
-}
 
 // O'zgarishning kattaligi — versiya shu asosda oshadi.
-enum ChangelogBump {
-  major // katta — yirik o'zgarish
-  minor // o'rtacha — yangi imkoniyat
-  patch // kichik — tuzatish
-}
 
 // ─────────────────────────────────────────────
-// FOYDALANUVCHI VA ROLLAR
+// FOYDALANUVCHI
 // ─────────────────────────────────────────────
+//
+// ROLLAR KATALOGI (`Role`) BU YERDA EMAS — platforma schema'sida, barcha
+// filiallarga umumiy. `User.role` allaqachon oddiy String edi (FK YO'Q),
+// shuning uchun ko'chirish birorta bog'lanishni buzmadi.
+//
+// Bitta foydalanuvchi = bitta filial. Yagona istisno — owner: u har bir
+// filial schema'sida AYNAN O'SHA `id` bilan mavjud (utils/initOwner.js).
+// Login esa platformadagi `UserDirectory` orqali yo'naltiriladi: u
+// "username → qaysi filial" degan yagona global indeks.
 
 model User {
   id            String    @id @db.Char(24)
@@ -335,26 +350,6 @@ model UserClass {
   @@map("user_classes")
 }
 
-model Role {
-  id       String  @id @db.Char(24)
-  name     String  @unique
-  value    String  @unique
-  isSystem Boolean @default(false) @map("is_system")
-
-  // Shu rol bilan yangi foydalanuvchi yaratilganda unga beriladigan boshlang'ich
-  // ruxsat kalitlari (utils/permissions.js). Mavjud foydalanuvchilarga ta'sir qilmaydi.
-  permissions String[] @default([]) @map("permissions")
-
-  workStartTime  String?  @map("work_start_time")
-  workEndTime    String?  @map("work_end_time")
-  workDays       Int[]    @default([1, 2, 3, 4, 5]) @map("work_days")
-  weeklySchedule Json     @default("{}") @map("weekly_schedule")
-  createdBy      String   @map("created_by") @db.Char(24)
-  createdAt      DateTime @default(now()) @map("created_at")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-
-  @@map("roles")
-}
 
 // ─────────────────────────────────────────────
 // AKADEMIK STRUKTURA
@@ -1525,62 +1520,28 @@ model EmojiConfig {
 }
 
 // ─────────────────────────────────────────────
-// MOLIYA — TARIFLAR VA NARXLAR
+// MOLIYA — TARIF VA CHEGIRMA BIRIKTIRISHLARI
 // ─────────────────────────────────────────────
+//
+// ⚠️ KATALOGNING O'ZI BU YERDA EMAS. `Tariff`, `TariffVersion` va
+// `Discount` — PLATFORMA schema'sida (prisma/platform/schema.prisma), chunki
+// narx katalogi barcha filiallarga UMUMIY. Bu yerda faqat BIRIKTIRISH
+// qatorlari qoladi: "shu o'quvchiga, shu oydan, shu tarif".
+//
+// Ko'chirish birorta bog'lanishni buzmadi, chunki `tariffId` va
+// `discountId` allaqachon soft ref edi (FK YO'Q) — pastdagi izohlarga
+// qarang. Narx esa hisob-fakturaga SNAPSHOT bo'lib muhrlanadi, ya'ni katalog
+// qayerda turishidan qat'i nazar o'tgan fakt o'zgarmaydi.
 //
 // OY — `Int` YYYYMM (202608 = 2026-avgust), inklyuziv. Bu domenda kun
 // darajasidagi koordinata umuman yo'q: "narx oshsa yangi oydan boshlab" talabi
-// shundan kelib chiqadi — 17-avgustda kiritilgan narx avgustga ta'sir qila
-// olmaydi, chunki uni ifodalaydigan maydonning o'zi yo'q. Taymzona butun
-// domenda bitta joyda: helpers/month.helpers.js dagi currentMonthKey().
+// shundan kelib chiqadi. Taymzona butun domenda bitta joyda:
+// helpers/month.helpers.js dagi currentMonthKey().
 //
 // PUL — Decimal(14,2) (Postgres NUMERIC). Float ISHLATILMAYDI. Service'da
 // Prisma.Decimal (decimal.js) metodlari bilan hisoblanadi (`+` — string
 // konkatenatsiya, jim xatolik!), API'ga har doim 2 xonali string sifatida
 // chiqadi — helpers/money.helpers.js.
-
-model Tariff {
-  id          String    @id @db.Char(24)
-  name        String    @unique
-  description String    @default("")
-  // ISO-4217. Tarif butun umri davomida bitta valyutada — versiya faqat
-  // summani o'zgartiradi (service'da versiya paydo bo'lgach o'zgarmas).
-  currency    String    @default("UZS") @db.Char(3)
-  isActive    Boolean   @default(true) @map("is_active")
-  isArchived  Boolean   @default(false) @map("is_archived")
-  archivedAt  DateTime? @map("archived_at")
-  createdBy   String    @map("created_by") @db.Char(24)
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
-
-  versions TariffVersion[]
-
-  // Katalogda narx maydoni YO'Q — versiyalashning butun mohiyati shu.
-  @@index([isArchived, isActive, name])
-  @@map("tariffs")
-}
-
-// Tarifning narx tarixi. Versiya — tarifning egalik ostidagi bolasi
-// (Topic→Subject kabi), shuning uchun haqiqiy relation + Cascade.
-model TariffVersion {
-  id            String   @id @db.Char(24)
-  tariffId      String   @map("tariff_id") @db.Char(24)
-  startMonth    Int      @map("start_month")
-  // null → ochiq versiya (hozircha oxirgi narx). Tarifda bittadan ortiq
-  // ochiq versiya bo'lishi mumkin emas (service tekshiradi).
-  endMonth      Int?     @map("end_month")
-  monthlyAmount Decimal  @map("monthly_amount") @db.Decimal(14, 2)
-  createdBy     String   @map("created_by") @db.Char(24)
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  tariff Tariff @relation(fields: [tariffId], references: [id], onDelete: Cascade)
-
-  // Kesishuv tekshiruvi service'da, lekin poyga holatida haqiqiy kafolat — shu.
-  @@unique([tariffId, startMonth])
-  @@index([tariffId, startMonth(sort: Desc)])
-  @@map("tariff_versions")
-}
 
 // O'quvchiga tarif biriktirish. NARX USTUNI YO'Q — bu kelajakka qaragan
 // qoida, o'tgan fakt emas (MarketOrder.productSnapshot dan farqi shu).
@@ -1672,34 +1633,11 @@ model StudentEnrollment {
 }
 
 // ─────────────────────────────────────────────
-// MOLIYA — CHEGIRMALAR
+// MOLIYA — CHEGIRMA BIRIKTIRISHLARI
 // ─────────────────────────────────────────────
-
-// Chegirma turlari katalogi ("Aka-uka 10%", "Xodim farzandi 50%").
-// Tarif kabi — narx emas, QOIDA. Chegirmaning summasi hisob-fakturaga
-// yozilganda muhrlanadi (MonthlyInvoice.discountSnapshot).
-model Discount {
-  id          String       @id @db.Char(24)
-  name        String       @unique
-  description String       @default("")
-  type        DiscountType
-  // percent uchun 0..100, fixed uchun so'm. Ikkalasi ham Decimal(14,2):
-  // "12.5%" qonuniy, va bitta ustunda ikki xil o'lchov saqlash uchun
-  // eng katta aniqlik kerak.
-  value       Decimal      @db.Decimal(14, 2)
-  // Grant/homiylik: boshqa chegirmalar bilan QO'SHILMAYDI. Biriktirishda
-  // tekshiriladi — yig'ilib qolib bepul o'qishga aylanmasin.
-  isExclusive Boolean      @default(false) @map("is_exclusive")
-  isActive    Boolean      @default(true) @map("is_active")
-  isArchived  Boolean      @default(false) @map("is_archived")
-  archivedAt  DateTime?    @map("archived_at")
-  createdBy   String       @map("created_by") @db.Char(24)
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @updatedAt @map("updated_at")
-
-  @@index([isArchived, isActive, name])
-  @@map("discounts")
-}
+//
+// Chegirma TURLARI katalogi (`Discount`) — platforma schema'sida, barcha
+// filiallarga umumiy. Bu yerda faqat "kimga, qachondan" qatorlari.
 
 // DIQQAT — StudentTariff bilan SHAKLI bir xil, MA'NOSI TESKARI:
 // tarifda kesishuv HAL QILINADI (eng kech boshlangani yutadi,
@@ -2250,133 +2188,12 @@ model Refund {
 // ─────────────────────────────────────────────
 // O'ZGARISHLAR TARIXI (release notes)
 // ─────────────────────────────────────────────
-// Bitta yozuv = bitta panel + bitta kun. Bir kunda admin va server ustida
-// ishlansa — IKKI yozuv bo'ladi (UI da sana bo'yicha guruhlanadi).
 //
-// Versiya har panel uchun MUSTAQIL o'sadi va monoton: o'tgan sanaga yozuv
-// qo'shilsa ham, keyingi versiya shu panelning ENG YUQORI versiyasidan olinadi
-// (sana bo'yicha oxirgisidan emas).
-model Changelog {
-  id String @id @db.Char(24)
-
-  panel ChangelogPanel
-  // Kun. Service UTC yarim tuniga normallashtiradi (soat saqlanmaydi) —
-  // @@unique([date, panel, seq]) shunga tayanadi.
-  date  DateTime
-  // Bir kun ichidagi reliz raqami. Odatda 1; o'sha kuni o'sha panelga
-  // ikkinchi marta reliz chiqarilsa 2, 3... Fayl nomida ham shunday:
-  // "2026-08-17-admin.md" → 1, "2026-08-17-admin-2.md" → 2.
-  seq   Int           @default(1)
-
-  // Ko'rsatiladigan qiymat ("1.4.2"). major/minor/patch — yagona haqiqat manbai;
-  // `version` denormalizatsiya (UI va unique cheklov uchun).
-  version String
-  // Alohida Int'lar tartiblash uchun shart: "0.10.0" satr sifatida "0.9.0" dan
-  // KICHIK chiqadi, ya'ni `version` bo'yicha ORDER BY noto'g'ri ishlaydi.
-  major   Int
-  minor   Int
-  patch   Int
-  // Qaysi darajada o'zgargani — auditda "versiya nega shunday sakradi".
-  bump    ChangelogBump @default(patch)
-
-  title String   @default("")
-  // Har element — bitta o'zgarish satri (markdown bullet'idan tozalangan).
-  items String[] @default([])
-  // "Nega kerak edi" izohi (ixtiyoriy).
-  notes String   @default("")
-
-  // Import qilingan fayl nomi ("2026-08-17-admin.md"). Qo'lda yaratilganda null.
-  // FAQAT audit uchun — kalit sifatida ISHLATILMAYDI (kalit: date + panel).
-  sourceFile String?  @map("source_file")
-  createdBy  String?  @map("created_by") @db.Char(24)
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
-
-  // Import idempotentligining KAFOLATI — qayta yuklash dublikat yaratmaydi.
-  // `seq` bilan birga: bir kunda bir panelga bir nechta reliz chiqarish mumkin,
-  // lekin ayni reliz qayta yuklanganda mavjudi yangilanadi.
-  @@unique([date, panel, seq])
-  // Poyga holatida bir xil versiya ikki marta yozilishining oldini oladi.
-  @@unique([panel, version])
-  // "Shu panelning eng yuqori versiyasi" — bitta indeks o'qish.
-  @@index([panel, major(sort: Desc), minor(sort: Desc), patch(sort: Desc)])
-  @@index([date(sort: Desc)])
-  @@map("changelogs")
-}
-
-enum ChangelogNotificationKind {
-  daily // har kuni ertalab — kechagi kun hisoboti
-  weekly // dushanba — o'tgan hafta yig'masi
-  manual // admin paneldan qo'lda yuborilgan
-}
-
-enum ChangelogNotificationStatus {
-  sent
-  failed
-}
-
-// Changelog Telegram xabarnomalari — singleton sozlama.
-// HAR BIR maydonda @default bor: settings.service.js dagi yalang'och
-// upsert({ where:{id:"singleton"}, create:{id:"singleton"}, update:{} }) ishlashi uchun.
-// (config/prisma.js dagi auto-id extension id'si default'li modellarni o'tkazib yuboradi.)
-model ChangelogSettings {
-  id String @id @default("singleton") @db.VarChar(24)
-
-  // Kunlik xabar. Standart false — chat qo'shilgach ataylab yoqiladi.
-  dailyEnabled Boolean @default(false) @map("daily_enabled")
-
-  // Asia/Tashkent devor soati, "HH:mm". Cron IFODASIDA emas, HANDLER'da
-  // o'qiladi: cron ifodasi startup'da qotib qoladi, sozlama esa o'zgaradi.
-  sendTime String @default("09:00") @map("send_time")
-
-  // Haftalik yig'ma (dushanba, o'sha sendTime da)
-  weeklyEnabled Boolean @default(false) @map("weekly_enabled")
-
-  // [{ chatId, label, isActive }] — ScheduleSettings.periods va
-  // PremiumSettings.allowedNameColors bilan bir xil naqsh: kichik, butunligicha
-  // o'qiladigan/yoziladigan ro'yxat, alohida jadval ortiqcha.
-  recipients Json @default("[]")
-
-  // IDEMPOTENTLIK KAFOLATI. Changelog.date bilan bir xil shakl (UTC yarim tuni),
-  // shuning uchun to'g'ridan-to'g'ri taqqoslanadi. Yuborishdan OLDIN shartli
-  // updateMany bilan "egallanadi" — ikkita instans bir kunni ikki marta yubormaydi.
-  lastDailySentDate DateTime? @map("last_daily_sent_date")
-  lastDailySentAt   DateTime? @map("last_daily_sent_at")
-  lastWeeklySentAt  DateTime? @map("last_weekly_sent_at")
-
-  updatedBy String?  @map("updated_by") @db.Char(24)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-
-  @@map("changelog_settings")
-}
-
-// Yuborish jurnali — har bir chat uchun alohida qator.
-// Busiz xatolar jimgina yo'qoladi (bot bloklangan, chatdan chiqarilgan va h.k.).
-model ChangelogNotification {
-  id String @id @db.Char(24)
-
-  kind   ChangelogNotificationKind   @default(daily)
-  status ChangelogNotificationStatus
-
-  // Kunlik/qo'lda → coverageDate; haftalik → coverageFrom/To
-  coverageDate DateTime? @map("coverage_date")
-  coverageFrom DateTime? @map("coverage_from")
-  coverageTo   DateTime? @map("coverage_to")
-
-  // Nom qatorning o'zida saqlanadi — qabul qiluvchi keyin o'chirilsa ham
-  // jurnal o'qiladigan bo'lib qoladi.
-  chatId String @map("chat_id")
-  label  String @default("")
-
-  entryCount   Int     @default(0) @map("entry_count")
-  messageCount Int     @default(0) @map("message_count")
-  errorMessage String? @map("error_message")
-
-  sentBy    String?  @map("sent_by") @db.Char(24) // qo'lda yuborilganda
-  createdAt DateTime @default(now()) @map("created_at")
-
-  @@index([createdAt(sort: Desc)])
-  @@index([kind, coverageDate])
-  @@map("changelog_notifications")
-}
+// ⚠️ BU BO'LIM PLATFORMAGA KO'CHDI — prisma/platform/schema.prisma.
+// O'zgarishlar tarixi DASTURIY TA'MINOT haqida, filial haqida emas: bitta
+// reliz barcha filiallarga bir vaqtda yetib boradi, ya'ni uni har filialda
+// takrorlash noto'g'ri bo'lardi (va versiya raqami filialma-filial ajralib
+// ketardi).
+//
+// `Changelog`, `ChangelogSettings`, `ChangelogNotification` va ularning
+// enum'lari o'sha faylda.

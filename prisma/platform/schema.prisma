@@ -1,0 +1,342 @@
+// Study-Track — PLATFORMA schema'si (filiallardan YUQORIDA turadigan qatlam).
+//
+// Bitta PostgreSQL baza ichida ikki xil schema bor:
+//
+//   platform        ← SHU FAYL. Filiallar reyestri, login yo'naltirgichi va
+//                     barcha filiallarga UMUMIY kataloglar.
+//   public / br_*   ← prisma/schema.prisma. Har filialning o'z ma'lumoti.
+//
+// NIMA UCHUN IKKI SCHEMA, IKKI CLIENT:
+// Filial schema'lari DINAMIK (yangi filial = yangi schema), shuning uchun
+// Prisma'ning `multiSchema` xususiyati mos kelmaydi — u schema nomlarini
+// kompilyatsiya vaqtida talab qiladi. Buning o'rniga har filial uchun
+// `?schema=` bilan alohida PrismaClient ochiladi (config/branchRegistry.js),
+// platforma esa doimiy `?schema=platform` bilan (config/platformPrisma.js).
+//
+// ⚠️ DECIMAL: bu client o'z `runtime/library.js` nusxasini olib yuradi, ya'ni
+// `Prisma.Decimal` filial client'inikidan BOSHQA klass. Shuning uchun ikki
+// client orasida Decimal uzatishda helpers/money.helpers.js dagi `toDecimal`
+// normalizatori ishlatiladi, platformaga yozishda esa summa STRING sifatida
+// beriladi (`formatAmount()`).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../src/generated/platform"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("PLATFORM_DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// FILIALLAR
+// ─────────────────────────────────────────────
+
+// Filial ochish IKKI QADAM: reyestr qatori darhol yoziladi, schema va
+// migratsiyalar esa fonda qo'llanadi. Shuning uchun holat maydoni kerak —
+// aks holda yarim ochilgan filialga login qilib bo'lardi.
+enum BranchStatus {
+  provisioning // schema yaratilmoqda / migratsiya qo'llanmoqda
+  ready // ishlashga tayyor
+  failed // provisioning xato bilan tugadi (provisionError'ga qarang)
+}
+
+model Branch {
+  id String @id @db.Char(24)
+
+  // Latin, kichik harf, faqat [a-z0-9_]. Schema nomi shundan hosil qilinadi
+  // (`br_<code>`), shuning uchun keyin O'ZGARTIRILMAYDI.
+  code String @unique
+  name String // "Chilonzor filiali"
+
+  // Schema nomi ALOHIDA saqlanadi va `code` dan hosila EMAS: mavjud baza
+  // "Bosh filial" bo'lib qolishi kerak, uning schema'si esa `public`.
+  // Qayta nomlash — migratsiya emas, ma'lumot yo'qotish xavfi.
+  schemaName String @unique @map("schema_name")
+
+  shortName String @default("") @map("short_name")
+  address   String @default("")
+  phone     String @default("")
+
+  status         BranchStatus @default(provisioning)
+  provisionError String?      @map("provision_error")
+
+  // Tokenida `branchId` bo'lmagan ESKI sessiyalar shu filialga tushadi.
+  // Reyestrda bittadan ortiq default bo'lishi mumkin emas (service tekshiradi).
+  isDefault Boolean @default(false) @map("is_default")
+
+  isActive Boolean @default(true) @map("is_active")
+  // Filial HECH QACHON o'chirilmaydi — ortida moliyaviy tarix bor
+  // (PaymentAccount uslubi). Arxivlangan filialga login qilib bo'lmaydi,
+  // lekin yig'ma hisobotda ko'rinadi.
+  isArchived Boolean   @default(false) @map("is_archived")
+  archivedAt DateTime? @map("archived_at")
+  sortOrder  Int       @default(0) @map("sort_order")
+
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users         UserDirectory[]
+  telegramLinks TelegramDirectory[]
+
+  @@index([isArchived, isActive, sortOrder])
+  @@map("branches")
+}
+
+// ─────────────────────────────────────────────
+// LOGIN YO'NALTIRGICHI
+// ─────────────────────────────────────────────
+
+// "Bu username qaysi filialda?" — login uchun YAGONA global indeks.
+//
+// NIMA UCHUN `User` ni butunlay platformaga ko'chirmadik: filial schema'sida
+// `User` ga 94 ta joyda `classes` relation'i bilan murojaat qilinadi
+// (`where: { classes: { some } }`, `include: { classes }`), ustiga
+// `UserClass` va `Image` FK'lari bor. Ularning hammasi cross-schema join'ga
+// aylanardi. Shuning uchun platformada faqat YUPQA yo'naltirgich turadi,
+// `User` modeli esa umuman o'zgarmaydi.
+//
+// `id` — AYNAN filial schema'sidagi `User.id`. Shu sababli login bitta
+// so'rovda ham filialni, ham foydalanuvchi id'sini beradi.
+model UserDirectory {
+  id       String @id @db.Char(24)
+  username String @unique
+
+  branchId String @map("branch_id") @db.Char(24)
+
+  // Denormalizatsiya: qidiruv va "qaysi filialda nechta o'qituvchi bor"
+  // savoliga filial bazasiga bormasdan javob berish uchun.
+  role      String
+  firstName String @default("") @map("first_name")
+  lastName  String @default("") @map("last_name")
+
+  isActive   Boolean @default(true) @map("is_active")
+  isArchived Boolean @default(false) @map("is_archived")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([branchId, role])
+  @@index([branchId, isArchived])
+  @@map("user_directory")
+}
+
+// Telegram → filial. Busiz bot har xabarda BARCHA filial schema'larini
+// skanerlashiga to'g'ri kelardi.
+model TelegramDirectory {
+  telegramId String @id @map("telegram_id")
+
+  branchId  String @map("branch_id") @db.Char(24)
+  studentId String @map("student_id") @db.Char(24)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([branchId])
+  @@map("telegram_directory")
+}
+
+// ─────────────────────────────────────────────
+// ROLLAR (barcha filiallarga UMUMIY)
+// ─────────────────────────────────────────────
+// `User.role` — filial schema'sidagi oddiy String (FK EMAS, schema izohida
+// shunday yozilgan). Aynan shu sababli rollarni platformaga ko'chirish
+// birorta bog'lanishni buzmaydi.
+
+model Role {
+  id       String  @id @db.Char(24)
+  name     String  @unique
+  value    String  @unique
+  isSystem Boolean @default(false) @map("is_system")
+
+  // Shu rol bilan yangi foydalanuvchi yaratilganda unga beriladigan boshlang'ich
+  // ruxsat kalitlari (utils/permissions.js). Mavjud foydalanuvchilarga ta'sir qilmaydi.
+  permissions String[] @default([]) @map("permissions")
+
+  workStartTime  String?  @map("work_start_time")
+  workEndTime    String?  @map("work_end_time")
+  workDays       Int[]    @default([1, 2, 3, 4, 5]) @map("work_days")
+  weeklySchedule Json     @default("{}") @map("weekly_schedule")
+  createdBy      String   @map("created_by") @db.Char(24)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("roles")
+}
+
+// ─────────────────────────────────────────────
+// TARIFLAR VA CHEGIRMALAR KATALOGI (UMUMIY)
+// ─────────────────────────────────────────────
+// Katalog umumiy, BIRIKTIRISH esa filialda: `StudentTariff.tariffId` va
+// `StudentDiscount.discountId` allaqachon soft ref (FK yo'q) — filial
+// schema'sidagi izohlarda shunday yozilgan. Hisob-fakturaga narx SNAPSHOT
+// bo'lib muhrlanadi, ya'ni katalog ko'chgani bilan o'tgan fakt o'zgarmaydi.
+
+enum DiscountType {
+  percent // 0..100
+  fixed // qat'iy summa (so'm)
+}
+
+model Tariff {
+  id          String    @id @db.Char(24)
+  name        String    @unique
+  description String    @default("")
+  currency    String    @default("UZS") @db.Char(3)
+  isActive    Boolean   @default(true) @map("is_active")
+  isArchived  Boolean   @default(false) @map("is_archived")
+  archivedAt  DateTime? @map("archived_at")
+  createdBy   String    @map("created_by") @db.Char(24)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  versions TariffVersion[]
+
+  // Katalogda narx maydoni YO'Q — versiyalashning butun mohiyati shu.
+  @@index([isArchived, isActive, name])
+  @@map("tariffs")
+}
+
+model TariffVersion {
+  id            String   @id @db.Char(24)
+  tariffId      String   @map("tariff_id") @db.Char(24)
+  startMonth    Int      @map("start_month")
+  endMonth      Int?     @map("end_month")
+  monthlyAmount Decimal  @map("monthly_amount") @db.Decimal(14, 2)
+  createdBy     String   @map("created_by") @db.Char(24)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tariff Tariff @relation(fields: [tariffId], references: [id], onDelete: Cascade)
+
+  @@unique([tariffId, startMonth])
+  @@index([tariffId, startMonth(sort: Desc)])
+  @@map("tariff_versions")
+}
+
+model Discount {
+  id          String       @id @db.Char(24)
+  name        String       @unique
+  description String       @default("")
+  type        DiscountType
+  value       Decimal      @db.Decimal(14, 2)
+  isExclusive Boolean      @default(false) @map("is_exclusive")
+  isActive    Boolean      @default(true) @map("is_active")
+  isArchived  Boolean      @default(false) @map("is_archived")
+  archivedAt  DateTime?    @map("archived_at")
+  createdBy   String       @map("created_by") @db.Char(24)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  @@index([isArchived, isActive, name])
+  @@map("discounts")
+}
+
+// ─────────────────────────────────────────────
+// O'ZGARISHLAR TARIXI (dasturiy ta'minot darajasida — UMUMIY)
+// ─────────────────────────────────────────────
+
+enum ChangelogPanel {
+  admin
+  teacher
+  student
+  server
+  bot
+}
+
+enum ChangelogBump {
+  major
+  minor
+  patch
+}
+
+model Changelog {
+  id String @id @db.Char(24)
+
+  panel ChangelogPanel
+  date  DateTime
+  seq   Int            @default(1)
+
+  version String
+  major   Int
+  minor   Int
+  patch   Int
+  bump    ChangelogBump @default(patch)
+
+  title String   @default("")
+  items String[] @default([])
+  notes String   @default("")
+
+  sourceFile String?  @map("source_file")
+  createdBy  String?  @map("created_by") @db.Char(24)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([date, panel, seq])
+  @@unique([panel, version])
+  @@index([panel, major(sort: Desc), minor(sort: Desc), patch(sort: Desc)])
+  @@index([date(sort: Desc)])
+  @@map("changelogs")
+}
+
+enum ChangelogNotificationKind {
+  daily
+  weekly
+  manual
+}
+
+enum ChangelogNotificationStatus {
+  sent
+  failed
+}
+
+model ChangelogSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  dailyEnabled Boolean @default(false) @map("daily_enabled")
+  sendTime     String  @default("09:00") @map("send_time")
+
+  weeklyEnabled Boolean @default(false) @map("weekly_enabled")
+
+  recipients Json @default("[]")
+
+  lastDailySentDate DateTime? @map("last_daily_sent_date")
+  lastDailySentAt   DateTime? @map("last_daily_sent_at")
+  lastWeeklySentAt  DateTime? @map("last_weekly_sent_at")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("changelog_settings")
+}
+
+model ChangelogNotification {
+  id String @id @db.Char(24)
+
+  kind   ChangelogNotificationKind   @default(daily)
+  status ChangelogNotificationStatus
+
+  coverageDate DateTime? @map("coverage_date")
+  coverageFrom DateTime? @map("coverage_from")
+  coverageTo   DateTime? @map("coverage_to")
+
+  chatId String @map("chat_id")
+  label  String @default("")
+
+  entryCount   Int     @default(0) @map("entry_count")
+  messageCount Int     @default(0) @map("message_count")
+  errorMessage String? @map("error_message")
+
+  sentBy    String?  @map("sent_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([kind, coverageDate])
+  @@map("changelog_notifications")
+}
