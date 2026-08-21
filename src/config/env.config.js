@@ -17,6 +17,29 @@ const optionalEnvVars = {
   LOG_LEVEL: "info",
   DO_REGION: "fra1",
   MAX_UPLOAD_FILE_SIZE_MB: 20,
+  // Filiallashtirish
+  PLATFORM_SCHEMA: "platform",
+  BRANCH_SCHEMA_PREFIX: "br_",
+  BRANCH_CONNECTION_LIMIT: 5,
+};
+
+/**
+ * Ulanish satrining `schema` parametrini almashtiradi.
+ *
+ * `helpers/schemaUrl.helpers.js` dagi `buildSchemaUrl` bilan bir xil ish
+ * qiladi, lekin bu fayl LOGGER'DAN ham, `utils/errors.js` dan ham OLDIN
+ * yuklanadi (izohga qarang) — shuning uchun bu yerda mustaqil, tashqi
+ * bog'liqliksiz nusxa turadi.
+ */
+const withSchema = (url, schema) => {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("schema", schema);
+    return parsed.toString();
+  } catch {
+    return undefined; // noto'g'ri URL — validateEnv baribir xato beradi
+  }
 };
 
 /**
@@ -50,6 +73,23 @@ const validateEnv = () => {
     }
   });
 
+  // PLATFORM_DATABASE_URL — `DATABASE_URL` dan hosila. `process.env` ga ham
+  // yoziladi, chunki uni IKKI iste'molchi o'qiydi: platforma client'i (bu
+  // yerdan) va `prisma migrate deploy` child-process'i (env orqali — filial
+  // ochilganda va `npm run branch:migrate` da).
+  if (!process.env.PLATFORM_DATABASE_URL) {
+    const derived = withSchema(process.env.DATABASE_URL, process.env.PLATFORM_SCHEMA);
+    if (!derived) {
+      throw new Error(
+        "PLATFORM_DATABASE_URL hosil qilinmadi: DATABASE_URL noto'g'ri formatda",
+      );
+    }
+    process.env.PLATFORM_DATABASE_URL = derived;
+    console.log(
+      `PLATFORM_DATABASE_URL kiritilmagan. DATABASE_URL dan hosil qilindi (schema=${process.env.PLATFORM_SCHEMA})`,
+    );
+  }
+
   console.log("Environment variables tekshirildi");
 };
 
@@ -66,7 +106,20 @@ const config = {
   isTest: (process.env.NODE_ENV || "development") === "test",
 
   // Database (PostgreSQL — Prisma)
+  // `DATABASE_URL` — BAZAGA ulanish satri. Filial u yerdagi `schema`
+  // parametri bilan tanlanadi (helpers/schemaUrl.helpers.js), shuning uchun
+  // yangi filial yangi ulanish satri, parol yoki zaxira nusxa TALAB QILMAYDI.
   databaseUrl: process.env.DATABASE_URL,
+
+  // Filiallashtirish
+  platformSchema: process.env.PLATFORM_SCHEMA || "platform",
+  platformDatabaseUrl:
+    process.env.PLATFORM_DATABASE_URL ||
+    withSchema(process.env.DATABASE_URL, process.env.PLATFORM_SCHEMA || "platform"),
+  branchSchemaPrefix: process.env.BRANCH_SCHEMA_PREFIX || "br_",
+  // Har filial client'ining pool hajmi. Prisma standarti (CPU×2+1) o'n
+  // filialda Postgres `max_connections` ini yeb qo'yardi.
+  branchConnectionLimit: parseInt(process.env.BRANCH_CONNECTION_LIMIT, 10) || 5,
 
   // JWT
   jwtSecret: process.env.JWT_SECRET,
