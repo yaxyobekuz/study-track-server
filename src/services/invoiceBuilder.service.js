@@ -85,9 +85,7 @@ const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings 
     : { proratedAmount: base, isProrated: false, roundingUnit: 0 };
 
   // Chegirma proratsiya qilingan summaga qo'llanadi — to'liq narxga emas
-  const discounted = applyDiscounts(prorated.proratedAmount, discounts ?? [], {
-    maxPercent: settings.maxDiscountPercent,
-  });
+  const discounted = applyDiscounts(prorated.proratedAmount, discounts ?? []);
 
   return {
     enrollment,

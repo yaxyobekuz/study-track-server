@@ -102,7 +102,9 @@ function parseDiscountValue(value, type) {
  *
  * @param {Prisma.Decimal} baseAmount - tarif narxi (chegirmagacha)
  * @param {Array<{id: string, name: string, type: "percent"|"fixed", value: Prisma.Decimal|string}>} discounts
- * @param {{maxPercent?: number}} [options] - FinanceSettings.maxDiscountPercent
+ * @param {{maxPercent?: number}} [options] - sukut bo'yicha 100%. Sozlanadigan
+ *   cheklov OLIB TASHLANGAN: 100 dan oshgan foiz manfiy summa bergani uchun
+ *   bu chegara siyosat emas, ARIFMETIKA.
  * @returns {{
  *   baseAmount: Prisma.Decimal,
  *   discountAmount: Prisma.Decimal,

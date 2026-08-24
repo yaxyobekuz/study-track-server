@@ -117,21 +117,6 @@ const updateSettings = async (data, userId) => {
     );
   }
 
-  if (data.maxDiscountPercent !== undefined) {
-    const percent = Number(data.maxDiscountPercent);
-    if (!Number.isInteger(percent) || percent < 0 || percent > 100) {
-      throw new BadRequestError("Chegirma cheklovi 0 dan 100 gacha bo'lishi kerak");
-    }
-    payload.maxDiscountPercent = percent;
-
-    // Mavjud hisob-fakturalar summasi MUHRLANGAN — cheklovni pasaytirish
-    // ularni qimmatlashtirmaydi. Bu tez-tez noto'g'ri tushuniladi.
-    if (percent < current.maxDiscountPercent) {
-      warnings.push(
-        "Cheklov faqat yangi hisob-fakturalarga ta'sir qiladi — chiqarilganlari o'z summasini saqlaydi",
-      );
-    }
-  }
 
   if (data.depositAutoApply !== undefined) {
     payload.depositAutoApply = Boolean(data.depositAutoApply);
