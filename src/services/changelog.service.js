@@ -78,10 +78,10 @@ function resolveExplicitVersion(value) {
  *
  * @param {string} panel
  * @param {"major"|"minor"|"patch"} bump
- * @param {object} client - prisma yoki transaction client
+ * @param {object} client - platformPrisma yoki transaction client
  * @returns {Promise<{version: string, major: number, minor: number, patch: number}>}
  */
-async function computeNextVersion(panel, bump, client = prisma) {
+async function computeNextVersion(panel, bump, client = platformPrisma) {
   const top = await client.changelog.findFirst({
     where: { panel },
     orderBy: [{ major: "desc" }, { minor: "desc" }, { patch: "desc" }],
@@ -103,7 +103,7 @@ async function computeNextVersion(panel, bump, client = prisma) {
  * @param {object} client
  * @returns {Promise<number>}
  */
-async function nextSeq(date, panel, client = prisma) {
+async function nextSeq(date, panel, client = platformPrisma) {
   const top = await client.changelog.findFirst({
     where: { date, panel },
     orderBy: { seq: "desc" },
