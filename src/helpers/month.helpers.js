@@ -26,6 +26,9 @@
  */
 
 const { BadRequestError } = require("../utils/errors");
+// Faqat oy NOMLARI — `constants.js` dan, `date.helpers.js` dan emas
+// (yuqoridagi izohga qarang: u moliya domenida ishlatilmaydi).
+const { MONTHS_UZ_CAP } = require("../utils/constants");
 
 const MIN_MONTH_KEY = 200001;
 const MAX_MONTH_KEY = 210012;
@@ -298,17 +301,27 @@ function diffMonths(from, to) {
 }
 
 /**
- * Ko'rsatish uchun: 202608 → "2026-08".
+ * Ko'rsatish uchun: 202608 → "Avgust, 2026".
+ *
+ * ⚠️ Bu FAQAT ko'rsatish uchun — mashina o'qiydigan qiymat emas. Ilgari
+ * u "2026-08" qaytarardi va o'sha satr `*MonthLabel` maydonlari orqali
+ * to'g'ridan-to'g'ri ekranga chiqib, qolgan sanalar o'zbekcha bo'lgan
+ * joyda ISO ko'rinishida turardi (`.claude/rules/dates.md`).
+ * `<input type="month">` qiymati kerak bo'lsa — frontenddagi
+ * `monthKeyToInputValue`.
+ *
  * @param {number|null} monthKey
  * @returns {string|null}
  */
 function formatMonthKey(monthKey) {
   if (monthKey == null) return null;
-  return `${Math.trunc(monthKey / 100)}-${String(monthKey % 100).padStart(2, "0")}`;
+  const name = MONTHS_UZ_CAP[(monthKey % 100) - 1];
+  return name ? `${name}, ${Math.trunc(monthKey / 100)}` : String(monthKey);
 }
 
 /**
- * Davr matni: "2026-01 — 2026-08" yoki "2026-01 dan boshlab".
+ * Davr matni: "Yanvar, 2026 — Avgust, 2026" yoki
+ * "Yanvar, 2026 dan boshlab".
  * Xato xabarlarida foydalanuvchiga qaysi davr to'sqinlik qilayotganini
  * ko'rsatish uchun.
  *

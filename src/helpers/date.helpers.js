@@ -1,6 +1,11 @@
-const { DAYS_UZ } = require("../utils/constants");
+const { DAYS_UZ, MONTHS_UZ, MONTHS_UZ_CAP } = require("../utils/constants");
 
 const UZBEKISTAN_TIMEZONE = "Asia/Tashkent";
+
+// Toshkent — UTC+5, DST yo'q (`education.md` §7). Shu sababli devor-soatini
+// olish uchun `Intl` shart emas: instantni +5 soatga surib, `getUTC*` bilan
+// o'qish yetarli va aniq.
+const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
 
 /**
  * Returns current date-time in Uzbekistan timezone.
@@ -191,9 +196,115 @@ const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => 
   return { canGrade: true, reason: null };
 };
 
+/* ------------------------------------------------------------------ *
+ * SANA FORMATLASH — server bo'yicha yagona manba
+ *
+ * Serverdan chiqadigan har qanday sana matni (Telegram xabari, Excel
+ * ustuni, xato matni) FAQAT shu funksiyalardan o'tadi:
+ *
+ *     kun          →  "21-may, 2025"        formatDateUz
+ *     kun + vaqt   →  "21-may, 2025 14:30"  formatDateTimeUz
+ *     vaqt         →  "14:30"               formatTimeUz
+ *
+ * Oy yorlig'i ("Yanvar, 2026") — moliya domenida: `month.helpers.js`
+ * dagi `formatMonthKey`.
+ *
+ * ⚠️ `toLocaleDateString("uz-UZ")` ISHLATILMAYDI: u Node ICU qurilishiga
+ * qarab "21.05.2025" yoki "5/21/2025" beradi, ya'ni format server qayerda
+ * ishga tushganiga bog'liq bo'lib qoladi. To'liq qoida: `.claude/rules/dates.md`.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Formatlash uchun Date tayyorlaydi. Yaroqsiz qiymatda `null`.
+ *
+ * @param {Date|string|number|null|undefined} value
+ * @param {boolean} utc `true` — qiymat UTC yarim tunida saqlangan KUN
+ *   (`@db.Date`, `Changelog.date`): getterlar UTC bo'yicha o'qiladi.
+ *   `false` — haqiqiy instant (`createdAt`, `paidAt`): Toshkent devor-soatiga
+ *   suriladi. Ikkalasi ham keyin `getUTC*` bilan o'qiladi.
+ * @returns {Date|null}
+ */
+const toDisplayDate = (value, utc) => {
+  if (value === null || value === undefined || value === "") return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return utc ? date : new Date(date.getTime() + TASHKENT_OFFSET_MS);
+};
+
+/**
+ * Kanonik sana: "21-may, 2025".
+ *
+ * @param {Date|string|number|null} value
+ * @param {{fallback?: string, utc?: boolean}} [options]
+ *   `utc: true` — kun aniqligidagi maydonlar uchun (`StudentEnrollment.startDate`,
+ *   `Changelog.date`). Ular UTC yarim tunida yotadi va Toshkentga surilsa
+ *   kun raqami o'zgarmasa-da, mantiq chalkashadi.
+ * @returns {string}
+ */
+const formatDateUz = (value, { fallback = "—", utc = false } = {}) => {
+  const date = toDisplayDate(value, utc);
+  if (!date) return fallback;
+
+  return `${date.getUTCDate()}-${MONTHS_UZ[date.getUTCMonth()]}, ${date.getUTCFullYear()}`;
+};
+
+/**
+ * Vaqt: "14:30" (Toshkent devor-soati).
+ * @param {Date|string|number|null} value
+ * @param {{fallback?: string}} [options]
+ * @returns {string}
+ */
+const formatTimeUz = (value, { fallback = "—" } = {}) => {
+  const date = toDisplayDate(value, false);
+  if (!date) return fallback;
+
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+};
+
+/**
+ * Kanonik sana + vaqt: "21-may, 2025 14:30" (Toshkent devor-soati).
+ * @param {Date|string|number|null} value
+ * @param {{fallback?: string}} [options]
+ * @returns {string}
+ */
+const formatDateTimeUz = (value, { fallback = "—" } = {}) => {
+  const date = toDisplayDate(value, false);
+  if (!date) return fallback;
+
+  return `${formatDateUz(value)} ${formatTimeUz(value)}`;
+};
+
+/**
+ * Sana oralig'i: "21-may, 2025 — 30-iyun, 2025".
+ * Oxiri bo'lmasa — "21-may, 2025 dan (hozirgacha)".
+ * @param {Date|string|null} start
+ * @param {Date|string|null} end
+ * @param {{fallback?: string, utc?: boolean, openLabel?: string}} [options]
+ * @returns {string}
+ */
+const formatDateRangeUz = (
+  start,
+  end,
+  { fallback = "—", utc = false, openLabel = "hozirgacha" } = {},
+) => {
+  const from = formatDateUz(start, { fallback: "", utc });
+  if (!from) return fallback;
+
+  const to = formatDateUz(end, { fallback: "", utc });
+  return to ? `${from} — ${to}` : `${from} dan (${openLabel})`;
+};
+
 module.exports = {
   getNowInUzbekistan,
   getTashkentDateUtc,
+  formatDateUz,
+  formatTimeUz,
+  formatDateTimeUz,
+  formatDateRangeUz,
+  MONTHS_UZ,
+  MONTHS_UZ_CAP,
   getCurrentDayUz,
   getDayNameUz,
   getDateRangeForDay,
