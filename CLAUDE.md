@@ -101,6 +101,24 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
 - Use the shared `logger` from `utils/logger.js` everywhere.
 - Log levels: `error` for failures, `warn` for unexpected states, `info` for key events.
 
+## Dates
+
+Serverdan chiqadigan har qanday sana MATNI (Telegram xabari, Excel ustuni,
+xato xabari, `*Label` maydonlari) yagona formatda bo'ladi:
+`21-may, 2025` / `21-may, 2025 14:30` / `Yanvar, 2026`.
+
+- Formatlovchilar `helpers/date.helpers.js` da: `formatDateUz`,
+  `formatDateTimeUz`, `formatTimeUz`, `formatDateRangeUz`.
+  Moliya oyi (YYYYMM) — `helpers/month.helpers.js` dagi `formatMonthKey` /
+  `formatMonthRange`. Oy nomlari — `utils/constants.js`.
+- Service ichida lokal `formatDate` yozilmaydi va `toLocaleDateString("uz-UZ")`
+  ISHLATILMAYDI: natija Node ICU qurilishiga bog'liq bo'lib qoladi.
+- ⚠️ `@db.Date` va `Changelog.date` UTC yarim tunida yotadi — ular uchun
+  `formatDateUz(v, { utc: true })`. Instantlar (`createdAt`, `paidAt`) uchun
+  bayroq qo'yilmaydi, ular Toshkent devor-soatiga suriladi.
+
+Batafsil: `.claude/rules/dates.md`.
+
 ## Pagination
 
 - All list endpoints must support pagination.
