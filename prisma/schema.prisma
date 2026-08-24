@@ -1716,10 +1716,6 @@ model FinanceSettings {
   // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
   firstInvoiceMonth Int? @map("first_invoice_month")
 
-  // Bir o'quvchidagi chegirmalar yig'indisi shu foizdan oshmaydi. Bitta
-  // butun son "40 ta o'quvchiga bexosdan bepul yil berib yubordik" ni
-  // rad etilgan biriktirishga aylantiradi.
-  maxDiscountPercent Int @default(100) @map("max_discount_percent")
 
   // Yangi hisob-faktura chiqqanda o'quvchining oldindan to'langan qoldig'i
   // avtomatik yechilsinmi. O'chirilsa — depozit qo'lda qo'llanadi.
