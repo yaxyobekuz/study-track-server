@@ -26,16 +26,13 @@ const {
   nextMonth,
 } = require("../helpers/month.helpers");
 const { formatAmount, sumAmounts } = require("../helpers/money.helpers");
-const {
-  describeAcademicMonth,
-  describeBillableMonth,
-} = require("../helpers/academicYear.helpers");
+
 const { getFinanceSettings } = require("./settings.service");
 const { resolveManyForMonth } = require("./tariffResolution.service");
 const { resolveStatusesForMonth, NON_BILLABLE } = require("./studentFinanceStatus.service");
 const { resolveDiscountsForMonth } = require("./studentDiscount.service");
 const { resolveEnrollmentsForStudents } = require("./studentEnrollment.service");
-const { getVacationSet } = require("./vacationMonth.service");
+const { isVacationMonth } = require("./vacationMonth.service");
 const { applyDepositsForStudents } = require("./studentAccount.service");
 const { buildInvoiceRow, prorationGap } = require("./invoiceBuilder.service");
 
@@ -44,13 +41,13 @@ const DETAILS_LIMIT = 200;
 // Postgres parametr chegarasiga urilmaslik uchun
 const CHUNK_SIZE = 1000;
 
-// Nima uchun oy o'tkazib yuborildi
+// Nima uchun oy o'tkazib yuborildi.
+//
+// O'quv yili tushunchasi yo'q: sukut bo'yicha HAR OY to'lanadi, shuning
+// uchun "akademik oy emas" degan sabab ham yo'q. Oy faqat ta'til deb
+// belgilangani yoki qattiq poldan oldin turgani uchun o'tkazib yuboriladi.
 const SKIP_REASONS = {
-  NOT_ACADEMIC: "not_academic",
   BEFORE_FIRST_INVOICE_MONTH: "before_first_invoice_month",
-  // Ta'til — akademik oyna ICHIDAGI istisno, shuning uchun alohida sabab:
-  // admin ekranida "2027-01 akademik oy emas" emas, "2027-01 — ta'til"
-  // yozilishi kerak.
   VACATION: "vacation",
 };
 
@@ -64,13 +61,12 @@ const chunk = (items, size) => {
 };
 
 /**
- * Bo'sh natija — xato emas. Cron iyul oyidan jimgina o'tib ketishi kerak,
- * admin esa "2026-07 akademik oy emas" deb ko'rishi kerak.
+ * Bo'sh natija — xato emas. Cron ta'til oyidan jimgina o'tib ketishi kerak,
+ * admin esa "2026-07 — ta'til" deb ko'rishi kerak.
  */
-const emptySummary = (month, settings, reason) => ({
+const emptySummary = (month, reason) => ({
   month,
   monthLabel: formatMonthKey(month),
-  ...describeAcademicMonth(month, settings),
   reason,
   dryRun: false,
   eligible: 0,
@@ -135,24 +131,14 @@ const generateForMonth = async (monthInput, options = {}) => {
     );
   }
 
-  const academic = describeAcademicMonth(month, settings);
-  if (!academic.isAcademicMonth) {
-    return emptySummary(month, settings, SKIP_REASONS.NOT_ACADEMIC);
-  }
-
   if (settings.firstInvoiceMonth != null && month < settings.firstInvoiceMonth) {
-    return emptySummary(month, settings, SKIP_REASONS.BEFORE_FIRST_INVOICE_MONTH);
+    return emptySummary(month, SKIP_REASONS.BEFORE_FIRST_INVOICE_MONTH);
   }
 
   // Ta'til — butun maktabga: hech kimga majburiyat yozilmaydi
-  const vacationSet = await getVacationSet(academic.academicYear);
-  if (vacationSet.has(month)) {
-    return emptySummary(month, settings, SKIP_REASONS.VACATION);
+  if (await isVacationMonth(month)) {
+    return emptySummary(month, SKIP_REASONS.VACATION);
   }
-
-  // Ota-ona ko'radigan "8 oydan 5-si" — ta'til oylari chegirilgan holda,
-  // va u ham SNAPSHOT: keyin qo'shilgan ta'til bu yorliqni o'zgartirmaydi.
-  const billableMonth = describeBillableMonth(month, settings, vacationSet);
 
   // ── 1. O'quvchilar ────────────────────────
   // `isActive` ATAYLAB filtrlanmaydi: u login bayrog'i, o'qishga yozilish emas.
@@ -258,8 +244,6 @@ const generateForMonth = async (monthInput, options = {}) => {
       student,
       month,
       settings,
-      academic,
-      billableMonth,
       resolved: byStudent.get(student.id),
       discounts: discountsByStudent.get(student.id) ?? [],
       periods: periodsByStudent.get(student.id) ?? [],
@@ -351,7 +335,7 @@ const generateForMonth = async (monthInput, options = {}) => {
 
 /**
  * Oylar oralig'i uchun (cron'ning catch-up'i va admin backfill'i).
- * Akademik bo'lmagan oylar shunchaki `reason: "not_academic"` qaytaradi.
+ * Ta'til oylari shunchaki `reason: "vacation"` qaytaradi.
  *
  * @param {number} fromMonth
  * @param {number} toMonth

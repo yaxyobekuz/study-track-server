@@ -1,9 +1,13 @@
 /**
  * Ta'til oylari — MAKTAB BO'YICHA.
  *
- * "Yanvarda o'qimaymiz" degan qaror: o'sha oyda hech kimga hisob-faktura
- * shakllanmaydi. Bu akademik oyna ichidagi ISTISNO — akademik davrning
- * o'zi (sentabr..may) kalendar qoidasi bo'lib qoladi.
+ * "Iyulda o'qimaymiz" degan qaror: o'sha oyda hech kimga hisob-faktura
+ * shakllanmaydi.
+ *
+ * ⚠️ O'QUV YILI TUSHUNCHASI YO'Q. Sukut bo'yicha HAR OY to'lanadi, ta'til esa
+ * yagona umumiy istisno. Ilgari ta'til "akademik oyna ichidagi istisno" edi va
+ * oynadan tashqaridagi oyni ta'til deb belgilash rad etilardi — endi bunday
+ * chegara yo'q, istalgan oy ta'til bo'lishi mumkin.
  *
  * Bitta o'quvchini to'xtatish uchun bu emas, `StudentFinanceStatus.frozen`
  * ishlatiladi.
@@ -20,35 +24,22 @@ const {
   formatMonthKey,
   currentMonthKey,
 } = require("../helpers/month.helpers");
-const {
-  academicYearOf,
-  academicYearBounds,
-  billableMonthsOfYear,
-  describeAcademicMonth,
-} = require("../helpers/academicYear.helpers");
-const { getFinanceSettings } = require("./settings.service");
 
 const serializeVacation = (row) => ({
   ...row,
   monthLabel: formatMonthKey(row.month),
-  academicYearLabel: `${row.academicYear}/${row.academicYear + 1}`,
 });
 
 /**
  * Ta'til oylari to'plami — generator va hisob-kitob uchun.
  *
- * Jadval kichik (o'quv yiliga 0..3 qator), shuning uchun oraliq bo'yicha
- * emas, kerak bo'lganda butun yil o'qiladi.
+ * Jadval kichik (yiliga 0..3 qator), shuning uchun filtrsiz butunicha
+ * o'qiladi: oraliq bo'yicha so'rov qo'shimcha murakkablik beradi, foyda bermaydi.
  *
- * @param {number} [academicYear] - berilmasa BARCHA ta'til oylari
  * @returns {Promise<Set<number>>} YYYYMM to'plami
  */
-const getVacationSet = async (academicYear) => {
-  const rows = await prisma.vacationMonth.findMany({
-    where: academicYear != null ? { academicYear } : {},
-    select: { month: true },
-  });
-
+const getVacationSet = async () => {
+  const rows = await prisma.vacationMonth.findMany({ select: { month: true } });
   return new Set(rows.map((r) => r.month));
 };
 
@@ -63,54 +54,54 @@ const isVacationMonth = async (month) => {
 };
 
 /**
- * O'quv yilining oylari — har biri ta'til bayrog'i va tartib raqami bilan.
+ * KALENDAR YILINING 12 oyi — har biri ta'til bayrog'i bilan.
  * Admin sozlamalar sahifasidagi oylar grid'i shu javobdan chiziladi.
  *
- * @param {object} query - { academicYear }
+ * Oyna sodda: yanvardan dekabrgacha. Ta'til deb belgilanmagan har bir oy
+ * to'lanadi, shuning uchun bu ekran "yilning qaysi oylari bepul" degan
+ * savolning YAGONA javob joyi.
+ *
+ * @param {object} query - { year }
  * @returns {Promise<object>}
  */
 const getVacationMonths = async (query = {}) => {
-  const settings = await getFinanceSettings();
+  const current = currentMonthKey();
+  const year =
+    query.year != null && query.year !== ""
+      ? Number(query.year)
+      : Math.trunc(current / 100);
 
-  const academicYear =
-    query.academicYear != null && query.academicYear !== ""
-      ? Number(query.academicYear)
-      : academicYearOf(currentMonthKey(), settings);
-
-  if (!Number.isInteger(academicYear)) {
-    throw new BadRequestError("O'quv yili noto'g'ri");
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new BadRequestError("Yil noto'g'ri");
   }
 
-  const [rows, vacationSet] = await Promise.all([
-    prisma.vacationMonth.findMany({
-      where: { academicYear },
-      orderBy: { month: "asc" },
-    }),
-    getVacationSet(academicYear),
-  ]);
+  const rows = await prisma.vacationMonth.findMany({
+    where: { month: { gte: year * 100 + 1, lte: year * 100 + 12 } },
+    orderBy: { month: "asc" },
+  });
 
   const titleByMonth = new Map(rows.map((r) => [r.month, r.title]));
   const idByMonth = new Map(rows.map((r) => [r.month, r.id]));
-  const { months, billableMonthCount } = billableMonthsOfYear(
-    academicYear,
-    settings,
-    vacationSet,
-  );
 
-  const bounds = academicYearBounds(academicYear, settings);
+  const months = Array.from({ length: 12 }, (_, index) => {
+    const month = year * 100 + index + 1;
+    return {
+      month,
+      monthLabel: formatMonthKey(month),
+      isVacation: idByMonth.has(month),
+      isPast: month < current,
+      isCurrent: month === current,
+      id: idByMonth.get(month) ?? null,
+      title: titleByMonth.get(month) ?? "",
+    };
+  });
 
   return {
-    academicYear,
-    academicYearLabel: `${academicYear}/${academicYear + 1}`,
-    ...bounds,
-    academicMonthCount: settings.academicMonthCount,
-    billableMonthCount,
-    months: months.map((m) => ({
-      ...m,
-      id: idByMonth.get(m.month) ?? null,
-      title: titleByMonth.get(m.month) ?? "",
-      monthLabel: formatMonthKey(m.month),
-    })),
+    year,
+    currentMonth: current,
+    // Shu yilda to'lanadigan oylar soni — ta'til chegirilgan holda
+    billableMonthCount: months.filter((m) => !m.isVacation).length,
+    months,
     items: rows.map(serializeVacation),
   };
 };
@@ -118,33 +109,26 @@ const getVacationMonths = async (query = {}) => {
 /**
  * Oyni ta'til deb belgilaydi.
  *
- * `academicYear` HOSILA bo'lsa ham saqlanadi: `academicStartMonth` keyin
- * o'zgarsa eski ta'til oylari jimgina boshqa o'quv yiliga ko'chib ketmasin.
+ * Istalgan oy ta'til bo'lishi mumkin — o'quv yili oynasi yo'q, ya'ni
+ * tekshiriladigan chegara ham yo'q.
  *
  * @param {object} data - { month, title }
  * @param {string} userId
  * @returns {Promise<object>}
  */
 const createVacationMonth = async (data, userId) => {
-  const settings = await getFinanceSettings();
   const month = parseMonthKey(data.month, "Oy");
-
-  const academic = describeAcademicMonth(month, settings);
-  if (!academic.isAcademicMonth) {
-    throw new BadRequestError(
-      `${formatMonthKey(month)} akademik oy emas — u allaqachon to'lovsiz`,
-    );
-  }
 
   const existing = await prisma.vacationMonth.findUnique({ where: { month } });
   if (existing) {
-    throw new BadRequestError(`${formatMonthKey(month)} allaqachon ta'til deb belgilangan`);
+    throw new BadRequestError(
+      `${formatMonthKey(month)} allaqachon ta'til deb belgilangan`,
+    );
   }
 
   const row = await prisma.vacationMonth.create({
     data: {
       month,
-      academicYear: academic.academicYear,
       title: data.title?.trim() || "",
       createdBy: userId,
     },
@@ -179,7 +163,10 @@ const deleteVacationMonth = async (id) => {
         ]
       : [];
 
-  return { message: `${formatMonthKey(row.month)} ta'til ro'yxatidan chiqarildi`, warnings };
+  return {
+    message: `${formatMonthKey(row.month)} ta'til ro'yxatidan chiqarildi`,
+    warnings,
+  };
 };
 
 /**

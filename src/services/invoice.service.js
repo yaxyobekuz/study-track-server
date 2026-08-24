@@ -26,16 +26,10 @@ const {
   parseOptionalMonthKey,
   formatMonthKey,
   monthKeyOfDate,
+  nextMonth,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
-const {
-  describeAcademicMonth,
-  academicYearBounds,
-  academicYearOf,
-  billableMonthsOfYear,
-  describeBillableMonth,
-  academicYearMonths,
-} = require("../helpers/academicYear.helpers");
+
 const { deriveStatus } = require("../helpers/allocation.helpers");
 const { applyDiscounts } = require("../helpers/discount.helpers");
 const { getFinanceSettings } = require("./settings.service");
@@ -97,6 +91,53 @@ const STUDENT_SELECT = {
 };
 
 /**
+ * O'QUVCHINING OYLAR OYNASI — birinchi kelgan oyidan oxirgi tegishli oygacha.
+ *
+ * O'quv yili tushunchasi yo'q, shuning uchun oyna o'quvchining O'ZIDAN
+ * chiqadi: qachon kelgan bo'lsa o'shandan boshlanadi.
+ *
+ * Oxirgi oy — hozir o'qiyotgan bo'lsa JORIY oy, aks holda oxirgi ketgan oyi.
+ * Kelgusi oylar ro'yxatga KIRMAYDI: ular hali majburiyat emas.
+ *
+ * ⚠️ Mavjud hisob-faktura oylari ham oynaga qo'shiladi. Davr keyin
+ * tahrirlansa (masalan boshlanish sanasi kechiktirilsa), chiqarilgan
+ * hisob-faktura oynadan tashqarida qolib, ekranda jimgina g'oyib bo'lardi.
+ *
+ * @param {Array<{startDate: Date, endDate: Date|null}>} periods
+ * @param {number[]} invoiceMonths - mavjud hisob-faktura oylari (YYYYMM)
+ * @param {number} currentMonth - YYYYMM
+ * @returns {{fromMonth: number, toMonth: number, months: number[]}}
+ */
+const buildStudentMonthWindow = (periods, invoiceMonths, currentMonth) => {
+  const starts = periods.map((period) => monthKeyOfDate(period.startDate));
+  const candidates = [...starts, ...invoiceMonths];
+
+  if (candidates.length === 0) {
+    return { fromMonth: null, toMonth: null, months: [] };
+  }
+
+  const fromMonth = Math.min(...candidates);
+
+  const isStudying = periods.some((period) => period.endDate == null);
+  const endMonths = periods
+    .filter((period) => period.endDate != null)
+    .map((period) => monthKeyOfDate(period.endDate));
+
+  const lastPeriodMonth = isStudying
+    ? currentMonth
+    : endMonths.length > 0
+      ? Math.max(...endMonths)
+      : currentMonth;
+
+  const toMonth = Math.max(lastPeriodMonth, ...invoiceMonths, fromMonth);
+
+  const months = [];
+  for (let m = fromMonth; m <= toMonth; m = nextMonth(m)) months.push(m);
+
+  return { fromMonth, toMonth, months };
+};
+
+/**
  * Hisob-fakturani javob shakliga keltiradi. `debt` doim hisoblanadi —
  * frontend summalar ustida arifmetika qilmasligi kerak.
  */
@@ -127,11 +168,7 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
     debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
     monthLabel: formatMonthKey(invoice.month),
     statusLabel: STATUS_LABELS[invoice.status] ?? invoice.status,
-    // "8 oydan 5-si" — ta'til hisobga olingan holda
-    billableLabel:
-      invoice.billableIndex != null
-        ? `${invoice.billableMonthCount} oydan ${invoice.billableIndex}-si`
-        : null,
+
     // O'quvchi o'chirilgan/arxivlangan bo'lishi mumkin — snapshot qutqaradi
     student: student ?? null,
     studentName:
@@ -158,17 +195,14 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
 
 /**
  * Query paramlaridan Prisma `where` quradi.
- * `academicYear` oy oralig'iga aylantiriladi — shunda [month, status] indeksi
- * ishlaydi va academicYear uchun alohida indeks kerak bo'lmaydi.
+ * Oy oralig'i `month: {gte, lte}` ga aylantiriladi — shunda [month, status]
+ * indeksi ishlaydi.
  */
-const buildInvoiceFilter = async (query, settings) => {
+const buildInvoiceFilter = async (query) => {
   const filter = {};
 
   if (query.month) {
     filter.month = parseMonthKey(query.month, "Oy");
-  } else if (query.academicYear) {
-    const bounds = academicYearBounds(Number(query.academicYear), settings);
-    filter.month = { gte: bounds.startMonth, lte: bounds.endMonth };
   } else {
     const from = parseOptionalMonthKey(query.fromMonth, "Boshlanish oyi");
     const to = parseOptionalMonthKey(query.toMonth, "Tugash oyi");
@@ -244,7 +278,7 @@ const loadStudentMap = async (invoices) => {
 const getInvoices = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const settings = await getFinanceSettings();
-  const filter = await buildInvoiceFilter(req.query, settings);
+  const filter = await buildInvoiceFilter(req.query);
 
   // `studentId: { in: [] }` — hech kim topilmadi, bo'sh sahifa
   if (filter.studentId?.in?.length === 0) {
@@ -315,27 +349,18 @@ const getInvoiceById = async (id, { includeVoided = false } = {}) => {
  * o'quvchining o'z sahifasi uchun umumiy yadro).
  *
  * @param {string} studentId
- * @param {{academicYear?: number, includeCancelled?: boolean}} options
+ * @param {{includeCancelled?: boolean}} options
  * @returns {Promise<object>}
  */
 const getStudentInvoices = async (studentId, options = {}) => {
   const settings = await getFinanceSettings();
   const month = currentMonthKey();
 
-  const years = await getStudentAcademicYears(studentId);
-
-  // Yil tanlanmagan bo'lsa — o'quvchi HAQIQATDA o'qigan yil ochiladi, kalendar
-  // bo'yicha "joriy" yil emas (izoh `pickAcademicYear` da).
-  const academicYear =
-    options.academicYear != null && options.academicYear !== ""
-      ? Number(options.academicYear)
-      : pickAcademicYear(years, academicYearOf(month, settings));
-
-  const bounds = academicYearBounds(academicYear, settings);
-
+  // Oy oralig'i bo'yicha FILTRLAMAYMIZ: oyna o'quvchining o'qish davridan
+  // chiqadi va uni bilish uchun avval hisob-faktura oylari kerak. O'quvchida
+  // ko'pi bilan bir necha o'nlab qator bo'ladi — filtr foyda bermaydi.
   const where = {
     studentId,
-    month: { gte: bounds.startMonth, lte: bounds.endMonth },
     ...(options.includeCancelled ? {} : { status: { not: "cancelled" } }),
   };
 
@@ -352,7 +377,7 @@ const getStudentInvoices = async (studentId, options = {}) => {
       },
     }),
     resolveStatusForStudent(studentId, month),
-    getVacationSet(academicYear),
+    getVacationSet(),
     getBalance(studentId),
     getPeriodsForStudent(studentId),
   ]);
@@ -388,38 +413,33 @@ const getStudentInvoices = async (studentId, options = {}) => {
   const paid = new Decimal(agg._sum.paidAmount ?? 0);
   const debt = invoiced.minus(paid);
 
-  // O'quv yilining TO'LIQ oylar jadvali — ta'til oylari ham ko'rinadi,
-  // shunda "yanvarda nega hisob yo'q?" savoli tug'ilmaydi.
+  // O'quvchining TO'LIQ oylar jadvali — ta'til oylari ham ko'rinadi,
+  // shunda "iyulda nega hisob yo'q?" savoli tug'ilmaydi.
   const invoiceByMonth = new Map(rows.map((r) => [r.month, r]));
-  const { months, billableMonthCount } = billableMonthsOfYear(
-    academicYear,
-    settings,
-    vacationSet,
+  const window = buildStudentMonthWindow(
+    periods,
+    rows.map((r) => r.month),
+    month,
   );
 
-  // O'quvchining O'ZI uchun hisob: u yanvardan kelgan bo'lsa "8 oydan 5-si"
-  // emas, "5 oydan 3-si" ko'rishi kerak. Bu JONLI hisoblanadi (snapshot
-  // emas): davr keyin to'g'rilansa yorliq ham to'g'rilanadi — u pul emas,
-  // shuning uchun muhrlash talab qilinmaydi.
-  //
-  // ⚠️ `MonthlyInvoice.billableIndex` esa O'ZGARMAYDI — u maktab bo'yicha
-  // snapshot va audit haqiqati.
+  // O'quvchi to'lagan/to'lashi kerak bo'lgan oylar sanog'i — JONLI hisob
+  // (snapshot emas): davr keyin to'g'rilansa yorliq ham to'g'rilanadi, u pul
+  // emas, shuning uchun muhrlash talab qilinmaydi.
   let enrolledIndex = 0;
-  // ⚠️ `enrolledIndex` KELGUSI oylarni ham sanaydi — u "o'quv yili rejasida
-  // nechanchi oy" degani. Qarz kartasidagi maxraj esa BOSHQA savol: "hozirga
-  // qadar nechta oy KELDI". Ular ajratilmasa, sentabrda boshlanadigan yil
-  // avgustda "0 / 9 oy to'langan" bo'lib, o'quvchi 9 oy qarzdordek ko'rinardi.
+  // Qarz progressining maxraji — hozirga qadar KELGAN oylar. Oyna kelgusi
+  // oylarni o'z ichiga olmasa ham, davr kelajakda boshlangan holat bor.
   let dueIndex = 0;
 
-  const timeline = months.map((entry) => {
-    const invoice = invoiceByMonth.get(entry.month);
-    const enrollment = resolveEnrollmentForMonth(periods, entry.month);
-    const isEnrolled = !entry.isVacation && enrollment.enrolled;
+  const timeline = window.months.map((entryMonth) => {
+    const invoice = invoiceByMonth.get(entryMonth);
+    const isVacation = vacationSet.has(entryMonth);
+    const enrollment = resolveEnrollmentForMonth(periods, entryMonth);
+    const isEnrolled = !isVacation && enrollment.enrolled;
 
     if (isEnrolled) enrolledIndex += 1;
-    if (isEnrolled && entry.month <= month) dueIndex += 1;
+    if (isEnrolled && entryMonth <= month) dueIndex += 1;
 
-    const skipReason = entry.isVacation
+    const skipReason = isVacation
       ? "vacation"
       : !enrollment.enrolled
         ? // "davri umuman yo'q" ni "bu oyda o'qimagan" dan ajratamiz: birinchisi
@@ -427,23 +447,21 @@ const getStudentInvoices = async (studentId, options = {}) => {
           enrollment.reason === "no_periods"
           ? "no_periods"
           : "not_enrolled"
-        : settings.firstInvoiceMonth != null && entry.month < settings.firstInvoiceMonth
+        : settings.firstInvoiceMonth != null && entryMonth < settings.firstInvoiceMonth
           ? "before_first_invoice_month"
           : null;
 
     return {
-      month: entry.month,
-      monthLabel: formatMonthKey(entry.month),
-      academicIndex: entry.academicIndex,
-      billableIndex: entry.billableIndex,
-      isVacation: entry.isVacation,
+      month: entryMonth,
+      monthLabel: formatMonthKey(entryMonth),
+      isVacation,
       isEnrolled,
       enrolledIndex: isEnrolled ? enrolledIndex : null,
       skipReason,
       isProrated: invoice?.billableDays != null,
       billableDays: invoice?.billableDays ?? null,
       monthDays: invoice?.monthDays ?? null,
-      isFuture: entry.month > month,
+      isFuture: entryMonth > month,
       invoice: invoice
         ? serializeInvoice(invoice, { payments: paymentsByInvoice.get(invoice.id) ?? [] })
         : null,
@@ -453,25 +471,19 @@ const getStudentInvoices = async (studentId, options = {}) => {
   const enrolledMonthCount = enrolledIndex;
   const dueMonthCount = dueIndex;
   const paidMonths = rows.filter((r) => r.status === "paid").length;
-  const currentMonthInfo = describeAcademicMonth(month, settings);
 
   return {
-    academicYear,
-    academicYearLabel: `${academicYear}/${academicYear + 1}`,
-    academicMonthCount: settings.academicMonthCount,
-    billableMonthCount,
+    // Oyna — o'quvchi kelgan oyidan oxirgi tegishli oygacha
+    fromMonth: window.fromMonth,
+    fromMonthLabel: window.fromMonth ? formatMonthKey(window.fromMonth) : null,
+    toMonth: window.toMonth,
+    toMonthLabel: window.toMonth ? formatMonthKey(window.toMonth) : null,
     vacationMonths: [...vacationSet].sort().map((m) => ({
       month: m,
       monthLabel: formatMonthKey(m),
     })),
     currentMonth: month,
     currentMonthLabel: formatMonthKey(month),
-    // ⚠️ SPREAD QILMANG. `describeAcademicMonth` JORIY KALENDAR oyni tavsiflaydi
-    // va uning ichida ham `academicYear`/`academicYearLabel` bor — spread
-    // yuqoridagi TANLANGAN yilni jimgina bosib ketardi (2026/2027 tanlangan
-    // bo'lsa ham sarlavha "2025/2026" chiqardi). Faqat kerakli kalitlar olinadi.
-    isAcademicMonth: currentMonthInfo.isAcademicMonth,
-    academicIndex: currentMonthInfo.academicIndex,
     financeStatus: {
       status: statusInfo.status,
       statusLabel: statusInfo.statusLabel,
@@ -480,7 +492,6 @@ const getStudentInvoices = async (studentId, options = {}) => {
       reason: statusInfo.row?.reason ?? "",
     },
     balance: formatAmount(balance),
-    academicYears: years,
     enrolledMonthCount,
     enrollment: describeEnrollmentForStudent(periods),
     totals: {
@@ -497,8 +508,7 @@ const getStudentInvoices = async (studentId, options = {}) => {
       debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
       unpaidCount: rows.filter((r) => r.status !== "paid").length,
       paidMonths,
-      // Maktab bo'yicha (audit) va o'quvchi bo'yicha (ko'rsatiladigan)
-      billableMonths: billableMonthCount,
+      // O'quvchi maktabda bo'lgan oylar (ta'til chegirilgan)
       enrolledMonths: enrolledMonthCount,
       // Hozirga qadar KELGAN oylar — qarz progressining maxraji.
       // Kelgusi oylar bu yerda sanalmaydi: ular hali majburiyat emas.
@@ -535,7 +545,6 @@ const getMyFinance = async (studentId, options = {}) => {
 
   // Joriy oydagi tarif, chegirma va narx — hisob-faktura hali shakllanmagan
   // bo'lsa ham o'quvchi nimaga qarzdor bo'lishini ko'rishi kerak.
-  // `academicYears` `data` ichida allaqachon bor — qayta so'ralmaydi
   const [resolved, discounts, movements, periods] = await Promise.all([
     resolveForStudentMonth(studentId, data.currentMonth),
     resolveDiscountsForStudent(studentId, data.currentMonth),
@@ -603,94 +612,6 @@ const describeEnrollmentForStudent = (periods) => {
     since: toDay(state.since),
     until: toDay(state.until),
   };
-};
-
-/**
- * O'quvchi qaysi o'quv yillarida o'qigan — "o'zi o'qigan davrlar" tanlagichi.
- *
- * Manba: hisob-fakturalar (`academicYear` snapshot'i). Joriy yil hisob-faktura
- * hali yo'q bo'lsa ham qo'shiladi — o'quvchi bo'sh sahifaga tushmasligi kerak.
- *
- * @param {string} studentId
- * @returns {Promise<Array<{academicYear: number, label: string, isCurrent: boolean}>>}
- */
-const getStudentAcademicYears = async (studentId) => {
-  const settings = await getFinanceSettings();
-  const current = academicYearOf(currentMonthKey(), settings);
-
-  const [grouped, periods] = await Promise.all([
-    prisma.monthlyInvoice.groupBy({
-      by: ["academicYear"],
-      where: { studentId },
-      _count: { _all: true },
-    }),
-    getPeriodsForStudent(studentId),
-  ]);
-
-  const years = new Set(grouped.map((g) => g.academicYear));
-  years.add(current);
-
-  // O'QISH DAVRLARI qamragan yillar ham qo'shiladi. Aks holda 2026-iyunda
-  // kelgan o'quvchida hali hisob-faktura yo'q va ro'yxatda faqat "joriy"
-  // yil ko'rinadi — u esa avgustda 2025/2026 ning DUMI bo'lib, o'quvchi
-  // umuman o'qimagan yil bo'ladi.
-  // Yozgi tanaffusda `academicYearOf` O'TGAN o'quv yilini qaytaradi (u dum).
-  // Ochiq davr esa KELASI yilga cho'ziladi, shuning uchun ro'yxatga boshlanishi
-  // yaqinlashgan yil ham kiritiladi: 2026-avgustda bu 2026/2027.
-  const upcoming =
-    currentMonthKey() % 100 >= settings.academicStartMonth ? current : current + 1;
-
-  for (const period of periods) {
-    const from = academicYearOf(monthKeyOfDate(period.startDate), settings);
-    const to = period.endDate
-      ? academicYearOf(monthKeyOfDate(period.endDate), settings)
-      : Math.max(from, upcoming);
-
-    for (let year = from; year <= to; year += 1) years.add(year);
-  }
-
-  // Har bir yil uchun: o'quvchi shu yilda umuman o'qiganmi
-  const enrolledIn = (year) =>
-    academicYearMonths(year, settings).some(
-      (entry) => resolveEnrollmentForMonth(periods, entry.month).enrolled,
-    );
-
-  return [...years]
-    .sort((a, b) => b - a)
-    .map((year) => ({
-      academicYear: year,
-      label: `${year}/${year + 1}`,
-      isCurrent: year === current,
-      isEnrolled: enrolledIn(year),
-    }));
-};
-
-/**
- * Qaysi o'quv yili ochilsin.
- *
- * Kalendar bo'yicha "joriy" yil har doim ham to'g'ri javob emas: avgustda
- * `academicYearOf` o'tgan o'quv yilini qaytaradi (u yozgi dum), va iyunda
- * kelgan o'quvchi uchun bu butunlay bo'sh yil bo'ladi. Shuning uchun:
- *
- *   1. joriy yilda o'qigan bo'lsa — joriy yil;
- *   2. aks holda o'qigan yillaridan joriysiga eng yaqini;
- *   3. hech qayerda o'qimagan bo'lsa — joriy yil (bo'sh holat ko'rinadi).
- *
- * @param {Array<{academicYear: number, isCurrent: boolean, isEnrolled: boolean}>} years
- * @param {number} current
- * @returns {number}
- */
-const pickAcademicYear = (years, current) => {
-  if (years.find((y) => y.academicYear === current)?.isEnrolled) return current;
-
-  const enrolled = years.filter((y) => y.isEnrolled);
-  if (enrolled.length === 0) return current;
-
-  return enrolled.reduce((best, year) =>
-    Math.abs(year.academicYear - current) < Math.abs(best.academicYear - current)
-      ? year
-      : best,
-  ).academicYear;
 };
 
 /**
@@ -1027,9 +948,7 @@ const getStudentRegistry = async (req) => {
  * @returns {Promise<object>}
  */
 const getSummary = async (monthInput) => {
-  const settings = await getFinanceSettings();
   const month = monthInput ? parseMonthKey(monthInput, "Oy") : currentMonthKey();
-  const academic = describeAcademicMonth(month, settings);
 
   const [grouped, vacationSet, deposits, discountAgg] = await Promise.all([
     prisma.monthlyInvoice.groupBy({
@@ -1038,7 +957,7 @@ const getSummary = async (monthInput) => {
       _count: { _all: true },
       _sum: { amount: true, paidAmount: true },
     }),
-    getVacationSet(academic.academicYear),
+    getVacationSet(),
     prisma.studentAccount.aggregate({ _sum: { balance: true } }),
     prisma.monthlyInvoice.aggregate({
       where: { month, status: { not: "cancelled" } },
@@ -1064,17 +983,14 @@ const getSummary = async (monthInput) => {
   return {
     month,
     monthLabel: formatMonthKey(month),
-    ...academic,
     isVacation,
     // Ta'til oyida "Shakllantirish" tugmasi o'chadi va sabab ko'rsatiladi
-    canGenerate: academic.isAcademicMonth && !isVacation && month <= currentMonthKey(),
-    blockedReason: !academic.isAcademicMonth
-      ? "not_academic"
-      : isVacation
-        ? "vacation"
-        : month > currentMonthKey()
-          ? "future"
-          : null,
+    canGenerate: !isVacation && month <= currentMonthKey(),
+    blockedReason: isVacation
+      ? "vacation"
+      : month > currentMonthKey()
+        ? "future"
+        : null,
     counts: { ...counts, invoiced: invoicedCount },
     totals: {
       baseAmount: formatAmount(new Decimal(discountAgg._sum.baseAmount ?? 0)),
@@ -1226,14 +1142,11 @@ const regenerateInvoice = async (id, reason, userId) => {
   }
 
   const settings = await getFinanceSettings();
-  const [resolved, discounts, vacationSet, periods] = await Promise.all([
+  const [resolved, discounts, periods] = await Promise.all([
     resolveForStudentMonth(invoice.studentId, invoice.month),
     resolveDiscountsForStudent(invoice.studentId, invoice.month),
-    getVacationSet(invoice.academicYear),
     getPeriodsForStudent(invoice.studentId),
   ]);
-
-  const billable = describeBillableMonth(invoice.month, settings, vacationSet);
 
   // ⚠️ Summa AYNAN oylik pass bilan bir xil quruvchi orqali hisoblanadi.
   // Ilgari bu yerda mustaqil hisob bor edi va u proratsiyani bilmasdi:
@@ -1243,14 +1156,6 @@ const regenerateInvoice = async (id, reason, userId) => {
     student: { id: invoice.studentId },
     month: invoice.month,
     settings,
-    academic: {
-      academicYear: invoice.academicYear,
-      academicIndex: invoice.academicIndex,
-    },
-    billableMonth: {
-      billableIndex: billable.billableIndex ?? invoice.billableIndex,
-      billableMonthCount: billable.billableMonthCount,
-    },
     resolved,
     discounts,
     periods,
@@ -1332,7 +1237,6 @@ module.exports = {
   getInvoices,
   getInvoiceById,
   getStudentInvoices,
-  getStudentAcademicYears,
   getStudentRegistry,
   getDebtors,
   getMyFinance,

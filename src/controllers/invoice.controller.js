@@ -18,9 +18,7 @@ const canAdjust = (req) =>
  * query'dan olinsa, har kim boshqaning qarzini ko'rib qolardi.
  */
 const getMyFinance = asyncHandler(async (req, res) => {
-  const data = await invoiceService.getMyFinance(req.user.id, {
-    academicYear: req.query.academicYear,
-  });
+  const data = await invoiceService.getMyFinance(req.user.id);
   res.json({ success: true, data });
 });
 
@@ -50,7 +48,6 @@ const getDebtors = asyncHandler(async (req, res) => {
 
 const getStudentInvoices = asyncHandler(async (req, res) => {
   const data = await invoiceService.getStudentInvoices(req.params.studentId, {
-    academicYear: req.query.academicYear,
     includeCancelled: req.query.includeCancelled === "true",
   });
   res.json({ success: true, data });
