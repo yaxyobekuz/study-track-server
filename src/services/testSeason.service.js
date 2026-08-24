@@ -5,6 +5,7 @@ const { config } = require("../config/env.config");
 const { ROLES } = require("../utils/constants");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
+const { formatDateUz } = require("../helpers/date.helpers");
 
 /** HTML parse mode uchun maxsus belgilarni ekranlash. */
 function escapeHtml(text) {
@@ -14,13 +15,9 @@ function escapeHtml(text) {
     .replace(/>/g, "&gt;");
 }
 
-/** Sanani DD.MM.YYYY ko'rinishida formatlaydi. */
+/** Sana — `date.helpers.js` dagi yagona manbadan ("21-may, 2025"). */
 function formatDate(date) {
-  if (!date) return "";
-  const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  return `${day}.${month}.${d.getFullYear()}`;
+  return formatDateUz(date, { fallback: "" });
 }
 
 /**

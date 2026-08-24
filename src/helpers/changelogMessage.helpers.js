@@ -8,6 +8,8 @@
 //     matni esa erkin matn. Escape qilinmasa Telegram butun xabarni rad etadi.
 //  2. Telegram bitta xabarda 4096 belgidan ko'pini qabul qilmaydi.
 
+const { formatDateUz: formatDate } = require("./date.helpers");
+
 // Telegram cheklovi 4096; sarlavha va "1/3" belgisi uchun zapas qoldiramiz.
 const TELEGRAM_MAX = 4096;
 const SAFE_LIMIT = 3800;
@@ -19,21 +21,6 @@ const PANEL_LABELS = {
   server: "Server",
   bot: "Telegram bot",
 };
-
-const MONTHS_UZ = [
-  "yanvar",
-  "fevral",
-  "mart",
-  "aprel",
-  "may",
-  "iyun",
-  "iyul",
-  "avgust",
-  "sentabr",
-  "oktabr",
-  "noyabr",
-  "dekabr",
-];
 
 /**
  * HTML parse_mode uchun xavfsiz matn.
@@ -64,8 +51,8 @@ function escapeHtml(text) {
  * @returns {string}
  */
 function formatDateUz(date) {
-  const d = new Date(date);
-  return `${d.getUTCDate()}-${MONTHS_UZ[d.getUTCMonth()]}, ${d.getUTCFullYear()}`;
+  // utc: true — `Changelog.date` UTC yarim tunida yotadi (yuqoridagi izoh).
+  return formatDate(date, { utc: true });
 }
 
 /** Sana kaliti (guruhlash uchun) — "2026-08-17". */

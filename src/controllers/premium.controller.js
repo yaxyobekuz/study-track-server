@@ -2,6 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const premiumService = require("../services/premium.service");
 const ExcelService = require("../services/excel.service");
 const { BadRequestError } = require("../utils/errors");
+const { formatDateUz } = require("../helpers/date.helpers");
 
 /**
  * @route  POST /api/premium/buy
@@ -203,8 +204,8 @@ const exportSubscriptions = asyncHandler(async (req, res) => {
 
   const data = rows.map((r) => ({
     ...r,
-    startDate: r.startDate ? new Date(r.startDate).toLocaleDateString("uz-UZ") : "-",
-    endDate: r.endDate ? new Date(r.endDate).toLocaleDateString("uz-UZ") : "-",
+    startDate: formatDateUz(r.startDate, { fallback: "-" }),
+    endDate: formatDateUz(r.endDate, { fallback: "-" }),
   }));
 
   const workbook = ExcelService.createExcel({

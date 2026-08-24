@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { formatDateUz } = require("../helpers/date.helpers");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 // createdBy soft ref larni yuklab, xaritalash
@@ -92,7 +93,7 @@ async function getSubjectsForExport() {
     createdBy: subject.createdBy
       ? `${subject.createdBy.firstName} ${subject.createdBy.lastName}`
       : "-",
-    createdAt: new Date(subject.createdAt).toLocaleDateString("uz-UZ"),
+    createdAt: formatDateUz(subject.createdAt),
   }));
 }
 

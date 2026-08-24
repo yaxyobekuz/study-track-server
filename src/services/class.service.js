@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { formatDateUz } = require("../helpers/date.helpers");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 // createdBy soft ref (FK emas) larni bir so'rovda yuklab, xaritalash uchun
@@ -256,7 +257,7 @@ async function getAllClassesForExport() {
     createdBy: classItem.createdBy
       ? `${classItem.createdBy.firstName} ${classItem.createdBy.lastName}`
       : "-",
-    createdAt: new Date(classItem.createdAt).toLocaleDateString("uz-UZ"),
+    createdAt: formatDateUz(classItem.createdAt),
   }));
 }
 

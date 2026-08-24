@@ -1,20 +1,11 @@
 const prisma = require("../config/prisma");
 const telegramService = require("./telegram.service");
 const logger = require("../utils/logger");
+const { formatDateUz } = require("../helpers/date.helpers");
 const { config } = require("../config/env.config");
 
-/**
- * Sanani DD.MM.YYYY ko'rinishida formatlaydi.
- * @param {Date|string} date
- * @returns {string}
- */
-const formatDate = (date) => {
-  if (!date) return "";
-  const d = new Date(date);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  return `${day}.${month}.${d.getFullYear()}`;
-};
+// Sana formatlash — `date.helpers.js` dagi yagona manbadan ("21-may, 2025").
+const formatDate = (date) => formatDateUz(date, { fallback: "" });
 
 /**
  * Hodisa turi bo'yicha xabar matnini tuzadi.
