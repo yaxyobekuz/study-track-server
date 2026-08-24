@@ -14,9 +14,4 @@ const updateSettings = asyncHandler(async (req, res) => {
   res.json({ success: true, data: settings, warnings });
 });
 
-const getAcademicYear = asyncHandler(async (req, res) => {
-  const data = await financeSettingsService.getAcademicYear(req.query);
-  res.json({ success: true, data });
-});
-
-module.exports = { getSettings, updateSettings, getAcademicYear };
+module.exports = { getSettings, updateSettings };

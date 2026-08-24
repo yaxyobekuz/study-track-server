@@ -15,14 +15,7 @@ const {
   parseOptionalMonthKey,
   formatMonthKey,
 } = require("../helpers/month.helpers");
-const {
-  ACADEMIC_MONTH_COUNTS,
-  assertAcademicSettings,
-  describeAcademicMonth,
-  academicYearBounds,
-  academicYearMonths,
-  academicYearOf,
-} = require("../helpers/academicYear.helpers");
+
 
 // Cron ifodasi emas, handler o'qiydigan kun. 28 dan oshmasligi kerak —
 // 29-31 fevralda hech qachon kelmaydi va o'sha oy tashlab ketilardi.
@@ -45,21 +38,17 @@ const getSettings = async () => {
 
   return {
     ...serializeSettings(settings),
-    academicMonthCountOptions: ACADEMIC_MONTH_COUNTS,
     current: {
       month,
       monthLabel: formatMonthKey(month),
-      ...describeAcademicMonth(month, settings),
+      // Ta'til deb belgilanmagan har bir oy to'lanadi — "akademik oy"
+      // degan tushuncha yo'q, shuning uchun bu yerda bayroq ham yo'q.
     },
   };
 };
 
 /**
  * Sozlamalarni yangilaydi.
- *
- * Akademik davr o'zgarsa — bu FAQAT yangi hisob-fakturalarga ta'sir qiladi:
- * chiqarilganlari o'z academicYear/academicIndex snapshot'ini saqlaydi.
- * Shuni admin ko'rishi uchun `warnings` qaytariladi.
  *
  * @param {object} data
  * @param {string} userId
@@ -69,34 +58,6 @@ const updateSettings = async (data, userId) => {
   const current = await getFinanceSettings();
   const payload = {};
   const warnings = [];
-
-  const academicStartMonth =
-    data.academicStartMonth !== undefined
-      ? Number(data.academicStartMonth)
-      : current.academicStartMonth;
-  const academicMonthCount =
-    data.academicMonthCount !== undefined
-      ? Number(data.academicMonthCount)
-      : current.academicMonthCount;
-
-  if (
-    data.academicStartMonth !== undefined ||
-    data.academicMonthCount !== undefined
-  ) {
-    assertAcademicSettings({ academicStartMonth, academicMonthCount });
-    payload.academicStartMonth = academicStartMonth;
-    payload.academicMonthCount = academicMonthCount;
-
-    const changed =
-      academicStartMonth !== current.academicStartMonth ||
-      academicMonthCount !== current.academicMonthCount;
-
-    if (changed) {
-      warnings.push(
-        "O'quv yili o'zgarishi faqat yangi hisob-fakturalarga ta'sir qiladi — mavjudlari o'z yorlig'ini saqlaydi",
-      );
-    }
-  }
 
   if (data.invoiceDayOfMonth !== undefined) {
     const day = Number(data.invoiceDayOfMonth);
@@ -190,48 +151,12 @@ const updateSettings = async (data, userId) => {
   return {
     settings: {
       ...serializeSettings(updated),
-      academicMonthCountOptions: ACADEMIC_MONTH_COUNTS,
       current: {
         month: currentMonthKey(),
         monthLabel: formatMonthKey(currentMonthKey()),
-        ...describeAcademicMonth(currentMonthKey(), updated),
       },
     },
     warnings,
-  };
-};
-
-/**
- * O'quv yilining oylari — UI kalendari va oy tanlagichi uchun.
- *
- * @param {{year?: number|string, month?: number}} query
- * @returns {Promise<object>}
- */
-const getAcademicYear = async ({ year, month } = {}) => {
-  const settings = await getFinanceSettings();
-
-  const academicYear =
-    year != null && year !== ""
-      ? Number(year)
-      : academicYearOf(month || currentMonthKey(), settings);
-
-  if (!Number.isInteger(academicYear)) {
-    throw new BadRequestError("O'quv yili noto'g'ri");
-  }
-
-  const bounds = academicYearBounds(academicYear, settings);
-
-  return {
-    academicYear,
-    academicYearLabel: `${academicYear}/${academicYear + 1}`,
-    academicMonthCount: settings.academicMonthCount,
-    ...bounds,
-    startMonthLabel: formatMonthKey(bounds.startMonth),
-    endMonthLabel: formatMonthKey(bounds.endMonth),
-    months: academicYearMonths(academicYear, settings).map((item) => ({
-      ...item,
-      monthLabel: formatMonthKey(item.month),
-    })),
   };
 };
 
@@ -241,5 +166,4 @@ module.exports = {
   serializeSettings,
   getSettings,
   updateSettings,
-  getAcademicYear,
 };

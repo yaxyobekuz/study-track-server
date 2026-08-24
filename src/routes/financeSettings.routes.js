@@ -10,10 +10,8 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getSettings,
   updateSettings,
-  getAcademicYear,
 } = require("../controllers/financeSettings.controller");
 
-router.get("/academic-year", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getAcademicYear);
 
 router.get("/", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getSettings);
 router.put("/", protect, authorizePermission(PERMISSIONS.FINANCE_SETTINGS), updateSettings);
