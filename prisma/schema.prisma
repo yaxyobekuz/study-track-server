@@ -1670,12 +1670,14 @@ model StudentDiscount {
 }
 
 // ─────────────────────────────────────────────
-// MOLIYA — AKADEMIK DAVR, HOLAT VA HISOB-FAKTURALAR
+// MOLIYA — HOLAT VA HISOB-FAKTURALAR
 // ─────────────────────────────────────────────
 //
-// AKADEMIK DAVR — MAKTAB BO'YICHA GLOBAL: boshlanish oyi (1..12) + davomiyligi
-// (9 yoki 11). Katalog ham, o'quvchiga biriktiriladigan narsa ham emas. Har
-// qanday YYYYMM yo akademik oy, yo yo'q — hisob helpers/academicYear.helpers.js da.
+// O'QUV YILI TUSHUNCHASI YO'Q. O'qish davri cheksiz deb qaraladi: o'quvchi
+// maktabda bo'lgan HAR OY uchun to'lov yoziladi. Yagona umumiy istisno —
+// VacationMonth ("iyulda o'qimaymiz"), yagona shaxsiy istisno — frozen.
+// Shu sababli hisob-fakturada "9 oydan 3-si" kabi yorliq ham YO'Q: cheksiz
+// davrda "nechanchi oy" degan raqamning maxraji bo'lmaydi.
 //
 // KUN KOORDINATASI bu domenda uch joyda bor, boshqa hech qayerda emas:
 //   1) FinanceSettings.invoiceDayOfMonth — cron qachon ishlashi (konfiguratsiya),
@@ -1697,10 +1699,6 @@ model StudentDiscount {
 model FinanceSettings {
   id String @id @default("singleton") @db.VarChar(24)
 
-  // O'quv yili qaysi oydan boshlanadi (1..12; 9 = sentabr)
-  academicStartMonth Int @default(9) @map("academic_start_month")
-  // Nechta oy davom etadi — 9 yoki 11 (service qat'iy tekshiradi)
-  academicMonthCount Int @default(9) @map("academic_month_count")
 
   // Oyning nechanchi kunida majburiyat shakllanadi. 1..28 bilan cheklanadi —
   // 29-31 fevralda hech qachon kelmaydi. Cron IFODASIDA emas, HANDLER'da
@@ -1750,22 +1748,18 @@ model FinanceSettings {
 // Ta'til oyi — MAKTAB BO'YICHA. O'sha oyda hech kimga hisob-faktura
 // shakllanmaydi (o'quvchi bo'yicha to'xtatish — StudentFinanceStatus.frozen).
 //
-// Akademik oyning o'zi (sentabr..may) kalendar qoidasi bo'lsa, ta'til —
-// o'sha oyna ichidagi ISTISNO: "yanvarda o'qimaymiz, to'lov ham yo'q".
+// TO'LOVDAN OZOD OY. O'quv yili tushunchasi YO'Q: sukut bo'yicha HAR OY
+// to'lanadi, ta'til esa yagona umumiy istisno — "iyulda o'qimaymiz, to'lov
+// ham yo'q". Butun maktabga tegishli; bitta o'quvchini vaqtincha to'xtatish
+// uchun StudentFinanceStatus.frozen ishlatiladi.
 model VacationMonth {
   id    String @id @db.Char(24)
   month Int    @unique // YYYYMM
-
-  // HOSILA, lekin SAQLANADI: academicStartMonth keyin o'zgarsa eski ta'til
-  // oylari jimgina boshqa o'quv yiliga ko'chib ketmasin. Bir o'quv yilining
-  // ta'tillari — bitta indeksli so'rov.
-  academicYear Int @map("academic_year")
 
   title     String   @default("") // "Qishki ta'til"
   createdBy String   @map("created_by") @db.Char(24)
   createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([academicYear])
   @@map("vacation_months")
 }
 
@@ -1813,18 +1807,6 @@ model MonthlyInvoice {
   // hisobotda qolishi SHART.
   studentId String @map("student_id") @db.Char(24)
   month     Int // YYYYMM, inklyuziv
-
-  // Chiqarilgan paytdagi akademik qoida snapshot'i: sozlama keyin o'zgarsa
-  // (9 → 11 oy), eski hisob-fakturalar o'z yorlig'ini saqlaydi.
-  academicYear  Int @map("academic_year") // davr boshlangan kalendar yil
-  academicIndex Int @map("academic_index") // 1..N ("9 oydan 3-si")
-
-  // Ta'tilni hisobga olgan IKKINCHI juftlik — ota-ona ko'radigan raqam
-  // ("8 oydan 5-si"). academicIndex KALENDAR koordinatasi bo'lib qoladi va
-  // to'g'ri; bu esa TO'LANADIGAN oylar ichidagi o'rin. U ham SNAPSHOT:
-  // martda qo'shilgan ta'til oktabrda muhrlangan yorliqni o'zgartira olmaydi.
-  billableIndex      Int @map("billable_index")
-  billableMonthCount Int @map("billable_month_count")
 
   // Narx provenansiyasi. Nullable: qo'lda yaratilgan hisob-fakturada tarif
   // bo'lmasligi mumkin.
@@ -1903,9 +1885,7 @@ model MonthlyInvoice {
   @@index([studentId, month(sort: Desc)])
   // "Barcha qarzdorlar" (oylar bo'ylab)
   @@index([status, month])
-  // academicYear bo'yicha indeks YO'Q: o'quv yili oylari uzluksiz, ya'ni filtr
-  // `month: {gte, lte}` ga aylantiriladi va [month, status] ishlaydi.
-  // dueDate ham YO'Q: "muddati o'tgan" = month < currentMonthKey() && status != paid.
+  // dueDate YO'Q: "muddati o'tgan" = month < currentMonthKey() && status != paid.
   @@map("monthly_invoices")
 }
 
