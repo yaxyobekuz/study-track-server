@@ -42,6 +42,12 @@ const getStudentRegistry = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+/** Qarzdorlar registri — "kim qancha qarzdor va qachondan beri". */
+const getDebtors = asyncHandler(async (req, res) => {
+  const result = await invoiceService.getDebtors(req);
+  res.json(result);
+});
+
 const getStudentInvoices = asyncHandler(async (req, res) => {
   const data = await invoiceService.getStudentInvoices(req.params.studentId, {
     academicYear: req.query.academicYear,
@@ -144,6 +150,7 @@ module.exports = {
   getInvoices,
   getSummary,
   getStudentRegistry,
+  getDebtors,
   getStudentInvoices,
   getInvoice,
   generateInvoices,

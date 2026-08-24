@@ -18,6 +18,7 @@ const {
   getInvoices,
   getSummary,
   getStudentRegistry,
+  getDebtors,
   getStudentInvoices,
   getInvoice,
   generateInvoices,
@@ -41,6 +42,8 @@ router.get("/summary", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), g
 // Kassirning asosiy ekrani — `/student/:studentId` dan oldin bo'lishi shart emas,
 // lekin `/:id` dan OLDIN
 router.get("/students", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentRegistry);
+// Qarzdorlar — o'quvchidan emas, QARZDAN boshlanadigan ro'yxat
+router.get("/debtors", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getDebtors);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.FINANCE_GENERATE), generateInvoices);
 router.get("/student/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentInvoices);
 

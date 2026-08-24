@@ -80,6 +80,14 @@ const STATUS_LABELS = {
   cancelled: "Bekor qilingan",
 };
 
+/** Qarzdor topilmaganda qaytariladigan yig'ma. */
+const EMPTY_DEBT_TOTALS = {
+  totalDebt: "0.00",
+  debtorCount: 0,
+  oldestMonth: null,
+  oldestMonthLabel: null,
+};
+
 const STUDENT_SELECT = {
   id: true,
   firstName: true,
@@ -686,6 +694,159 @@ const pickAcademicYear = (years, current) => {
 };
 
 /**
+ * QARZDORLAR REGISTRI — "kim qancha qarzdor va qachondan beri".
+ *
+ * ⚠️ So'rov O'QUVCHIDAN emas, QARZDAN boshlanadi. O'quvchilar ro'yxatini
+ * sahifalab, so'ng qarzdorlarni xotirada filtrlash NOTO'G'RI bo'lardi:
+ * birinchi sahifada 2 ta, ikkinchisida 0 ta qator chiqib, "jami qarz" esa
+ * faqat o'sha sahifani sanardi. Shuning uchun avval to'lanmagan
+ * hisob-fakturalar guruhlanadi, keyin sahifaning o'quvchilari yuklanadi.
+ *
+ * Guruhlash natijasi o'quvchilar soni bilan chegaralangan (har o'quvchiga
+ * bitta qator), shuning uchun saralash va sahifalash xotirada bajariladi —
+ * "amount - paid_amount" ayirmasini SQL darajasida saralash uchun xom so'rov
+ * kerak bo'lardi va u filial schema'si bilan bog'liq xavf tug'dirardi.
+ *
+ * @param {object} req
+ * @returns {Promise<object>}
+ */
+const getDebtors = async (req) => {
+  const { page, limit, skip } = getPaginationParams(req);
+  const { query } = req;
+  const search = query.search?.trim();
+  // Qarz "yoshi" (necha oy turgani) shunga nisbatan hisoblanadi
+  const currentMonth = currentMonthKey();
+
+  // Qidiruv/sinf filtri bo'lsa avval o'quvchilar aniqlanadi
+  let studentFilter = null;
+  if (search || query.classId) {
+    const matched = await prisma.user.findMany({
+      where: {
+        role: ROLES.STUDENT,
+        ...(query.classId ? { classes: { some: { classId: query.classId } } } : {}),
+        ...(search
+          ? {
+              OR: [
+                { firstName: { contains: search, mode: "insensitive" } },
+                { lastName: { contains: search, mode: "insensitive" } },
+                { username: { contains: search, mode: "insensitive" } },
+              ],
+            }
+          : {}),
+      },
+      select: { id: true },
+    });
+    studentFilter = matched.map((s) => s.id);
+    if (studentFilter.length === 0) {
+      return {
+        ...formatPaginationResponse([], 0, page, limit),
+        currentMonth,
+        totals: EMPTY_DEBT_TOTALS,
+      };
+    }
+  }
+
+  const grouped = await prisma.monthlyInvoice.groupBy({
+    by: ["studentId"],
+    where: {
+      status: { in: ["unpaid", "partial"] },
+      ...(studentFilter ? { studentId: { in: studentFilter } } : {}),
+    },
+    _sum: { amount: true, paidAmount: true },
+    _min: { month: true },
+    _count: { _all: true },
+  });
+
+  // Qarzi nolga teng qatorlar chiqarib tashlanadi: to'liq to'langan
+  // hisob-faktura "paid" bo'lib yopiladi, lekin bekor qilingan/tuzatilgan
+  // holatlarda ayirma nolga tushib qolishi mumkin.
+  const rows = grouped
+    .map((row) => ({
+      studentId: row.studentId,
+      debt: new Decimal(row._sum.amount ?? 0).minus(row._sum.paidAmount ?? 0),
+      unpaidCount: row._count._all,
+      oldestMonth: row._min.month,
+    }))
+    .filter((row) => row.debt.greaterThan(0));
+
+  const totalDebt = rows.reduce((sum, row) => sum.plus(row.debt), new Decimal(0));
+  const oldestMonth = rows.reduce(
+    (min, row) => (min == null || row.oldestMonth < min ? row.oldestMonth : min),
+    null,
+  );
+
+  // "Eng katta qarz" (sukut) yoki "Eng eski qarz"
+  const byOldest = query.sort === "oldest";
+  rows.sort((a, b) =>
+    byOldest
+      ? a.oldestMonth - b.oldestMonth || b.debt.comparedTo(a.debt)
+      : b.debt.comparedTo(a.debt) || a.oldestMonth - b.oldestMonth,
+  );
+
+  const pageRows = rows.slice(skip, skip + limit);
+
+  if (pageRows.length === 0) {
+    return {
+      ...formatPaginationResponse([], rows.length, page, limit),
+      currentMonth,
+      totals: {
+        totalDebt: formatAmount(totalDebt),
+        debtorCount: rows.length,
+        oldestMonth,
+        oldestMonthLabel: oldestMonth ? formatMonthKey(oldestMonth) : null,
+      },
+    };
+  }
+
+  const ids = pageRows.map((row) => row.studentId);
+
+  const [students, balances] = await Promise.all([
+    prisma.user.findMany({
+      where: { id: { in: ids } },
+      select: {
+        ...STUDENT_SELECT,
+        classes: { select: { class: { select: { id: true, name: true } } } },
+      },
+    }),
+    getBalances(ids),
+  ]);
+
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+
+  const items = pageRows.map((row) => {
+    // O'quvchi arxivlangan/o'chirilgan bo'lishi mumkin — qarz baribir ko'rinadi
+    const student = studentMap.get(row.studentId) ?? null;
+    const balance = balances.get(row.studentId) ?? new Decimal(0);
+
+    return {
+      id: row.studentId,
+      fullName: student
+        ? `${student.firstName} ${student.lastName ?? ""}`.trim()
+        : "Noma'lum",
+      username: student?.username ?? null,
+      className: student?.classes?.[0]?.class?.name ?? null,
+      isArchived: student?.isArchived ?? false,
+      debt: formatAmount(row.debt),
+      unpaidCount: row.unpaidCount,
+      oldestMonth: row.oldestMonth,
+      oldestMonthLabel: formatMonthKey(row.oldestMonth),
+      balance: formatAmount(balance),
+      hasBalance: balance.greaterThan(0),
+    };
+  });
+
+  return {
+    ...formatPaginationResponse(items, rows.length, page, limit),
+    currentMonth,
+    totals: {
+      totalDebt: formatAmount(totalDebt),
+      debtorCount: rows.length,
+      oldestMonth,
+      oldestMonthLabel: oldestMonth ? formatMonthKey(oldestMonth) : null,
+    },
+  };
+};
+/**
  * O'QUVCHILAR REGISTRI — kassirning asosiy ekrani.
  *
  * Har bir qatorda: tarif, chegirma, shu oydagi summa, depozit qoldig'i va
@@ -1173,6 +1334,7 @@ module.exports = {
   getStudentInvoices,
   getStudentAcademicYears,
   getStudentRegistry,
+  getDebtors,
   getMyFinance,
   getSummary,
   updateNote,
