@@ -721,38 +721,30 @@ const getDebtors = async (req) => {
 
   const ids = pageRows.map((row) => row.studentId);
 
-  const [students, balances] = await Promise.all([
-    prisma.user.findMany({
-      where: { id: { in: ids } },
-      select: {
-        ...STUDENT_SELECT,
-        classes: { select: { class: { select: { id: true, name: true } } } },
-      },
-    }),
-    getBalances(ids),
-  ]);
+  // Ro'yxatda ko'rsatilmaydigan hech narsa o'qilmaydi: sinf JOIN'i ham,
+  // depozit qoldig'i ham olib tashlangan. Sinf bo'yicha FILTR esa yuqorida,
+  // alohida so'rovda ishlaydi.
+  const students = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: STUDENT_SELECT,
+  });
 
   const studentMap = new Map(students.map((s) => [s.id, s]));
 
   const items = pageRows.map((row) => {
     // O'quvchi arxivlangan/o'chirilgan bo'lishi mumkin — qarz baribir ko'rinadi
     const student = studentMap.get(row.studentId) ?? null;
-    const balance = balances.get(row.studentId) ?? new Decimal(0);
 
     return {
       id: row.studentId,
       fullName: student
         ? `${student.firstName} ${student.lastName ?? ""}`.trim()
         : "Noma'lum",
-      username: student?.username ?? null,
-      className: student?.classes?.[0]?.class?.name ?? null,
       isArchived: student?.isArchived ?? false,
       debt: formatAmount(row.debt),
       unpaidCount: row.unpaidCount,
       oldestMonth: row.oldestMonth,
       oldestMonthLabel: formatMonthKey(row.oldestMonth),
-      balance: formatAmount(balance),
-      hasBalance: balance.greaterThan(0),
     };
   });
 
