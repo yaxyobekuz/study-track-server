@@ -28,7 +28,7 @@
 const { BadRequestError } = require("../utils/errors");
 // Faqat oy NOMLARI — `constants.js` dan, `date.helpers.js` dan emas
 // (yuqoridagi izohga qarang: u moliya domenida ishlatilmaydi).
-const { MONTHS_UZ_CAP } = require("../utils/constants");
+const { MONTHS_UZ_CAP, MONTHS_UZ_SHORT } = require("../utils/constants");
 
 const MIN_MONTH_KEY = 200001;
 const MAX_MONTH_KEY = 210012;
@@ -320,6 +320,22 @@ function formatMonthKey(monthKey) {
 }
 
 /**
+ * Qisqa yorliq: 202608 → "Avg 26".
+ *
+ * FAQAT diagramma o'qi uchun — u yerda 12 ta to'liq nom sig'maydi. Jadval,
+ * sarlavha va har qanday matnda `formatMonthKey` ishlatiladi.
+ *
+ * @param {number} monthKey - YYYYMM
+ * @returns {string|null}
+ */
+function formatMonthShort(monthKey) {
+  if (monthKey == null) return null;
+  const name = MONTHS_UZ_SHORT[(monthKey % 100) - 1];
+  if (!name) return String(monthKey);
+  return `${name} ${String(Math.trunc(monthKey / 100)).slice(2)}`;
+}
+
+/**
  * Davr matni: "Yanvar, 2026 — Avgust, 2026" yoki
  * "Yanvar, 2026 dan boshlab".
  * Xato xabarlarida foydalanuvchiga qaysi davr to'sqinlik qilayotganini
@@ -429,6 +445,7 @@ module.exports = {
   prevMonth,
   diffMonths,
   formatMonthKey,
+  formatMonthShort,
   formatMonthRange,
   periodCovers,
   coveringMonthWhere,

@@ -56,6 +56,26 @@ const MONTHS_UZ = [
 /** Oy nomlari — mustaqil yorliq sifatida: "Yanvar, 2026". */
 const MONTHS_UZ_CAP = MONTHS_UZ.map((m) => m[0].toUpperCase() + m.slice(1));
 
+/**
+ * Qisqa oy nomlari — FAQAT diagramma o'qi uchun, u yerda 12 ta to'liq nom
+ * sig'maydi ("Avgust, 2026" × 12 → o'qi o'qib bo'lmas holga keladi).
+ * Jadval, sarlavha va matnda TO'LIQ nom ishlatiladi.
+ */
+const MONTHS_UZ_SHORT = [
+  "Yan",
+  "Fev",
+  "Mar",
+  "Apr",
+  "May",
+  "Iyn",
+  "Iyl",
+  "Avg",
+  "Sen",
+  "Okt",
+  "Noy",
+  "Dek",
+];
+
 // Baho chegaralari
 const GRADE_MIN = 1;
 const GRADE_MAX = 5;
@@ -76,6 +96,7 @@ module.exports = {
   DAYS_UZ,
   MONTHS_UZ,
   MONTHS_UZ_CAP,
+  MONTHS_UZ_SHORT,
   GRADE_MIN,
   GRADE_MAX,
   PAGINATION_DEFAULTS,
