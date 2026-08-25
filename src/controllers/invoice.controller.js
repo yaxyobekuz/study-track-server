@@ -1,6 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const invoiceService = require("../services/invoice.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
+const debtReminderService = require("../services/debtReminder.service");
 const paymentService = require("../services/payment.service");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
@@ -44,6 +45,26 @@ const getStudentRegistry = asyncHandler(async (req, res) => {
 const getDebtors = asyncHandler(async (req, res) => {
   const result = await invoiceService.getDebtors(req);
   res.json(result);
+});
+
+/**
+ * Qarzdorlarga Telegram eslatmasi.
+ *
+ * Ro'yxatdagi summaga ISHONILMAYDI — qarz service ichida qayta hisoblanadi:
+ * ekran ochilgandan keyin to'lov tushgan bo'lishi mumkin va ota-onaga
+ * yopilgan qarz haqida xabar ketishi eng yomon natija bo'lardi.
+ */
+const remindDebtors = asyncHandler(async (req, res) => {
+  const result = await debtReminderService.remindDebtors(req.body.studentIds, {
+    note: req.body.note,
+    actorId: req.user.id,
+  });
+
+  res.json({
+    success: true,
+    message: "Eslatmalar navbatga qo'shildi",
+    data: result,
+  });
 });
 
 const getStudentInvoices = asyncHandler(async (req, res) => {
@@ -148,6 +169,7 @@ module.exports = {
   getSummary,
   getStudentRegistry,
   getDebtors,
+  remindDebtors,
   getStudentInvoices,
   getInvoice,
   generateInvoices,

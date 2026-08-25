@@ -19,6 +19,7 @@ const {
   getSummary,
   getStudentRegistry,
   getDebtors,
+  remindDebtors,
   getStudentInvoices,
   getInvoice,
   generateInvoices,
@@ -46,6 +47,9 @@ router.get("/students", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), 
 // ALOHIDA ruxsat: bitta ekranda butun maktabning qarzi ko'rinadi, shuning
 // uchun uni `finance.view` bilan birga berib yubormaymiz.
 router.get("/debtors", protect, authorizePermission(PERMISSIONS.DEBTORS_VIEW), getDebtors);
+// Eslatma yuborish — ko'rishdan ALOHIDA: ro'yxatni ochish ichki ish, ota-onaga
+// xabar yuborish esa maktabdan TASHQARIGA chiqadigan amal.
+router.post("/debtors/remind", protect, authorizePermission(PERMISSIONS.DEBTORS_REMIND), remindDebtors);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.FINANCE_GENERATE), generateInvoices);
 router.get("/student/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentInvoices);
 
