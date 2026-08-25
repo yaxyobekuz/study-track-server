@@ -34,6 +34,7 @@ const SECTIONS = {
   DISCOUNTS: "discounts",
   FINANCE: "finance",
   DEBTORS: "debtors",
+  REPORTS: "reports",
   HOLIDAYS: "holidays",
   MONITORS: "monitors",
   CHANGELOG: "changelog",
@@ -305,6 +306,16 @@ const PERMISSION_SECTIONS = [
     // ro'yxatni ko'rish va pulni harakatlantirish boshqa-boshqa mas'uliyat.
     key: SECTIONS.DEBTORS,
     label: "Qarzdorlar",
+    group: "Moliya",
+    actions: [A.view],
+  },
+  {
+    // Hisobotlar — moliyaning eng KENG kesimi: bitta ekranda butun maktabning
+    // tushumi, qarzi, sinf va tarif bo'yicha taqsimoti ko'rinadi. Registrni
+    // ko'rish huquqi (`finance.view`) bilan birga berilmaydi: kassirga kunlik
+    // ish uchun registr kerak, butun maktabning moliyaviy manzarasi emas.
+    key: SECTIONS.REPORTS,
+    label: "Moliya hisobotlari",
     group: "Moliya",
     actions: [A.view],
   },
