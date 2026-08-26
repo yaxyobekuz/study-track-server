@@ -26,9 +26,15 @@ const getExternalIncome = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+const getExpenseReport = asyncHandler(async (req, res) => {
+  const data = await financeReportService.getExpenseReport(req.query);
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getOverview,
   getCashflow,
+  getExpenseReport,
   getDebt,
   getTariffBreakdown,
   getExternalIncome,

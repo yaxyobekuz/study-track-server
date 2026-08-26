@@ -1,5 +1,5 @@
 /**
- * MOLIYA HISOBOTLARI (KIRIM) — faqat o'qiydi.
+ * MOLIYA HISOBOTLARI (KIRIM VA CHIQIM) — faqat o'qiydi.
  *
  * ⚠️ Bu fayl HECH NARSA YOZMAYDI va summani QAYTA HISOBLAMAYDI. Hisob-faktura
  * summasi muhrlangan fakt (`invoiceBuilder.service.js`), bu yerda esa faqat
@@ -185,17 +185,31 @@ const getOverview = async (query = {}) => {
   let prevFrom = prevTo;
   for (let i = 1; i < months.length; i += 1) prevFrom = prevMonth(prevFrom);
 
-  const [byMonth, totals, previous, deposits, studentAgg] = await Promise.all([
+  // Sof natija SANA oralig'ida hisoblanadi (pul qachon harakatlandi),
+  // majburiyat esa OY bo'yicha. Ikkalasi boshqa savol, shuning uchun
+  // oyning birinchi kunidan oxirgi kunigacha oraliq quriladi.
+  // ⚠️ Oy oxirini `oy + 1` bilan hisoblab bo'lmaydi: dekabrda 13-oy chiqadi.
+  // Mavjud `nextMonth` helperi yil chegarasini o'zi hal qiladi.
+  const monthStartIso = (monthKey) =>
+    `${Math.trunc(monthKey / 100)}-${String(monthKey % 100).padStart(2, "0")}-01T00:00:00+05:00`;
+
+  const cashFrom = new Date(monthStartIso(fromMonth));
+  const cashTo = new Date(new Date(monthStartIso(nextMonth(toMonth))).getTime() - 1);
+
+  const [byMonth, totals, previous, deposits, studentAgg, income, expense] =
+    await Promise.all([
     groupInvoicesByMonth(fromMonth, toMonth),
     sumRange(fromMonth, toMonth),
     sumRange(prevFrom, prevTo),
     prisma.studentAccount.aggregate({ _sum: { balance: true } }),
-    prisma.monthlyInvoice.findMany({
-      where: { month: { gte: fromMonth, lte: toMonth }, ...LIVE_INVOICE },
-      select: { studentId: true },
-      distinct: ["studentId"],
-    }),
-  ]);
+      prisma.monthlyInvoice.findMany({
+        where: { month: { gte: fromMonth, lte: toMonth }, ...LIVE_INVOICE },
+        select: { studentId: true },
+        distinct: ["studentId"],
+      }),
+      sumIncome(cashFrom, cashTo),
+      sumExpense(cashFrom, cashTo),
+    ]);
 
   const series = months.map((month) => {
     const row = byMonth.get(month) ?? {
@@ -232,6 +246,17 @@ const getOverview = async (query = {}) => {
       depositBalance: formatAmount(new Decimal(deposits._sum.balance ?? 0)),
       invoiceCount: totals.invoiceCount,
       studentCount: studentAgg.length,
+    },
+    // SOF NATIJA — kassaga tushgan va kassadan chiqqan pul.
+    // ⚠️ `income` AYNAN `getCashflow.totals.amount` bilan bir xil manbadan
+    // olinadi: ikki tab ikki xil raqam ko'rsatmasligi uchun.
+    cash: {
+      income: formatAmount(income),
+      expense: formatAmount(expense.total),
+      salary: formatAmount(expense.salary),
+      otherExpense: formatAmount(expense.other),
+      net: formatAmount(income.minus(expense.total)),
+      isProfit: income.greaterThanOrEqualTo(expense.total),
     },
     // O'sish foizini frontend hisoblamaydi — bu ham pul mantig'i
     previous: {
@@ -744,9 +769,199 @@ const getExternalIncome = async (query = {}) => {
   };
 };
 
+// ─────────────────────────────────────────────
+// 6. Chiqim (xodimlar oyligi va xarajatlar)
+// ─────────────────────────────────────────────
+
+/**
+ * Bir sana oralig'idagi KIRIM — o'quvchi to'lovi + tashqi kirim.
+ *
+ * ⚠️ `getCashflow` bilan AYNAN bir xil manba va filtrlardan foydalanadi.
+ * Boshqacha hisoblansa, "Tushum" tabi va "Umumiy" tabi ikki xil raqam
+ * ko'rsatib, hisobot ishonchini yo'qotardi.
+ */
+const sumIncome = async (from, to) => {
+  const [payments, external] = await Promise.all([
+    prisma.payment.aggregate({
+      where: { isVoided: false, paidAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+    }),
+    prisma.externalIncome.aggregate({
+      where: { isVoided: false, occurredAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  return new Decimal(payments._sum.amount ?? 0).plus(external._sum.amount ?? 0);
+};
+
+/**
+ * Bir sana oralig'idagi CHIQIM — xodim oyligi + xarajatlar.
+ *
+ * ⚠️ Oylik bu yerda TO'LANGAN pul bo'yicha olinadi (`SalaryPayment`),
+ * hisoblangan majburiyat (`PayrollEntry`) bo'yicha emas: chiqim — kassadan
+ * chiqqan pul. Hisoblangani esa "qarzimiz" va u alohida ko'rsatiladi.
+ */
+const sumExpense = async (from, to) => {
+  const [salaries, expenses] = await Promise.all([
+    prisma.salaryPayment.aggregate({
+      where: { isVoided: false, paidAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+    }),
+    prisma.expense.aggregate({
+      where: { isVoided: false, occurredAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  return {
+    salary: new Decimal(salaries._sum.amount ?? 0),
+    other: new Decimal(expenses._sum.amount ?? 0),
+    total: new Decimal(salaries._sum.amount ?? 0).plus(expenses._sum.amount ?? 0),
+  };
+};
+
+/**
+ * CHIQIM HISOBOTI — oylik va xarajatlar, kategoriya kesimi bilan.
+ *
+ * @param {object} query - { from, to }
+ */
+const getExpenseReport = async (query = {}) => {
+  const toIso = query.to || todayIsoTashkent();
+  const fromIso = query.from || shiftIsoDays(toIso, -364);
+
+  const from = new Date(`${fromIso}T00:00:00+05:00`);
+  const to = new Date(`${toIso}T23:59:59.999+05:00`);
+
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw new BadRequestError("Sana noto'g'ri");
+  }
+  if (from > to) {
+    throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
+  }
+
+  const expenseWhere = { isVoided: false, occurredAt: { gte: from, lte: to } };
+  const salaryWhere = { isVoided: false, paidAt: { gte: from, lte: to } };
+
+  const [totals, byCategoryRows, monthRows, payrollDebt, recent] =
+    await Promise.all([
+      sumExpense(from, to),
+      prisma.expense.groupBy({
+        by: ["categoryName"],
+        where: expenseWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      // Oylik trend — ikki jadval UNION ALL bilan, manba belgisi saqlanadi
+      prisma.$queryRawUnsafe(
+        `SELECT month, source, SUM(amount)::text AS amount
+           FROM (
+             SELECT to_char(paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent', 'YYYYMM')::int AS month,
+                    'salary' AS source, amount
+               FROM salary_payments
+              WHERE is_voided = false AND paid_at >= $1 AND paid_at <= $2
+             UNION ALL
+             SELECT to_char(occurred_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent', 'YYYYMM')::int AS month,
+                    'other' AS source, amount
+               FROM expenses
+              WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+           ) AS combined
+          GROUP BY 1, 2
+          ORDER BY 1 ASC`,
+        from,
+        to,
+      ),
+      // Hali TO'LANMAGAN oylik — "xodimlarga qarzimiz"
+      prisma.payrollEntry.aggregate({
+        where: { status: { in: ["unpaid", "partial"] } },
+        _sum: { amount: true, paidAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.expense.findMany({
+        where: expenseWhere,
+        orderBy: [{ occurredAt: "desc" }],
+        take: 10,
+        include: { account: { select: { name: true } } },
+      }),
+    ]);
+
+  const salaryDebt = clampDebt(
+    new Decimal(payrollDebt._sum.amount ?? 0).minus(payrollDebt._sum.paidAmount ?? 0),
+  );
+
+  // Oylik qatorlarni bitta o'qqa yig'amiz
+  const byMonth = new Map();
+  for (const row of monthRows) {
+    const entry = byMonth.get(row.month) ?? {
+      salary: new Decimal(0),
+      other: new Decimal(0),
+    };
+    entry[row.source] = entry[row.source].plus(row.amount ?? 0);
+    byMonth.set(row.month, entry);
+  }
+
+  return {
+    from: fromIso,
+    to: toIso,
+    totals: {
+      amount: formatAmount(totals.total),
+      salary: formatAmount(totals.salary),
+      other: formatAmount(totals.other),
+      // Hisoblangan-u hali to'lanmagan oylik — kassadan chiqmagan, lekin
+      // majburiyat. Chiqim summasiga KIRMAYDI.
+      salaryDebt: formatAmount(salaryDebt),
+      salaryDebtCount: payrollDebt._count._all,
+    },
+    bySource: [
+      {
+        key: "salary",
+        label: "Xodimlar oyligi",
+        amount: formatAmount(totals.salary),
+        share: percentOf(totals.salary, totals.total),
+      },
+      {
+        key: "other",
+        label: "Xarajatlar",
+        amount: formatAmount(totals.other),
+        share: percentOf(totals.other, totals.total),
+      },
+    ],
+    byCategory: byCategoryRows
+      .map((row) => {
+        const amount = new Decimal(row._sum.amount ?? 0);
+        return {
+          categoryName: row.categoryName || "Kategoriyasiz",
+          amount: formatAmount(amount),
+          count: row._count._all,
+          share: percentOf(amount, totals.other),
+        };
+      })
+      .sort((a, b) => Number(b.amount) - Number(a.amount)),
+    series: [...byMonth.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([month, row]) => ({
+        month,
+        monthLabel: formatMonthKey(month),
+        monthShort: formatMonthShort(month),
+        salary: formatAmount(row.salary),
+        other: formatAmount(row.other),
+        total: formatAmount(row.salary.plus(row.other)),
+      })),
+    recent: recent.map((row) => ({
+      id: row.id,
+      categoryName: row.categoryName,
+      amount: formatAmount(row.amount),
+      payee: row.payee,
+      occurredAt: row.occurredAt,
+      accountName: row.account?.name ?? null,
+    })),
+  };
+};
+
 module.exports = {
   getOverview,
   getCashflow,
+  getExpenseReport,
   getExternalIncome,
   getDebt,
   getTariffBreakdown,
