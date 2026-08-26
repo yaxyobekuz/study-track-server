@@ -36,6 +36,8 @@ const SECTIONS = {
   DEBTORS: "debtors",
   REPORTS: "reports",
   INCOME: "income",
+  PAYROLL: "payroll",
+  EXPENSES: "expenses",
   HOLIDAYS: "holidays",
   MONITORS: "monitors",
   CHANGELOG: "changelog",
@@ -333,6 +335,35 @@ const PERMISSION_SECTIONS = [
     // to'lovni bekor qilish bilan bir xil og'irlikdagi amal.
     key: SECTIONS.INCOME,
     label: "Tashqi kirimlar",
+    group: "Moliya",
+    actions: [
+      A.view,
+      A.create,
+      { key: "void", label: "Bekor qilish" },
+      { key: "categories", label: "Kategoriyalarni boshqarish" },
+    ],
+  },
+  {
+    // XODIMLAR OYLIGI — chiqim tomonining o'quvchi registriga o'xshashi.
+    // Amallar ATAYLAB mayda: qoida biriktirish (kimga qancha oylik) va
+    // to'lash (pulni kassadan chiqarish) — ikki xil mas'uliyat. Buxgalter
+    // to'laydi, lekin oylik miqdorini o'zi belgilay olmasligi kerak.
+    key: SECTIONS.PAYROLL,
+    label: "Xodimlar oyligi",
+    group: "Moliya",
+    actions: [
+      A.view,
+      { key: "assign", label: "Oylik belgilash" },
+      { key: "generate", label: "Oylik shakllantirish" },
+      { key: "pay", label: "To'lash" },
+      { key: "void", label: "To'lovni bekor qilish" },
+      { key: "cancel", label: "Majburiyatni bekor qilish" },
+    ],
+  },
+  {
+    // XARAJATLAR — kommunal, ta'mirlash, jihoz. Oylik BU YERDA EMAS.
+    key: SECTIONS.EXPENSES,
+    label: "Xarajatlar",
     group: "Moliya",
     actions: [
       A.view,
