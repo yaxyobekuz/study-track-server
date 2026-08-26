@@ -21,4 +21,15 @@ const getTariffBreakdown = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-module.exports = { getOverview, getCashflow, getDebt, getTariffBreakdown };
+const getExternalIncome = asyncHandler(async (req, res) => {
+  const data = await financeReportService.getExternalIncome(req.query);
+  res.json({ success: true, data });
+});
+
+module.exports = {
+  getOverview,
+  getCashflow,
+  getDebt,
+  getTariffBreakdown,
+  getExternalIncome,
+};

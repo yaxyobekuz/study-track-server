@@ -12,6 +12,7 @@ const {
   getCashflow,
   getDebt,
   getTariffBreakdown,
+  getExternalIncome,
 } = require("../controllers/financeReport.controller");
 
 // Hisobotlar ALOHIDA ruxsat talab qiladi: bitta ekranda butun maktabning pul
@@ -21,5 +22,6 @@ router.get("/overview", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), 
 router.get("/cashflow", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getCashflow);
 router.get("/debt", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getDebt);
 router.get("/tariffs", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getTariffBreakdown);
+router.get("/external", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getExternalIncome);
 
 module.exports = router;

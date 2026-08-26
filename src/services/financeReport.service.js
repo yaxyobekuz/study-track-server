@@ -292,54 +292,92 @@ const getCashflow = async (query = {}) => {
     throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
   }
 
-  const where = { isVoided: false, paidAt: { gte: from, lte: to } };
+  const paymentWhere = { isVoided: false, paidAt: { gte: from, lte: to } };
+  const incomeWhere = { isVoided: false, occurredAt: { gte: from, lte: to } };
 
-  // Kunlik qator — `date_trunc` ni Prisma groupBy ifodalay olmaydi
-  const [rows, agg, byAccountRaw] = await Promise.all([
-    prisma.$queryRawUnsafe(
-      `SELECT date_trunc('${groupBy}', paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent')::date AS bucket,
-              SUM(amount)::text AS amount,
-              COUNT(*)::int AS count
-         FROM payments
-        WHERE is_voided = false AND paid_at >= $1 AND paid_at <= $2
-        GROUP BY 1
-        ORDER BY 1 ASC`,
-      from,
-      to,
-    ),
-    prisma.payment.aggregate({
-      where,
-      _sum: { amount: true, allocatedAmount: true, depositAmount: true },
-      _count: { _all: true },
-    }),
-    prisma.payment.groupBy({
-      by: ["accountId"],
-      where,
-      _sum: { amount: true },
-      _count: { _all: true },
-    }),
-  ]);
+  // ⚠️ IKKALA MANBA ham sanaladi: o'quvchi to'lovi (`payments`) va tashqi
+  // kirim (`external_incomes`). Faqat birinchisi olinsa, "Jami tushum"
+  // kassa qoldig'i o'sishidan kam chiqib, ikki ekran ikki xil haqiqat
+  // ko'rsatardi. Ikkalasida ham `is_voided = false`.
+  //
+  // Kunlik qator — `date_trunc` ni Prisma groupBy ifodalay olmaydi,
+  // ikki jadval esa UNION ALL bilan bitta o'qqa keltiriladi.
+  const [rows, paymentAgg, incomeAgg, payByAccount, incByAccount] =
+    await Promise.all([
+      prisma.$queryRawUnsafe(
+        `SELECT bucket, SUM(amount)::text AS amount, SUM(cnt)::int AS count
+           FROM (
+             SELECT date_trunc('${groupBy}', paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent')::date AS bucket,
+                    amount, 1 AS cnt
+               FROM payments
+              WHERE is_voided = false AND paid_at >= $1 AND paid_at <= $2
+             UNION ALL
+             SELECT date_trunc('${groupBy}', occurred_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent')::date AS bucket,
+                    amount, 1 AS cnt
+               FROM external_incomes
+              WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+           ) AS combined
+          GROUP BY 1
+          ORDER BY 1 ASC`,
+        from,
+        to,
+      ),
+      prisma.payment.aggregate({
+        where: paymentWhere,
+        _sum: { amount: true, allocatedAmount: true, depositAmount: true },
+        _count: { _all: true },
+      }),
+      prisma.externalIncome.aggregate({
+        where: incomeWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.payment.groupBy({
+        by: ["accountId"],
+        where: paymentWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.externalIncome.groupBy({
+        by: ["accountId"],
+        where: incomeWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+  const studentTotal = new Decimal(paymentAgg._sum.amount ?? 0);
+  const externalTotal = new Decimal(incomeAgg._sum.amount ?? 0);
+  const total = studentTotal.plus(externalTotal);
+  const count = paymentAgg._count._all + incomeAgg._count._all;
+
+  // To'lov turi kesimi — ikkala manba bitta hisobga tushishi mumkin,
+  // shuning uchun ular qo'shiladi
+  const perAccount = new Map();
+  for (const row of [...payByAccount, ...incByAccount]) {
+    const current = perAccount.get(row.accountId) ?? {
+      amount: new Decimal(0),
+      count: 0,
+    };
+    current.amount = current.amount.plus(row._sum.amount ?? 0);
+    current.count += row._count._all;
+    perAccount.set(row.accountId, current);
+  }
 
   const accounts = await prisma.paymentAccount.findMany({
-    where: { id: { in: byAccountRaw.map((r) => r.accountId) } },
+    where: { id: { in: [...perAccount.keys()] } },
     select: { id: true, name: true },
   });
   const nameById = new Map(accounts.map((a) => [a.id, a.name]));
 
-  const total = new Decimal(agg._sum.amount ?? 0);
-  const count = agg._count._all;
-
-  const byAccount = byAccountRaw
-    .map((row) => {
-      const amount = new Decimal(row._sum.amount ?? 0);
-      return {
-        accountId: row.accountId,
-        name: nameById.get(row.accountId) ?? "Noma'lum",
-        amount: formatAmount(amount),
-        count: row._count._all,
-        share: percentOf(amount, total),
-      };
-    })
+  const byAccount = [...perAccount.entries()]
+    .map(([accountId, row]) => ({
+      accountId,
+      name: nameById.get(accountId) ?? "Noma'lum",
+      amount: formatAmount(row.amount),
+      count: row.count,
+      share: percentOf(row.amount, total),
+    }))
     .sort((a, b) => Number(b.amount) - Number(a.amount));
 
   return {
@@ -349,13 +387,31 @@ const getCashflow = async (query = {}) => {
     to: toIso,
     groupBy,
     totals: {
+      // Kassaga tushgan BUTUN pul — o'quvchi to'lovi + tashqi kirim
       amount: formatAmount(total),
       count,
       // O'rtacha chek — kassirning ishini baholaydigan raqam
       averageReceipt: formatAmount(count > 0 ? total.div(count) : new Decimal(0)),
-      allocated: formatAmount(new Decimal(agg._sum.allocatedAmount ?? 0)),
-      toDeposit: formatAmount(new Decimal(agg._sum.depositAmount ?? 0)),
+      allocated: formatAmount(new Decimal(paymentAgg._sum.allocatedAmount ?? 0)),
+      toDeposit: formatAmount(new Decimal(paymentAgg._sum.depositAmount ?? 0)),
     },
+    // Manba kesimi — "pul qayerdan keldi" degan savolga javob
+    bySource: [
+      {
+        key: "student",
+        label: "O'quvchi to'lovi",
+        amount: formatAmount(studentTotal),
+        count: paymentAgg._count._all,
+        share: percentOf(studentTotal, total),
+      },
+      {
+        key: "external",
+        label: "Tashqi kirim",
+        amount: formatAmount(externalTotal),
+        count: incomeAgg._count._all,
+        share: percentOf(externalTotal, total),
+      },
+    ],
     series: rows.map((row) => ({
       date: row.bucket.toISOString().slice(0, 10),
       amount: formatAmount(new Decimal(row.amount ?? 0)),
@@ -587,9 +643,111 @@ const getTariffBreakdown = async (query = {}) => {
   };
 };
 
+// ─────────────────────────────────────────────
+// 5. Tashqi kirim (o'quvchi to'lovi bo'lmagan pul)
+// ─────────────────────────────────────────────
+
+/**
+ * Ijara, kitob sotuvi, homiylik — kategoriya kesimida.
+ *
+ * ⚠️ Guruhlash `categoryName` (hujjatga MUHRLANGAN nom) bo'yicha, katalog
+ * `categoryId` si bo'yicha emas: kategoriya keyin qayta nomlansa, o'tgan
+ * hisobot o'z nomini saqlashi kerak. `tariffName` bilan bir xil doktrina.
+ *
+ * @param {object} query - { from, to }
+ */
+const getExternalIncome = async (query = {}) => {
+  const toIso = query.to || todayIsoTashkent();
+  const fromIso = query.from || shiftIsoDays(toIso, -364);
+
+  const from = new Date(`${fromIso}T00:00:00+05:00`);
+  const to = new Date(`${toIso}T23:59:59.999+05:00`);
+
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    throw new BadRequestError("Sana noto'g'ri");
+  }
+  if (from > to) {
+    throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
+  }
+
+  const where = { isVoided: false, occurredAt: { gte: from, lte: to } };
+
+  const [byCategoryRows, agg, monthRows, recent] = await Promise.all([
+    prisma.externalIncome.groupBy({
+      by: ["categoryName"],
+      where,
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    prisma.externalIncome.aggregate({
+      where,
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    // Oylik trend — `date_trunc` Prisma groupBy da ifodalanmaydi
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(occurred_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent', 'YYYYMM')::int AS month,
+              SUM(amount)::text AS amount,
+              COUNT(*)::int     AS count
+         FROM external_incomes
+        WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+        GROUP BY 1
+        ORDER BY 1 ASC`,
+      from,
+      to,
+    ),
+    prisma.externalIncome.findMany({
+      where,
+      orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }],
+      take: 10,
+      include: { account: { select: { name: true } } },
+    }),
+  ]);
+
+  const total = new Decimal(agg._sum.amount ?? 0);
+
+  return {
+    from: fromIso,
+    to: toIso,
+    totals: {
+      amount: formatAmount(total),
+      count: agg._count._all,
+      categoryCount: byCategoryRows.length,
+    },
+    byCategory: byCategoryRows
+      .map((row) => {
+        const amount = new Decimal(row._sum.amount ?? 0);
+        return {
+          categoryName: row.categoryName || "Kategoriyasiz",
+          amount: formatAmount(amount),
+          count: row._count._all,
+          share: percentOf(amount, total),
+        };
+      })
+      .sort((a, b) => Number(b.amount) - Number(a.amount)),
+    series: monthRows.map((row) => ({
+      month: row.month,
+      monthLabel: formatMonthKey(row.month),
+      monthShort: formatMonthShort(row.month),
+      amount: formatAmount(new Decimal(row.amount ?? 0)),
+      count: row.count,
+    })),
+    recent: recent.map((row) => ({
+      id: row.id,
+      categoryName: row.categoryName,
+      amount: formatAmount(row.amount),
+      payer: row.payer,
+      note: row.note,
+      occurredAt: row.occurredAt,
+      accountName: row.account?.name ?? null,
+    })),
+  };
+};
+
 module.exports = {
   getOverview,
   getCashflow,
+  getExternalIncome,
   getDebt,
   getTariffBreakdown,
   // Sinov uchun ochiladi
