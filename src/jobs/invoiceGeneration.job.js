@@ -29,6 +29,7 @@ const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
 const { getFinanceSettings } = require("../services/settings.service");
 const { generateForMonth } = require("../services/invoiceGeneration.service");
+const payrollService = require("../services/payroll.service");
 const {
   currentMonthKey,
   currentDayOfMonth,
@@ -95,6 +96,31 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
     } catch (error) {
       // Bitta oydagi xato qolganlarini to'xtatmaydi
       logger.error(`[InvoiceCron] ${target} oyida xato: ${error.message}`);
+    }
+
+    // ── XODIMLAR OYLIGI ──────────────────
+    // Oyni yopish — BITTA moment: o'quvchidan qancha olishimiz va xodimga
+    // qancha to'lashimiz kerakligi bir vaqtda hisoblanadi. Shu sababli
+    // alohida job va alohida sozlama qo'shilmadi.
+    //
+    // ⚠️ Oylik xatosi hisob-fakturani TO'XTATMAYDI va aksincha — ikkalasi
+    // mustaqil biznes jarayoni.
+    try {
+      const payrollSummary = await payrollService.generateForMonth(target, {
+        actorId: null,
+      });
+
+      if (payrollSummary.created > 0 || payrollSummary.eligible > 0) {
+        logger.info(
+          `[PayrollCron] ${payrollSummary.monthLabel}: ` +
+            `${payrollSummary.created} ta oylik majburiyati, ` +
+            `mavjud ${payrollSummary.skipped.alreadyExists}, ` +
+            `arxivlangan ${payrollSummary.skipped.archived}, ` +
+            `summa ${payrollSummary.totalAmount}`,
+        );
+      }
+    } catch (error) {
+      logger.error(`[PayrollCron] ${target} oyida xato: ${error.message}`);
     }
   }
 
