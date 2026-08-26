@@ -209,6 +209,11 @@ const ENTRY_SIGNS = {
   adjustment: 0, // ± ikkalasi ham qonuniy
   external_income: 1,
   external_income_void: -1,
+  // CHIQIM — pul kassadan chiqadi, shuning uchun MANFIY
+  salary_payment: -1,
+  salary_payment_void: 1,
+  expense: -1,
+  expense_void: 1,
 };
 
 /**
