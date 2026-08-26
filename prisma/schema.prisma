@@ -269,6 +269,24 @@ enum AccountEntryType {
   adjustment // ± qo'lda to'g'rilash (sanoq farqi)
   external_income // + o'quvchi to'lovi BO'LMAGAN kirim (ijara, sotuv, homiylik)
   external_income_void // − tashqi kirim bekor qilindi
+  salary_payment // − xodimga oylik to'landi
+  salary_payment_void // + oylik to'lovi bekor qilindi
+  expense // − xarajat (kommunal, ta'mirlash, jihoz)
+  expense_void // + xarajat bekor qilindi
+}
+
+// Oylik qanday hisoblanadi. Hozircha faqat `fixed` — soatbay, darsbay va
+// guruh tushumidan foiz kelajakda qo'shiladi (baza shunga tayyor).
+enum SalaryType {
+  fixed
+}
+
+// Oylik majburiyatining holati — `InvoiceStatus` bilan bir xil.
+enum PayrollStatus {
+  unpaid
+  partial
+  paid
+  cancelled
 }
 
 // To'lov hisob-fakturaga QACHON tushdi. Depozit ALOHIDA mexanizm emas —
@@ -1918,6 +1936,8 @@ model PaymentAccount {
   transfersFrom AccountTransfer[] @relation("TransferFrom")
   transfersTo   AccountTransfer[] @relation("TransferTo")
   externalIncomes ExternalIncome[]
+  salaryPayments  SalaryPayment[]
+  expenses        Expense[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("payment_accounts")
@@ -1991,6 +2011,205 @@ model ExternalIncome {
   @@map("external_incomes")
 }
 
+// ─────────────────────────────────────────────
+// CHIQIM — xodimlar oyligi va xarajatlar
+// ─────────────────────────────────────────────
+//
+// ⚠️ LOCK TARTIBI (kirim tomonidagi qoidaning davomi):
+//
+//   KIRIM :  StudentAccount → MonthlyInvoice (month asc, id asc) → PaymentAccount
+//   CHIQIM:                   PayrollEntry   (month asc, id asc) → PaymentAccount
+//
+// `PaymentAccount` HAR IKKALA yo'lda ham OXIRGI. O'quvchi to'lovi va xodim
+// oyligi bir vaqtda kelganda deadlock shu sababli bo'lmaydi. Kassa avval
+// lock qilinsa, ikki jarayon bir-birini kutib qolardi.
+
+// OYLIK QOIDASI — `StudentTariff` bilan bir xil shakl: davr bilan biriktirish.
+//
+// ⚠️ Tarifdan FARQI: summa shu yerda SAQLANADI. Tarif — katalog (ko'p
+// o'quvchiga bitta narx), xodim oyligi esa har kimda o'ziniki.
+model StaffSalary {
+  id String @id @db.Char(24)
+  // soft ref → User (role != student). FK YO'Q: xodim arxivlansa ham
+  // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
+  staffId String @map("staff_id") @db.Char(24)
+
+  type   SalaryType @default(fixed)
+  amount Decimal    @db.Decimal(14, 2)
+
+  startMonth Int  @map("start_month")
+  endMonth   Int? @map("end_month")
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Poyga backstop'i — kesishuv KAFOLATI EMAS, uni service tekshiradi
+  @@unique([staffId, startMonth])
+  @@index([staffId, startMonth(sort: Desc)])
+  @@map("staff_salaries")
+}
+
+// OYLIK MAJBURIYAT — `MonthlyInvoice` ning ko'zgusi.
+//
+// ⚠️ `amount` MUHRLANADI: uni o'zgartiradigan endpoint YO'Q. Xato bo'lsa
+// bekor qilinib qayta shakllantiriladi (hisob-faktura doktrinasi).
+//
+// ⚠️ Kun proratsiyasi YO'Q. "Fiksa" — qat'iy summa, oy aniqligida. Oy
+// o'rtasida ishga kirgan xodim uchun `startMonth` keyingi oydan qo'yiladi.
+model PayrollEntry {
+  id String @id @db.Char(24)
+  staffId String @map("staff_id") @db.Char(24)
+  month   Int // YYYYMM
+
+  amount     Decimal @db.Decimal(14, 2)
+  paidAmount Decimal @default(0) @map("paid_amount") @db.Decimal(14, 2)
+
+  status     PayrollStatus @default(unpaid)
+  salaryType SalaryType    @default(fixed) @map("salary_type")
+
+  // Xodim arxivlansa/o'chirilsa ham registr o'qilishi kerak
+  staffSnapshot Json @map("staff_snapshot")
+
+  note String @default("")
+
+  cancelReason String    @default("") @map("cancel_reason")
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelledBy  String?   @map("cancelled_by") @db.Char(24)
+
+  paidAt DateTime? @map("paid_at")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  allocations SalaryAllocation[]
+
+  @@unique([staffId, month])
+  @@index([month, status])
+  @@index([staffId, month(sort: Desc)])
+  @@map("payroll_entries")
+}
+
+// OYLIK TO'LOVI — `Payment` ning ko'zgusi, LEKIN DEPOZITSIZ.
+//
+// ⚠️ Xodimda "hamyon" yo'q: qarzdan ortiq to'lov RAD ETILADI. Avans
+// tushunchasi qo'shilmagani uchun ortiqcha pulni saqlaydigan joy ham
+// kerak emas. Bitta oylikni bir necha marta to'lash esa MUMKIN.
+model SalaryPayment {
+  id String @id @db.Char(24)
+  staffId   String @map("staff_id") @db.Char(24)
+  accountId String @map("account_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2) // musbat; daftarga MANFIY tushadi
+
+  paidAt DateTime @map("paid_at")
+  note   String   @default("")
+
+  staffSnapshot Json @map("staff_snapshot")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  account     PaymentAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  allocations SalaryAllocation[]
+  entries     AccountEntry[]
+
+  @@index([staffId, paidAt(sort: Desc)])
+  @@index([accountId, paidAt(sort: Desc)])
+  @@index([paidAt])
+  @@map("salary_payments")
+}
+
+// To'lov qaysi oylikni yopdi — `PaymentAllocation` ning ko'zgusi.
+model SalaryAllocation {
+  id String @id @db.Char(24)
+  paymentId      String @map("payment_id") @db.Char(24)
+  payrollEntryId String @map("payroll_entry_id") @db.Char(24)
+  staffId        String @map("staff_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2)
+
+  appliedAt DateTime @map("applied_at")
+
+  isVoided  Boolean   @default(false) @map("is_voided")
+  voidedAt  DateTime? @map("voided_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  payment      SalaryPayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  payrollEntry PayrollEntry  @relation(fields: [payrollEntryId], references: [id], onDelete: Cascade)
+
+  @@index([payrollEntryId, isVoided])
+  @@index([paymentId])
+  @@map("salary_allocations")
+}
+
+// XARAJAT KATEGORIYASI — `IncomeCategory` ning aynan ko'zgusi.
+model ExpenseCategory {
+  id   String @id @db.Char(24)
+  name String @unique
+
+  isActive   Boolean @default(true) @map("is_active")
+  // O'CHIRILMAYDI — arxivlanadi. O'tgan xarajatlar unga ishora qiladi.
+  isArchived Boolean @default(false) @map("is_archived")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  expenses Expense[]
+
+  @@index([isArchived, isActive, sortOrder])
+  @@map("expense_categories")
+}
+
+// XARAJAT — `ExternalIncome` ning ko'zgusi, faqat pul CHIQADI.
+// Kommunal, ta'mirlash, jihoz, oziq-ovqat. Oylik BU YERDA EMAS —
+// u alohida mexanizm (PayrollEntry + SalaryPayment).
+model Expense {
+  id String @id @db.Char(24)
+
+  categoryId String @map("category_id") @db.Char(24)
+  accountId  String @map("account_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2) // musbat; daftarga MANFIY tushadi
+
+  // Kategoriya nomi MUHRLANADI — keyin qayta nomlansa hisobot o'zgarmaydi
+  categoryName String @default("") @map("category_name")
+
+  payee String @default("") // kimga to'landi
+  note  String @default("")
+
+  occurredAt DateTime @map("occurred_at")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  account  PaymentAccount  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  entries  AccountEntry[]
+
+  @@index([occurredAt(sort: Desc)])
+  @@index([categoryId, occurredAt(sort: Desc)])
+  @@index([accountId, occurredAt(sort: Desc)])
+  @@map("expenses")
+}
+
 // Hisoblar orasidagi o'tkazma — HUJJAT; postinglari ikkita AccountEntry
 // (Payment → PaymentAllocation bilan bir xil munosabat).
 //
@@ -2054,6 +2273,8 @@ model AccountEntry {
   transferId String? @map("transfer_id") @db.Char(24)
   refundId   String? @map("refund_id") @db.Char(24)
   externalIncomeId String? @map("external_income_id") @db.Char(24)
+  salaryPaymentId  String? @map("salary_payment_id") @db.Char(24)
+  expenseId        String? @map("expense_id") @db.Char(24)
 
   note      String   @default("")
   createdBy String   @map("created_by") @db.Char(24)
@@ -2066,12 +2287,16 @@ model AccountEntry {
   payment  Payment?         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   transfer AccountTransfer? @relation(fields: [transferId], references: [id], onDelete: Restrict)
   externalIncome ExternalIncome? @relation(fields: [externalIncomeId], references: [id], onDelete: Restrict)
+  salaryPayment  SalaryPayment?  @relation(fields: [salaryPaymentId], references: [id], onDelete: Restrict)
+  expense        Expense?        @relation(fields: [expenseId], references: [id], onDelete: Restrict)
 
   @@index([accountId, seq(sort: Desc)]) // registr + running balance
   @@index([accountId, occurredAt]) // "X–Y oralig'idagi kirim"
   @@index([occurredAt])
   @@index([transferId])
   @@index([externalIncomeId])
+  @@index([salaryPaymentId])
+  @@index([expenseId])
   @@map("account_entries")
 }
 
