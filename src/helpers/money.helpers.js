@@ -207,6 +207,8 @@ const ENTRY_SIGNS = {
   refund: -1,
   refund_void: 1,
   adjustment: 0, // ± ikkalasi ham qonuniy
+  external_income: 1,
+  external_income_void: -1,
 };
 
 /**

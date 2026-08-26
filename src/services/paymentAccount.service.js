@@ -38,6 +38,8 @@ const ENTRY_TYPE_LABELS = {
   refund: "Qaytarildi",
   refund_void: "Qaytarish bekor qilindi",
   adjustment: "Qo'lda to'g'rilash",
+  external_income: "Tashqi kirim",
+  external_income_void: "Tashqi kirim bekor qilindi",
 };
 
 const serializeAccount = (row, extra = {}) => ({
@@ -104,6 +106,7 @@ const postEntry = async (tx, params) => {
       paymentId: params.paymentId ?? null,
       transferId: params.transferId ?? null,
       refundId: params.refundId ?? null,
+      externalIncomeId: params.externalIncomeId ?? null,
       note: params.note?.trim() || "",
       createdBy,
     },
