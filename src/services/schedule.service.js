@@ -6,6 +6,7 @@ const {
   getTashkentDateUtc,
 } = require("../helpers/date.helpers");
 const { parseDayDate, parseOptionalDayDate } = require("../helpers/month.helpers");
+const scheduleRevisionService = require("./scheduleRevision.service");
 
 // ─────────────────────────────────────────────
 // VERSIYALASH yordamchilari (amal qilish davri — kun aniqligida)
@@ -367,10 +368,54 @@ const parsePeriod = (effectiveFrom, effectiveTo) => {
 };
 
 /**
+ * Sinfning berilgan SANADAGI haftalik holatini snapshot'ga aylantiradi —
+ * tahrirlar tarixi uchun. Nomlar ham saqlanadi (eski versiyani ko'rsatish uchun).
+ * asOf tahrirning amal qilish sanasi bo'ladi — kelajakdagi o'zgarish ham to'g'ri
+ * qayd etilishi uchun (bugungi holat emas).
+ */
+async function snapshotClass(classId, asOf) {
+  const week = await getScheduleByClass(classId, asOf);
+  return week.map((s) => ({
+    day: s.day,
+    effectiveFrom: s.effectiveFrom,
+    effectiveTo: s.effectiveTo,
+    subjects: (s.subjects || []).map((sub) => ({
+      subjectId: sub.subject?.id ?? null,
+      subjectName: sub.subject?.name ?? "",
+      teacherId: sub.teacher?.id ?? null,
+      teacherName: sub.teacher
+        ? `${sub.teacher.firstName} ${sub.teacher.lastName || ""}`.trim()
+        : "",
+      order: sub.order,
+      startTime: sub.startTime,
+      endTime: sub.endTime,
+    })),
+  }));
+}
+
+/** Revision yozadi (xatolik saqlashni buzmasligi uchun try/catch). */
+async function recordRevisionSafe(classId, prevSnapshot, newSnapshot, actor, action = "edit") {
+  try {
+    await scheduleRevisionService.record({
+      classId,
+      editedBy: actor?.userId ?? null,
+      editedByName: actor?.name || "",
+      editedByRole: actor?.role || "",
+      ip: actor?.ip || "",
+      action,
+      prevSnapshot,
+      newSnapshot,
+    });
+  } catch {
+    // Tarix yozilmasligi jadval saqlanishini bekor qilmaydi
+  }
+}
+
+/**
  * Bitta kun uchun jadval versiyasini yaratish/tahrirlash.
  * @param {object} data - { classId, day, subjects, effectiveFrom, effectiveTo }
  */
-async function createOrUpdateSchedule(data, createdBy) {
+async function createOrUpdateSchedule(data, createdBy, actor) {
   const { classId, day, subjects } = data;
 
   if (!classId || !day || !subjects || subjects.length === 0) {
@@ -386,9 +431,15 @@ async function createOrUpdateSchedule(data, createdBy) {
   await validateScheduleSubjects(subjects);
   await ensureNoTeacherConflicts(classId, day, subjects, from, to);
 
+  const asOf = formatDay(from);
+  const prevSnapshot = await snapshotClass(classId, asOf);
+
   const scheduleId = await prisma.$transaction((tx) =>
     writeDayVersion(tx, classId, day, from, to, subjects, createdBy),
   );
+
+  const newSnapshot = await snapshotClass(classId, asOf);
+  await recordRevisionSafe(classId, prevSnapshot, newSnapshot, actor);
 
   const saved = await prisma.schedule.findUnique({
     where: { id: scheduleId },
@@ -403,7 +454,7 @@ async function createOrUpdateSchedule(data, createdBy) {
  * @param {string} classId
  * @param {object} payload - { schedules: [{day, subjects}], effectiveFrom, effectiveTo }
  */
-async function saveClassSchedule(classId, payload, createdBy) {
+async function saveClassSchedule(classId, payload, createdBy, actor) {
   const { schedules, effectiveFrom, effectiveTo } = payload || {};
   if (!classId || !Array.isArray(schedules)) {
     throw new BadRequestError("Sinf va dars jadvali majburiy");
@@ -426,6 +477,9 @@ async function saveClassSchedule(classId, payload, createdBy) {
     await ensureNoTeacherConflicts(classId, day, subjects, from, to);
   }
 
+  const asOf = formatDay(from);
+  const prevSnapshot = await snapshotClass(classId, asOf);
+
   await prisma.$transaction(async (tx) => {
     for (const entry of schedules) {
       const { day, subjects = [] } = entry;
@@ -437,8 +491,38 @@ async function saveClassSchedule(classId, payload, createdBy) {
     }
   });
 
+  const newSnapshot = await snapshotClass(classId, asOf);
+  await recordRevisionSafe(classId, prevSnapshot, newSnapshot, actor, actor?.action || "edit");
+
   // Yangi davr boshidagi holatni qaytaramiz
   return getScheduleByClass(classId, formatDay(from));
+}
+
+/**
+ * Revision'ga (tarixdagi holatga) QAYTARISH — snapshot'ni bugundan yangi
+ * versiya sifatida qayta qo'llaydi (Google Sheets "restore this version").
+ */
+async function restoreRevision(revId, actor) {
+  const rev = await scheduleRevisionService.getById(revId);
+  const snapshot = Array.isArray(rev.snapshot) ? rev.snapshot : [];
+
+  const schedules = snapshot.map((d) => ({
+    day: d.day,
+    subjects: (d.subjects || []).map((s) => ({
+      subject: s.subjectId,
+      teacher: s.teacherId,
+      order: s.order,
+      startTime: s.startTime,
+      endTime: s.endTime,
+    })),
+  }));
+
+  return saveClassSchedule(
+    rev.classId,
+    { schedules, effectiveFrom: formatDay(todayDate()), effectiveTo: null },
+    actor?.userId,
+    { ...actor, action: "restore" },
+  );
 }
 
 async function deleteSchedule(id) {
@@ -646,6 +730,7 @@ module.exports = {
   getScheduleVersions,
   createOrUpdateSchedule,
   saveClassSchedule,
+  restoreRevision,
   deleteSchedule,
   getScheduleForExport,
   getLessonDayMap,

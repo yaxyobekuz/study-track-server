@@ -29,6 +29,23 @@ const {
   getPayments,
 } = require("../controllers/payroll.controller");
 
+const {
+  getCategories,
+  getActiveCategories,
+  createCategory,
+  updateCategory,
+  archiveCategory,
+  deleteCategory,
+} = require("../controllers/salaryCategory.controller");
+
+// ── Malaka toifasi katalogi (soatlik KPI stavka) ──
+router.get("/categories", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getCategories);
+router.get("/categories/active", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getActiveCategories);
+router.post("/categories", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createCategory);
+router.put("/categories/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateCategory);
+router.patch("/categories/:id/archive", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), archiveCategory);
+router.delete("/categories/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteCategory);
+
 // ── Oylik qoidalari (kimga qancha) ───────────
 // `assign` ALOHIDA huquq: to'laydigan xodim oylik miqdorini o'zi
 // belgilay olmasligi kerak.

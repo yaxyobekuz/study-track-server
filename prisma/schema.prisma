@@ -450,6 +450,29 @@ model Schedule {
   @@map("schedules")
 }
 
+// Dars jadvali TAHRIRLAR TARIXI (Google Sheets revision uslubida).
+// Har saqlashda butun sinf haftasining snapshot'i + kim/qachon/IP/xulosa
+// yoziladi. Foydalanuvchi versiyani KO'RA oladi va o'sha holatga QAYTARA oladi.
+model ScheduleRevision {
+  id           String  @id @db.Char(24)
+  classId      String  @map("class_id") @db.Char(24)
+  editedBy     String? @map("edited_by") @db.Char(24)
+  editedByName String  @default("") @map("edited_by_name")
+  editedByRole String  @default("") @map("edited_by_role")
+  ip           String  @default("")
+  // Qisqacha nima o'zgardi ("Dushanba: 4 → 5 dars; Juma o'chirildi")
+  summary      String  @default("")
+  action       String  @default("edit") // edit | restore
+  // Butun hafta holati:
+  // [{ day, effectiveFrom, effectiveTo, subjects: [{subjectId, teacherId, order, startTime, endTime}] }]
+  snapshot     Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([classId, createdAt(sort: Desc)])
+  @@map("schedule_revisions")
+}
+
 // schedule.subjects[] → alohida jadval (teacher bo'yicha filter/populate qilinadi)
 model ScheduleLesson {
   id         String  @id @db.Char(24)
@@ -2043,20 +2066,48 @@ model ExternalIncome {
 //
 // ⚠️ Tarifdan FARQI: summa shu yerda SAQLANADI. Tarif — katalog (ko'p
 // o'quvchiga bitta narx), xodim oyligi esa har kimda o'ziniki.
+// Xodim malaka TOIFASI — soatlik KPI stavkasi KATALOGI (sozlamalarda).
+// Har toifa (Mutaxassis, 2-malaka, 1-malaka, Oliy malaka) o'z soat narxiga ega.
+// Xodim toifaga biriktiriladi va KPI = jami dars soati × toifa stavkasi.
+// Stavka payroll generatsiyasida MUHRLANADI — keyin o'zgarsa o'tgan oyга tegmaydi.
+model SalaryCategory {
+  id          String    @id @db.Char(24)
+  name        String    @unique
+  perHourRate Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  description String    @default("")
+  isActive    Boolean   @default(true) @map("is_active")
+  isArchived  Boolean   @default(false) @map("is_archived")
+  archivedAt  DateTime? @map("archived_at")
+  createdBy   String    @map("created_by") @db.Char(24)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([isArchived, isActive, name])
+  @@map("salary_categories")
+}
+
 model StaffSalary {
   id String @id @db.Char(24)
   // soft ref → User (role != student). FK YO'Q: xodim arxivlansa ham
   // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
   staffId String @map("staff_id") @db.Char(24)
 
-  // Oylik ikki komponentdan iborat bo'lishi mumkin:
+  // Oylik uch qismdan iborat bo'lishi mumkin:
   //   fixedAmount  — qat'iy oylik (oy aniqligida, proratsiyasiz)
-  //   perHourRate  — 1 dars soatiga to'lov (KPI). Oylik jami soat schedule'dan
-  //                  hisoblanadi va PayrollEntry'ga MUHRLANADI.
-  // `type` shu ikkisidan hosila: fixed / kpi / mixed (service belgilaydi).
+  //   allowances   — cheksiz USTAMA qoidalari: [{ label, type:'fixed'|'percent', value }].
+  //                  Foizli ustama HAR DOIM fiksa maoshdan olinadi (ustamali
+  //                  oylikdan EMAS) va foizlar QO'SHILADI (kompaund emas).
+  //   KPI          — categoryId (toifa) stavkasi × jami dars soati (schedule'dan).
+  //                  categoryId bo'lmasa eski `perHourRate` (qo'lda) ishlatiladi.
+  // `type` shu qismlardan hosila: fixed / kpi / mixed (service belgilaydi).
   type        SalaryType @default(fixed)
   fixedAmount Decimal    @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  // KPI stavkasi manbai (soft ref SalaryCategory). Bo'lsa perHourRate'dan ustun.
+  categoryId  String?    @map("category_id") @db.Char(24)
+  // Eski/qo'lda KPI stavkasi (toifa bo'lmaganda)
   perHourRate Decimal    @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  // Ustama qoidalari: [{ label, type: 'fixed'|'percent', value }]
+  allowances  Json       @default("[]")
 
   startMonth Int  @map("start_month")
   endMonth   Int? @map("end_month")
@@ -2092,12 +2143,19 @@ model PayrollEntry {
   salaryType SalaryType    @default(fixed) @map("salary_type")
 
   // Summa breakdown — MUHRLANGAN (generatsiya vaqtidagi qiymatlar).
-  // amount = fixedAmount + kpiAmount; kpiAmount = perHourRate × lessonHours.
-  // Schedule keyin o'zgarsa bu qatorga tegilmaydi (hisob-faktura doktrinasi).
-  fixedAmount Decimal @default(0) @map("fixed_amount") @db.Decimal(14, 2)
-  kpiAmount   Decimal @default(0) @map("kpi_amount") @db.Decimal(14, 2)
-  lessonHours Decimal @default(0) @map("lesson_hours") @db.Decimal(10, 2)
-  perHourRate Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  // amount = fixedAmount + allowanceAmount + kpiAmount.
+  //   allowanceAmount — ustamalar (foizlilar fiksadan) yig'indisi
+  //   kpiAmount       — perHourRate × lessonHours (stavka toifadan yoki qo'lda)
+  // Schedule/toifa keyin o'zgarsa bu qatorga tegilmaydi (hisob-faktura doktrinasi).
+  fixedAmount        Decimal @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  allowanceAmount    Decimal @default(0) @map("allowance_amount") @db.Decimal(14, 2)
+  kpiAmount          Decimal @default(0) @map("kpi_amount") @db.Decimal(14, 2)
+  lessonHours        Decimal @default(0) @map("lesson_hours") @db.Decimal(10, 2)
+  perHourRate        Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  // Ustama qoidalarining muhrlangan tafsiloti: [{label,type,value,amount}]
+  allowanceBreakdown Json    @default("[]") @map("allowance_breakdown")
+  // Toifa nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
+  categoryName       String  @default("") @map("category_name")
 
   // Xodim arxivlansa/o'chirilsa ham registr o'qilishi kerak
   staffSnapshot Json @map("staff_snapshot")

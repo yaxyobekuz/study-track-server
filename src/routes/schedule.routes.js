@@ -5,6 +5,9 @@ const {
   getScheduleByDay,
   getScheduleByClass,
   getScheduleVersions,
+  getRevisions,
+  getRevision,
+  restoreRevision,
   getMyTodaySchedule,
   getAllTodaySchedules,
   createOrUpdateSchedule,
@@ -40,6 +43,25 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
   getScheduleVersions,
+);
+// Tahrirlar tarixi (revision — kim/qachon/IP/xulosa)
+router.get(
+  "/class/:classId/revisions",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW),
+  getRevisions,
+);
+router.get(
+  "/revisions/:revId",
+  validateObjectId("revId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW),
+  getRevision,
+);
+router.post(
+  "/revisions/:revId/restore",
+  validateObjectId("revId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
+  restoreRevision,
 );
 router.get(
   "/class/:classId/export",

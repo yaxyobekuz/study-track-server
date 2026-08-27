@@ -1,6 +1,15 @@
 const asyncHandler = require("../middleware/async.middleware");
 const ExcelService = require("../services/excel.service");
 const scheduleService = require("../services/schedule.service");
+const scheduleRevisionService = require("../services/scheduleRevision.service");
+
+/** Tahrir tarixi uchun aktyor: kim, roli, IP. */
+const buildActor = (req) => ({
+  userId: req.user?.id ?? null,
+  name: `${req.user?.firstName ?? ""} ${req.user?.lastName ?? ""}`.trim(),
+  role: req.user?.role ?? "",
+  ip: req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "",
+});
 
 // Get active schedules for class (as of a date, default today)
 const getScheduleByClass = asyncHandler(async (req, res) => {
@@ -29,7 +38,11 @@ const getScheduleByDay = asyncHandler(async (req, res) => {
 
 // Create or update schedule (Owner only)
 const createOrUpdateSchedule = asyncHandler(async (req, res) => {
-  const data = await scheduleService.createOrUpdateSchedule(req.body, req.user.id);
+  const data = await scheduleService.createOrUpdateSchedule(
+    req.body,
+    req.user.id,
+    buildActor(req),
+  );
 
   res.json({
     success: true,
@@ -45,6 +58,7 @@ const saveClassSchedule = asyncHandler(async (req, res) => {
     req.params.classId,
     req.body,
     req.user.id,
+    buildActor(req),
   );
 
   res.json({
@@ -52,6 +66,22 @@ const saveClassSchedule = asyncHandler(async (req, res) => {
     message: "Dars jadvali muvaffaqiyatli saqlandi",
     data,
   });
+});
+
+// ── Tahrirlar tarixi (revision) ──────────────
+const getRevisions = asyncHandler(async (req, res) => {
+  const data = await scheduleRevisionService.list(req.params.classId, req);
+  res.json({ success: true, ...data });
+});
+
+const getRevision = asyncHandler(async (req, res) => {
+  const data = await scheduleRevisionService.getById(req.params.revId);
+  res.json({ success: true, data });
+});
+
+const restoreRevision = asyncHandler(async (req, res) => {
+  const data = await scheduleService.restoreRevision(req.params.revId, buildActor(req));
+  res.json({ success: true, message: "Versiya qayta tiklandi", data });
 });
 
 // Delete schedule (Owner only)
@@ -125,6 +155,9 @@ module.exports = {
   getScheduleByClass,
   getScheduleVersions,
   getScheduleByDay,
+  getRevisions,
+  getRevision,
+  restoreRevision,
   createOrUpdateSchedule,
   saveClassSchedule,
   deleteSchedule,

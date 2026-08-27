@@ -29,11 +29,12 @@ const {
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const {
   resolveSalariesForMonth,
-  deriveSalaryType,
   TYPE_LABELS,
   STAFF_SELECT,
 } = require("./staffSalary.service");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
+const { loadCategoriesByIds } = require("./salaryCategory.service");
+const { computeAllowances } = require("../helpers/salaryRules.helpers");
 
 const STATUS_LABELS = {
   unpaid: "To'lanmagan",
@@ -49,9 +50,12 @@ const serializeEntry = (row, { staff } = {}) => {
     ...row,
     amount: formatAmount(row.amount),
     fixedAmount: formatAmount(row.fixedAmount ?? 0),
+    allowanceAmount: formatAmount(row.allowanceAmount ?? 0),
+    allowanceBreakdown: Array.isArray(row.allowanceBreakdown) ? row.allowanceBreakdown : [],
     kpiAmount: formatAmount(row.kpiAmount ?? 0),
     perHourRate: formatAmount(row.perHourRate ?? 0),
     lessonHours: Number(row.lessonHours ?? 0),
+    categoryName: row.categoryName ?? "",
     salaryTypeLabel: TYPE_LABELS[row.salaryType] ?? row.salaryType,
     paidAmount: formatAmount(row.paidAmount),
     // Ortiqcha to'lov RAD ETILADI, shuning uchun manfiy bo'lmasligi kerak —
@@ -145,12 +149,20 @@ const generateForMonth = async (monthInput, options = {}) => {
   });
   const existingIds = new Set(existing.map((e) => e.staffId));
 
-  // 3.5 ── KPI stavkasi bor xodimlar uchun oylik dars soatini hisoblaymiz
-  // (schedule bo'yicha). Bitta so'rov — natija generatsiya vaqtida MUHRLANADI.
+  // 3.5 ── Toifalar (KPI stavka manbai) va dars soatlarini yuklaymiz.
+  const eligibleSalaries = staff.map((s) => salaries.get(s.id)).filter(Boolean);
+  const categoryMap = await loadCategoriesByIds(
+    eligibleSalaries.map((s) => s.categoryId),
+  );
+  // KPI oladigan xodimlar: toifa yoki qo'lda stavka bor
   const kpiStaffIds = staff
     .filter((s) => {
       const rule = salaries.get(s.id);
-      return rule && new Decimal(rule.perHourRate).greaterThan(0);
+      if (!rule) return false;
+      const rate = rule.categoryId
+        ? categoryMap.get(rule.categoryId)?.perHourRate
+        : rule.perHourRate;
+      return new Decimal(rate ?? 0).greaterThan(0);
     })
     .map((s) => s.id);
   const hoursMap = await computeLessonHoursForMonth(month, kpiStaffIds);
@@ -174,22 +186,31 @@ const generateForMonth = async (monthInput, options = {}) => {
     }
 
     const fixedAmount = new Decimal(salary.fixedAmount);
-    const perHourRate = new Decimal(salary.perHourRate);
+
+    // Ustama qoidalari (foizlilar fiksadan)
+    const allowances = Array.isArray(salary.allowances) ? salary.allowances : [];
+    const { total: allowanceAmount, breakdown: allowanceBreakdown } = computeAllowances(
+      fixedAmount,
+      allowances,
+    );
+
+    // KPI: stavka toifadan yoki qo'lda; soat schedule'dan
+    const category = salary.categoryId ? categoryMap.get(salary.categoryId) : null;
+    const kpiRate = new Decimal(category ? category.perHourRate : salary.perHourRate || 0);
     const hours = new Decimal(hoursMap.get(person.id)?.hours ?? 0);
-    const kpiAmount = perHourRate
-      .times(hours)
-      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-    const amount = fixedAmount.plus(kpiAmount);
+    const kpiAmount = kpiRate.times(hours).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
+    const amount = fixedAmount.plus(allowanceAmount).plus(kpiAmount);
 
     // Faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodimga 0 li majburiyat
-    // yozilmaydi (shovqin bo'lardi). Fiksa komponent bo'lsa amount > 0.
+    // yozilmaydi (shovqin bo'lardi). Fiksa/ustama komponent bo'lsa amount > 0.
     if (amount.lessThanOrEqualTo(0)) {
       summary.skipped.zeroAmount += 1;
       continue;
     }
 
     total = total.plus(amount);
-    fixedTotal = fixedTotal.plus(fixedAmount);
+    fixedTotal = fixedTotal.plus(fixedAmount).plus(allowanceAmount);
     kpiTotal = kpiTotal.plus(kpiAmount);
 
     rows.push({
@@ -197,10 +218,13 @@ const generateForMonth = async (monthInput, options = {}) => {
       month,
       amount,
       fixedAmount,
+      allowanceAmount,
+      allowanceBreakdown,
       kpiAmount,
       lessonHours: hours,
-      perHourRate,
-      salaryType: salary.type ?? deriveSalaryType(fixedAmount, perHourRate),
+      perHourRate: kpiRate,
+      categoryName: category?.name ?? "",
+      salaryType: salary.type,
       staffSnapshot: {
         firstName: person.firstName,
         lastName: person.lastName ?? "",

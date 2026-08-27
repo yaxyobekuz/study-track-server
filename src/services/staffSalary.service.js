@@ -31,6 +31,13 @@ const {
 } = require("../helpers/month.helpers");
 const { parseAmount, formatAmount, Decimal } = require("../helpers/money.helpers");
 const { computeLessonHoursForStaff } = require("./lessonHours.service");
+const { normalizeAllowances, computeAllowances } = require("../helpers/salaryRules.helpers");
+
+/** Oylikning amaldagi KPI stavkasi: toifa bo'lsa undan, aks holda qo'lda. */
+const resolveKpiRate = (row, category) => {
+  if (category) return new Decimal(category.perHourRate);
+  return new Decimal(row.perHourRate || 0);
+};
 
 const STAFF_SELECT = {
   id: true,
@@ -47,10 +54,9 @@ const TYPE_LABELS = {
   mixed: "Fiksa + KPI",
 };
 
-/** `type` ni komponentlardan hosil qiladi. */
-const deriveSalaryType = (fixed, perHour) => {
+/** `type` ni qismlardan hosil qiladi (KPI = toifa yoki qo'lda stavka). */
+const deriveSalaryType = (fixed, hasKpi) => {
   const hasFixed = fixed.greaterThan(0);
-  const hasKpi = perHour.greaterThan(0);
   if (hasFixed && hasKpi) return "mixed";
   if (hasKpi) return "kpi";
   return "fixed";
@@ -62,21 +68,46 @@ const parseComponent = (value, label) => {
   return parseAmount(value, label);
 };
 
-const serializeSalary = (row, { staff, kpiPreview } = {}) => ({
-  ...row,
-  fixedAmount: formatAmount(row.fixedAmount),
-  perHourRate: formatAmount(row.perHourRate),
-  typeLabel: TYPE_LABELS[row.type] ?? row.type,
-  periodLabel: formatMonthRange(row.startMonth, row.endMonth),
-  startMonthLabel: formatMonthKey(row.startMonth),
-  endMonthLabel: row.endMonth ? formatMonthKey(row.endMonth) : null,
-  isOpen: row.endMonth == null,
-  staff: staff ?? null,
-  staffName: staff
-    ? `${staff.firstName} ${staff.lastName ?? ""}`.trim()
-    : "Noma'lum",
-  ...(kpiPreview ? { kpiPreview } : {}),
-});
+const serializeSalary = (row, { staff, kpiPreview, category } = {}) => {
+  const allowances = Array.isArray(row.allowances) ? row.allowances : [];
+  const { total: allowanceTotal, breakdown: allowanceBreakdown } = computeAllowances(
+    row.fixedAmount,
+    allowances,
+  );
+  const effectiveRate = resolveKpiRate(row, category);
+
+  return {
+    ...row,
+    fixedAmount: formatAmount(row.fixedAmount),
+    perHourRate: formatAmount(row.perHourRate),
+    allowances,
+    allowanceBreakdown,
+    allowanceTotal: formatAmount(allowanceTotal),
+    categoryId: row.categoryId ?? null,
+    categoryName: category?.name ?? null,
+    categoryRate: category ? formatAmount(category.perHourRate) : null,
+    effectiveRate: formatAmount(effectiveRate),
+    typeLabel: TYPE_LABELS[row.type] ?? row.type,
+    periodLabel: formatMonthRange(row.startMonth, row.endMonth),
+    startMonthLabel: formatMonthKey(row.startMonth),
+    endMonthLabel: row.endMonth ? formatMonthKey(row.endMonth) : null,
+    isOpen: row.endMonth == null,
+    staff: staff ?? null,
+    staffName: staff
+      ? `${staff.firstName} ${staff.lastName ?? ""}`.trim()
+      : "Noma'lum",
+    ...(kpiPreview ? { kpiPreview } : {}),
+  };
+};
+
+/** Toifa mavjud/faolligini tekshiradi va qaytaradi (yoki null). */
+const assertCategory = async (categoryId) => {
+  if (!categoryId) return null;
+  const category = await prisma.salaryCategory.findUnique({ where: { id: categoryId } });
+  if (!category) throw new NotFoundError("Toifa topilmadi");
+  if (category.isArchived) throw new BadRequestError("Toifa arxivlangan");
+  return category;
+};
 
 /**
  * Xodim mavjudligini tekshiradi.
@@ -204,8 +235,20 @@ const getSalaries = async (req) => {
     : [];
   const staffMap = new Map(staff.map((s) => [s.id, s]));
 
+  const catIds = rows.map((r) => r.categoryId).filter(Boolean);
+  const catMap = catIds.length
+    ? new Map(
+        (await prisma.salaryCategory.findMany({ where: { id: { in: catIds } } })).map((c) => [c.id, c]),
+      )
+    : new Map();
+
   return formatPaginationResponse(
-    rows.map((row) => serializeSalary(row, { staff: staffMap.get(row.staffId) })),
+    rows.map((row) =>
+      serializeSalary(row, {
+        staff: staffMap.get(row.staffId),
+        category: catMap.get(row.categoryId),
+      }),
+    ),
     total,
     page,
     limit,
@@ -226,10 +269,21 @@ const getStaffHistory = async (staffId) => {
     (r) => r.startMonth <= month && (r.endMonth == null || r.endMonth >= month),
   );
 
+  // Barcha toifalarni yuklaymiz (serialize + preview uchun)
+  const catIds = rows.map((r) => r.categoryId).filter(Boolean);
+  const catMap = catIds.length
+    ? new Map(
+        (await prisma.salaryCategory.findMany({ where: { id: { in: catIds } } })).map((c) => [c.id, c]),
+      )
+    : new Map();
+
   // Joriy qoida KPI olsa — shu oy uchun dars soati va taxminiy summani ko'rsatamiz
   let currentKpiPreview = null;
-  if (current && new Decimal(current.perHourRate).greaterThan(0)) {
-    currentKpiPreview = await buildKpiPreview(staffId, month, current.perHourRate);
+  if (current) {
+    const rate = resolveKpiRate(current, catMap.get(current.categoryId));
+    if (rate.greaterThan(0)) {
+      currentKpiPreview = await buildKpiPreview(staffId, month, rate);
+    }
   }
 
   return {
@@ -237,9 +291,15 @@ const getStaffHistory = async (staffId) => {
     currentMonth: month,
     currentMonthLabel: formatMonthKey(month),
     current: current
-      ? serializeSalary(current, { staff, kpiPreview: currentKpiPreview })
+      ? serializeSalary(current, {
+          staff,
+          kpiPreview: currentKpiPreview,
+          category: catMap.get(current.categoryId),
+        })
       : null,
-    items: rows.map((row) => serializeSalary(row, { staff })),
+    items: rows.map((row) =>
+      serializeSalary(row, { staff, category: catMap.get(row.categoryId) }),
+    ),
   };
 };
 
@@ -291,14 +351,17 @@ const createSalary = async (data, userId) => {
 
   const fixedAmount = parseComponent(data.fixedAmount ?? data.amount, "Fiksa oylik");
   const perHourRate = parseComponent(data.perHourRate, "1 dars soati narxi");
+  const category = await assertCategory(data.categoryId);
+  const allowances = normalizeAllowances(data.allowances);
 
-  if (fixedAmount.lessThanOrEqualTo(0) && perHourRate.lessThanOrEqualTo(0)) {
+  const hasKpi = Boolean(category) || perHourRate.greaterThan(0);
+  if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi) {
     throw new BadRequestError(
-      "Kamida bittasi — fiksa oylik yoki KPI stavkasi — noldan katta bo'lishi kerak",
+      "Kamida bittasi — fiksa oylik yoki KPI (toifa/stavka) — bo'lishi kerak",
     );
   }
 
-  const type = deriveSalaryType(fixedAmount, perHourRate);
+  const type = deriveSalaryType(fixedAmount, hasKpi);
   const period = parsePeriod(data.startMonth, data.endMonth);
 
   const created = await prisma.$transaction(async (tx) => {
@@ -309,7 +372,10 @@ const createSalary = async (data, userId) => {
         staffId: staff.id,
         type,
         fixedAmount,
-        perHourRate,
+        // Toifa tanlansa qo'lda stavka saqlanmaydi (chalkashmasin)
+        perHourRate: category ? new Decimal(0) : perHourRate,
+        categoryId: category?.id ?? null,
+        allowances,
         ...period,
         note: data.note?.trim() || "",
         createdBy: userId,
@@ -317,7 +383,7 @@ const createSalary = async (data, userId) => {
     });
   });
 
-  return serializeSalary(created, { staff });
+  return serializeSalary(created, { staff, category });
 };
 
 /**
@@ -331,31 +397,43 @@ const updateSalary = async (id, data) => {
   if (!row) throw new NotFoundError("Oylik qoidasi topilmadi");
 
   const payload = {};
+  let category;
 
   const wantsAmountChange =
     data.fixedAmount !== undefined ||
     data.amount !== undefined ||
-    data.perHourRate !== undefined;
+    data.perHourRate !== undefined ||
+    data.categoryId !== undefined ||
+    data.allowances !== undefined;
 
   if (wantsAmountChange) {
     const fixedAmount =
       data.fixedAmount !== undefined || data.amount !== undefined
         ? parseComponent(data.fixedAmount ?? data.amount, "Fiksa oylik")
         : new Decimal(row.fixedAmount);
+
+    // Toifa: undefined → tegilmaydi; null → olib tashlanadi; id → tekshiriladi
+    const categoryId =
+      data.categoryId !== undefined ? data.categoryId || null : row.categoryId;
+    category = data.categoryId !== undefined ? await assertCategory(categoryId) : null;
+
     const perHourRate =
       data.perHourRate !== undefined
         ? parseComponent(data.perHourRate, "1 dars soati narxi")
         : new Decimal(row.perHourRate);
 
-    if (fixedAmount.lessThanOrEqualTo(0) && perHourRate.lessThanOrEqualTo(0)) {
+    const hasKpi = Boolean(categoryId) || perHourRate.greaterThan(0);
+    if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi) {
       throw new BadRequestError(
-        "Kamida bittasi — fiksa oylik yoki KPI stavkasi — noldan katta bo'lishi kerak",
+        "Kamida bittasi — fiksa oylik yoki KPI (toifa/stavka) — bo'lishi kerak",
       );
     }
 
     payload.fixedAmount = fixedAmount;
-    payload.perHourRate = perHourRate;
-    payload.type = deriveSalaryType(fixedAmount, perHourRate);
+    payload.categoryId = categoryId;
+    payload.perHourRate = categoryId ? new Decimal(0) : perHourRate;
+    payload.type = deriveSalaryType(fixedAmount, hasKpi);
+    if (data.allowances !== undefined) payload.allowances = normalizeAllowances(data.allowances);
   }
 
   if (data.note !== undefined) payload.note = data.note?.trim() || "";
@@ -388,7 +466,12 @@ const updateSalary = async (id, data) => {
     select: STAFF_SELECT,
   });
 
-  return serializeSalary(updated, { staff });
+  // Serialize uchun toifa: yangilanmagan bo'lsa ham mavjudini yuklaymiz
+  if (category === undefined && updated.categoryId) {
+    category = await prisma.salaryCategory.findUnique({ where: { id: updated.categoryId } });
+  }
+
+  return serializeSalary(updated, { staff, category });
 };
 
 /**
@@ -448,6 +531,7 @@ module.exports = {
   STAFF_SELECT,
   TYPE_LABELS,
   deriveSalaryType,
+  resolveKpiRate,
   serializeSalary,
   assertStaff,
   resolveSalaryForMonth,
