@@ -14,15 +14,29 @@ const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
 const { currentDayDate } = require("../helpers/month.helpers");
 
-// Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaydi
-function flattenClasses(user) {
+// Junction M2M larni eski tekis shaklga qaytaradi:
+//   classes  → [{ id, name }]   (UserClass)
+//   subjects → [{ id, name }]   (UserSubject)
+// Frontend ikkalasini ham shu ko'rinishda kutadi, shuning uchun junction
+// qatlami service'dan tashqariga chiqmaydi.
+function flattenRelations(user) {
   if (!user) return user;
   const out = { ...user };
   if (Array.isArray(user.classes)) {
     out.classes = user.classes.map((uc) => (uc.class ? uc.class : uc));
   }
+  if (Array.isArray(user.subjects)) {
+    out.subjects = user.subjects.map((us) => (us.subject ? us.subject : us));
+  }
   return out;
 }
+
+// `include` bloki — classes va subjects har doim birga yuklanadi, aks holda
+// bir joyda bor, ikkinchisida yo'q holat kelib chiqardi.
+const USER_RELATIONS = {
+  classes: { include: { class: { select: { id: true, name: true } } } },
+  subjects: { include: { subject: { select: { id: true, name: true } } } },
+};
 
 /**
  * Filialdagi `User` qatorini platformadagi login yo'naltirgichi bilan
@@ -131,18 +145,17 @@ async function propagateIdentity(userId, data) {
   return updated;
 }
 
-// classes junction bilan user'ni yuklab, password'siz tekislangan shaklda qaytaradi
+// classes/subjects junction bilan user'ni yuklab, password'siz tekislangan
+// shaklda qaytaradi
 async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
   const user = await prisma.user.findUnique({
     where: { id },
-    include: {
-      classes: { include: { class: { select: { id: true, name: true } } } },
-    },
+    include: USER_RELATIONS,
     ...(withPassword
       ? {}
       : { omit: { password: true, plainPassword: !withPlain } }),
   });
-  return flattenClasses(user);
+  return flattenRelations(user);
 }
 
 async function getStats() {
@@ -202,9 +215,7 @@ async function getAllUsers(query) {
     prisma.user.findMany({
       where,
       omit: { password: true, plainPassword: true },
-      include: {
-        classes: { include: { class: { select: { id: true, name: true } } } },
-      },
+      include: USER_RELATIONS,
       orderBy: { createdAt: "desc" },
       skip,
       take: limitNum,
@@ -221,7 +232,7 @@ async function getAllUsers(query) {
   });
 
   const usersWithSchedule = users.map((u) => {
-    const obj = flattenClasses(u);
+    const obj = flattenRelations(u);
     if (u.role === "student" || u.role === "owner") {
       obj.effectiveSchedule = null;
     } else {
@@ -394,6 +405,7 @@ async function updateUser(id, data) {
     lastName,
     gender,
     classes: userClasses,
+    subjects: userSubjects,
     isActive,
     workStartTime,
     workEndTime,
@@ -403,7 +415,10 @@ async function updateUser(id, data) {
 
   const user = await prisma.user.findUnique({
     where: { id },
-    include: { classes: { select: { classId: true } } },
+    include: {
+      classes: { select: { classId: true } },
+      subjects: { select: { subjectId: true } },
+    },
   });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
@@ -455,12 +470,45 @@ async function updateUser(id, data) {
       prevClasses.some((c, i) => c !== nextClassIds[i]);
   }
 
+  // O'QITUVCHI FANLARI — sinflarning ko'zgusi, lekin TESKARI rol uchun:
+  // sinf o'quvchiga, fan esa xodimga biriktiriladi. Fan dars jadvalini
+  // rejalashtirishning kirimi (planner_loads satri shundan tug'iladi).
+  //
+  // ⚠️ Bu maydon propagateIdentity() dan O'TMAYDI: u identifikatsiya emas.
+  // Bir odam Chilonzorda matematikadan, Yunusobodda fizikadan dars berishi
+  // mumkin, ya'ni fan har filialda alohida hal qilinadi.
+  let subjectsChanged = false;
+  if (user.role !== "student" && userSubjects) {
+    for (const subjectId of userSubjects) {
+      const subjectExists = await prisma.subject.findUnique({
+        where: { id: subjectId },
+        select: { id: true },
+      });
+      if (!subjectExists) {
+        throw new BadRequestError(`Fan topilmadi: ${subjectId}`);
+      }
+    }
+
+    const prevSubjects = user.subjects.map((us) => us.subjectId).sort();
+    const nextSubjectIds = [...userSubjects].sort();
+    subjectsChanged =
+      prevSubjects.length !== nextSubjectIds.length ||
+      prevSubjects.some((v, i) => v !== nextSubjectIds[i]);
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.user.update({ where: { id }, data: update });
     if (classesChanged) {
       await tx.userClass.deleteMany({ where: { userId: id } });
       await tx.userClass.createMany({
         data: userClasses.map((classId) => ({ userId: id, classId })),
+        skipDuplicates: true,
+      });
+    }
+    if (subjectsChanged) {
+      await tx.userSubject.deleteMany({ where: { userId: id } });
+      await tx.userSubject.createMany({
+        data: userSubjects.map((subjectId) => ({ userId: id, subjectId })),
         skipDuplicates: true,
       });
     }
@@ -708,7 +756,7 @@ async function getStudents(query) {
     take: parseInt(limit, 10),
   });
 
-  return users.map(flattenClasses);
+  return users.map(flattenRelations);
 }
 
 /**
