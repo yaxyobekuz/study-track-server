@@ -40,6 +40,22 @@ async function getScheduleSettings() {
   });
 }
 
+/**
+ * Dars jadvalini rejalashtirish qoidalari (preview qatlami).
+ *
+ * Dars soatlari (`periods`) BU YERDA EMAS — ular ScheduleSettings da:
+ * preview grid amaldagi jadval bilan AYNAN bir xil koordinatada bo'lishi
+ * shart, aks holda keyinchalik qo'llash mumkin bo'lmasdi. Bu yerda faqat
+ * shakllantirish cheklovlari.
+ */
+async function getPlannerSettings() {
+  return prisma.plannerSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 async function getAttendanceSettings() {
   return prisma.attendanceSettings.upsert({
     where: { id: SINGLETON },
@@ -144,6 +160,7 @@ async function getPremiumSettings() {
 module.exports = {
   getCoinSettings,
   getScheduleSettings,
+  getPlannerSettings,
   getAttendanceSettings,
   getGradePenaltySettings,
   getTestSettings,
