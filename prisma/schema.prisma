@@ -349,6 +349,7 @@ model User {
 
   profileImage Image?      @relation("UserProfileImage", fields: [profilePicture], references: [id])
   classes      UserClass[]
+  subjects     UserSubject[]
 
   @@index([role, isActive])
   @@index([role, isArchived])
@@ -368,6 +369,30 @@ model UserClass {
   @@id([userId, classId])
   @@index([classId])
   @@map("user_classes")
+}
+
+// User ↔ Subject M2M junction — "bu o'qituvchi shu fanlardan dars beradi".
+//
+// Bu DOIMIY katalog va u mavjud ikki narsadan farq qiladi:
+//   · TeacherAssignment — test MAVSUMIGA bog'liq (seasonId), testlar moduliniki;
+//   · ScheduleLesson.teacherId — fakt, ya'ni jadval tuzilgandan KEYINGI holat.
+// Rejalashtirish esa jadval tuzilishidan OLDIN kerak bo'ladigan KIRIM:
+// o'qituvchiga fan biriktirilishi bilan u rejalashtirish jadvalida satr
+// sifatida paydo bo'ladi (planner_loads).
+//
+// ⚠️ Fan biriktirish HAR FILIALDA ALOHIDA — identifikatsiya maydoni emas,
+// shuning uchun propagateIdentity() dan o'tmaydi: bir odam Chilonzorda
+// matematikadan, Yunusobodda fizikadan dars berishi mumkin.
+model UserSubject {
+  userId    String @map("user_id") @db.Char(24)
+  subjectId String @map("subject_id") @db.Char(24)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([userId, subjectId])
+  @@index([subjectId])
+  @@map("user_subjects")
 }
 
 
@@ -399,7 +424,8 @@ model Subject {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  topics Topic[]
+  topics   Topic[]
+  teachers UserSubject[]
 
   @@map("subjects")
 }
@@ -491,6 +517,161 @@ model ClassSubjectProgress {
 
   @@unique([classId, subjectId])
   @@map("class_subject_progress")
+}
+
+// ─────────────────────────────────────────────
+// DARS JADVALINI REJALASHTIRISH (preview qatlami)
+// ─────────────────────────────────────────────
+//
+// Bu bo'lim AMALDAGI jadvalga (Schedule / ScheduleLesson) TEGMAYDI. U alohida
+// ish stoli: o'qituvchining fanlari, haftalik soati, sinflari va band vaqtlari
+// kiritiladi, tizim esa haftalik jadvalni avtomat shakllantiradi. Natijani
+// "asosiy jadvalga qo'llash" keyingi bosqichda qo'shiladi.
+//
+// KIRIM va NATIJA ataylab ajratilgan:
+//   · KIRIM (planner_loads, planner_load_classes, planner_busy_slots,
+//     planner_settings) — BITTA to'plam, versiyalanmaydi. Soat va bandlik
+//     barqaror ma'lumot.
+//   · NATIJA (planner_runs + planner_lessons) — VERSIYALANADI. O'zgaradigan
+//     narsa joylashtirishning o'zi, shuning uchun bir nechta variantni
+//     yonma-yon saqlab, solishtirib, yoqqanini qoldirish mumkin.
+// Kirimni ham versiyalash foydalanuvchini har safar ikki marta tanlashga
+// majbur qilardi.
+//
+// Kun — ScheduleDay (mavjud enum, 6 kun). Dars katagi — ScheduleSettings.periods
+// dagi `order`. Ya'ni preview grid amaldagi jadval bilan AYNAN bir xil
+// koordinatada yashaydi va keyinchalik qo'llash oddiy ko'chirish bo'ladi.
+
+// "Asosiy" tabdagi bitta satr: o'qituvchi × fan.
+//
+// Satrning O'ZI bu jadvaldan emas, `user_subjects` dan chiqadi (fan
+// biriktirilishi bilan satr paydo bo'ladi). Bu yerda faqat kiritilgan
+// qiymatlar yotadi, shuning uchun fan vaqtincha olib tashlansa qator yetim
+// qoladi-yu, YO'QOLMAYDI: fan qaytarilganda soatlar joyida turadi.
+model PlannerLoad {
+  id        String @id @db.Char(24)
+  teacherId String @map("teacher_id") @db.Char(24) // soft ref → User (FK emas)
+  subjectId String @map("subject_id") @db.Char(24) // soft ref → Subject (FK emas)
+  // HAR BIR SINF uchun standart haftalik soat: 4 soat × 3 sinf = 12.
+  // Sinfga xos qiymat — PlannerLoadClass.weeklyHours (null bo'lsa shu amal qiladi).
+  weeklyHours Int      @default(0) @map("weekly_hours")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  classes PlannerLoadClass[]
+
+  @@unique([teacherId, subjectId])
+  @@index([subjectId])
+  @@map("planner_loads")
+}
+
+// O'qituvchi shu fandan qaysi sinflarga dars beradi.
+// `weeklyHours` — ixtiyoriy istisno: aksariyat sinfda standart soat, bittasida
+// boshqacha bo'lsa faqat o'shanga yoziladi (null = standart).
+model PlannerLoadClass {
+  loadId      String @map("load_id") @db.Char(24)
+  classId     String @map("class_id") @db.Char(24) // soft ref → Class (FK emas)
+  weeklyHours Int?   @map("weekly_hours")
+
+  load PlannerLoad @relation(fields: [loadId], references: [id], onDelete: Cascade)
+
+  @@id([loadId, classId])
+  @@index([classId])
+  @@map("planner_load_classes")
+}
+
+// O'qituvchining BAND katagi — bu yerga dars qo'yib bo'lmaydi.
+//
+// Qator BORLIGI = band. Bo'sh katak uchun yozuv saqlanmaydi, shuning uchun
+// "bo'sh"ni alohida belgilash kerak emas va jadval kichik qoladi.
+model PlannerBusySlot {
+  teacherId String      @map("teacher_id") @db.Char(24) // soft ref → User
+  day       ScheduleDay
+  order     Int // ScheduleSettings.periods[].order
+  note      String?
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  @@id([teacherId, day, order])
+  @@index([day, order])
+  @@map("planner_busy_slots")
+}
+
+// Shakllantirish qoidalari (singleton).
+model PlannerSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+  // Ish kunlari — ScheduleDay qiymatlari. BO'SH massiv = 6 kunning hammasi
+  // (yangi filialda darhol ishlashi uchun; "hech bir kun" holati ma'nosiz).
+  workDays             String[] @default([]) @map("work_days")
+  maxLessonsPerDay     Int      @default(7) @map("max_lessons_per_day") // sinf uchun
+  minLessonsPerDay     Int      @default(0) @map("min_lessons_per_day") // sinf uchun
+  teacherMaxPerDay     Int      @default(6) @map("teacher_max_per_day")
+  // Sinf jadvalidagi "oyna" (bo'sh katakdan keyin yana dars). Standart —
+  // taqiqlangan: o'quvchi darsdan darsga kutib o'tirmasligi kerak.
+  allowClassGaps       Boolean  @default(false) @map("allow_class_gaps")
+  // O'qituvchida "oyna" — standart RUXSAT: uni butunlay taqiqlash ko'p holda
+  // jadvalni umuman shakllantirib bo'lmaydigan qilib qo'yadi.
+  allowTeacherGaps     Boolean  @default(true) @map("allow_teacher_gaps")
+  maxSameSubjectPerDay Int      @default(2) @map("max_same_subject_per_day")
+  // Ketma-ket ikkita bir xil dars ("juft dars"). Standart — taqiqlangan;
+  // juft dars kerak bo'lsa false qilinadi.
+  avoidConsecutiveSame Boolean  @default(true) @map("avoid_consecutive_same")
+  // Takrorlanuvchanlik: bir xil kirim + bir xil seed = AYNAN bir xil jadval.
+  // Boshqa variant kerak bo'lsa raqam o'zgartiriladi.
+  seed      Int      @default(1)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("planner_settings")
+}
+
+// Bitta shakllantirish = bitta variant.
+model PlannerRun {
+  id   String @id @db.Char(24)
+  name String
+  // { demand, placed, unplacedCount, fillRate, byClass[], byTeacher[] }
+  stats Json @default("{}")
+  // [{ teacherId, subjectId, classId, missing, reason }] — nega joylashmagani
+  // odam tilida. Bu ro'yxat jim qolmasligi kerak: "98%" degan raqamning o'zi
+  // qaysi darsni qo'lda joylash kerakligini aytmaydi.
+  unplaced Json @default("[]")
+  // Shakllantirish paytidagi sozlama + periods nusxasi. Keyin sozlama
+  // o'zgarsa, bu variant QANDAY shartlarda tug'ilgani ma'lum bo'lib qoladi.
+  settingsSnapshot Json     @default("{}") @map("settings_snapshot")
+  generatedBy      String?  @map("generated_by") @db.Char(24)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  lessons PlannerLesson[]
+
+  @@index([createdAt(sort: Desc)])
+  @@map("planner_runs")
+}
+
+// Variantdagi bitta dars. Vaqt SAQLANMAYDI — u `order` orqali
+// ScheduleSettings.periods dan o'qiladi. Aks holda vaqt ikki joyda yotib,
+// ScheduleLesson.startTime dagi kabi jimgina eskirib qolardi.
+model PlannerLesson {
+  id        String      @id @db.Char(24)
+  runId     String      @map("run_id") @db.Char(24)
+  classId   String      @map("class_id") @db.Char(24) // soft ref → Class
+  day       ScheduleDay
+  order     Int
+  subjectId String      @map("subject_id") @db.Char(24) // soft ref → Subject
+  teacherId String      @map("teacher_id") @db.Char(24) // soft ref → User
+  // Qo'lda ko'chirilgan yoki ataylab qadalgan dars — qayta shakllantirishda
+  // joyida qoladi.
+  isPinned Boolean @default(false) @map("is_pinned")
+
+  run PlannerRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  // Sinf to'qnashuvi STRUKTURAVIY IMKONSIZ: bitta sinfning bitta katagida
+  // ikkinchi dars paydo bo'la olmaydi.
+  @@unique([runId, classId, day, order])
+  // O'qituvchi to'qnashuvi shu indeks orqali tekshiriladi (uni unique qilib
+  // bo'lmaydi: bitta o'qituvchi turli variantlarda turli joyda turadi).
+  @@index([runId, teacherId, day, order])
+  @@map("planner_lessons")
 }
 
 // ─────────────────────────────────────────────
