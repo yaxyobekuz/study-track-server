@@ -1,16 +1,44 @@
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
-const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
+const {
+  getCurrentDayUz,
+  isSunday,
+  getTashkentDateUtc,
+} = require("../helpers/date.helpers");
+const { parseDayDate, parseOptionalDayDate } = require("../helpers/month.helpers");
 
-/**
- * ScheduleLesson child yozuvlarini eski `subjects[]` embedded shakliga xaritalaydi.
- * Berilgan subject/teacher xaritalaridan `subject` ({_id,name}) va
- * `teacher` ({_id,firstName,lastName}) objektlarini to'ldiradi.
- * @param {Array} lessons - ScheduleLesson yozuvlari
- * @param {Map} subjectMap - subjectId -> { _id, name }
- * @param {Map} teacherMap - teacherId -> { _id, firstName, lastName }
- * @returns {Array} eski shakldagi subjects massivi
- */
+// ─────────────────────────────────────────────
+// VERSIYALASH yordamchilari (amal qilish davri — kun aniqligida)
+// ─────────────────────────────────────────────
+
+/** Bugungi kun (Toshkent), @db.Date bilan mos UTC yarim tuni. */
+const todayDate = () => getTashkentDateUtc(0);
+
+/** @db.Date qiymatni "YYYY-MM-DD" ga (ekranga emas, API/solishtirish uchun). */
+const formatDay = (date) => (date ? date.toISOString().slice(0, 10) : null);
+
+/** N kun qo'shilgan/ayirilgan UTC yarim tunidagi sana. */
+const addDaysUtc = (date, n) =>
+  new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + n));
+
+/** Berilgan sanada AMALDA bo'lgan versiyalarni tanlash uchun where. */
+const activeAsOfWhere = (asOf) => ({
+  effectiveFrom: { lte: asOf },
+  OR: [{ effectiveTo: null }, { effectiveTo: { gte: asOf } }],
+});
+
+/** [from, to] davri bilan KESISHUVCHI versiyalarni topish uchun where. */
+const overlapWhere = (from, to) => ({
+  ...(to ? { effectiveFrom: { lte: to } } : {}),
+  OR: [{ effectiveTo: null }, { effectiveTo: { gte: from } }],
+});
+
+const resolveAsOf = (value) => (value ? parseDayDate(value, "Sana") : todayDate());
+
+// ─────────────────────────────────────────────
+// Format
+// ─────────────────────────────────────────────
+
 function mapLessons(lessons, subjectMap, teacherMap) {
   return (lessons || []).map((lesson) => ({
     id: lesson.id,
@@ -22,12 +50,6 @@ function mapLessons(lessons, subjectMap, teacherMap) {
   }));
 }
 
-/**
- * Berilgan schedule yozuvlaridagi barcha subject va teacher'larni bitta
- * so'rovdan yuklab, xaritalarni qaytaradi (soft ref — relation YO'Q).
- * @param {Array} schedules - lessons bilan yuklangan schedule'lar
- * @returns {Promise<{subjectMap: Map, teacherMap: Map}>}
- */
 async function loadLessonRefs(schedules) {
   const subjectIds = new Set();
   const teacherIds = new Set();
@@ -49,43 +71,31 @@ async function loadLessonRefs(schedules) {
     }),
   ]);
 
-  const subjectMap = new Map(
-    subjects.map((s) => [s.id, { id: s.id, name: s.name }]),
-  );
+  const subjectMap = new Map(subjects.map((s) => [s.id, { id: s.id, name: s.name }]));
   const teacherMap = new Map(
-    teachers.map((t) => [
-      t.id,
-      { id: t.id, firstName: t.firstName, lastName: t.lastName },
-    ]),
+    teachers.map((t) => [t.id, { id: t.id, firstName: t.firstName, lastName: t.lastName }]),
   );
 
   return { subjectMap, teacherMap };
 }
 
-/**
- * Bitta schedule'ni eski shaklga (id + subjects[]) aylantiradi.
- * @param {object} schedule - lessons bilan yuklangan schedule
- * @param {Map} subjectMap
- * @param {Map} teacherMap
- * @returns {object}
- */
 function formatSchedule(schedule, subjectMap, teacherMap) {
   return {
     id: schedule.id,
     class: schedule.classId,
     day: schedule.day,
-    subjects: mapLessons(schedule.lessons, subjectMap, teacherMap),
+    effectiveFrom: formatDay(schedule.effectiveFrom),
+    effectiveTo: formatDay(schedule.effectiveTo),
+    isOpen: schedule.effectiveTo == null,
+    subjects: [...mapLessons(schedule.lessons, subjectMap, teacherMap)].sort(
+      (a, b) => (a.order || 0) - (b.order || 0),
+    ),
     createdBy: schedule.createdBy,
     createdAt: schedule.createdAt,
     updatedAt: schedule.updatedAt,
   };
 }
 
-/**
- * Bir kunlik darslardan ScheduleLesson create'lar uchun ma'lumot tuzadi.
- * @param {Array} subjects - kiritilgan darslar (subject, teacher, order, ...)
- * @returns {Array} createMany uchun data (position bilan)
- */
 function buildLessonRows(scheduleId, subjects) {
   return subjects.map((item, index) => ({
     scheduleId,
@@ -98,89 +108,90 @@ function buildLessonRows(scheduleId, subjects) {
   }));
 }
 
-/**
- * Sinf uchun barcha dars jadvallarini olish.
- * @param {string} classId - sinf ID
- * @returns {Promise<Array>} jadvallar ro'yxati
- */
-async function getScheduleByClass(classId) {
-  const classExists = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classExists) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
+// ─────────────────────────────────────────────
+// O'qish (sana bo'yicha — default BUGUN)
+// ─────────────────────────────────────────────
 
-  const schedules = await prisma.schedule.findMany({
-    where: { classId },
-    include: { lessons: true },
-    orderBy: { day: "asc" },
-  });
-
-  const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
-
-  // Sort lessons by their order number (manual order, e.g. 1, 3, 4)
-  return schedules.map((schedule) => {
-    const formatted = formatSchedule(schedule, subjectMap, teacherMap);
-    formatted.subjects = [...formatted.subjects].sort(
-      (a, b) => (a.order || 0) - (b.order || 0),
-    );
-    return formatted;
-  });
+/** Har (kun) uchun eng kech boshlangan amaldagi versiyani qoldiradi. */
+function pickActivePerDay(schedules) {
+  // schedules effectiveFrom desc tartibda kelgan bo'lishi kerak
+  const perDay = new Map();
+  for (const s of schedules) if (!perDay.has(s.day)) perDay.set(s.day, s);
+  return [...perDay.values()];
 }
 
-/**
- * Sinf va kun uchun dars jadvalini olish.
- * @param {string} classId - sinf ID
- * @param {string} day - kun nomi
- * @returns {Promise<object>} jadval
- */
-async function getScheduleByDay(classId, day) {
-  const schedule = await prisma.schedule.findFirst({
-    where: { classId, day },
+async function getScheduleByClass(classId, asOfInput) {
+  const classExists = await prisma.class.findUnique({ where: { id: classId } });
+  if (!classExists) throw new NotFoundError("Sinf topilmadi");
+
+  const asOf = resolveAsOf(asOfInput);
+  const schedules = await prisma.schedule.findMany({
+    where: { classId, ...activeAsOfWhere(asOf) },
     include: { lessons: true },
+    orderBy: [{ day: "asc" }, { effectiveFrom: "desc" }],
   });
 
-  if (!schedule) {
-    throw new NotFoundError("Bu kun uchun dars jadvali topilmadi");
-  }
+  const active = pickActivePerDay(schedules);
+  const { subjectMap, teacherMap } = await loadLessonRefs(active);
+  return active
+    .map((schedule) => formatSchedule(schedule, subjectMap, teacherMap))
+    .sort((a, b) => DAY_RANK(a.day) - DAY_RANK(b.day));
+}
+
+async function getScheduleByDay(classId, day, asOfInput) {
+  const asOf = resolveAsOf(asOfInput);
+  const schedule = await prisma.schedule.findFirst({
+    where: { classId, day, ...activeAsOfWhere(asOf) },
+    include: { lessons: true },
+    orderBy: { effectiveFrom: "desc" },
+  });
+
+  if (!schedule) throw new NotFoundError("Bu kun uchun dars jadvali topilmadi");
 
   const { subjectMap, teacherMap } = await loadLessonRefs([schedule]);
   return formatSchedule(schedule, subjectMap, teacherMap);
 }
 
 /**
- * O'qituvchining parallel to'qnashuvini tekshirish.
- * Bir o'qituvchi bir kunda bir xil tartib (order) raqamida turli sinflarda
- * band bo'lsa, xato beriladi.
- * @param {string} classId - joriy sinf ID (o'zini tekshirmaslik uchun)
- * @param {string} day - kun nomi
- * @param {Array} subjects - kiritilayotgan darslar
- * @returns {Promise<void>}
+ * Sinfning BARCHA jadval versiyalari (tarix) — kun + amal qilish davri bo'yicha.
+ * Frontend versiyalar ro'yxatini shu asosda chizadi.
  */
-async function ensureNoTeacherConflicts(classId, day, subjects) {
+async function getScheduleVersions(classId) {
+  const classExists = await prisma.class.findUnique({ where: { id: classId } });
+  if (!classExists) throw new NotFoundError("Sinf topilmadi");
+
+  const schedules = await prisma.schedule.findMany({
+    where: { classId },
+    include: { lessons: true },
+    orderBy: [{ day: "asc" }, { effectiveFrom: "desc" }],
+  });
+
+  const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
+  return schedules.map((schedule) => formatSchedule(schedule, subjectMap, teacherMap));
+}
+
+// ─────────────────────────────────────────────
+// Tekshiruvlar
+// ─────────────────────────────────────────────
+
+/**
+ * O'qituvchining parallel to'qnashuvi — FAQAT [from, to] bilan kesishuvchi
+ * versiyalar orasida (turli davrdagi jadvallar bir-biriga xalaqit bermaydi).
+ */
+async function ensureNoTeacherConflicts(classId, day, subjects, from, to) {
   const otherSchedules = await prisma.schedule.findMany({
-    where: {
-      day,
-      classId: { not: classId },
-    },
+    where: { day, classId: { not: classId }, ...overlapWhere(from, to) },
     include: { lessons: true },
   });
 
-  // Boshqa sinflarning nomlari va band o'qituvchilar uchun refs'ni yuklaymiz
-  const classIds = [
-    ...new Set(otherSchedules.map((s) => s.classId).filter(Boolean)),
-  ];
+  const classIds = [...new Set(otherSchedules.map((s) => s.classId).filter(Boolean))];
   const teacherIds = new Set();
-  for (const schedule of otherSchedules) {
-    for (const lesson of schedule.lessons || []) {
+  for (const schedule of otherSchedules)
+    for (const lesson of schedule.lessons || [])
       if (lesson.teacherId) teacherIds.add(lesson.teacherId);
-    }
-  }
 
   const [classes, teachers] = await Promise.all([
-    prisma.class.findMany({
-      where: { id: { in: classIds } },
-      select: { id: true, name: true },
-    }),
+    prisma.class.findMany({ where: { id: { in: classIds } }, select: { id: true, name: true } }),
     prisma.user.findMany({
       where: { id: { in: [...teacherIds] } },
       select: { id: true, firstName: true, lastName: true },
@@ -190,49 +201,33 @@ async function ensureNoTeacherConflicts(classId, day, subjects) {
   const classNameMap = new Map(classes.map((c) => [c.id, c.name]));
   const teacherMap = new Map(teachers.map((t) => [t.id, t]));
 
-  // Map: "teacherId-order" -> { className, teacherName }
   const occupied = new Map();
   for (const schedule of otherSchedules) {
     for (const item of schedule.lessons || []) {
-      const teacherId = String(item.teacherId);
       const teacher = teacherMap.get(item.teacherId);
-      const key = `${teacherId}-${item.order}`;
-      occupied.set(key, {
+      occupied.set(`${String(item.teacherId)}-${item.order}`, {
         className: classNameMap.get(schedule.classId) || "",
-        teacherName: teacher
-          ? `${teacher.firstName} ${teacher.lastName || ""}`.trim()
-          : "",
+        teacherName: teacher ? `${teacher.firstName} ${teacher.lastName || ""}`.trim() : "",
       });
     }
   }
 
   for (const item of subjects) {
-    const teacherId = String(item.teacher);
-    const conflict = occupied.get(`${teacherId}-${Number(item.order)}`);
+    const conflict = occupied.get(`${String(item.teacher)}-${Number(item.order)}`);
     if (conflict) {
       throw new BadRequestError(
-        `${conflict.teacherName} o'qituvchisi shu kuni ${item.order}-tartibda "${conflict.className}" sinfida band. Parallel dars belgilab bo'lmaydi`,
+        `${conflict.teacherName} o'qituvchisi shu kuni ${item.order}-tartibda "${conflict.className}" sinfida band (shu davrda). Parallel dars belgilab bo'lmaydi`,
       );
     }
   }
 }
 
-/**
- * Bir kunlik darslar ro'yxatini tekshirish: tartib raqamlari, vaqtlar,
- * fan/o'qituvchi mavjudligi va vaqtlar to'qnashuvi.
- * O'qituvchining boshqa sinflar bilan to'qnashuvi bu yerda tekshirilmaydi.
- * @param {Array} subjects - bir kun uchun darslar
- * @returns {Promise<void>}
- */
 async function validateScheduleSubjects(subjects) {
-  // Validate lesson order numbers (manual 1..100, no duplicates within a day)
   const seenOrders = new Set();
   for (const item of subjects) {
     const order = Number(item.order);
     if (!Number.isInteger(order) || order < 1 || order > 100) {
-      throw new BadRequestError(
-        "Dars tartibi 1 dan 100 gacha bo'lgan butun son bo'lishi kerak",
-      );
+      throw new BadRequestError("Dars tartibi 1 dan 100 gacha bo'lgan butun son bo'lishi kerak");
     }
     if (seenOrders.has(order)) {
       throw new BadRequestError(
@@ -242,7 +237,6 @@ async function validateScheduleSubjects(subjects) {
     seenOrders.add(order);
   }
 
-  // Validate times, subjects and teachers
   for (const item of subjects) {
     if (item.startTime || item.endTime) {
       if (!item.startTime || !item.endTime) {
@@ -250,14 +244,12 @@ async function validateScheduleSubjects(subjects) {
           `${item.order}-dars: boshlanish va tugash vaqti ikkalasi ham kiritilishi kerak`,
         );
       }
-
       const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
       if (!timeRegex.test(item.startTime) || !timeRegex.test(item.endTime)) {
         throw new BadRequestError(
           `${item.order}-dars: vaqt formati noto'g'ri (HH:mm formatida bo'lishi kerak)`,
         );
       }
-
       if (item.startTime >= item.endTime) {
         throw new BadRequestError(
           `${item.order}-dars: boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak`,
@@ -265,81 +257,138 @@ async function validateScheduleSubjects(subjects) {
       }
     }
 
-    const subject = await prisma.subject.findUnique({
-      where: { id: item.subject },
-    });
-    if (!subject) {
-      throw new NotFoundError(`Fan topilmadi: ${item.subject}`);
-    }
+    const subject = await prisma.subject.findUnique({ where: { id: item.subject } });
+    if (!subject) throw new NotFoundError(`Fan topilmadi: ${item.subject}`);
 
-    const teacher = await prisma.user.findFirst({
-      where: { id: item.teacher, role: "teacher" },
-    });
-    if (!teacher) {
-      throw new NotFoundError(`O'qituvchi topilmadi: ${item.teacher}`);
-    }
+    const teacher = await prisma.user.findFirst({ where: { id: item.teacher, role: "teacher" } });
+    if (!teacher) throw new NotFoundError(`O'qituvchi topilmadi: ${item.teacher}`);
   }
 
-  // Check for time overlaps
   const subjectsWithTimes = subjects.filter((s) => s.startTime && s.endTime);
   if (subjectsWithTimes.length > 0) {
-    const sortedSubjects = [...subjectsWithTimes].sort((a, b) =>
-      a.startTime.localeCompare(b.startTime),
-    );
-    for (let i = 0; i < sortedSubjects.length - 1; i++) {
-      if (sortedSubjects[i].endTime > sortedSubjects[i + 1].startTime) {
+    const sorted = [...subjectsWithTimes].sort((a, b) => a.startTime.localeCompare(b.startTime));
+    for (let i = 0; i < sorted.length - 1; i++) {
+      if (sorted[i].endTime > sorted[i + 1].startTime) {
         throw new BadRequestError(
-          `Darslar vaqtlari to'qnashib ketdi: ${sortedSubjects[i].order}-dars (${sortedSubjects[i].startTime}-${sortedSubjects[i].endTime}) va ${sortedSubjects[i + 1].order}-dars (${sortedSubjects[i + 1].startTime}-${sortedSubjects[i + 1].endTime})`,
+          `Darslar vaqtlari to'qnashib ketdi: ${sorted[i].order}-dars (${sorted[i].startTime}-${sorted[i].endTime}) va ${sorted[i + 1].order}-dars (${sorted[i + 1].startTime}-${sorted[i + 1].endTime})`,
         );
       }
     }
   }
 }
 
+// ─────────────────────────────────────────────
+// Yozish (VERSIYA)
+// ─────────────────────────────────────────────
+
+/** [from, to] boshqa versiya bilan kesishmasin. */
+async function assertNoOverlap(tx, classId, day, from, to, excludeId) {
+  const conflict = await tx.schedule.findFirst({
+    where: {
+      classId,
+      day,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      ...overlapWhere(from, to),
+    },
+    orderBy: { effectiveFrom: "asc" },
+  });
+  if (conflict) {
+    throw new BadRequestError(
+      `Bu davr mavjud jadval versiyasi bilan kesishadi ` +
+        `(${formatDay(conflict.effectiveFrom)} — ${conflict.effectiveTo ? formatDay(conflict.effectiveTo) : "hozircha"}). ` +
+        "Avval o'shani yoping yoki sanani to'g'rilang.",
+    );
+  }
+}
+
+/** `from` dan oldin boshlangan ochiq/qamragan versiyani `from-1` da yopadi. */
+async function autoClosePrior(tx, classId, day, from) {
+  const prior = await tx.schedule.findFirst({
+    where: {
+      classId,
+      day,
+      effectiveFrom: { lt: from },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: from } }],
+    },
+    orderBy: { effectiveFrom: "desc" },
+  });
+  if (prior) {
+    await tx.schedule.update({
+      where: { id: prior.id },
+      data: { effectiveTo: addDaysUtc(from, -1) },
+    });
+  }
+}
+
 /**
- * Dars jadvalini yaratish yoki yangilash.
- * @param {object} data - { classId, day, subjects }
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<object>} saqlangan jadval
+ * Bitta (sinf, kun) versiyasini yozadi:
+ *   - aynan `from` dan boshlanadigan versiya bo'lsa — o'shani tahrirlaydi;
+ *   - bo'lmasa — oldingi ochiq versiyani yopib, yangi versiya ochadi.
+ */
+async function writeDayVersion(tx, classId, day, from, to, subjects, createdBy) {
+  const sameStart = await tx.schedule.findFirst({
+    where: { classId, day, effectiveFrom: from },
+  });
+
+  if (sameStart) {
+    await assertNoOverlap(tx, classId, day, from, to, sameStart.id);
+    await tx.schedule.update({ where: { id: sameStart.id }, data: { effectiveTo: to } });
+    await tx.scheduleLesson.deleteMany({ where: { scheduleId: sameStart.id } });
+    await tx.scheduleLesson.createMany({ data: buildLessonRows(sameStart.id, subjects) });
+    return sameStart.id;
+  }
+
+  await autoClosePrior(tx, classId, day, from);
+  await assertNoOverlap(tx, classId, day, from, to, null);
+  const created = await tx.schedule.create({
+    data: { classId, day, effectiveFrom: from, effectiveTo: to, createdBy },
+  });
+  await tx.scheduleLesson.createMany({ data: buildLessonRows(created.id, subjects) });
+  return created.id;
+}
+
+/** Kunni `from` dan bo'sh qoldirish: shu sanadagi versiyani o'chirib, oldingisini yopadi. */
+async function clearDayFrom(tx, classId, day, from) {
+  await tx.schedule.deleteMany({ where: { classId, day, effectiveFrom: from } });
+  await autoClosePrior(tx, classId, day, from);
+}
+
+const VALID_DAYS = ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"];
+
+const parsePeriod = (effectiveFrom, effectiveTo) => {
+  const from = effectiveFrom
+    ? parseDayDate(effectiveFrom, "Amal qilish sanasi")
+    : todayDate();
+  const to = parseOptionalDayDate(effectiveTo, "Tugash sanasi");
+  if (to && to < from) {
+    throw new BadRequestError("Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas");
+  }
+  return { from, to };
+};
+
+/**
+ * Bitta kun uchun jadval versiyasini yaratish/tahrirlash.
+ * @param {object} data - { classId, day, subjects, effectiveFrom, effectiveTo }
  */
 async function createOrUpdateSchedule(data, createdBy) {
   const { classId, day, subjects } = data;
 
   if (!classId || !day || !subjects || subjects.length === 0) {
-    throw new BadRequestError("All required fields must be filled");
+    throw new BadRequestError("Sinf, kun va kamida bitta dars kiritilishi kerak");
   }
+  if (!VALID_DAYS.includes(day)) throw new BadRequestError(`Noto'g'ri kun: ${day}`);
 
   const classExists = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classExists) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
+  if (!classExists) throw new NotFoundError("Sinf topilmadi");
+
+  const { from, to } = parsePeriod(data.effectiveFrom, data.effectiveTo);
 
   await validateScheduleSubjects(subjects);
+  await ensureNoTeacherConflicts(classId, day, subjects, from, to);
 
-  // Check for teacher conflicts across other classes (same day + same order)
-  await ensureNoTeacherConflicts(classId, day, subjects);
-
-  const existing = await prisma.schedule.findFirst({
-    where: { classId, day },
-  });
-
-  let scheduleId;
-  if (existing) {
-    scheduleId = existing.id;
-    // Eski darslarni tozalab, yangilarini qayta yozamiz (position bilan)
-    await prisma.scheduleLesson.deleteMany({ where: { scheduleId } });
-    await prisma.scheduleLesson.createMany({
-      data: buildLessonRows(scheduleId, subjects),
-    });
-  } else {
-    const schedule = await prisma.schedule.create({
-      data: { classId, day, createdBy },
-    });
-    scheduleId = schedule.id;
-    await prisma.scheduleLesson.createMany({
-      data: buildLessonRows(scheduleId, subjects),
-    });
-  }
+  const scheduleId = await prisma.$transaction((tx) =>
+    writeDayVersion(tx, classId, day, from, to, subjects, createdBy),
+  );
 
   const saved = await prisma.schedule.findUnique({
     where: { id: scheduleId },
@@ -350,171 +399,97 @@ async function createOrUpdateSchedule(data, createdBy) {
 }
 
 /**
- * Sinf uchun butun hafta dars jadvalini bir martada saqlash.
- * Har bir kun uchun darslar bo'lsa - yaratiladi/yangilanadi,
- * darslar bo'sh bo'lsa - o'sha kun jadvali o'chiriladi.
- * Barcha kunlar avval tekshiriladi, keyin yoziladi (qisman saqlanish bo'lmaydi).
- * @param {string} classId - sinf ID
- * @param {Array} schedules - [{ day, subjects }]
- * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<Array>} sinfning yangilangan jadvallari
+ * Sinf uchun butun hafta jadvalini bir amal qilish davri bilan saqlash.
+ * @param {string} classId
+ * @param {object} payload - { schedules: [{day, subjects}], effectiveFrom, effectiveTo }
  */
-async function saveClassSchedule(classId, schedules, createdBy) {
+async function saveClassSchedule(classId, payload, createdBy) {
+  const { schedules, effectiveFrom, effectiveTo } = payload || {};
   if (!classId || !Array.isArray(schedules)) {
     throw new BadRequestError("Sinf va dars jadvali majburiy");
   }
 
   const classExists = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classExists) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
+  if (!classExists) throw new NotFoundError("Sinf topilmadi");
 
-  const validDays = [
-    "dushanba",
-    "seshanba",
-    "chorshanba",
-    "payshanba",
-    "juma",
-    "shanba",
-  ];
+  const { from, to } = parsePeriod(effectiveFrom, effectiveTo);
 
-  // Validate everything first so a single bad day doesn't leave a partial save
+  // Avval hammasini tekshiramiz (qisman saqlanish bo'lmasin)
   const seenDays = new Set();
   for (const entry of schedules) {
     const { day, subjects = [] } = entry;
-
-    if (!validDays.includes(day)) {
-      throw new BadRequestError(`Noto'g'ri kun: ${day}`);
-    }
-    if (seenDays.has(day)) {
-      throw new BadRequestError(`${day} kuni bir necha marta yuborildi`);
-    }
+    if (!VALID_DAYS.includes(day)) throw new BadRequestError(`Noto'g'ri kun: ${day}`);
+    if (seenDays.has(day)) throw new BadRequestError(`${day} kuni bir necha marta yuborildi`);
     seenDays.add(day);
-
     if (subjects.length === 0) continue;
-
     await validateScheduleSubjects(subjects);
-    await ensureNoTeacherConflicts(classId, day, subjects);
+    await ensureNoTeacherConflicts(classId, day, subjects, from, to);
   }
 
-  // Persist: upsert days with lessons, delete days that were cleared
-  for (const entry of schedules) {
-    const { day, subjects = [] } = entry;
-
-    if (subjects.length === 0) {
-      await prisma.schedule.deleteMany({ where: { classId, day } });
-      continue;
+  await prisma.$transaction(async (tx) => {
+    for (const entry of schedules) {
+      const { day, subjects = [] } = entry;
+      if (subjects.length === 0) {
+        await clearDayFrom(tx, classId, day, from);
+      } else {
+        await writeDayVersion(tx, classId, day, from, to, subjects, createdBy);
+      }
     }
+  });
 
-    const schedule = await prisma.schedule.findFirst({
-      where: { classId, day },
-    });
-    if (schedule) {
-      await prisma.scheduleLesson.deleteMany({
-        where: { scheduleId: schedule.id },
-      });
-      await prisma.scheduleLesson.createMany({
-        data: buildLessonRows(schedule.id, subjects),
-      });
-    } else {
-      const created = await prisma.schedule.create({
-        data: { classId, day, createdBy },
-      });
-      await prisma.scheduleLesson.createMany({
-        data: buildLessonRows(created.id, subjects),
-      });
-    }
-  }
-
-  return getScheduleByClass(classId);
+  // Yangi davr boshidagi holatni qaytaramiz
+  return getScheduleByClass(classId, formatDay(from));
 }
 
-/**
- * Dars jadvalini o'chirish.
- * @param {string} id - jadval ID
- * @returns {Promise<void>}
- */
 async function deleteSchedule(id) {
   const schedule = await prisma.schedule.findUnique({ where: { id } });
-  if (!schedule) {
-    throw new NotFoundError("Dars jadvali topilmadi");
-  }
-
+  if (!schedule) throw new NotFoundError("Dars jadvali topilmadi");
   await prisma.schedule.delete({ where: { id } });
 }
 
-/**
- * Sinf uchun Excel eksport ma'lumotlarini tayyorlash.
- * @param {string} classId - sinf ID
- * @returns {Promise<{classDoc: object, data: Array}>}
- */
-async function getScheduleForExport(classId) {
-  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classDoc) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
+// ─────────────────────────────────────────────
+// Eksport / bugungi / boshqalar (sana-aware)
+// ─────────────────────────────────────────────
 
-  const schedules = await prisma.schedule.findMany({
-    where: { classId },
+const DAY_ORDER = ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba"];
+const DAY_RANK = (day) => {
+  const i = DAY_ORDER.indexOf(day);
+  return i === -1 ? 999 : i;
+};
+
+async function getScheduleForExport(classId, asOfInput) {
+  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
+  if (!classDoc) throw new NotFoundError("Sinf topilmadi");
+
+  const asOf = resolveAsOf(asOfInput);
+  const rawSchedules = await prisma.schedule.findMany({
+    where: { classId, ...activeAsOfWhere(asOf) },
     include: { lessons: true },
-    orderBy: { day: "asc" },
+    orderBy: [{ day: "asc" }, { effectiveFrom: "desc" }],
   });
+  const schedules = pickActivePerDay(rawSchedules);
 
   const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
 
-  const dayOrder = [
-    "dushanba",
-    "seshanba",
-    "chorshanba",
-    "payshanba",
-    "juma",
-    "shanba",
-    "yakshanba",
-  ];
-
-  const dayRank = new Map(dayOrder.map((day, index) => [day, index]));
-
-  const formattedSchedules = schedules.map((schedule) =>
-    formatSchedule(schedule, subjectMap, teacherMap),
-  );
-
-  const sortedSchedules = [...formattedSchedules].sort((a, b) => {
-    const rankA = dayRank.has(a.day) ? dayRank.get(a.day) : 999;
-    const rankB = dayRank.has(b.day) ? dayRank.get(b.day) : 999;
-    return rankA - rankB;
-  });
+  const sortedSchedules = schedules
+    .map((schedule) => formatSchedule(schedule, subjectMap, teacherMap))
+    .sort((a, b) => DAY_RANK(a.day) - DAY_RANK(b.day));
 
   const data = [];
-
   sortedSchedules.forEach((schedule) => {
-    const subjects = [...(schedule.subjects || [])].sort(
-      (a, b) => (a.order || 0) - (b.order || 0),
-    );
-
+    const subjects = schedule.subjects || [];
     if (subjects.length === 0) {
-      data.push({
-        day: schedule.day,
-        order: "-",
-        subject: "-",
-        teacher: "-",
-        time: "-",
-      });
+      data.push({ day: schedule.day, order: "-", subject: "-", teacher: "-", time: "-" });
       return;
     }
-
     subjects.forEach((subj, index) => {
-      const displayOrder = subj.order || index + 1;
       const teacherName = subj.teacher
         ? `${subj.teacher.firstName} ${subj.teacher.lastName || ""}`.trim()
         : "-";
-      const time =
-        subj.startTime && subj.endTime
-          ? `${subj.startTime} - ${subj.endTime}`
-          : "-";
-
+      const time = subj.startTime && subj.endTime ? `${subj.startTime} - ${subj.endTime}` : "-";
       data.push({
         day: schedule.day,
-        order: displayOrder,
+        order: subj.order || index + 1,
         subject: subj.subject?.name || "-",
         teacher: teacherName,
         time,
@@ -525,209 +500,132 @@ async function getScheduleForExport(classId) {
   return { classDoc, data };
 }
 
-/**
- * Dars mavjud (kamida bitta fan) sinf+kun juftliklari to'plamini qaytaradi.
- * Kalit formati: "<classId>|<dayName>" (masalan "65f...|dushanba").
- * Davomat cron va hisobotlarida "bu sinfda shu kuni dars bormi?" tekshiruvi uchun.
- * @returns {Promise<Set<string>>}
- */
+/** Dars mavjud (sinf|kun) to'plami — BUGUN amaldagi versiyalar bo'yicha. */
 async function getLessonDayMap() {
+  const asOf = todayDate();
   const schedules = await prisma.schedule.findMany({
-    where: { lessons: { some: {} } },
+    where: { lessons: { some: {} }, ...activeAsOfWhere(asOf) },
     select: { classId: true, day: true },
   });
-
   return new Set(schedules.map((s) => `${s.classId}|${s.day}`));
 }
 
-/**
- * Bugungi barcha jadvallarni olish.
- * @returns {Promise<Array>} formatlangan jadvallar
- */
 async function getAllTodaySchedules() {
+  if (isSunday()) return [];
   const dayName = getCurrentDayUz();
+  const asOf = todayDate();
 
-  if (isSunday()) {
-    return [];
-  }
-
-  const schedules = await prisma.schedule.findMany({
-    where: { day: dayName },
+  const raw = await prisma.schedule.findMany({
+    where: { day: dayName, ...activeAsOfWhere(asOf) },
     include: { lessons: true },
+    orderBy: { effectiveFrom: "desc" },
   });
+  // Har sinf uchun bitta (amaldagi) versiya
+  const perClass = new Map();
+  for (const s of raw) if (!perClass.has(s.classId)) perClass.set(s.classId, s);
+  const schedules = [...perClass.values()];
 
   const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
-
-  // Sinf nomlarini yuklab, sinf nomi bo'yicha tartiblaymiz
-  const classIds = [
-    ...new Set(schedules.map((s) => s.classId).filter(Boolean)),
-  ];
+  const classIds = [...new Set(schedules.map((s) => s.classId).filter(Boolean))];
   const classes = await prisma.class.findMany({
     where: { id: { in: classIds } },
     select: { id: true, name: true },
   });
-  const classMap = new Map(
-    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
-  );
+  const classMap = new Map(classes.map((c) => [c.id, { id: c.id, name: c.name }]));
 
-  const result = schedules.map((schedule) => ({
-    class: classMap.get(schedule.classId) || null,
-    subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort(
-      (a, b) => a.order - b.order,
-    ),
-  }));
-
-  return result.sort((a, b) =>
-    (a.class?.name || "").localeCompare(b.class?.name || ""),
-  );
+  return schedules
+    .map((schedule) => ({
+      class: classMap.get(schedule.classId) || null,
+      subjects: mapLessons(schedule.lessons, subjectMap, teacherMap).sort((a, b) => a.order - b.order),
+    }))
+    .sort((a, b) => (a.class?.name || "").localeCompare(b.class?.name || ""));
 }
 
-/**
- * O'qituvchining bugungi dars jadvalini olish.
- * @param {string} teacherId - o'qituvchi ID
- * @returns {Promise<Array>} o'qituvchining bugungi darslari
- */
 async function getMyTodaySchedule(teacherId) {
+  if (isSunday()) return [];
   const dayName = getCurrentDayUz();
+  const asOf = todayDate();
 
-  if (isSunday()) {
-    return [];
-  }
-
-  const schedules = await prisma.schedule.findMany({
+  const raw = await prisma.schedule.findMany({
     where: {
       day: dayName,
       lessons: { some: { teacherId: teacherId.toString() } },
+      ...activeAsOfWhere(asOf),
     },
     include: { lessons: true },
+    orderBy: { effectiveFrom: "desc" },
   });
+  const perClass = new Map();
+  for (const s of raw) if (!perClass.has(s.classId)) perClass.set(s.classId, s);
+  const schedules = [...perClass.values()];
 
   const { subjectMap, teacherMap } = await loadLessonRefs(schedules);
-
-  const classIds = [
-    ...new Set(schedules.map((s) => s.classId).filter(Boolean)),
-  ];
+  const classIds = [...new Set(schedules.map((s) => s.classId).filter(Boolean))];
   const classes = await prisma.class.findMany({
     where: { id: { in: classIds } },
     select: { id: true, name: true },
   });
-  const classMap = new Map(
-    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
-  );
+  const classMap = new Map(classes.map((c) => [c.id, { id: c.id, name: c.name }]));
 
   return schedules
-    .map((schedule) => {
-      const teacherSubjects = mapLessons(
-        schedule.lessons,
-        subjectMap,
-        teacherMap,
-      )
-        .filter(
-          (item) =>
-            item.teacher &&
-            item.teacher.id.toString() === teacherId.toString(),
-        )
-        .sort((a, b) => a.order - b.order);
-
-      return {
-        class: classMap.get(schedule.classId) || null,
-        subjects: teacherSubjects,
-      };
-    })
+    .map((schedule) => ({
+      class: classMap.get(schedule.classId) || null,
+      subjects: mapLessons(schedule.lessons, subjectMap, teacherMap)
+        .filter((item) => item.teacher && item.teacher.id.toString() === teacherId.toString())
+        .sort((a, b) => a.order - b.order),
+    }))
     .filter((schedule) => schedule.subjects.length > 0);
 }
 
-/**
- * Fan bo'yicha sinflarni va joriy mavzu raqamini olish.
- * @param {string} subjectId - fan ID
- * @returns {Promise<{classes: Array, subject: object}>}
- */
 async function getClassesBySubject(subjectId) {
   const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
-  if (!subject) {
-    throw new NotFoundError("Fan topilmadi");
-  }
+  if (!subject) throw new NotFoundError("Fan topilmadi");
 
+  const asOf = todayDate();
   const schedules = await prisma.schedule.findMany({
-    where: { lessons: { some: { subjectId } } },
-    include: { lessons: true },
+    where: { lessons: { some: { subjectId } }, ...activeAsOfWhere(asOf) },
+    select: { classId: true },
   });
 
-  const classIds = [
-    ...new Set(schedules.map((s) => s.classId).filter(Boolean)),
-  ];
+  const classIds = [...new Set(schedules.map((s) => s.classId).filter(Boolean))];
 
   const [classes, progressList] = await Promise.all([
-    prisma.class.findMany({
-      where: { id: { in: classIds } },
-      select: { id: true, name: true },
-    }),
-    prisma.classSubjectProgress.findMany({
-      where: { subjectId, classId: { in: classIds } },
-    }),
+    prisma.class.findMany({ where: { id: { in: classIds } }, select: { id: true, name: true } }),
+    prisma.classSubjectProgress.findMany({ where: { subjectId, classId: { in: classIds } } }),
   ]);
 
-  const classInfoMap = new Map(
-    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
-  );
+  const classInfoMap = new Map(classes.map((c) => [c.id, { id: c.id, name: c.name }]));
+  const progressMap = new Map(progressList.map((p) => [p.classId, p.currentTopicNumber]));
 
-  const progressMap = new Map();
-  for (const p of progressList) {
-    progressMap.set(p.classId, p.currentTopicNumber);
+  const seen = new Set();
+  const classesResult = [];
+  for (const cid of classIds) {
+    if (seen.has(cid)) continue;
+    seen.add(cid);
+    classesResult.push({
+      class: classInfoMap.get(cid) || null,
+      subjectId,
+      currentTopicNumber: progressMap.get(cid) || 1,
+    });
   }
+  classesResult.sort((a, b) => (a.class?.name || "").localeCompare(b.class?.name || ""));
 
-  const classMap = new Map();
-  for (const schedule of schedules) {
-    const classId = schedule.classId;
-
-    if (!classMap.has(classId)) {
-      classMap.set(classId, {
-        class: classInfoMap.get(classId) || null,
-        subjectId: subjectId,
-        currentTopicNumber: progressMap.get(classId) || 1,
-      });
-    }
-  }
-
-  const classesResult = Array.from(classMap.values()).sort((a, b) =>
-    (a.class?.name || "").localeCompare(b.class?.name || ""),
-  );
-
-  return {
-    classes: classesResult,
-    subject: { id: subject.id, name: subject.name },
-  };
+  return { classes: classesResult, subject: { id: subject.id, name: subject.name } };
 }
 
-/**
- * Sinf+fan uchun joriy mavzu raqamini yangilash.
- * @param {string} classId - sinf ID
- * @param {string} subjectId - fan ID
- * @param {number} topicNumber - mavzu raqami
- * @returns {Promise<object>} yangilangan ma'lumot
- */
 async function updateCurrentTopic(classId, subjectId, topicNumber) {
   if (!topicNumber || topicNumber < 1) {
     throw new BadRequestError("Mavzu raqami kamida 1 bo'lishi kerak");
   }
 
   const classDoc = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classDoc) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
+  if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
   const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
-  if (!subject) {
-    throw new NotFoundError("Fan topilmadi");
-  }
+  if (!subject) throw new NotFoundError("Fan topilmadi");
 
-  const topic = await prisma.topic.findFirst({
-    where: { subjectId, order: topicNumber },
-  });
-
-  if (!topic) {
-    throw new NotFoundError(`${topicNumber}-mavzu ushbu fan uchun topilmadi`);
-  }
+  const topic = await prisma.topic.findFirst({ where: { subjectId, order: topicNumber } });
+  if (!topic) throw new NotFoundError(`${topicNumber}-mavzu ushbu fan uchun topilmadi`);
 
   const progress = await prisma.classSubjectProgress.upsert({
     where: { classId_subjectId: { classId, subjectId } },
@@ -745,6 +643,7 @@ async function updateCurrentTopic(classId, subjectId, topicNumber) {
 module.exports = {
   getScheduleByClass,
   getScheduleByDay,
+  getScheduleVersions,
   createOrUpdateSchedule,
   saveClassSchedule,
   deleteSchedule,

@@ -275,10 +275,15 @@ enum AccountEntryType {
   expense_void // + xarajat bekor qilindi
 }
 
-// Oylik qanday hisoblanadi. Hozircha faqat `fixed` — soatbay, darsbay va
-// guruh tushumidan foiz kelajakda qo'shiladi (baza shunga tayyor).
+// Oylik qanday hisoblanadi. Ikki komponent birga bo'lishi mumkin:
+//   fixed — qat'iy oylik summa (oy aniqligida)
+//   kpi   — faqat dars soatlari bo'yicha (perHourRate × oylik soat)
+//   mixed — fiksa + KPI birga
+// `type` StaffSalary komponentlaridan HOSILA (service belgilaydi).
 enum SalaryType {
   fixed
+  kpi
+  mixed
 }
 
 // Oylik majburiyatining holati — `InvoiceStatus` bilan bir xil.
@@ -421,17 +426,27 @@ model Topic {
   @@map("topics")
 }
 
+// Dars jadvali — VERSIYALANADI. Jadval ko'p o'zgaradi, shuning uchun har
+// o'zgarish yangi versiya: eski jadval o'chmaydi, o'z amal qilish davrida
+// (kun aniqligida) qoladi. Bir (sinf, kun) uchun kesishuvchi davrlar
+// TAQIQLANADI (service tekshiradi) — shu sabab `@@unique([classId, day])`
+// olib tashlandi. "Berilgan sanada qaysi jadval amalda" — effectiveFrom/To
+// bo'yicha hal qilinadi (bugungi dars, baholash va KPI dars soati shunga
+// tayanadi).
 model Schedule {
   id        String      @id @db.Char(24)
   classId   String      @map("class_id") @db.Char(24)
   day       ScheduleDay
+  // Amal qilish davri (kun aniqligida). `effectiveTo == null` → hozircha amalda.
+  effectiveFrom DateTime  @map("effective_from") @db.Date
+  effectiveTo   DateTime? @map("effective_to") @db.Date
   createdBy String      @map("created_by") @db.Char(24)
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
 
   lessons ScheduleLesson[]
 
-  @@unique([classId, day])
+  @@index([classId, day, effectiveFrom(sort: Desc)])
   @@map("schedules")
 }
 
@@ -2034,8 +2049,14 @@ model StaffSalary {
   // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
   staffId String @map("staff_id") @db.Char(24)
 
-  type   SalaryType @default(fixed)
-  amount Decimal    @db.Decimal(14, 2)
+  // Oylik ikki komponentdan iborat bo'lishi mumkin:
+  //   fixedAmount  — qat'iy oylik (oy aniqligida, proratsiyasiz)
+  //   perHourRate  — 1 dars soatiga to'lov (KPI). Oylik jami soat schedule'dan
+  //                  hisoblanadi va PayrollEntry'ga MUHRLANADI.
+  // `type` shu ikkisidan hosila: fixed / kpi / mixed (service belgilaydi).
+  type        SalaryType @default(fixed)
+  fixedAmount Decimal    @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  perHourRate Decimal    @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
 
   startMonth Int  @map("start_month")
   endMonth   Int? @map("end_month")
@@ -2069,6 +2090,14 @@ model PayrollEntry {
 
   status     PayrollStatus @default(unpaid)
   salaryType SalaryType    @default(fixed) @map("salary_type")
+
+  // Summa breakdown — MUHRLANGAN (generatsiya vaqtidagi qiymatlar).
+  // amount = fixedAmount + kpiAmount; kpiAmount = perHourRate × lessonHours.
+  // Schedule keyin o'zgarsa bu qatorga tegilmaydi (hisob-faktura doktrinasi).
+  fixedAmount Decimal @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  kpiAmount   Decimal @default(0) @map("kpi_amount") @db.Decimal(14, 2)
+  lessonHours Decimal @default(0) @map("lesson_hours") @db.Decimal(10, 2)
+  perHourRate Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
 
   // Xodim arxivlansa/o'chirilsa ham registr o'qilishi kerak
   staffSnapshot Json @map("staff_snapshot")

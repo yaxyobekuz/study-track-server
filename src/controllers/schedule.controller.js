@@ -2,17 +2,27 @@ const asyncHandler = require("../middleware/async.middleware");
 const ExcelService = require("../services/excel.service");
 const scheduleService = require("../services/schedule.service");
 
-// Get all schedules for class
+// Get active schedules for class (as of a date, default today)
 const getScheduleByClass = asyncHandler(async (req, res) => {
-  const data = await scheduleService.getScheduleByClass(req.params.classId);
+  const data = await scheduleService.getScheduleByClass(
+    req.params.classId,
+    req.query.asOf,
+  );
 
   res.json({ success: true, data });
 });
 
-// Get schedule for class and day
+// Get all schedule VERSIONS for a class (history)
+const getScheduleVersions = asyncHandler(async (req, res) => {
+  const data = await scheduleService.getScheduleVersions(req.params.classId);
+
+  res.json({ success: true, data });
+});
+
+// Get schedule for class and day (as of a date, default today)
 const getScheduleByDay = asyncHandler(async (req, res) => {
   const { classId, day } = req.params;
-  const data = await scheduleService.getScheduleByDay(classId, day);
+  const data = await scheduleService.getScheduleByDay(classId, day, req.query.asOf);
 
   res.json({ success: true, data });
 });
@@ -30,9 +40,10 @@ const createOrUpdateSchedule = asyncHandler(async (req, res) => {
 
 // Create or update the whole week schedule for a class (Owner only)
 const saveClassSchedule = asyncHandler(async (req, res) => {
+  // req.body: { schedules, effectiveFrom, effectiveTo }
   const data = await scheduleService.saveClassSchedule(
     req.params.classId,
-    req.body.schedules,
+    req.body,
     req.user.id,
   );
 
@@ -112,6 +123,7 @@ const updateCurrentTopic = asyncHandler(async (req, res) => {
 
 module.exports = {
   getScheduleByClass,
+  getScheduleVersions,
   getScheduleByDay,
   createOrUpdateSchedule,
   saveClassSchedule,

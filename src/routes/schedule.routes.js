@@ -4,6 +4,7 @@ const {
   deleteSchedule,
   getScheduleByDay,
   getScheduleByClass,
+  getScheduleVersions,
   getMyTodaySchedule,
   getAllTodaySchedules,
   createOrUpdateSchedule,
@@ -32,6 +33,13 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
   getScheduleByClass,
+);
+// Barcha versiyalar (tarix) — sana bo'yicha
+router.get(
+  "/class/:classId/versions",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
+  getScheduleVersions,
 );
 router.get(
   "/class/:classId/export",

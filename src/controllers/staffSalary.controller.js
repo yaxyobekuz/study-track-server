@@ -11,6 +11,15 @@ const getStaffHistory = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+/** Xodimning berilgan oydagi dars soati — forma KPI preview'i uchun. */
+const getLessonHours = asyncHandler(async (req, res) => {
+  const data = await staffSalaryService.getLessonHoursPreview(
+    req.params.staffId,
+    req.query.month,
+  );
+  res.json({ success: true, data });
+});
+
 const createSalary = asyncHandler(async (req, res) => {
   const data = await staffSalaryService.createSalary(req.body, req.user.id);
   res.status(201).json({ success: true, data });
@@ -34,6 +43,7 @@ const deleteSalary = asyncHandler(async (req, res) => {
 module.exports = {
   getSalaries,
   getStaffHistory,
+  getLessonHours,
   createSalary,
   updateSalary,
   closeSalary,

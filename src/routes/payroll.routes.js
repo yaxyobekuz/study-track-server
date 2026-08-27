@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getSalaries,
   getStaffHistory,
+  getLessonHours,
   createSalary,
   updateSalary,
   closeSalary,
@@ -34,6 +35,8 @@ const {
 router.get("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getSalaries);
 router.post("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createSalary);
 router.get("/salaries/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffHistory);
+// Dars soati preview'i (KPI summasini oldindan ko'rsatish uchun)
+router.get("/salaries/lesson-hours/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getLessonHours);
 router.put("/salaries/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateSalary);
 router.patch("/salaries/:id/close", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), closeSalary);
 router.delete("/salaries/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteSalary);

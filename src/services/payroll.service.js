@@ -27,7 +27,13 @@ const {
   formatMonthKey,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
-const { resolveSalariesForMonth, STAFF_SELECT } = require("./staffSalary.service");
+const {
+  resolveSalariesForMonth,
+  deriveSalaryType,
+  TYPE_LABELS,
+  STAFF_SELECT,
+} = require("./staffSalary.service");
+const { computeLessonHoursForMonth } = require("./lessonHours.service");
 
 const STATUS_LABELS = {
   unpaid: "To'lanmagan",
@@ -42,6 +48,11 @@ const serializeEntry = (row, { staff } = {}) => {
   return {
     ...row,
     amount: formatAmount(row.amount),
+    fixedAmount: formatAmount(row.fixedAmount ?? 0),
+    kpiAmount: formatAmount(row.kpiAmount ?? 0),
+    perHourRate: formatAmount(row.perHourRate ?? 0),
+    lessonHours: Number(row.lessonHours ?? 0),
+    salaryTypeLabel: TYPE_LABELS[row.salaryType] ?? row.salaryType,
     paidAmount: formatAmount(row.paidAmount),
     // Ortiqcha to'lov RAD ETILADI, shuning uchun manfiy bo'lmasligi kerak —
     // lekin himoya qavati qoladi
@@ -70,7 +81,10 @@ const emptySummary = (month, reason) => ({
   eligible: 0,
   created: 0,
   totalAmount: "0.00",
-  skipped: { alreadyExists: 0, noSalary: 0, archived: 0 },
+  fixedTotal: "0.00",
+  kpiTotal: "0.00",
+  // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
+  skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0 },
   durationMs: 0,
 });
 
@@ -131,9 +145,21 @@ const generateForMonth = async (monthInput, options = {}) => {
   });
   const existingIds = new Set(existing.map((e) => e.staffId));
 
+  // 3.5 ── KPI stavkasi bor xodimlar uchun oylik dars soatini hisoblaymiz
+  // (schedule bo'yicha). Bitta so'rov — natija generatsiya vaqtida MUHRLANADI.
+  const kpiStaffIds = staff
+    .filter((s) => {
+      const rule = salaries.get(s.id);
+      return rule && new Decimal(rule.perHourRate).greaterThan(0);
+    })
+    .map((s) => s.id);
+  const hoursMap = await computeLessonHoursForMonth(month, kpiStaffIds);
+
   // 4 ── Qatorlarni yig'ish
   const rows = [];
   let total = new Decimal(0);
+  let fixedTotal = new Decimal(0);
+  let kpiTotal = new Decimal(0);
 
   for (const person of staff) {
     if (existingIds.has(person.id)) {
@@ -147,14 +173,34 @@ const generateForMonth = async (monthInput, options = {}) => {
       continue;
     }
 
-    const amount = new Decimal(salary.amount);
+    const fixedAmount = new Decimal(salary.fixedAmount);
+    const perHourRate = new Decimal(salary.perHourRate);
+    const hours = new Decimal(hoursMap.get(person.id)?.hours ?? 0);
+    const kpiAmount = perHourRate
+      .times(hours)
+      .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const amount = fixedAmount.plus(kpiAmount);
+
+    // Faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodimga 0 li majburiyat
+    // yozilmaydi (shovqin bo'lardi). Fiksa komponent bo'lsa amount > 0.
+    if (amount.lessThanOrEqualTo(0)) {
+      summary.skipped.zeroAmount += 1;
+      continue;
+    }
+
     total = total.plus(amount);
+    fixedTotal = fixedTotal.plus(fixedAmount);
+    kpiTotal = kpiTotal.plus(kpiAmount);
 
     rows.push({
       staffId: person.id,
       month,
       amount,
-      salaryType: salary.type,
+      fixedAmount,
+      kpiAmount,
+      lessonHours: hours,
+      perHourRate,
+      salaryType: salary.type ?? deriveSalaryType(fixedAmount, perHourRate),
       staffSnapshot: {
         firstName: person.firstName,
         lastName: person.lastName ?? "",
@@ -167,6 +213,8 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   summary.created = rows.length;
   summary.totalAmount = formatAmount(total);
+  summary.fixedTotal = formatAmount(fixedTotal);
+  summary.kpiTotal = formatAmount(kpiTotal);
   summary.dryRun = dryRun;
 
   if (!dryRun && rows.length > 0) {
