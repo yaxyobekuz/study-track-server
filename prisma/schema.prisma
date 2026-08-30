@@ -674,6 +674,28 @@ model PlannerLesson {
   @@map("planner_lessons")
 }
 
+// DARS TAQSIMOTI VARAG'I (mustaqil tab).
+//
+// ⚠️ Bu model ATAYLAB "ochiq" (opaque): butun varaq BITTA JSON hujjat sifatida
+// saqlanadi. Sababi — tab hozircha MUSTAQIL: ustunlar (sinflar) va qatorlar
+// (fanlar) shu varaqning o'zida yashaydi, `classes`/`subjects` kataloglariga
+// bog'lanmaydi. Ularni normallashtirilgan jadvalga yoysak, hali qabul
+// qilinmagan qarorni (qaysi ustun qaysi sinf?) sxemaga muhrlab qo'ygan
+// bo'lardik va integratsiya paytida migratsiya qilishga to'g'ri kelardi.
+//
+// Doimiy saqlash MIJOZDA — localStorage. Bu jadval esa IXTIYORIY zaxira:
+// foydalanuvchi "Saqlash" tugmasini bosgandagina yoziladi (avtomatik emas).
+model PlannerDistribution {
+  id String @id @default("singleton") @db.VarChar(24)
+  // { version, columns[], rows[], values{}, savedAt }
+  data      Json     @default("{}")
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("planner_distributions")
+}
+
 // ─────────────────────────────────────────────
 // DAVOMAT (XODIMLAR + O'QUVCHILAR)
 // ─────────────────────────────────────────────
