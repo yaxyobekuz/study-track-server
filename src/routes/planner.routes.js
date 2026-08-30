@@ -37,6 +37,18 @@ router.post(
   controller.fillFromWorkSchedule,
 );
 
+// ── Dars taqsimoti varag'i (mustaqil tab) ──
+router.get(
+  "/distribution",
+  authorizePermission(PERMISSIONS.PLANNER_VIEW),
+  controller.getDistribution,
+);
+router.put(
+  "/distribution",
+  authorizePermission(PERMISSIONS.PLANNER_DISTRIBUTION),
+  controller.saveDistribution,
+);
+
 // ── Sozlamalar ──
 router.get("/settings", authorizePermission(PERMISSIONS.PLANNER_VIEW), controller.getSettings);
 router.put(

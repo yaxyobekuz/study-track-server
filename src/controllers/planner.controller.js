@@ -11,6 +11,7 @@ const availabilityService = require("../services/plannerAvailability.service");
 const settingsService = require("../services/plannerSettings.service");
 const generatorService = require("../services/plannerGenerator.service");
 const runService = require("../services/plannerRun.service");
+const distributionService = require("../services/plannerDistribution.service");
 
 // ── YUKLAMA ("Asosiy" tab) ──
 
@@ -63,6 +64,20 @@ exports.fillFromWorkSchedule = asyncHandler(async (req, res) => {
     message: `${filled} ta katak band deb belgilandi`,
     data: availability,
   });
+});
+
+// ── DARS TAQSIMOTI VARAG'I (mustaqil tab) ──
+
+/** GET /api/planner/distribution */
+exports.getDistribution = asyncHandler(async (req, res) => {
+  const data = await distributionService.getSheet();
+  return res.json({ success: true, data });
+});
+
+/** PUT /api/planner/distribution */
+exports.saveDistribution = asyncHandler(async (req, res) => {
+  const data = await distributionService.saveSheet(req.body?.data, req.user.id);
+  return res.json({ success: true, message: "Varaq serverga saqlandi", data });
 });
 
 // ── SOZLAMALAR ──
