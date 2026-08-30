@@ -19,7 +19,24 @@ async function attachCreators(rows) {
  */
 async function getAllClasses() {
   const classes = await prisma.class.findMany({ orderBy: { name: "asc" } });
-  return attachCreators(classes);
+
+  // O'quvchi soni — BITTA guruhlangan so'rov bilan (har sinf uchun alohida
+  // `count` qilsak, 25 sinfda 25 ta so'rov ketardi).
+  //
+  // Arxivlangan o'quvchi sanalmaydi: u maktabda yo'q, ya'ni sinf
+  // ro'yxatidagi raqam haqiqiy holatni ko'rsatishi kerak.
+  const counts = await prisma.userClass.groupBy({
+    by: ["classId"],
+    where: { user: { role: "student", isArchived: false } },
+    _count: { userId: true },
+  });
+  const countMap = new Map(counts.map((c) => [c.classId, c._count.userId]));
+
+  const withCreators = await attachCreators(classes);
+  return withCreators.map((item) => ({
+    ...item,
+    studentCount: countMap.get(item.id) ?? 0,
+  }));
 }
 
 /**
