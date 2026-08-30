@@ -154,6 +154,7 @@ const PERMISSION_SECTIONS = [
       { key: "loads", label: "Dars soatlarini belgilash" },
       { key: "availability", label: "Bandlikni belgilash" },
       { key: "generate", label: "Jadval shakllantirish" },
+      { key: "distribution", label: "Dars taqsimoti varag'i" },
       A.export,
       A.settings,
     ],
