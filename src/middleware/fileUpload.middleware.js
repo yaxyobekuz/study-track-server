@@ -1,5 +1,6 @@
 const multer = require("multer");
 const { config } = require("../config/env.config");
+const { getBranch, runWithBranch } = require("../config/branchContext");
 
 const FILE_MIME_TYPES = {
   image: ["image/jpeg", "image/jpg", "image/png", "image/webp"],
@@ -15,6 +16,32 @@ const FILE_MIME_TYPES = {
   ],
   // Lottie animatsiya (.json) fayllari
   json: ["application/json", "text/plain", "application/octet-stream"],
+};
+
+/**
+ * FILIAL KONTEKSTINI TIKLAYDI (multer'dan keyin MAJBURIY).
+ *
+ * Multer faylni `req` stream'idan busboy orqali o'qiydi. Stream hodisalari
+ * so'rov emas, SOKET async resursidan keladi — u esa `runWithBranch()`
+ * chaqirilishidan ANCHA OLDIN, ulanish paytida yaratilgan. Shu sababli
+ * AsyncLocalStorage konteksti multer'ning tugash callback'iga tarqalmaydi
+ * va undan keyingi butun zanjir (controller, service) filialsiz qoladi —
+ * "Filial konteksti yo'q" xatosi aynan shundan chiqadi.
+ *
+ * Yechim: kontekstni yuklashdan OLDIN o'qib olamiz va `next()` ni o'sha
+ * filial ichida chaqiramiz. Kontekstsiz kelgan so'rovda hech narsa
+ * o'zgarmaydi.
+ *
+ * @param {Function} uploadMiddleware Multer middleware.
+ * @returns {Function} Filial kontekstini tiklaydigan middleware.
+ */
+const withBranchContext = (uploadMiddleware) => (req, res, next) => {
+  const branch = getBranch();
+
+  uploadMiddleware(req, res, (err) => {
+    if (!branch) return next(err);
+    runWithBranch(branch, () => next(err));
+  });
 };
 
 /**
@@ -55,7 +82,7 @@ const createSingleFileUpload = ({
     },
   });
 
-  return upload.single(fieldName);
+  return withBranchContext(upload.single(fieldName));
 };
 
 /**
@@ -92,7 +119,7 @@ const createMultiFileUpload = ({
     },
   });
 
-  return upload.array(fieldName, Math.max(1, maxFiles));
+  return withBranchContext(upload.array(fieldName, Math.max(1, maxFiles)));
 };
 
 /**
@@ -125,6 +152,7 @@ const handleFileUploadError = (err, req, res, next) => {
 
 module.exports = {
   FILE_MIME_TYPES,
+  withBranchContext,
   getAllowedMimeTypes,
   createSingleFileUpload,
   createMultiFileUpload,

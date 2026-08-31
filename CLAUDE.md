@@ -48,6 +48,12 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
 - Outside a request (cron, scripts, detached work) you MUST wrap the work in
   `helpers/branchIterator.js` (`forEachBranch` / `mapBranches` / `branchCron`)
   or `runWithBranch` — otherwise the first query throws.
+- **Multipart (multer) breaks the context.** Busboy reads the request through
+  the socket's async resource, which predates `runWithBranch()`, so everything
+  after the upload would run branchless. `middleware/fileUpload.middleware.js`
+  wraps every multer middleware in `withBranchContext()` — build upload
+  middleware only with `createSingleFileUpload` / `createMultiFileUpload`,
+  never with a bare `multer(...)` in a route.
 - Migrations: `npm run branch:migrate` applies to platform **and every branch**.
   `npm run prisma:migrate` alone only touches whatever `DATABASE_URL` points at.
 
