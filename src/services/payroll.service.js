@@ -32,9 +32,19 @@ const {
   TYPE_LABELS,
   STAFF_SELECT,
 } = require("./staffSalary.service");
-const { computeLessonHoursForMonth } = require("./lessonHours.service");
-const { loadCategoriesByIds } = require("./salaryCategory.service");
-const { computeAllowances } = require("../helpers/salaryRules.helpers");
+const payrollEngine = require("./payrollEngine.service");
+
+// Payroll uchun user maydonlari — biriktirmalar bilan
+const PAYROLL_USER_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  username: true,
+  role: true,
+  isArchived: true,
+  positionId: true,
+  salaryCategoryId: true,
+};
 
 const STATUS_LABELS = {
   unpaid: "To'lanmagan",
@@ -56,6 +66,8 @@ const serializeEntry = (row, { staff } = {}) => {
     perHourRate: formatAmount(row.perHourRate ?? 0),
     lessonHours: Number(row.lessonHours ?? 0),
     categoryName: row.categoryName ?? "",
+    positionName: row.positionName ?? "",
+    departmentName: row.departmentName ?? "",
     salaryTypeLabel: TYPE_LABELS[row.salaryType] ?? row.salaryType,
     paidAmount: formatAmount(row.paidAmount),
     // Ortiqcha to'lov RAD ETILADI, shuning uchun manfiy bo'lmasligi kerak —
@@ -115,59 +127,40 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   const summary = emptySummary(month, null);
 
-  // 1 ── Oylik qoidasi bor xodimlar (bitta so'rov)
-  const salaries = await resolveSalariesForMonth(month);
-  if (salaries.size === 0) {
-    summary.durationMs = Date.now() - startedAt;
-    return summary;
-  }
+  // 1 ── Oylik oladigan xodimlar: lavozim (staff) YOKI toifa (teacher) YOKI
+  // eski StaffSalary qoidasi bor. `isArchived` FILTRLANADI (ketganga yozilmaydi).
+  const salaryRules = await resolveSalariesForMonth(month); // eski qatlam
+  const ruleIds = [...salaryRules.keys()];
 
-  const ids = staffIds?.length
-    ? [...salaries.keys()].filter((id) => staffIds.includes(id))
-    : [...salaries.keys()];
+  const where = {
+    isArchived: false,
+    role: { not: ROLES.STUDENT },
+    OR: [
+      { positionId: { not: null } },
+      { salaryCategoryId: { not: null } },
+      ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+    ],
+  };
+  if (staffIds?.length) where.id = { in: staffIds };
 
-  // 2 ── Xodimlar. `isArchived` FILTRLANADI: ketgan odamga oylik yozilmaydi.
-  // (O'quvchi tomonida `isActive` ataylab filtrlanmaydi — u yerda qarz
-  // bekor bo'lmaydi. Bu yerda esa aksincha: biz to'laymiz.)
-  const staff = await prisma.user.findMany({
-    where: { id: { in: ids }, isArchived: false, role: { not: ROLES.STUDENT } },
-    select: STAFF_SELECT,
-  });
-
-  summary.skipped.archived = ids.length - staff.length;
+  const staff = await prisma.user.findMany({ where, select: PAYROLL_USER_SELECT });
   summary.eligible = staff.length;
-
   if (staff.length === 0) {
     summary.durationMs = Date.now() - startedAt;
     return summary;
   }
 
-  // 3 ── Allaqachon shakllantirilganlari
+  // 2 ── Allaqachon shakllantirilganlari
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
     select: { staffId: true },
   });
   const existingIds = new Set(existing.map((e) => e.staffId));
 
-  // 3.5 ── Toifalar (KPI stavka manbai) va dars soatlarini yuklaymiz.
-  const eligibleSalaries = staff.map((s) => salaries.get(s.id)).filter(Boolean);
-  const categoryMap = await loadCategoriesByIds(
-    eligibleSalaries.map((s) => s.categoryId),
-  );
-  // KPI oladigan xodimlar: toifa yoki qo'lda stavka bor
-  const kpiStaffIds = staff
-    .filter((s) => {
-      const rule = salaries.get(s.id);
-      if (!rule) return false;
-      const rate = rule.categoryId
-        ? categoryMap.get(rule.categoryId)?.perHourRate
-        : rule.perHourRate;
-      return new Decimal(rate ?? 0).greaterThan(0);
-    })
-    .map((s) => s.id);
-  const hoursMap = await computeLessonHoursForMonth(month, kpiStaffIds);
+  // 3 ── Kontekst (lavozim/toifa/soat/ustama) — bir marta
+  const ctx = await payrollEngine.loadContext(month, staff, { salaryRules });
 
-  // 4 ── Qatorlarni yig'ish
+  // 4 ── Qatorlarni yig'ish (engine bilan hisoblab, MUHRLAB)
   const rows = [];
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
@@ -179,52 +172,34 @@ const generateForMonth = async (monthInput, options = {}) => {
       continue;
     }
 
-    const salary = salaries.get(person.id);
-    if (!salary) {
+    const c = payrollEngine.computeForStaff(person, month, ctx);
+    if (!c) {
       summary.skipped.noSalary += 1;
       continue;
     }
-
-    const fixedAmount = new Decimal(salary.fixedAmount);
-
-    // Ustama qoidalari (foizlilar fiksadan)
-    const allowances = Array.isArray(salary.allowances) ? salary.allowances : [];
-    const { total: allowanceAmount, breakdown: allowanceBreakdown } = computeAllowances(
-      fixedAmount,
-      allowances,
-    );
-
-    // KPI: stavka toifadan yoki qo'lda; soat schedule'dan
-    const category = salary.categoryId ? categoryMap.get(salary.categoryId) : null;
-    const kpiRate = new Decimal(category ? category.perHourRate : salary.perHourRate || 0);
-    const hours = new Decimal(hoursMap.get(person.id)?.hours ?? 0);
-    const kpiAmount = kpiRate.times(hours).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-
-    const amount = fixedAmount.plus(allowanceAmount).plus(kpiAmount);
-
-    // Faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodimga 0 li majburiyat
-    // yozilmaydi (shovqin bo'lardi). Fiksa/ustama komponent bo'lsa amount > 0.
-    if (amount.lessThanOrEqualTo(0)) {
+    if (c.amount.lessThanOrEqualTo(0)) {
       summary.skipped.zeroAmount += 1;
       continue;
     }
 
-    total = total.plus(amount);
-    fixedTotal = fixedTotal.plus(fixedAmount).plus(allowanceAmount);
-    kpiTotal = kpiTotal.plus(kpiAmount);
+    total = total.plus(c.amount);
+    fixedTotal = fixedTotal.plus(c.fixedAmount).plus(c.allowanceAmount);
+    kpiTotal = kpiTotal.plus(c.kpiAmount);
 
     rows.push({
       staffId: person.id,
       month,
-      amount,
-      fixedAmount,
-      allowanceAmount,
-      allowanceBreakdown,
-      kpiAmount,
-      lessonHours: hours,
-      perHourRate: kpiRate,
-      categoryName: category?.name ?? "",
-      salaryType: salary.type,
+      amount: c.amount,
+      fixedAmount: c.fixedAmount,
+      allowanceAmount: c.allowanceAmount,
+      allowanceBreakdown: c.allowanceBreakdown,
+      kpiAmount: c.kpiAmount,
+      lessonHours: c.lessonHours,
+      perHourRate: c.perHourRate,
+      categoryName: c.categoryName,
+      positionName: c.positionName,
+      departmentName: c.departmentName,
+      salaryType: c.salaryType,
       staffSnapshot: {
         firstName: person.firstName,
         lastName: person.lastName ?? "",

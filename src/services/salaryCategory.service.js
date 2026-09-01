@@ -1,84 +1,143 @@
 /**
- * MALAKA TOIFASI KATALOGI — soatlik KPI stavkasi (sozlamalar).
+ * MALAKA TOIFASI KATALOGI — teaching BO'LIMGA bog'langan soatbay maosh jadvali.
  *
- * Har toifa (Mutaxassis, 2/1-malaka, Oliy malaka) o'z soat narxiga ega.
- * Xodim oyligiga toifa biriktiriladi; KPI = jami dars soati × toifa stavkasi.
- * Stavka payroll generatsiyasida MUHRLANADI — keyin o'zgarsa o'tgan oyга tegmaydi
- * (tarif katalogi doktrinasi).
+ * Har teaching bo'lim (MTB / Boshlang'ich / Yuqori) o'z toifalariga ega
+ * (O'rta maxsus, 2-toifa, 1-toifa, Oliy toifa) va har toifada:
+ *   perHourRate    — bir soat uchun
+ *   monthlyPerHour — bir oy uchun
+ *   hoursPerStavka — bir stavka uchun dars soati
+ *   baseSalary     — asosiy maosh (to'liq stavka)
+ *
+ * O'qituvchi toifaga biriktiriladi (User.salaryCategoryId); KPI = perHourRate ×
+ * o'tilgan dars soati. Stavka payroll generatsiyasida MUHRLANADI (o'zgarsa
+ * o'tgan oyга tegmaydi).
  */
 
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { parseAmount, formatAmount } = require("../helpers/money.helpers");
 
-const serialize = (row, { usageCount } = {}) => ({
-  ...row,
+const serialize = (row, { usageCount, department } = {}) => ({
+  id: row.id,
+  departmentId: row.departmentId,
+  departmentName: department?.name ?? row.department?.name ?? null,
+  name: row.name,
   perHourRate: formatAmount(row.perHourRate),
+  monthlyPerHour: formatAmount(row.monthlyPerHour),
+  hoursPerStavka: row.hoursPerStavka,
+  baseSalary: formatAmount(row.baseSalary),
+  description: row.description,
+  sortOrder: row.sortOrder,
+  isActive: row.isActive,
+  isArchived: row.isArchived,
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt,
   ...(usageCount != null ? { usageCount } : {}),
 });
 
-/** Toifalar ro'yxati (status bo'yicha) + biriktirilgan oylik soni. */
+const statusWhere = (status) => {
+  if (status === "active") return { isArchived: false, isActive: true };
+  if (status === "inactive") return { isArchived: false, isActive: false };
+  if (status === "archived") return { isArchived: true };
+  return { isArchived: false };
+};
+
+/** O'qituvchilar soni (User.salaryCategoryId bo'yicha). */
+const usageCounts = async (ids) => {
+  if (!ids.length) return new Map();
+  const counts = await prisma.user.groupBy({
+    by: ["salaryCategoryId"],
+    where: { salaryCategoryId: { in: ids }, isArchived: false },
+    _count: { _all: true },
+  });
+  return new Map(counts.map((c) => [c.salaryCategoryId, c._count._all]));
+};
+
+/** Toifalar ro'yxati (bo'lim + status bo'yicha) + o'qituvchilar soni. */
 const getCategories = async (query = {}) => {
-  const status = query.status;
-  const where = {};
-  if (status === "active") Object.assign(where, { isArchived: false, isActive: true });
-  else if (status === "inactive") Object.assign(where, { isArchived: false, isActive: false });
-  else if (status === "archived") where.isArchived = true;
-  else where.isArchived = false; // default — arxivlanmaganlar
+  const where = statusWhere(query.status);
+  if (query.departmentId) where.departmentId = query.departmentId;
 
   const rows = await prisma.salaryCategory.findMany({
     where,
-    orderBy: [{ perHourRate: "asc" }, { name: "asc" }],
+    orderBy: [{ sortOrder: "asc" }, { baseSalary: "asc" }, { name: "asc" }],
+    include: { department: { select: { name: true } } },
   });
 
-  // Har toifaga nechta oylik qoidasi biriktirilgan
-  const counts = await prisma.staffSalary.groupBy({
-    by: ["categoryId"],
-    where: { categoryId: { in: rows.map((r) => r.id) } },
-    _count: { _all: true },
-  });
-  const countMap = new Map(counts.map((c) => [c.categoryId, c._count._all]));
-
+  const countMap = await usageCounts(rows.map((r) => r.id));
   return rows.map((row) => serialize(row, { usageCount: countMap.get(row.id) ?? 0 }));
 };
 
-/** Faol toifalar (select uchun). */
-const getActiveCategories = async () => {
+/** Faol toifalar (select uchun), ixtiyoriy bo'lim bo'yicha. */
+const getActiveCategories = async (query = {}) => {
+  const where = { isArchived: false, isActive: true };
+  if (query.departmentId) where.departmentId = query.departmentId;
   const rows = await prisma.salaryCategory.findMany({
-    where: { isArchived: false, isActive: true },
-    orderBy: [{ perHourRate: "asc" }, { name: "asc" }],
+    where,
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    include: { department: { select: { name: true } } },
   });
   return rows.map((row) => serialize(row));
 };
 
 const getById = async (id) => {
-  const row = await prisma.salaryCategory.findUnique({ where: { id } });
+  const row = await prisma.salaryCategory.findUnique({
+    where: { id },
+    include: { department: { select: { name: true } } },
+  });
   if (!row) throw new NotFoundError("Toifa topilmadi");
   return serialize(row);
+};
+
+const assertTeachingDepartment = async (departmentId) => {
+  if (!departmentId) return null;
+  const dept = await prisma.department.findUnique({ where: { id: departmentId } });
+  if (!dept) throw new NotFoundError("Bo'lim topilmadi");
+  if (dept.kind !== "teaching") {
+    throw new BadRequestError("Toifa faqat 'teaching' turidagi bo'limga qo'shiladi");
+  }
+  return dept;
+};
+
+const parseFields = (data) => {
+  const payload = {};
+  if (data.perHourRate !== undefined) payload.perHourRate = parseAmount(data.perHourRate, "Bir soat uchun");
+  if (data.monthlyPerHour !== undefined) payload.monthlyPerHour = parseAmount(data.monthlyPerHour, "Bir oy uchun");
+  if (data.baseSalary !== undefined) payload.baseSalary = parseAmount(data.baseSalary, "Asosiy maosh");
+  if (data.hoursPerStavka !== undefined) {
+    const h = Number(data.hoursPerStavka);
+    if (!Number.isFinite(h) || h < 0) throw new BadRequestError("Dars soati noto'g'ri");
+    payload.hoursPerStavka = Math.trunc(h);
+  }
+  if (data.description !== undefined) payload.description = String(data.description).trim();
+  if (data.sortOrder !== undefined) payload.sortOrder = Number(data.sortOrder) || 0;
+  if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
+  return payload;
 };
 
 const createCategory = async (data, userId) => {
   const name = String(data.name ?? "").trim();
   if (!name) throw new BadRequestError("Toifa nomi majburiy");
+  const department = await assertTeachingDepartment(data.departmentId);
 
-  const perHourRate = parseAmount(data.perHourRate ?? 0, "Soat narxi");
-  if (perHourRate.lessThanOrEqualTo(0)) {
-    throw new BadRequestError("Soat narxi noldan katta bo'lishi kerak");
+  const fields = parseFields(data);
+  if (!fields.perHourRate || fields.perHourRate.lessThanOrEqualTo(0)) {
+    throw new BadRequestError("Bir soat uchun narx noldan katta bo'lishi kerak");
   }
 
   try {
     const row = await prisma.salaryCategory.create({
       data: {
         name,
-        perHourRate,
-        description: String(data.description ?? "").trim(),
-        isActive: data.isActive !== false,
+        departmentId: department?.id ?? null,
+        ...fields,
         createdBy: userId,
       },
+      include: { department: { select: { name: true } } },
     });
     return serialize(row, { usageCount: 0 });
   } catch (error) {
-    if (error?.code === "P2002") throw new BadRequestError("Bu nomli toifa allaqachon bor");
+    if (error?.code === "P2002") throw new BadRequestError("Bu bo'limda shu nomli toifa allaqachon bor");
     throw error;
   }
 };
@@ -87,55 +146,51 @@ const updateCategory = async (id, data) => {
   const row = await prisma.salaryCategory.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Toifa topilmadi");
 
-  const payload = {};
+  const payload = parseFields(data);
   if (data.name !== undefined) {
     const name = String(data.name).trim();
     if (!name) throw new BadRequestError("Toifa nomi majburiy");
     payload.name = name;
   }
-  if (data.perHourRate !== undefined) {
-    const rate = parseAmount(data.perHourRate, "Soat narxi");
-    if (rate.lessThanOrEqualTo(0)) {
-      throw new BadRequestError("Soat narxi noldan katta bo'lishi kerak");
-    }
-    payload.perHourRate = rate;
+  if (data.departmentId !== undefined) {
+    const dept = await assertTeachingDepartment(data.departmentId || null);
+    payload.departmentId = dept?.id ?? null;
   }
-  if (data.description !== undefined) payload.description = String(data.description).trim();
-  if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
 
   try {
-    const updated = await prisma.salaryCategory.update({ where: { id }, data: payload });
+    const updated = await prisma.salaryCategory.update({
+      where: { id },
+      data: payload,
+      include: { department: { select: { name: true } } },
+    });
     return serialize(updated);
   } catch (error) {
-    if (error?.code === "P2002") throw new BadRequestError("Bu nomli toifa allaqachon bor");
+    if (error?.code === "P2002") throw new BadRequestError("Bu bo'limda shu nomli toifa allaqachon bor");
     throw error;
   }
 };
 
-/** Arxivlash/qaytarish — o'chirish o'rniga (oyliklar unga ishora qiladi). */
 const archiveCategory = async (id, isArchived) => {
   const row = await prisma.salaryCategory.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Toifa topilmadi");
 
   const updated = await prisma.salaryCategory.update({
     where: { id },
-    data: {
-      isArchived: Boolean(isArchived),
-      archivedAt: isArchived ? new Date() : null,
-    },
+    data: { isArchived: Boolean(isArchived), archivedAt: isArchived ? new Date() : null },
+    include: { department: { select: { name: true } } },
   });
   return serialize(updated);
 };
 
-/** O'chirish — faqat hech qanday oylik unga biriktirilmagan bo'lsa. */
+/** O'chirish — faqat hech qanday o'qituvchi biriktirilmagan bo'lsa. */
 const deleteCategory = async (id) => {
   const row = await prisma.salaryCategory.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Toifa topilmadi");
 
-  const used = await prisma.staffSalary.count({ where: { categoryId: id } });
+  const used = await prisma.user.count({ where: { salaryCategoryId: id } });
   if (used > 0) {
     throw new BadRequestError(
-      `Bu toifa ${used} ta oylik qoidasiga biriktirilgan — o'chirib bo'lmaydi. Arxivlang.`,
+      `Bu toifaga ${used} ta o'qituvchi biriktirilgan — o'chirib bo'lmaydi. Arxivlang.`,
     );
   }
 

@@ -38,6 +38,38 @@ const {
   deleteCategory,
 } = require("../controllers/salaryCategory.controller");
 
+const {
+  getDepartments,
+  createDepartment,
+  updateDepartment,
+  deleteDepartment,
+  getPositions,
+  createPosition,
+  updatePosition,
+  deletePosition,
+  assignStaff,
+} = require("../controllers/department.controller");
+
+// ── Hisoblangan oyliklar (admin ko'rinishlari) ──
+const { getStaffPayroll, getTeacherPayroll } = require("../controllers/payrollView.controller");
+router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);
+router.get("/view/teachers", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getTeacherPayroll);
+
+// ── Bo'limlar (staff/teaching) ──
+router.get("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getDepartments);
+router.post("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createDepartment);
+router.put("/departments/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateDepartment);
+router.delete("/departments/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteDepartment);
+
+// ── Lavozimlar (staff bo'lim ichida) ──
+router.get("/positions", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getPositions);
+router.post("/positions", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createPosition);
+router.put("/positions/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updatePosition);
+router.delete("/positions/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deletePosition);
+
+// ── Xodimni lavozim/toifaga biriktirish ──
+router.patch("/staff/:staffId/assign", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), assignStaff);
+
 // ── Malaka toifasi katalogi (soatlik KPI stavka) ──
 router.get("/categories", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getCategories);
 router.get("/categories/active", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getActiveCategories);

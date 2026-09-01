@@ -328,6 +328,12 @@ model User {
   lastName      String?   @map("last_name")
   telegramIds   String[]  @map("telegram_ids")
   role          String // Role.value ga ishora (FK emas, service validatsiya)
+  // Payroll biriktirmalari (soft ref — FK yo'q, service validatsiya).
+  //   positionId       — staff bo'lim xodimi uchun LAVOZIM (maosh lavozimdan)
+  //   salaryCategoryId — teaching o'qituvchi uchun joriy TOIFA (KPI toifadan)
+  // Xodimning bo'limi shulardan hosila (position→department / category→department).
+  positionId       String? @map("position_id") @db.Char(24)
+  salaryCategoryId String? @map("salary_category_id") @db.Char(24)
   // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
   permissions   String[]  @default([]) @map("permissions")
   isActive      Boolean   @default(true) @map("is_active")
@@ -2070,20 +2076,174 @@ model ExternalIncome {
 // Har toifa (Mutaxassis, 2-malaka, 1-malaka, Oliy malaka) o'z soat narxiga ega.
 // Xodim toifaga biriktiriladi va KPI = jami dars soati × toifa stavkasi.
 // Stavka payroll generatsiyasida MUHRLANADI — keyin o'zgarsa o'tgan oyга tegmaydi.
-model SalaryCategory {
-  id          String    @id @db.Char(24)
-  name        String    @unique
-  perHourRate Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
-  description String    @default("")
-  isActive    Boolean   @default(true) @map("is_active")
-  isArchived  Boolean   @default(false) @map("is_archived")
-  archivedAt  DateTime? @map("archived_at")
-  createdBy   String    @map("created_by") @db.Char(24)
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+// BO'LIM turi: staff (lavozim + qat'iy maosh) yoki teaching (toifa + soatbay).
+enum DepartmentKind {
+  staff // Texnik, Boshqaruv — maosh LAVOZIMga biriktiriladi
+  teaching // MTB, Boshlang'ich, Yuqori — maosh TOIFAga (soatbay) biriktiriladi
+}
 
-  @@index([isArchived, isActive, name])
+// BO'LIM — payroll'ning tashkiliy o'lchovi ("Yo'nalish × Bo'lim" filtri).
+model Department {
+  id        String         @id @db.Char(24)
+  name      String         @unique
+  kind      DepartmentKind
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdBy String         @map("created_by") @db.Char(24)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  positions  Position[]
+  categories SalaryCategory[]
+
+  @@index([kind, isActive, sortOrder])
+  @@map("departments")
+}
+
+// LAVOZIM — maosh XODIMGA emas, LAVOZIMGA biriktiriladi. Lavozim maoshi
+// o'zgarsa, shu lavozimdagi barcha xodimlarning bazasi avtomatik yangilanadi
+// (payroll generatsiyasida joriy qiymat o'qiladi va MUHRLANADI).
+model Position {
+  id           String  @id @db.Char(24)
+  departmentId String  @map("department_id") @db.Char(24)
+  name         String
+  baseSalary   Decimal @default(0) @map("base_salary") @db.Decimal(14, 2)
+  sortOrder    Int     @default(0) @map("sort_order")
+  isActive     Boolean @default(true) @map("is_active")
+  createdBy    String  @map("created_by") @db.Char(24)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@unique([departmentId, name])
+  @@index([departmentId, isActive])
+  @@map("positions")
+}
+
+// MALAKA TOIFASI — endi teaching BO'LIMGA bog'langan (MTB/Boshlang'ich/Yuqori
+// har biri o'z toifalari va stavkalariga ega). Reference jadval maydonlari:
+//   perHourRate   — bir soat uchun
+//   monthlyPerHour — bir oy uchun (bir soatlik stavkaning oylik ekvivalenti)
+//   hoursPerStavka — bir stavka uchun dars soati
+//   baseSalary    — asosiy maosh (to'liq stavka uchun) = monthlyPerHour × hoursPerStavka
+model SalaryCategory {
+  id           String    @id @db.Char(24)
+  departmentId String?   @map("department_id") @db.Char(24) // teaching bo'lim (soft ref; legacy = null)
+  name         String
+  perHourRate  Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  monthlyPerHour Decimal @default(0) @map("monthly_per_hour") @db.Decimal(14, 2)
+  hoursPerStavka Int     @default(0) @map("hours_per_stavka")
+  baseSalary   Decimal   @default(0) @map("base_salary") @db.Decimal(14, 2)
+  description  String    @default("")
+  sortOrder    Int       @default(0) @map("sort_order")
+  isActive     Boolean   @default(true) @map("is_active")
+  isArchived   Boolean   @default(false) @map("is_archived")
+  archivedAt   DateTime? @map("archived_at")
+  createdBy    String    @map("created_by") @db.Char(24)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@unique([departmentId, name])
+  @@index([departmentId, isArchived, isActive, sortOrder])
   @@map("salary_categories")
+}
+
+// TASDIQLANGAN USTAMA — o'qituvchi/xodim oyligiga qo'shiladigan qo'shimcha.
+// Odatda `PayrollRequest` (zayavka) tasdiqlanganda yaratiladi; qo'lda ham
+// qo'shilishi mumkin. Payroll generatsiyasida faol ustamalar yig'iladi va
+// PayrollEntry.allowanceAmount ga MUHRLANADI.
+enum AllowanceKind {
+  fixed // qat'iy summa
+  percent // fiksa/bazadan foiz
+}
+
+model PayrollBonus {
+  id       String        @id @db.Char(24)
+  staffId  String        @map("staff_id") @db.Char(24)
+  label    String        @default("")
+  type     AllowanceKind @default(fixed)
+  value    Decimal       @default(0) @db.Decimal(14, 2)
+
+  // Amal qilish davri (oy aniqligida). endMonth = null → muddatsiz.
+  startMonth Int  @map("start_month")
+  endMonth   Int? @map("end_month")
+
+  // Qaysi zayavka asosida qo'shildi (soft ref PayrollRequest)
+  sourceRequestId String? @map("source_request_id") @db.Char(24)
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([staffId, isActive, startMonth])
+  @@map("payroll_bonuses")
+}
+
+// O'qituvchi/xodim yuboradigan zayavka: TOIFA o'zgartirish yoki USTAMA so'rash.
+// Request→approve naqshi ExcuseRequest bilan bir xil (ReviewStatus + reviewedBy
+// + rejectionReason + attachments). Tasdiqlanganda natija payroll'ga ta'sir
+// qiladi: category → user.salaryCategoryId, bonus → PayrollBonus yaratiladi.
+enum PayrollRequestKind {
+  category // Malaka toifasini o'zgartirish
+  bonus // Ustama haq
+}
+
+model PayrollRequest {
+  id      String             @id @db.Char(24)
+  staffId String             @map("staff_id") @db.Char(24) // so'rovchi
+  kind    PayrollRequestKind
+  status  ReviewStatus       @default(pending)
+  reason  String? // so'rovchi izohi
+
+  // kind=category → so'ralgan toifa (soft ref SalaryCategory)
+  requestedCategoryId String? @map("requested_category_id") @db.Char(24)
+
+  // kind=bonus → so'ralgan ustama tafsilotlari
+  bonusLabel      String?        @map("bonus_label")
+  bonusType       AllowanceKind? @map("bonus_type")
+  bonusValue      Decimal?       @map("bonus_value") @db.Decimal(14, 2)
+  bonusStartMonth Int?           @map("bonus_start_month")
+  bonusEndMonth   Int?           @map("bonus_end_month")
+
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  attachments Json @default("[]")
+
+  reviewedBy      String?   @map("reviewed_by") @db.Char(24)
+  reviewedAt      DateTime? @map("reviewed_at")
+  rejectionReason String?   @map("rejection_reason")
+
+  // Tasdiqda yaratilgan natija (bonus id) — audit uchun
+  resultBonusId String? @map("result_bonus_id") @db.Char(24)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([staffId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("payroll_requests")
+}
+
+// Oylik strukturasiga tegadigan har bir o'zgarish qaydi (kim/qachon/eski/yangi).
+// Lavozim maoshini o'zgartirish, toifa biriktirish, ustama tasdiqlash — hammasi.
+model PayrollAudit {
+  id         String @id @db.Char(24)
+  actorId    String @map("actor_id") @db.Char(24)
+  action     String // "position.update" | "category.assign" | "request.approve" ...
+  targetType String @map("target_type") // "position" | "category" | "user" | "bonus" | "request"
+  targetId   String @map("target_id") @db.Char(24)
+  summary    String @default("") // inson o'qiydigan qisqa izoh
+  oldValue   Json?  @map("old_value")
+  newValue   Json?  @map("new_value")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("payroll_audits")
 }
 
 model StaffSalary {
@@ -2154,8 +2314,10 @@ model PayrollEntry {
   perHourRate        Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
   // Ustama qoidalarining muhrlangan tafsiloti: [{label,type,value,amount}]
   allowanceBreakdown Json    @default("[]") @map("allowance_breakdown")
-  // Toifa nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
+  // Toifa / lavozim / bo'lim nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
   categoryName       String  @default("") @map("category_name")
+  positionName       String  @default("") @map("position_name")
+  departmentName     String  @default("") @map("department_name")
 
   // Xodim arxivlansa/o'chirilsa ham registr o'qilishi kerak
   staffSnapshot Json @map("staff_snapshot")
