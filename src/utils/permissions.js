@@ -92,6 +92,11 @@ const PERMISSION_SECTIONS = [
       { key: "archive", label: "Arxivlash" },
       { key: "restore", label: "Arxivdan qaytarish" },
       { key: "password", label: "Parolni ko'rish / tiklash" },
+      // Hisobotlar — ro'yxatning KESIMI emas, butun shtat manzarasi: tarkib,
+      // xodimlar oqimi, jarima va topshiriq intizomi bitta ekranda. Shuning
+      // uchun `users.view` bilan birga berilmaydi (davomat bo'limidagi
+      // `attendance.reports` bilan bir xil mantiq).
+      { key: "reports", label: "Hisobotlar" },
       A.export,
     ],
   },

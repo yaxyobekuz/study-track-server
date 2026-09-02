@@ -12,6 +12,7 @@ const {
   archiveUser,
   restoreUser,
   getStats,
+  getStaffReport,
   exportUsersToExcel,
   getStudents,
   updateMe,
@@ -43,6 +44,7 @@ router.use(protect);
 router.use(authorizeSection(SECTIONS.USERS));
 
 router.get("/stats", authorizePermission(PERMISSIONS.USERS_VIEW), getStats);
+router.get("/reports", authorizePermission(PERMISSIONS.USERS_REPORTS), getStaffReport);
 router.get("/export", authorizePermission(PERMISSIONS.USERS_EXPORT), exportUsersToExcel);
 
 router.get("/", authorizePermission(PERMISSIONS.USERS_VIEW), getAllUsers);

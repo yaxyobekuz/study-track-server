@@ -2,10 +2,38 @@ const asyncHandler = require("../middleware/async.middleware");
 const { NotFoundError } = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
+const staffReportService = require("../services/staffReport.service");
+const { PERMISSIONS, hasPermission } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 
 // Get user statistics (Owner only)
 const getStats = asyncHandler(async (req, res) => {
   const data = await userService.getStats();
+
+  res.json({ success: true, data });
+});
+
+// Xodimlar bo'limining "Hisobotlar" tabi.
+//
+// Davomat bloki ALOHIDA ruxsat ostida: `users.reports` shtat manzarasini
+// ochadi, xodimlarning kelish-ketish tarixini emas. Ruxsati bo'lmasa blok
+// umuman kelmaydi va frontend uni chizmaydi.
+const getStaffReport = asyncHandler(async (req, res) => {
+  const now = new Date();
+  // Oy/yil ixtiyoriy: berilmasa yoki noto'g'ri kelsa joriy oy olinadi
+  const rawMonth = parseInt(req.query.month, 10);
+  const rawYear = parseInt(req.query.year, 10);
+  const month = rawMonth >= 1 && rawMonth <= 12 ? rawMonth : now.getMonth() + 1;
+  const year =
+    rawYear >= 2000 && rawYear <= 2100 ? rawYear : now.getFullYear();
+
+  const withAttendance =
+    req.user.role === ROLES.OWNER ||
+    hasPermission(req.user.permissions, PERMISSIONS.ATTENDANCE_REPORTS);
+
+  const data = await staffReportService.getStaffReport(month, year, {
+    withAttendance,
+  });
 
   res.json({ success: true, data });
 });
@@ -224,6 +252,7 @@ module.exports = {
   archiveUser,
   restoreUser,
   getStats,
+  getStaffReport,
   exportUsersToExcel,
   getStudents,
   updateMe,
