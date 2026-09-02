@@ -1,5 +1,4 @@
 const asyncHandler = require("../middleware/async.middleware");
-const prisma = require("../config/prisma");
 const { NotFoundError } = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
@@ -31,22 +30,11 @@ const createUser = asyncHandler(async (req, res) => {
 
 // Get single user (Owner only)
 const getUser = asyncHandler(async (req, res) => {
-  const user = await prisma.user.findUnique({
-    where: { id: req.params.id },
-    // plainPassword ham yashiriladi — parolni ko'rish alohida ruxsatli
-    // endpoint orqali beriladi (`GET /:id/password`)
-    omit: { password: true, plainPassword: true },
-    include: {
-      classes: { include: { class: { select: { id: true, name: true } } } },
-    },
-  });
-  if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
-
-  // Junction M2M classes → eski `classes: [{_id,name}]` shakliga tekislaymiz
-  const data = { ...user };
-  data.classes = (user.classes || []).map((uc) => ({
-    ...uc.class,
-  }));
+  // Service orqali: u `classes` va `subjects` junction'larini BIRGA yuklab
+  // tekislaydi va parollarni o'zi yashiradi (parolni ko'rish alohida
+  // ruxsatli endpoint — `GET /:id/password`).
+  const data = await userService.getUserById(req.params.id);
+  if (!data) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   res.json({ success: true, data });
 });

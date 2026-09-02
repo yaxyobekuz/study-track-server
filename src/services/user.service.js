@@ -1041,6 +1041,11 @@ async function detachFromBranch(userId, branchId) {
 
 module.exports = {
   getStats,
+  // Bitta foydalanuvchi — classes VA subjects bilan (`loadUser` nomining
+  // tashqi ko'rinishi). Controller o'z so'rovini yozmasligi kerak: aynan
+  // shunday nusxa `subjects` ni unutgani uchun detal sahifasida fanlar
+  // umuman ko'rinmay yurgan edi.
+  getUserById: loadUser,
   getAllUsers,
   createUser,
   updateUser,
