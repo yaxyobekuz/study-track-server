@@ -9,6 +9,7 @@ const {
   createMultiFileUpload,
   handleFileUploadError,
 } = require("../middleware/fileUpload.middleware");
+const { rebindBranchContext } = require("../middleware/branch.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 
 // Controllers
@@ -35,7 +36,17 @@ router.use(protect);
 // Har bir autentifikatsiyalangan xodim o'zi uchun zayavka yubora oladi.
 router.get("/mine", getMyRequests);
 router.get("/available-categories", getAvailableCategories);
-router.post("/", uploadAttachments, handleFileUploadError, submitRequest);
+// ⚠️ multer so'rov stream'ini asinxron o'qiydi va filial (AsyncLocalStorage)
+// kontekstini uzadi — shuning uchun yuklovchidan keyin `rebindBranchContext`
+// bilan kontekst qayta tiklanadi, aks holda `submitRequest` "Filial konteksti
+// yo'q" xatosini beradi.
+router.post(
+  "/",
+  uploadAttachments,
+  handleFileUploadError,
+  rebindBranchContext,
+  submitRequest,
+);
 router.delete("/:id", validateObjectId("id"), cancelRequest);
 
 // ── ADMIN TOMONI ──
