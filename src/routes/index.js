@@ -55,6 +55,9 @@ const paymentAccountRoutes = require("./paymentAccount.routes");
 const studentAccountRoutes = require("./studentAccount.routes");
 const discountRoutes = require("./discount.routes");
 const vacationMonthRoutes = require("./vacationMonth.routes");
+const inventoryRoutes = require("./inventory.routes");
+const inventoryCheckRoutes = require("./inventoryCheck.routes");
+const damageRoutes = require("./damage.routes");
 const changelogRoutes = require("./changelog.routes");
 const changelogSettingsRoutes = require("./changelogSettings.routes");
 
@@ -111,6 +114,9 @@ router.use("/payment-accounts", paymentAccountRoutes);
 router.use("/student-accounts", studentAccountRoutes);
 router.use("/discounts", discountRoutes);
 router.use("/vacation-months", vacationMonthRoutes);
+router.use("/inventory", inventoryRoutes);
+router.use("/inventory-checks", inventoryCheckRoutes);
+router.use("/damages", damageRoutes);
 router.use("/changelogs", changelogRoutes);
 router.use("/changelog-settings", changelogSettingsRoutes);
 

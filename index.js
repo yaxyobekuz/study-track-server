@@ -48,6 +48,10 @@ const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
 const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
 const { startFinanceReconcileCron } = require("./src/jobs/financeReconcile.job");
+const { startInventoryReconcileCron } = require("./src/jobs/inventoryReconcile.job");
+const {
+  startInventoryCheckReminderCron,
+} = require("./src/jobs/inventoryCheckReminder.job");
 const {
   startChangelogNotificationCron,
 } = require("./src/jobs/changelogNotification.job");
@@ -144,6 +148,8 @@ const bootstrap = async () => {
   startPremiumExpiryCron();
   startInvoiceGenerationCron();
   startFinanceReconcileCron();
+  startInventoryReconcileCron();
+  startInventoryCheckReminderCron();
   startChangelogNotificationCron();
 
   // Navbatlar: modul yuklanganda filial konteksti yo'q, shuning uchun

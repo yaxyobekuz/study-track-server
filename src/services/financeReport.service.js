@@ -320,14 +320,20 @@ const getCashflow = async (query = {}) => {
   const paymentWhere = { isVoided: false, paidAt: { gte: from, lte: to } };
   const incomeWhere = { isVoided: false, occurredAt: { gte: from, lte: to } };
 
-  // ⚠️ IKKALA MANBA ham sanaladi: o'quvchi to'lovi (`payments`) va tashqi
-  // kirim (`external_incomes`). Faqat birinchisi olinsa, "Jami tushum"
-  // kassa qoldig'i o'sishidan kam chiqib, ikki ekran ikki xil haqiqat
-  // ko'rsatardi. Ikkalasida ham `is_voided = false`.
+  // ⚠️ UCHALA MANBA ham sanaladi: o'quvchi to'lovi (`payments`), tashqi
+  // kirim (`external_incomes`) va moddiy zarar undiruvi (`damage_payments`).
+  // Bittasi tushib qolsa, "Jami tushum" kassa qoldig'i o'sishidan kam
+  // chiqib, ikki ekran ikki xil haqiqat ko'rsatardi. Uchalasida ham
+  // `is_voided = false`.
+  //
+  // ⚠️ YANGI KIRIM MANBASI QO'SHILSA SHU RO'YXATGA HAM QO'SHILADI.
+  // Tekshirish usuli bitta: manba `AccountEntry` ga MUSBAT qator yozadimi
+  // (`money.helpers.js` → ENTRY_SIGNS). Yozsa — kassaga tegadi, ya'ni bu
+  // yerda ham bo'lishi shart.
   //
   // Kunlik qator — `date_trunc` ni Prisma groupBy ifodalay olmaydi,
-  // ikki jadval esa UNION ALL bilan bitta o'qqa keltiriladi.
-  const [rows, paymentAgg, incomeAgg, payByAccount, incByAccount] =
+  // uch jadval esa UNION ALL bilan bitta o'qqa keltiriladi.
+  const [rows, paymentAgg, incomeAgg, damageAgg, payByAccount, incByAccount, dmgByAccount] =
     await Promise.all([
       prisma.$queryRawUnsafe(
         `SELECT bucket, SUM(amount)::text AS amount, SUM(cnt)::int AS count
@@ -341,6 +347,11 @@ const getCashflow = async (query = {}) => {
                     amount, 1 AS cnt
                FROM external_incomes
               WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+             UNION ALL
+             SELECT date_trunc('${groupBy}', paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent')::date AS bucket,
+                    amount, 1 AS cnt
+               FROM damage_payments
+              WHERE is_voided = false AND paid_at >= $1 AND paid_at <= $2
            ) AS combined
           GROUP BY 1
           ORDER BY 1 ASC`,
@@ -357,6 +368,12 @@ const getCashflow = async (query = {}) => {
         _sum: { amount: true },
         _count: { _all: true },
       }),
+      // Moddiy zarar undiruvi — `paidAt` bo'yicha (`payments` bilan bir xil)
+      prisma.damagePayment.aggregate({
+        where: paymentWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
       prisma.payment.groupBy({
         by: ["accountId"],
         where: paymentWhere,
@@ -369,17 +386,25 @@ const getCashflow = async (query = {}) => {
         _sum: { amount: true },
         _count: { _all: true },
       }),
+      prisma.damagePayment.groupBy({
+        by: ["accountId"],
+        where: paymentWhere,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
     ]);
 
   const studentTotal = new Decimal(paymentAgg._sum.amount ?? 0);
   const externalTotal = new Decimal(incomeAgg._sum.amount ?? 0);
-  const total = studentTotal.plus(externalTotal);
-  const count = paymentAgg._count._all + incomeAgg._count._all;
+  const damageTotal = new Decimal(damageAgg._sum.amount ?? 0);
+  const total = studentTotal.plus(externalTotal).plus(damageTotal);
+  const count =
+    paymentAgg._count._all + incomeAgg._count._all + damageAgg._count._all;
 
-  // To'lov turi kesimi — ikkala manba bitta hisobga tushishi mumkin,
+  // To'lov turi kesimi — uchala manba bitta hisobga tushishi mumkin,
   // shuning uchun ular qo'shiladi
   const perAccount = new Map();
-  for (const row of [...payByAccount, ...incByAccount]) {
+  for (const row of [...payByAccount, ...incByAccount, ...dmgByAccount]) {
     const current = perAccount.get(row.accountId) ?? {
       amount: new Decimal(0),
       count: 0,
@@ -435,6 +460,13 @@ const getCashflow = async (query = {}) => {
         amount: formatAmount(externalTotal),
         count: incomeAgg._count._all,
         share: percentOf(externalTotal, total),
+      },
+      {
+        key: "damage",
+        label: "Moddiy zarar undiruvi",
+        amount: formatAmount(damageTotal),
+        count: damageAgg._count._all,
+        share: percentOf(damageTotal, total),
       },
     ],
     series: rows.map((row) => ({
@@ -781,7 +813,10 @@ const getExternalIncome = async (query = {}) => {
  * ko'rsatib, hisobot ishonchini yo'qotardi.
  */
 const sumIncome = async (from, to) => {
-  const [payments, external] = await Promise.all([
+  // ⚠️ MANBALAR RO'YXATI `getCashflow` BILAN AYNAN BIR XIL bo'lishi shart —
+  // aks holda "Umumiy" tabidagi sof natija "Kassa" tabidagi tushumdan
+  // farq qilardi. Yangi kirim manbasi qo'shilsa IKKALA joyga ham qo'shiladi.
+  const [payments, external, damages] = await Promise.all([
     prisma.payment.aggregate({
       where: { isVoided: false, paidAt: { gte: from, lte: to } },
       _sum: { amount: true },
@@ -790,9 +825,15 @@ const sumIncome = async (from, to) => {
       where: { isVoided: false, occurredAt: { gte: from, lte: to } },
       _sum: { amount: true },
     }),
+    prisma.damagePayment.aggregate({
+      where: { isVoided: false, paidAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+    }),
   ]);
 
-  return new Decimal(payments._sum.amount ?? 0).plus(external._sum.amount ?? 0);
+  return new Decimal(payments._sum.amount ?? 0)
+    .plus(external._sum.amount ?? 0)
+    .plus(damages._sum.amount ?? 0);
 };
 
 /**

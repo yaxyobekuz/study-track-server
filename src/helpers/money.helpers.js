@@ -214,6 +214,11 @@ const ENTRY_SIGNS = {
   salary_payment_void: 1,
   expense: -1,
   expense_void: 1,
+  // MODDIY ZARAR — pul kassaga KIRADI (xarajatning teskarisi: xarajat
+  // ta'mirlashga ketgan pul, bu esa o'sha zararni qoplagan odamdan
+  // tushgan pul).
+  damage_payment: 1,
+  damage_payment_void: -1,
 };
 
 /**

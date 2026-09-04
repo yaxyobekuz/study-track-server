@@ -39,6 +39,9 @@ const SECTIONS = {
   INCOME: "income",
   PAYROLL: "payroll",
   EXPENSES: "expenses",
+  INVENTORY: "inventory",
+  MONITORING: "monitoring",
+  DAMAGES: "damages",
   HOLIDAYS: "holidays",
   MONITORS: "monitors",
   CHANGELOG: "changelog",
@@ -399,6 +402,72 @@ const PERMISSION_SECTIONS = [
       A.create,
       { key: "void", label: "Bekor qilish" },
       { key: "categories", label: "Kategoriyalarni boshqarish" },
+    ],
+  },
+  {
+    // MODDIY-TEXNIK BAZA — xatlov: qaysi xonada nima va nechta bor.
+    //
+    // Moliyadan ALOHIDA guruh: xo'jalik mudiri partani sanaydi, lekin
+    // maktabning qarzdorlik registrini ko'rmasligi kerak. Teskarisi ham
+    // to'g'ri — kassirga jihoz katalogi kerak emas.
+    //
+    // Amallar ATAYLAB mayda: xatlovga jihoz KIRITISH (`stock`) va uni
+    // HISOBDAN CHIQARISH (`writeoff`) — ikki xil og'irlikdagi amal.
+    // Birinchisi ma'lumot to'ldirish, ikkinchisi esa maktab mulkini
+    // hujjatdan o'chirish.
+    key: SECTIONS.INVENTORY,
+    label: "Moddiy-texnik baza",
+    group: "Inventar",
+    actions: [
+      A.view,
+      { key: "catalog", label: "Jihoz katalogini boshqarish" },
+      { key: "locations", label: "Xonalarni boshqarish" },
+      { key: "stock", label: "Xatlovga jihoz kiritish" },
+      { key: "transfer", label: "Xonalar orasida ko'chirish" },
+      { key: "repair", label: "Ta'mirlanganini belgilash" },
+      { key: "writeoff", label: "Hisobdan chiqarish" },
+      { key: "adjust", label: "Qo'lda to'g'rilash" },
+      A.export,
+      A.settings,
+    ],
+  },
+  {
+    // KUNLIK MONITORING — hisobotni SINF RAHBARI yoki OSHXONA MUDIRI
+    // yuboradi, xo'jalik mudiri emas. Shuning uchun `inventory` dan
+    // alohida: hisobot berish huquqi butun katalogni va hisobdan chiqarish
+    // tugmasini ochib bermasligi kerak (o'qish davri `enrollment` ning
+    // tariflardan ajratilgani bilan bir xil mulohaza).
+    key: SECTIONS.MONITORING,
+    label: "Kunlik monitoring",
+    group: "Inventar",
+    actions: [
+      A.view,
+      { key: "submit", label: "Hisobot yuborish" },
+      A.delete,
+      { key: "reports", label: "Hisobotlar" },
+    ],
+  },
+  {
+    // MODDIY ZARAR VA UNDIRUV — pulga tegadigan qism.
+    //
+    // Amallar ATAYLAB mayda va bu `finance` bilan bir xil mulohaza:
+    // zararni QAYD ETADIGAN odam (mas'ul shaxs) uni aybdorga YOZA
+    // olmasligi, aybdorga yozadigan odam esa undiruvni BEKOR QILA
+    // olmasligi kerak — bularning har biri pulni ota-onasiz
+    // harakatlantiradi.
+    key: SECTIONS.DAMAGES,
+    label: "Moddiy zarar",
+    group: "Inventar",
+    actions: [
+      A.view,
+      { key: "create", label: "Zarar qayd etish" },
+      { key: "charge", label: "Aybdorga yozish" },
+      { key: "waive", label: "Maktab hisobidan deb belgilash" },
+      { key: "cancel", label: "Zarar / qarzni bekor qilish" },
+      { key: "pay", label: "Undiruvni qabul qilish" },
+      { key: "void", label: "Undiruvni bekor qilish" },
+      { key: "reports", label: "Hisobotlar" },
+      A.export,
     ],
   },
   {

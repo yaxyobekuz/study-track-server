@@ -56,11 +56,17 @@ const uploadFile = async ({ buffer, mimeType, originalName }) => {
 };
 
 /**
- * Jarima uchun bir nechta faylni yuklaydi (rasm/video/pdf)
+ * Bir nechta ilova faylni yuklaydi (rasm/video/pdf).
+ *
+ * Nomi ATAYLAB neytral: ilova fayllar jarimada ham, inventar zararida ham
+ * bir xil shaklda saqlanadi (`attachments[]` — { key, url, type,
+ * originalName, sizeBytes }). Ikkita bir xil yuklovchi yozilsa, biriga
+ * qo'shilgan tozalash mantig'i ikkinchisida yo'q bo'lib qolardi.
+ *
  * @param {Array} files - Multer fayl massivi
  * @returns {Promise<Array<{key: string, url: string, type: string, originalName: string, sizeBytes: number}>>}
  */
-const uploadPenaltyAttachments = async (files) => {
+const uploadAttachments = async (files) => {
   if (!files || files.length === 0) return [];
 
   const uploaded = [];
@@ -85,11 +91,11 @@ const uploadPenaltyAttachments = async (files) => {
 };
 
 /**
- * Jarima attachment fayllarini o'chiradi
+ * Ilova fayllarni saqlashdan o'chiradi.
  * @param {Array} attachments - Attachment massivi
  * @returns {Promise<void>}
  */
-const deletePenaltyAttachments = async (attachments) => {
+const deleteAttachments = async (attachments) => {
   if (!attachments || attachments.length === 0) return;
 
   await Promise.allSettled(
@@ -99,6 +105,10 @@ const deletePenaltyAttachments = async (attachments) => {
 
 module.exports = {
   uploadFile,
-  uploadPenaltyAttachments,
-  deletePenaltyAttachments,
+  uploadAttachments,
+  deleteAttachments,
+  // Eski nomlar — `penalty.service.js` shular bilan chaqiradi. Yangi kodda
+  // neytral nomlar ishlatiladi (yuqoridagi izohga qarang).
+  uploadPenaltyAttachments: uploadAttachments,
+  deletePenaltyAttachments: deleteAttachments,
 };

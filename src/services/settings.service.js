@@ -118,6 +118,21 @@ async function getFinanceSettings() {
   });
 }
 
+/**
+ * Inventar (moddiy-texnik baza) sozlamalari — HAR FILIALDA ALOHIDA.
+ *
+ * Har filialning o'z xonalari, o'z mas'ullari va o'z ish tartibi bor:
+ * bir filialda kunlik monitoring yoqilgan, boshqasida haftalik
+ * inventarizatsiya yetarli bo'lishi mumkin.
+ */
+async function getInventorySettings() {
+  return prisma.inventorySettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 // PLATFORMADA — yuqoridagi izohga qarang (yagona istisno).
 async function getChangelogSettings() {
   return platformPrisma.changelogSettings.upsert({
@@ -167,6 +182,7 @@ module.exports = {
   getPenaltySettings,
   getPremiumSettings,
   getFinanceSettings,
+  getInventorySettings,
   getChangelogSettings,
   DEFAULT_NAME_COLORS,
 };
