@@ -140,6 +140,12 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
   const data = await userService.getUsersForExport(role);
 
+  // Tanga faqat o'quvchida bo'ladi (`coin.service.js` butunlay `role:
+  // "student"` bilan ishlaydi), jarima esa xodimda ham — shuning uchun
+  // "Tangalar" ustuni faqat o'quvchi tushadigan eksportda chiziladi, aks
+  // holda xodimlar faylida boshdan-oyoq nol turgan ustun paydo bo'lardi.
+  const withCoins = !role || role === "all" || role === "student";
+
   const workbook = ExcelService.createExcel({
     sheetName: "Foydalanuvchilar",
     columns: [
@@ -148,6 +154,10 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 40 },
+      ...(withCoins
+        ? [{ header: "Tangalar", key: "coinBalance", width: 12 }]
+        : []),
+      { header: "Jarimalar", key: "penaltyPoints", width: 12 },
     ],
     data,
   });

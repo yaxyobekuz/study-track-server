@@ -711,6 +711,10 @@ async function getUsersForExport(role) {
       user.classes && user.classes.length > 0
         ? user.classes.map((c) => c.class.name).join(", ")
         : "-",
+    // Ro'yxat jadvalidagi "Tangalar" va "Jarimalar" ustunlari bilan bir xil
+    // manba: eksport shu ikki raqamsiz ro'yxatning to'liq nusxasi bo'lmaydi.
+    coinBalance: user.coinBalance ?? 0,
+    penaltyPoints: user.penaltyPoints ?? 0,
   }));
 }
 
