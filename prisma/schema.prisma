@@ -273,6 +273,13 @@ enum AccountEntryType {
   salary_payment_void // + oylik to'lovi bekor qilindi
   expense // − xarajat (kommunal, ta'mirlash, jihoz)
   expense_void // + xarajat bekor qilindi
+  // MODDIY ZARAR — aybdordan undirilgan pul. XARAJATNING TESKARISI:
+  // xarajat jihozni ta'mirlashga ketgan pul (−), bu esa o'sha zararni
+  // qoplagan odamdan tushgan pul (+). Ikkalasi bir hodisaning ikki tomoni,
+  // shuning uchun alohida tip: hisobotda "qancha zarar qopladik" degan
+  // savolga `external_income` bilan aralashmagan javob kerak.
+  damage_payment // + moddiy zarar undirildi
+  damage_payment_void // − undiruv bekor qilindi
 }
 
 // Oylik qanday hisoblanadi. Hozircha faqat `fixed` — soatbay, darsbay va
@@ -2141,6 +2148,7 @@ model PaymentAccount {
   externalIncomes ExternalIncome[]
   salaryPayments  SalaryPayment[]
   expenses        Expense[]
+  damagePayments  DamagePayment[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("payment_accounts")
@@ -2478,6 +2486,7 @@ model AccountEntry {
   externalIncomeId String? @map("external_income_id") @db.Char(24)
   salaryPaymentId  String? @map("salary_payment_id") @db.Char(24)
   expenseId        String? @map("expense_id") @db.Char(24)
+  damagePaymentId  String? @map("damage_payment_id") @db.Char(24)
 
   note      String   @default("")
   createdBy String   @map("created_by") @db.Char(24)
@@ -2492,6 +2501,7 @@ model AccountEntry {
   externalIncome ExternalIncome? @relation(fields: [externalIncomeId], references: [id], onDelete: Restrict)
   salaryPayment  SalaryPayment?  @relation(fields: [salaryPaymentId], references: [id], onDelete: Restrict)
   expense        Expense?        @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  damagePayment  DamagePayment?  @relation(fields: [damagePaymentId], references: [id], onDelete: Restrict)
 
   @@index([accountId, seq(sort: Desc)]) // registr + running balance
   @@index([accountId, occurredAt]) // "X–Y oralig'idagi kirim"
@@ -2500,6 +2510,7 @@ model AccountEntry {
   @@index([externalIncomeId])
   @@index([salaryPaymentId])
   @@index([expenseId])
+  @@index([damagePaymentId])
   @@map("account_entries")
 }
 
@@ -2675,3 +2686,603 @@ model Refund {
 //
 // `Changelog`, `ChangelogSettings`, `ChangelogNotification` va ularning
 // enum'lari o'sha faylda.
+
+// ─────────────────────────────────────────────
+// INVENTAR — MODDIY-TEXNIK BAZA
+// ─────────────────────────────────────────────
+//
+// Uch bosqichli domen, moliya moduli bilan AYNAN bir xil doktrinada:
+//
+//   1) XATLOV      — qaysi xonada nima va nechta bor  (InventoryStock)
+//   2) MONITORING  — har kuni mas'ul shaxs hisoboti   (InventoryCheck)
+//   3) UNDIRUV     — zarar → aybdorga qarz → to'lov    (InventoryDamage →
+//                                              DamageCharge → DamagePayment)
+//
+// ⚠️ NIMA UCHUN ALOHIDA REGISTR, HISOB-FAKTURA EMAS.
+// `MonthlyInvoice` — TARIF majburiyati va u muhrlangan fakt: uning summasi
+// `proratedAmount − discountAmount` ga TENG bo'lishi `financeReconcile`
+// invarianti (#4). Zararni o'sha qatorga qo'shsak, invariant birinchi
+// singan partada buzilardi va "bu oy nega 2 400 000?" degan savolga
+// hisob-fakturaning o'zidan javob chiqmasdi. Shuning uchun zarar —
+// `PayrollEntry` uslubidagi MUSTAQIL majburiyat registri.
+//
+// ⚠️ `StudentAccount.balance` GA TEGILMAYDI. U invariant #2 bo'yicha
+// AYNAN `Σ Payment.depositAmount` — ya'ni oldindan to'langan o'qish puli.
+// Zarar qarzini o'sha balansga qo'shsak, depozit bilan zarar bir xaltaga
+// tushib, "ota-onaga qancha qaytaramiz" degan savol javobsiz qolardi.
+//
+// ⚠️ AYBDOR — O'QUVCHI HAM, XODIM HAM. Shuning uchun `DamageCharge.personId`
+// oddiy soft ref: `studentId`/`staffId` deb ikkiga bo'lish ikkita bir xil
+// jadval va ikkita bir xil FIFO degani bo'lardi.
+
+// Lokatsiya turi — hisobotdagi KESIM. Erkin matn bo'lsa "1-A sinf",
+// "1a sinf", "1 A xona" uchta boshqa qator bo'lib ko'rinardi.
+enum InventoryLocationType {
+  classroom // sinf xonasi
+  canteen // oshxona / ovqatlanish zali
+  gym // sport zali
+  library // kutubxona
+  lab // laboratoriya
+  office // xodim xonasi
+  corridor // yo'lak, sanuzel, umumiy joy
+  dorm // yotoqxona
+  warehouse // ombor
+  other
+}
+
+// Miqdor daftaridagi harakat turi — `AccountEntryType` ning aynan ko'zgusi.
+// Ishora TIPGA BOG'LIQ va `assertMovementSigns` bilan tekshiriladi.
+enum InventoryMovementType {
+  initial // boshlang'ich xatlov (+)
+  purchase // yangi jihoz keldi (+)
+  damage // sindi/yaroqsiz (yaroqsiz +, yo'qolganda jami −)
+  repair // ta'mirlandi — yaroqsizdan qaytdi (yaroqsiz −)
+  write_off // hisobdan chiqarildi (jami −, yaroqsiz −)
+  transfer_in // boshqa xonadan keldi (+)
+  transfer_out // boshqa xonaga ketdi (−)
+  adjustment // sanoq farqi (±) — YAGONA ikki tomonlama tip
+  damage_revert // zarar bekor qilindi (teskari qator)
+}
+
+// Kunlik hisobot holati. `draft` — mas'ul to'ldirayotgan varaq (hech narsa
+// harakatlanmagan), `submitted` — YUBORILGAN va MUHRLANGAN: shu paytda
+// miqdor daftariga qatorlar yoziladi va zarar hodisalari tug'iladi.
+enum InventoryCheckStatus {
+  draft
+  submitted
+}
+
+// Zarar turi. Ikkalasi ham puli bir xil, LEKIN XATLOVGA TA'SIRI BOSHQA:
+// singan parta xonada turibdi (jami o'zgarmaydi, yaroqsiz ortadi),
+// yo'qolgan piyola esa yo'q (jami kamayadi). Bitta maydonga qo'shsak,
+// "xonada nechta stul bor" degan savol noto'g'ri javob berardi.
+enum InventoryDamageKind {
+  broken // sindi / yaroqsiz holatga keldi
+  missing // yo'qoldi
+}
+
+enum InventoryDamageStatus {
+  pending // aybdor hali aniqlanmagan
+  charged // aybdor(lar)ga qarz yozilgan
+  waived // maktab hisobidan — aybdor yo'q (tabiiy eskirish, forsmajor)
+  cancelled // xato yozuv — bekor qilindi (sababi va aktyori bilan)
+}
+
+// `InvoiceStatus` / `PayrollStatus` bilan AYNAN bir xil — uchinchi holat
+// to'plami kiritilmaydi, chunki `deriveStatus` uchalasiga bitta.
+enum DamageChargeStatus {
+  unpaid
+  partial
+  paid
+  cancelled
+}
+
+// JIHOZ TOIFASI — `ExpenseCategory` ning aynan ko'zgusi: o'chirilmaydi,
+// ARXIVLANADI (o'tgan zarar yozuvlari unga ishora qiladi).
+model InventoryCategory {
+  id   String @id @db.Char(24)
+  name String @unique
+
+  isActive   Boolean @default(true) @map("is_active")
+  isArchived Boolean @default(false) @map("is_archived")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items InventoryItem[]
+
+  @@index([isArchived, isActive, sortOrder])
+  @@map("inventory_categories")
+}
+
+// JIHOZ NOMI — katalog. "Parta", "Piyola", "Proyektor", "Qoshiq".
+//
+// ⚠️ NARX VERSIYALANMAYDI — va bu `Tariff` bilan ATAYLAB QARAMA-QARSHI.
+// Tarifda narx versiyalanadi, chunki hisob-faktura KELAJAKDA, qoidaga
+// qarab shakllanadi: "avgustdan boshlab 600 000". Zararda esa narx
+// O'TMISHDAGI BITTA ONGA tegishli — parta AYNAN 12-sentabrda sindi.
+// Shuning uchun narx hodisa paytida `InventoryDamage.unitPrice` ga
+// MUHRLANADI va katalogdagi qiymat keyin o'zgarsa ham o'tgan zararga
+// tegilmaydi. Versiya jadvali bu yerda ortiqcha murakkablik bo'lardi.
+model InventoryItem {
+  id         String @id @db.Char(24)
+  categoryId String @map("category_id") @db.Char(24)
+
+  name String @unique
+  // "dona", "komplekt", "juft", "kg" — miqdor BUTUN son bo'lgani uchun
+  // faqat YORLIQ. Kasrli o'lchov (2.5 kg un) bu domenda yo'q: xatlov
+  // sanaladigan buyumlar haqida.
+  unit String @default("dona")
+
+  // Zararning STANDART narxi (bittasi uchun). Nol qonuniy: qiymati
+  // hisoblanmaydigan buyum (masalan bepul tarqatilgan daftar) uchun
+  // zarar qayd etiladi-yu, pul undirilmaydi.
+  unitPrice Decimal @default(0) @map("unit_price") @db.Decimal(14, 2)
+
+  description String  @default("")
+  isArchived  Boolean @default(false) @map("is_archived")
+  sortOrder   Int     @default(0) @map("sort_order")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category  InventoryCategory  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  stocks    InventoryStock[]
+  damages   InventoryDamage[]
+  movements InventoryMovement[]
+
+  @@index([categoryId, isArchived, sortOrder])
+  @@index([isArchived, name])
+  @@map("inventory_items")
+}
+
+// XONA (lokatsiya) — xatlovning birinchi o'lchovi.
+//
+// `classId` — IXTIYORIY soft ref: "1-A sinf xonasi" odatda sinfga tegishli,
+// lekin oshxona va yo'lak hech qaysi sinfga tegishli emas. Sinf o'chirilsa
+// xona yo'qolmasligi kerak, shuning uchun FK emas.
+model InventoryLocation {
+  id   String                @id @db.Char(24)
+  name String                @unique
+  type InventoryLocationType @default(classroom)
+
+  classId String? @map("class_id") @db.Char(24)
+  // MAS'UL SHAXS — kunlik hisobotni kim yuboradi (soft ref → User).
+  // U AYBDOR EMAS: mas'ullik hisobot berishga tegishli, zarar esa
+  // aniq odamga alohida yoziladi (`DamageCharge`).
+  responsibleId String? @map("responsible_id") @db.Char(24)
+
+  note       String  @default("")
+  isArchived Boolean @default(false) @map("is_archived")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stocks    InventoryStock[]
+  checks    InventoryCheck[]
+  damages   InventoryDamage[]
+  movements InventoryMovement[]
+
+  @@index([isArchived, type, sortOrder])
+  @@index([responsibleId])
+  @@index([classId])
+  @@map("inventory_locations")
+}
+
+// XATLOV QATORI — "shu xonada shu jihozdan nechta bor".
+//
+// `quantity` va `brokenQuantity` — HOSILA qiymatlar: ular `InventoryMovement`
+// daftarining yig'indisi. Denormalizatsiya tezlik uchun, `financeReconcile`
+// job'i har kecha tasdiqlaydi (`PaymentAccount.balance` bilan bir xil naqsh).
+//
+// Yaroqli miqdor = quantity − brokenQuantity va u USTUN EMAS: ikkita
+// haqiqat manbai bo'lib qolardi, service'da hisoblanadi.
+model InventoryStock {
+  id         String @id @db.Char(24)
+  locationId String @map("location_id") @db.Char(24)
+  itemId     String @map("item_id") @db.Char(24)
+
+  quantity       Int @default(0) // jami (yaroqsizlari ham shu ichida)
+  brokenQuantity Int @default(0) @map("broken_quantity") // ta'mirlanmagan yaroqsizlar
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  location  InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  item      InventoryItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  movements InventoryMovement[]
+  damages   InventoryDamage[]
+  lines     InventoryCheckLine[]
+
+  // Bitta xonada bitta jihozdan BITTA qator — "Parta 20 ta" va "Parta 5 ta"
+  // yonma-yon tursa, "nechta parta bor" savoli javobsiz qolardi.
+  @@unique([locationId, itemId])
+  @@index([itemId])
+  @@index([locationId, brokenQuantity])
+  @@map("inventory_stocks")
+}
+
+// MIQDOR DAFTARI — QAT'IY APPEND-ONLY, `AccountEntry` ning aynan ko'zgusi.
+//
+// Xato yozuv tahrirlanmaydi ham, o'chirilmaydi ham: teskari (kompensatsiya)
+// qatori yoziladi. Daftarga yozadigan YAGONA nuqta — `postMovement()`,
+// va uning shakli MAJBURIY:
+//   update({ quantity: { increment } }) → QAYTGAN qiymat `quantityAfter`.
+// "O'qi → hisobla → yoz" aynan yo'qolgan yangilanish shakli va bu yerda
+// "20 ta parta bor edi, ikki hisobot bir vaqtda kelib 19 ta bo'lib qoldi"
+// degan holatga olib kelardi.
+model InventoryMovement {
+  id String @id @db.Char(24)
+
+  // QO'SHILISH tartibi — `quantityAfter` AYNAN shunga bog'liq. Orqaga
+  // sanalgan hisobot `occurredAt` bo'yicha ro'yxat o'rtasiga tushadi va
+  // running qoldiq ustunini ma'nosiz qilardi. Registr `seq`, hisobot
+  // `occurredAt` bo'yicha.
+  seq BigInt @default(autoincrement())
+
+  stockId String @map("stock_id") @db.Char(24)
+  // Denormalizatsiya: "shu xonada bu oy nima bo'ldi" hisoboti `stockId`
+  // orqali join qilmasin.
+  locationId String @map("location_id") @db.Char(24)
+  itemId     String @map("item_id") @db.Char(24)
+
+  type InventoryMovementType
+
+  // ISHORALI: + keldi, − ketdi. Ikkalasi bir vaqtda 0 bo'lishi mumkin emas.
+  quantityDelta Int @map("quantity_delta")
+  brokenDelta   Int @default(0) @map("broken_delta")
+
+  // Post-image — `update({ increment })` dan QAYTGAN qiymat
+  quantityAfter Int @map("quantity_after")
+  brokenAfter   Int @map("broken_after")
+
+  occurredAt DateTime @map("occurred_at")
+
+  checkId  String? @map("check_id") @db.Char(24)
+  damageId String? @map("damage_id") @db.Char(24)
+  // Xonalar orasidagi o'tkazmada juftini ko'rsatadi (ikki qator, bitta hodisa)
+  counterpartLocationId String? @map("counterpart_location_id") @db.Char(24)
+
+  note      String   @default("")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Restrict, Cascade EMAS: Cascade xatlov tarixini xona bilan birga
+  // olib ketardi (`AccountEntry` bilan bir xil mulohaza).
+  stock    InventoryStock    @relation(fields: [stockId], references: [id], onDelete: Restrict)
+  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  item     InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  check    InventoryCheck?   @relation(fields: [checkId], references: [id], onDelete: Restrict)
+  damage   InventoryDamage?  @relation(fields: [damageId], references: [id], onDelete: Restrict)
+
+  @@index([stockId, seq(sort: Desc)]) // registr + running qoldiq
+  @@index([locationId, occurredAt(sort: Desc)])
+  @@index([itemId, occurredAt(sort: Desc)])
+  @@index([occurredAt])
+  @@index([checkId])
+  @@index([damageId])
+  @@map("inventory_movements")
+}
+
+// KUNLIK HISOBOT — mas'ul shaxsning "bugun shu xonada nima holatda" akti.
+//
+// `@@unique([locationId, date])` — IDEMPOTENTLIK: bir kunda bir xonaga
+// ikkita hisobot bo'lsa, "bugun nechta sindi" savoli ikki xil javob
+// berardi. Ikkinchi marta ochilganda mavjud varaq qaytariladi.
+//
+// `date` — `@db.Date`, ya'ni vaqt komponenti STRUKTURA BO'YICHA yo'q
+// (`StudentEnrollment.startDate` bilan bir xil g'oya). Faqat `getUTC*`
+// bilan o'qiladi.
+model InventoryCheck {
+  id         String   @id @db.Char(24)
+  locationId String   @map("location_id") @db.Char(24)
+  date       DateTime @db.Date
+
+  status InventoryCheckStatus @default(draft)
+
+  // Kim hisobot berdi (soft ref → User). Xona mas'ulidan FARQ QILISHI
+  // mumkin: mas'ul ta'tilda bo'lsa o'rniga boshqa xodim yuboradi.
+  reportedBy String @map("reported_by") @db.Char(24)
+
+  note String @default("")
+
+  // ⚠️ HISOBOT YUBORILGANDA MUHRLANADI. Undan keyin satrlar tahrirlanmaydi:
+  // miqdor daftariga qatorlar yozilib bo'lgan, ularni "orqaga qaytarish"
+  // uchun teskari qator kerak — bu esa alohida, ko'rinadigan amal.
+  submittedAt DateTime? @map("submitted_at")
+
+  // HOSILA sanoqchilar — ro'yxat ekranida har bir hisobot uchun satrlarni
+  // o'qimaslik uchun. Yuborish paytida bir marta hisoblanadi va o'zgarmaydi.
+  linesCount     Int     @default(0) @map("lines_count")
+  brokenCount    Int     @default(0) @map("broken_count")
+  missingCount   Int     @default(0) @map("missing_count")
+  repairedCount  Int     @default(0) @map("repaired_count")
+  damageAmount   Decimal @default(0) @map("damage_amount") @db.Decimal(14, 2)
+
+  // Xona arxivlansa/qayta nomlansa ham o'tgan hisobot o'qilishi kerak
+  locationSnapshot Json @map("location_snapshot")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  location  InventoryLocation    @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  lines     InventoryCheckLine[]
+  damages   InventoryDamage[]
+  movements InventoryMovement[]
+
+  @@unique([locationId, date])
+  @@index([date(sort: Desc), status])
+  @@index([locationId, date(sort: Desc)])
+  @@index([reportedBy, date(sort: Desc)])
+  @@map("inventory_checks")
+}
+
+// Hisobotning bitta jihoz bo'yicha satri.
+//
+// `expectedQuantity` — varaq OCHILGAN paytdagi xatlov surati. U bilan
+// haqiqiy sanoq taqqoslanadi: farq "yo'qolgan" degani.
+model InventoryCheckLine {
+  id      String @id @db.Char(24)
+  checkId String @map("check_id") @db.Char(24)
+  stockId String @map("stock_id") @db.Char(24)
+  itemId  String @map("item_id") @db.Char(24)
+
+  // Jihoz qayta nomlansa ham hisobot o'z matnini saqlaydi
+  itemName String @map("item_name")
+  unit     String @default("dona")
+
+  expectedQuantity Int @map("expected_quantity") // varaq ochilgandagi jami
+  expectedBroken   Int @default(0) @map("expected_broken") // oldindan yaroqsiz bo'lganlari
+
+  // BUGUNGI o'zgarish — mas'ul shaxs kiritadigan uchta raqam
+  brokenQuantity   Int @default(0) @map("broken_quantity") // bugun singani
+  missingQuantity  Int @default(0) @map("missing_quantity") // bugun yo'qolgani
+  repairedQuantity Int @default(0) @map("repaired_quantity") // bugun ta'mirlangani
+
+  note String @default("")
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  // Rasm/tafsilot: "qanday singan" degan savolga javob (Penalty uslubi)
+  attachments Json @default("[]")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  check InventoryCheck @relation(fields: [checkId], references: [id], onDelete: Cascade)
+  stock InventoryStock @relation(fields: [stockId], references: [id], onDelete: Restrict)
+
+  // Bitta hisobotda bitta jihoz BIR MARTA
+  @@unique([checkId, itemId])
+  @@index([stockId])
+  @@map("inventory_check_lines")
+}
+
+// ZARAR HODISASI — MUHRLANGAN FAKT (`MonthlyInvoice` doktrinasi).
+//
+//   amount = quantity × unitPrice        ← MUHRLANADI
+//
+// ⚠️ `amount` NI O'ZGARTIRADIGAN ENDPOINT YO'Q. Katalogdagi narx keyin
+// to'g'rilansa bu qatorga tegilmaydi: hodisa o'z kunidagi narxda qoladi.
+// Xato bo'lsa — bekor qilinadi (`cancelled`) va qaytadan kiritiladi.
+model InventoryDamage {
+  id         String  @id @db.Char(24)
+  locationId String  @map("location_id") @db.Char(24)
+  itemId     String  @map("item_id") @db.Char(24)
+  stockId    String  @map("stock_id") @db.Char(24)
+  // Kunlik hisobotdan tug'ilgan bo'lsa — manbasi
+  checkId    String? @map("check_id") @db.Char(24)
+
+  kind   InventoryDamageKind   @default(broken)
+  status InventoryDamageStatus @default(pending)
+
+  quantity Int
+  // Hodisa PAYTIDAGI narx — katalogdan olingan surat
+  unitPrice Decimal @map("unit_price") @db.Decimal(14, 2)
+  amount    Decimal @db.Decimal(14, 2) // = quantity × unitPrice
+
+  // HOSILA: Σ (bekor qilinmagan) DamageCharge.amount. Aybdorlarga
+  // yozilgan ulush zarardan OSHIB KETMASLIGI service'da tekshiriladi
+  // va `financeReconcile` har kecha tasdiqlaydi.
+  chargedAmount Decimal @default(0) @map("charged_amount") @db.Decimal(14, 2)
+
+  description String @default("")
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  attachments Json   @default("[]")
+
+  occurredAt DateTime @map("occurred_at")
+  reportedBy String   @map("reported_by") @db.Char(24)
+
+  itemSnapshot     Json @map("item_snapshot")
+  locationSnapshot Json @map("location_snapshot")
+
+  // MAKTAB HISOBIDAN — aybdor yo'q (tabiiy eskirish, forsmajor).
+  // "Bekor qilish" EMAS: zarar bo'lgan, faqat undirilmaydi. Ikkalasini
+  // bitta holatga qo'shsak, "bu yil qancha zarar ko'rdik" degan savolga
+  // javob past chiqardi.
+  waiveReason String    @default("") @map("waive_reason")
+  waivedAt    DateTime? @map("waived_at")
+  waivedBy    String?   @map("waived_by") @db.Char(24)
+
+  cancelReason String    @default("") @map("cancel_reason")
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelledBy  String?   @map("cancelled_by") @db.Char(24)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  location  InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  item      InventoryItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  stock     InventoryStock      @relation(fields: [stockId], references: [id], onDelete: Restrict)
+  check     InventoryCheck?     @relation(fields: [checkId], references: [id], onDelete: Restrict)
+  charges   DamageCharge[]
+  movements InventoryMovement[]
+
+  @@index([occurredAt(sort: Desc)])
+  @@index([status, occurredAt(sort: Desc)])
+  @@index([locationId, occurredAt(sort: Desc)])
+  @@index([itemId, occurredAt(sort: Desc)])
+  @@index([checkId])
+  @@map("inventory_damages")
+}
+
+// AYBDORGA YOZILGAN QARZ — `PayrollEntry` ning aynan ko'zgusi, faqat pul
+// TESKARI yo'nalishda harakatlanadi (biz emas, bizga to'lanadi).
+//
+// Bitta zararda bir NECHTA aybdor bo'lishi mumkin ("derazani uchovi
+// birga sindirdi") — shuning uchun `InventoryDamage` 1..N `DamageCharge`.
+// Ulushlar yig'indisi zarardan oshmasligi service'da tekshiriladi.
+//
+// ⚠️ SUMMA MUHRLANADI. Uni o'zgartiradigan endpoint YO'Q: xato bo'lsa
+// qarz bekor qilinadi va yangisi yoziladi (`MonthlyInvoice` doktrinasi).
+model DamageCharge {
+  id       String @id @db.Char(24)
+  damageId String @map("damage_id") @db.Char(24)
+
+  // soft ref → User. O'quvchi ham, xodim ham bo'lishi mumkin — shuning
+  // uchun `studentId`/`staffId` deb ikkiga bo'linmagan.
+  personId String @map("person_id") @db.Char(24)
+  // Hodisa paytidagi rol — keyin o'zgarsa ham hisobot kesimi buzilmaydi
+  personRole String @map("person_role")
+  // { firstName, lastName, username, role, className }
+  personSnapshot Json @map("person_snapshot")
+
+  // Nechta jihoz uchun javobgar — MA'LUMOT uchun (summa mustaqil muhrlanadi:
+  // uch kishi bittada 1/3 dan to'lashi mumkin)
+  quantity Int @default(0)
+
+  amount     Decimal @db.Decimal(14, 2)
+  paidAmount Decimal @default(0) @map("paid_amount") @db.Decimal(14, 2)
+
+  status DamageChargeStatus @default(unpaid)
+
+  note String @default("")
+  // Qachongacha to'lansin — eslatma va "muddati o'tgan" kesimi uchun
+  dueDate DateTime? @map("due_date") @db.Date
+
+  paidAt DateTime? @map("paid_at")
+
+  cancelReason String    @default("") @map("cancel_reason")
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelledBy  String?   @map("cancelled_by") @db.Char(24)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  damage      InventoryDamage    @relation(fields: [damageId], references: [id], onDelete: Restrict)
+  allocations DamageAllocation[]
+
+  @@index([personId, status])
+  @@index([personId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([damageId])
+  @@index([dueDate])
+  @@map("damage_charges")
+}
+
+// ZARAR UNDIRUVI — `SalaryPayment` ning ko'zgusi, LEKIN PUL KASSAGA KIRADI.
+//
+// ⚠️ DEPOZIT YO'Q va AVANS YO'Q: qarzdan ortiq to'lov RAD ETILADI.
+// O'quvchining o'qish to'lovida ortiqcha pul depozitga tushadi, chunki
+// keyingi oy majburiyati ANIQ keladi. Zararda esa "keyingi zarar" degan
+// narsa yo'q — ortiqcha pulni saqlaydigan joy ochilsa, u ikkinchi
+// "hamyon" bo'lib, depozit bilan chalkashardi.
+//
+// Bo'lib to'lash MUMKIN: bitta qarz bir necha marta to'lanadi
+// (`partial` → `paid`).
+model DamagePayment {
+  id String @id @db.Char(24)
+
+  // Chek raqami — `Payment` bilan bir xil mulohaza: ota-onaga aytiladigan
+  // RAQAM hozir qo'shiladi, keyin retro-raqamlash imkonsiz.
+  receiptNo Int @unique @default(autoincrement()) @map("receipt_no")
+
+  personId  String @map("person_id") @db.Char(24)
+  accountId String @map("account_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2) // musbat; daftarga MUSBAT tushadi
+
+  paidAt DateTime @map("paid_at")
+  note   String   @default("")
+
+  personSnapshot Json @map("person_snapshot")
+
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  account     PaymentAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  allocations DamageAllocation[]
+  entries     AccountEntry[]
+
+  @@index([personId, paidAt(sort: Desc)])
+  @@index([accountId, paidAt(sort: Desc)])
+  @@index([paidAt])
+  @@map("damage_payments")
+}
+
+// To'lov qaysi qarzni yopdi — `SalaryAllocation` ning aynan ko'zgusi.
+model DamageAllocation {
+  id        String @id @db.Char(24)
+  paymentId String @map("payment_id") @db.Char(24)
+  chargeId  String @map("charge_id") @db.Char(24)
+  personId  String @map("person_id") @db.Char(24)
+
+  amount Decimal @db.Decimal(14, 2)
+
+  appliedAt DateTime @map("applied_at")
+
+  isVoided  Boolean   @default(false) @map("is_voided")
+  voidedAt  DateTime? @map("voided_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  payment DamagePayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  charge  DamageCharge  @relation(fields: [chargeId], references: [id], onDelete: Cascade)
+
+  @@index([chargeId, isVoided])
+  @@index([paymentId])
+  @@index([personId, appliedAt(sort: Desc)])
+  @@map("damage_allocations")
+}
+
+// Inventar bo'limining sozlamalari — HAR FILIALDA ALOHIDA.
+model InventorySettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // Kunlik monitoring yoqilganmi. O'chirilsa eslatma ketmaydi va
+  // "hisobot bermagan xonalar" kesimi hisoblanmaydi.
+  dailyCheckEnabled Boolean @default(true) @map("daily_check_enabled")
+  // Eslatma vaqti — "HH:mm", Toshkent devor-soati. Cron ifodasi QOTIB
+  // QOLMASLIGI uchun vaqt bazadan o'qiladi (changelog job'i bilan bir xil).
+  reminderTime String @default("17:00") @map("reminder_time")
+  // Eslatma Telegramga ketadimi
+  reminderEnabled Boolean @default(false) @map("reminder_enabled")
+
+  // Zarar qayd etilganda rasm MAJBURIYMI. "Bugun 1 ta sindi" degan
+  // yozuv rasmsiz bo'lsa, keyin uni tekshirib bo'lmaydi.
+  requirePhoto Boolean @default(false) @map("require_photo")
+
+  // Undiruv odatda qaysi to'lov turiga tushadi (kassirning ishini
+  // qisqartiradi; tanlash baribir mumkin)
+  defaultAccountId String? @map("default_account_id") @db.Char(24)
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("inventory_settings")
+}

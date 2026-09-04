@@ -11,6 +11,8 @@ const {
   updateCurrentTopic,
   exportScheduleByClass,
   getClassesBySubject,
+  getTeacherWorkload,
+  getMyWorkload,
 } = require("../controllers/schedule.controller");
 const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
@@ -22,6 +24,10 @@ router.use(protect);
 
 // Teacher's today schedule
 router.get("/my-today", authorize(ROLES.TEACHER), getMyTodaySchedule);
+
+// O'zimning haftalik yuklamam (xodim panelidagi profil). Ruxsat kaliti yo'q —
+// identifikator tokendan olinadi, o'quvchi controller'da rad etiladi.
+router.get("/my-workload", getMyWorkload);
 
 // All today schedules (Owner only)
 router.get("/all-today", authorizePermission(PERMISSIONS.SCHEDULES_VIEW), getAllTodaySchedules);
@@ -44,6 +50,15 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
   getScheduleByDay,
+);
+
+// O'qituvchining haftalik yuklamasi (profil sahifasi):
+// necha soat, qaysi sinflarda, qaysi kunlari.
+router.get(
+  "/teacher/:teacherId",
+  validateObjectId("teacherId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW),
+  getTeacherWorkload,
 );
 
 // Get all classes by subject (Owner only)

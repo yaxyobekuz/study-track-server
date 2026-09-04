@@ -130,6 +130,34 @@ const authorizePermission = (permission, ...extraRoles) => {
 };
 
 /**
+ * Bir nechta ruxsatdan HECH BO'LMASA BITTASI bo'lsa o'tkazadi.
+ *
+ * Ma'lumotnoma ro'yxatlari uchun: bitta endpoint bir nechta bo'limning
+ * ekraniga xizmat qiladi (masalan, faol xonalar ro'yxati xatlovga ham,
+ * kunlik hisobotga ham, zarar oynasiga ham kerak). Har bir bo'lim uchun
+ * alohida nusxa endpoint ochish o'rniga bitta yo'l bir nechta kalitni
+ * qabul qiladi. `authorizePermission` bilan bir xil qoida: owner va
+ * `extraRoles` doim o'tadi.
+ *
+ * @param {string[]} permissions - kalitlardan biri yetarli ("<bo'lim>.<amal>")
+ * @param {...string} extraRoles - shu route'ga avvaldan ruxsati bor rollar
+ * @returns {Function} Express middleware
+ */
+const authorizeAnyPermission = (permissions = [], ...extraRoles) => {
+  return (req, res, next) => {
+    const { role, permissions: userPermissions = [] } = req.user;
+
+    if (role === ROLES.OWNER) return next();
+    if (extraRoles.includes(role)) return next();
+    if (permissions.some((key) => hasPermission(userPermissions, key))) {
+      return next();
+    }
+
+    throw new ForbiddenError("Bu amal uchun ruxsatingiz yo'q");
+  };
+};
+
+/**
  * Bo'limga umumiy darvoza: foydalanuvchida bo'limning hech bo'lmasa bitta amali
  * bo'lsa o'tkazadi. `router.use(...)` uchun mo'ljallangan — aniq amal tekshiruvi
  * har bir route'da `authorizePermission` bilan qilinadi.
@@ -150,4 +178,10 @@ const authorizeSection = (section, ...extraRoles) => {
   };
 };
 
-module.exports = { protect, authorize, authorizePermission, authorizeSection };
+module.exports = {
+  protect,
+  authorize,
+  authorizePermission,
+  authorizeAnyPermission,
+  authorizeSection,
+};

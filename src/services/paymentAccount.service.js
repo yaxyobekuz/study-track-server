@@ -44,6 +44,8 @@ const ENTRY_TYPE_LABELS = {
   salary_payment_void: "Oylik to'lovi bekor qilindi",
   expense: "Xarajat",
   expense_void: "Xarajat bekor qilindi",
+  damage_payment: "Moddiy zarar undirildi",
+  damage_payment_void: "Zarar undiruvi bekor qilindi",
 };
 
 const serializeAccount = (row, extra = {}) => ({
@@ -84,6 +86,7 @@ const serializeEntry = (row, { account } = {}) => ({
  * @param {string} [params.paymentId]
  * @param {string} [params.transferId]
  * @param {string} [params.refundId]
+ * @param {string} [params.damagePaymentId] - moddiy zarar undiruvi
  * @param {string} [params.note]
  * @returns {Promise<object>} yozilgan qator (xom)
  */
@@ -113,6 +116,7 @@ const postEntry = async (tx, params) => {
       externalIncomeId: params.externalIncomeId ?? null,
       salaryPaymentId: params.salaryPaymentId ?? null,
       expenseId: params.expenseId ?? null,
+      damagePaymentId: params.damagePaymentId ?? null,
       note: params.note?.trim() || "",
       createdBy,
     },
