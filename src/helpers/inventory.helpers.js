@@ -228,6 +228,69 @@ function parseSignedQuantity(value, label = "Miqdor") {
 }
 
 // ─────────────────────────────────────────────
+// ZARAR SABABI
+// ─────────────────────────────────────────────
+
+/**
+ * Sababni o'qiydi va TURGA mosligini tekshiradi.
+ *
+ * @param {*} value - InventoryDamageReason yoki bo'sh
+ * @param {string} kind - InventoryDamageKind ("broken" | "missing")
+ * @param {object} [options]
+ * @param {string} [options.note] - erkin izoh ("boshqa" uchun tekshiriladi)
+ * @param {boolean} [options.required=false] - berilmasa xato beriladimi
+ * @param {boolean} [options.requireNote=true] - "boshqa" uchun izoh talab qilinsinmi.
+ *   QORALAMA bosqichida `false`: xodim avval sababni tanlab, izohni keyin
+ *   yozishi mumkin. Yuborishda esa `true` — muhrlangan hodisa izohsiz
+ *   "boshqa" bo'lib qolmasin.
+ * @param {boolean} [options.allowEmpty=false] - bo'sh qiymatda standart
+ *   O'RNIGA `null` qaytarilsinmi (qoralama satri uchun)
+ * @param {string} [options.label="Sabab"] - xato xabaridagi kontekst
+ * @returns {string|null} InventoryDamageReason
+ * @throws {BadRequestError}
+ */
+function parseDamageReason(value, kind, options = {}) {
+  const {
+    note,
+    required = false,
+    requireNote = true,
+    allowEmpty = false,
+    label = "Sabab",
+  } = options;
+
+  const allowed = REASONS_BY_KIND[kind];
+  if (!allowed) {
+    throw new InternalServerError(`Zarar turi noma'lum: ${kind}`);
+  }
+
+  const raw = value == null || value === "" ? null : String(value);
+
+  if (raw === null) {
+    if (required) throw new BadRequestError(`${label} tanlanishi kerak`);
+    return allowEmpty ? null : DEFAULT_REASON_BY_KIND[kind];
+  }
+
+  if (!DAMAGE_REASON_LABELS[raw]) {
+    throw new BadRequestError(`${label} noto'g'ri`);
+  }
+  if (!allowed.includes(raw)) {
+    throw new BadRequestError(
+      `${label}: "${DAMAGE_REASON_LABELS[raw]}" ` +
+        `"${DAMAGE_KIND_LABELS[kind]}" turiga mos kelmaydi`,
+    );
+  }
+
+  // "Boshqa" — izohsiz ma'nosiz
+  if (requireNote && REASONS_REQUIRING_NOTE.includes(raw) && !String(note ?? "").trim()) {
+    throw new BadRequestError(
+      `${label}: "${DAMAGE_REASON_LABELS[raw]}" tanlanganda izoh yozilishi shart`,
+    );
+  }
+
+  return raw;
+}
+
+// ─────────────────────────────────────────────
 // ZARAR SUMMASI
 // ─────────────────────────────────────────────
 
@@ -280,6 +343,53 @@ const DAMAGE_KIND_LABELS = {
   broken: "Singan / yaroqsiz",
   missing: "Yo'qolgan",
 };
+
+// ZARAR SABABI — `kind` dan MUSTAQIL ikkinchi o'lchov (`schema.prisma`
+// dagi `InventoryDamageReason` izohiga qarang).
+const DAMAGE_REASON_LABELS = {
+  broken: "Sindi",
+  expired: "Yaroqlilik muddati tugadi",
+  worn_out: "Eskirdi",
+  misused: "Noto'g'ri foydalanildi",
+  lost: "Yo'qoldi",
+  stolen: "O'g'irlandi",
+  other: "Boshqa",
+};
+
+/**
+ * Qaysi sabab qaysi TURDA qonuniy.
+ *
+ * Ro'yxat kesishmaydigan emas: `expired` va `other` IKKALASIDA ham bor va
+ * bu ataylab — yaroqlilik muddati tugagan piyola xonada turaveradi
+ * (`broken`), tugagan sut esa tashlab yuboriladi (`missing`). Qolganlari
+ * esa faqat bitta turda ma'noli: "yo'qoldi" degan sabab bilan xonada
+ * turgan buyumni belgilash mumkin emas.
+ *
+ * ⚠️ Bu tekshiruv MAJBURIY: sabab bilan tur mos kelmasa, hisobotdagi
+ * "nechta jihoz yo'qoldi" va "nechta jihoz yaroqsiz" kesimlari bir-birini
+ * inkor qilardi.
+ */
+const REASONS_BY_KIND = {
+  broken: ["broken", "expired", "worn_out", "misused", "other"],
+  missing: ["lost", "stolen", "expired", "other"],
+};
+
+/**
+ * Sabab ko'rsatilmaganda ishlatiladigan qiymat.
+ *
+ * Faqat ESKI mijozlar uchun murosa: kunlik hisobotda sabab MAJBURIY
+ * (`inventoryCheck.service.js`), qo'lda zarar kiritishda esa berilmasa
+ * turdan kelib chiqadi — aks holda `POST /damages` ning eski shakli
+ * birdaniga ishlamay qolardi.
+ */
+const DEFAULT_REASON_BY_KIND = {
+  broken: "broken",
+  missing: "lost",
+};
+
+// Erkin izoh MAJBURIY bo'ladigan sabablar. "Boshqa" deb belgilab izoh
+// yozmaslik — hisobotni "boshqa: 47 ta" degan javobsiz qatorga aylantirardi.
+const REASONS_REQUIRING_NOTE = ["other"];
 
 const DAMAGE_STATUS_LABELS = {
   pending: "Aybdor aniqlanmagan",
@@ -345,6 +455,11 @@ module.exports = {
   LOCATION_TYPE_LABELS,
   MOVEMENT_TYPE_LABELS,
   DAMAGE_KIND_LABELS,
+  DAMAGE_REASON_LABELS,
+  REASONS_BY_KIND,
+  DEFAULT_REASON_BY_KIND,
+  REASONS_REQUIRING_NOTE,
+  parseDamageReason,
   DAMAGE_STATUS_LABELS,
   CHARGE_STATUS_LABELS,
   personSnapshotOf,

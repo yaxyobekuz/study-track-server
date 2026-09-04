@@ -99,6 +99,7 @@ const parseOccurredAt = (value) => {
  * @param {string} [params.itemName] - xato xabari uchun
  * @param {string} [params.checkId]
  * @param {string} [params.damageId]
+ * @param {string} [params.transferId] - o'tkazma HUJJATI (ikkala qator uchun bitta)
  * @param {string} [params.counterpartLocationId]
  * @param {string} [params.note]
  * @returns {Promise<object>} yozilgan qator (xom)
@@ -147,6 +148,7 @@ const postMovement = async (tx, params) => {
       occurredAt,
       checkId: params.checkId ?? null,
       damageId: params.damageId ?? null,
+      transferId: params.transferId ?? null,
       counterpartLocationId: params.counterpartLocationId ?? null,
       note: params.note?.trim() || "",
       createdBy,
@@ -279,6 +281,7 @@ const getMovements = async (req) => {
   if (query.type) where.type = query.type;
   if (query.checkId) where.checkId = query.checkId;
   if (query.damageId) where.damageId = query.damageId;
+  if (query.transferId) where.transferId = query.transferId;
 
   if (query.from || query.to) {
     where.occurredAt = {};
@@ -547,89 +550,16 @@ const adjustStock = async (data, userId) => {
   );
 };
 
-/**
- * XONALAR ORASIDA KO'CHIRISH — bitta hodisa, IKKITA daftar qatori
- * (`AccountTransfer` bilan aynan bir xil munosabat).
- *
- * ⚠️ DEADLOCK: A→B va B→A parallel kelganda xatlov qatorlari HAR DOIM
- * `id` bo'yicha O'SISH tartibida lock qilinadi, yo'nalishdan qat'i nazar.
- *
- * @param {object} data - { fromLocationId, toLocationId, itemId, quantity, brokenQuantity, occurredAt, note }
- */
-const transferStock = async (data, userId) => {
-  if (!data.fromLocationId || !data.toLocationId) {
-    throw new BadRequestError("Qaysi xonadan qaysi xonaga — ikkalasi ham kerak");
-  }
-  if (data.fromLocationId === data.toLocationId) {
-    throw new BadRequestError("Bir xonaning o'ziga ko'chirib bo'lmaydi");
-  }
-
-  const [fromLocation, toLocation, item] = await Promise.all([
-    assertActiveLocation(data.fromLocationId),
-    assertActiveLocation(data.toLocationId),
-    assertActiveItem(data.itemId),
-  ]);
-
-  const quantity = parseQuantity(data.quantity, "Miqdor");
-  if (quantity <= 0) throw new BadRequestError("Miqdor noldan katta bo'lishi kerak");
-
-  // Yaroqsizini ham ko'chirish mumkin ("singan partalar omborga")
-  const brokenQuantity = parseQuantity(data.brokenQuantity ?? 0, "Yaroqsiz miqdor");
-  if (brokenQuantity > quantity) {
-    throw new BadRequestError("Yaroqsizlar soni ko'chirilayotgan miqdordan ko'p");
-  }
-
-  const occurredAt = parseOccurredAt(data.occurredAt);
-  const note = data.note?.trim() || "";
-
-  await prisma.$transaction(async (tx) => {
-    const fromStock = await tx.inventoryStock.findUnique({
-      where: { locationId_itemId: { locationId: fromLocation.id, itemId: item.id } },
-    });
-    if (!fromStock) {
-      throw new BadRequestError(
-        `"${fromLocation.name}" xatlovida "${item.name}" yo'q`,
-      );
-    }
-
-    const toStock = await ensureStock(tx, toLocation.id, item.id, userId);
-
-    // ⚠️ Lock tartibi — HAR DOIM id bo'yicha o'sish tartibida
-    const ordered = [
-      { stock: fromStock, out: true },
-      { stock: toStock, out: false },
-    ].sort((a, b) => a.stock.id.localeCompare(b.stock.id));
-
-    for (const { stock, out } of ordered) {
-      await postMovement(tx, {
-        stock,
-        type: out ? "transfer_out" : "transfer_in",
-        quantityDelta: out ? -quantity : quantity,
-        brokenDelta: out ? -brokenQuantity : brokenQuantity,
-        occurredAt,
-        itemName: item.name,
-        counterpartLocationId: out ? toLocation.id : fromLocation.id,
-        note:
-          note ||
-          (out ? `→ ${toLocation.name}` : `← ${fromLocation.name}`),
-        createdBy: userId,
-      });
-    }
-  }, TX_OPTIONS);
-
-  logger.info(
-    `[inventory] Ko'chirildi: ${item.name} ×${quantity} · ` +
-      `${fromLocation.name} → ${toLocation.name} · actor=${userId}`,
-  );
-
-  return {
-    item: { id: item.id, name: item.name },
-    from: { id: fromLocation.id, name: fromLocation.name },
-    to: { id: toLocation.id, name: toLocation.name },
-    quantity,
-    brokenQuantity,
-  };
-};
+// ⚠️ XONALAR ORASIDA KO'CHIRISH BU YERDA EMAS.
+//
+// U `inventoryTransfer.service.js` ga ko'chirildi va HUJJATGA aylandi
+// (`InventoryTransfer` + `InventoryTransferLine`). Sabab: o'tkazma uch
+// narsani saqlashi kerak — qaysi xonaga, KIMGA topshirildi va nima uchun,
+// — daftar qatori esa faqat miqdorni biladi. Bir aktda bir nechta jihoz
+// ham shu qatlamda paydo bo'ldi.
+//
+// Bu fayl daftarning YAGONA yozuv nuqtasi bo'lib qoladi: o'tkazma servisi
+// ham miqdorni faqat `postMovement()` orqali o'zgartiradi.
 
 module.exports = {
   TX_OPTIONS,
@@ -645,5 +575,4 @@ module.exports = {
   repairStock,
   writeOffStock,
   adjustStock,
-  transferStock,
 };

@@ -322,39 +322,39 @@ enum AllocationSource {
 // "username → qaysi filial" degan yagona global indeks.
 
 model User {
-  id            String    @id @db.Char(24)
-  username      String    @unique
-  password      String
-  plainPassword String?   @map("plain_password")
-  firstName     String    @map("first_name")
-  lastName      String?   @map("last_name")
-  telegramIds   String[]  @map("telegram_ids")
-  role          String // Role.value ga ishora (FK emas, service validatsiya)
+  id               String    @id @db.Char(24)
+  username         String    @unique
+  password         String
+  plainPassword    String?   @map("plain_password")
+  firstName        String    @map("first_name")
+  lastName         String?   @map("last_name")
+  telegramIds      String[]  @map("telegram_ids")
+  role             String // Role.value ga ishora (FK emas, service validatsiya)
   // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
-  permissions   String[]  @default([]) @map("permissions")
-  isActive      Boolean   @default(true) @map("is_active")
-  gender        Gender?
-  coinBalance   Int       @default(0) @map("coin_balance")
-  penaltyPoints Int       @default(0) @map("penalty_points")
-  isArchived    Boolean   @default(false) @map("is_archived")
-  archivedAt    DateTime? @map("archived_at")
+  permissions      String[]  @default([]) @map("permissions")
+  isActive         Boolean   @default(true) @map("is_active")
+  gender           Gender?
+  coinBalance      Int       @default(0) @map("coin_balance")
+  penaltyPoints    Int       @default(0) @map("penalty_points")
+  isArchived       Boolean   @default(false) @map("is_archived")
+  archivedAt       DateTime? @map("archived_at")
   // { coinBalance, penaltyPoints } — arxivlashdan oldingi zaxira
-  archiveSnapshot Json?   @map("archive_snapshot")
-  workStartTime String?   @map("work_start_time")
-  workEndTime   String?   @map("work_end_time")
-  workDays      Int[]     @map("work_days")
+  archiveSnapshot  Json?     @map("archive_snapshot")
+  workStartTime    String?   @map("work_start_time")
+  workEndTime      String?   @map("work_end_time")
+  workDays         Int[]     @map("work_days")
   // Map<hafta_kuni, { startTime, endTime }>
-  weeklySchedule Json     @default("{}") @map("weekly_schedule")
+  weeklySchedule   Json      @default("{}") @map("weekly_schedule")
   premiumIsActive  Boolean   @default(false) @map("premium_is_active")
   premiumExpiresAt DateTime? @map("premium_expires_at")
-  profilePicture String?   @map("profile_picture") @db.Char(24)
-  emojiBadgeId  String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
-  displayName   String?   @map("display_name")
-  nameColor     String?   @map("name_color")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
+  profilePicture   String?   @map("profile_picture") @db.Char(24)
+  emojiBadgeId     String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
+  displayName      String?   @map("display_name")
+  nameColor        String?   @map("name_color")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  profileImage Image?      @relation("UserProfileImage", fields: [profilePicture], references: [id])
+  profileImage Image?        @relation("UserProfileImage", fields: [profilePicture], references: [id])
   classes      UserClass[]
   subjects     UserSubject[]
 
@@ -402,7 +402,6 @@ model UserSubject {
   @@map("user_subjects")
 }
 
-
 // ─────────────────────────────────────────────
 // AKADEMIK STRUKTURA
 // ─────────────────────────────────────────────
@@ -415,9 +414,9 @@ model Class {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users            UserClass[]
-  testBindings     TestBindingClass[]
-  weeklyStats      WeeklyStatsClass[]
+  users        UserClass[]
+  testBindings TestBindingClass[]
+  weeklyStats  WeeklyStatsClass[]
 
   @@map("classes")
 }
@@ -556,9 +555,9 @@ model ClassSubjectProgress {
 // qiymatlar yotadi, shuning uchun fan vaqtincha olib tashlansa qator yetim
 // qoladi-yu, YO'QOLMAYDI: fan qaytarilganda soatlar joyida turadi.
 model PlannerLoad {
-  id        String @id @db.Char(24)
-  teacherId String @map("teacher_id") @db.Char(24) // soft ref → User (FK emas)
-  subjectId String @map("subject_id") @db.Char(24) // soft ref → Subject (FK emas)
+  id          String   @id @db.Char(24)
+  teacherId   String   @map("teacher_id") @db.Char(24) // soft ref → User (FK emas)
+  subjectId   String   @map("subject_id") @db.Char(24) // soft ref → Subject (FK emas)
   // HAR BIR SINF uchun standart haftalik soat: 4 soat × 3 sinf = 12.
   // Sinfga xos qiymat — PlannerLoadClass.weeklyHours (null bo'lsa shu amal qiladi).
   weeklyHours Int      @default(0) @map("weekly_hours")
@@ -605,7 +604,7 @@ model PlannerBusySlot {
 
 // Shakllantirish qoidalari (singleton).
 model PlannerSettings {
-  id String @id @default("singleton") @db.VarChar(24)
+  id                   String   @id @default("singleton") @db.VarChar(24)
   // Ish kunlari — ScheduleDay qiymatlari. BO'SH massiv = 6 kunning hammasi
   // (yangi filialda darhol ishlashi uchun; "hech bir kun" holati ma'nosiz).
   workDays             String[] @default([]) @map("work_days")
@@ -624,24 +623,24 @@ model PlannerSettings {
   avoidConsecutiveSame Boolean  @default(true) @map("avoid_consecutive_same")
   // Takrorlanuvchanlik: bir xil kirim + bir xil seed = AYNAN bir xil jadval.
   // Boshqa variant kerak bo'lsa raqam o'zgartiriladi.
-  seed      Int      @default(1)
-  updatedBy String?  @map("updated_by") @db.Char(24)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  seed                 Int      @default(1)
+  updatedBy            String?  @map("updated_by") @db.Char(24)
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@map("planner_settings")
 }
 
 // Bitta shakllantirish = bitta variant.
 model PlannerRun {
-  id   String @id @db.Char(24)
-  name String
+  id               String   @id @db.Char(24)
+  name             String
   // { demand, placed, unplacedCount, fillRate, byClass[], byTeacher[] }
-  stats Json @default("{}")
+  stats            Json     @default("{}")
   // [{ teacherId, subjectId, classId, missing, reason }] — nega joylashmagani
   // odam tilida. Bu ro'yxat jim qolmasligi kerak: "98%" degan raqamning o'zi
   // qaysi darsni qo'lda joylash kerakligini aytmaydi.
-  unplaced Json @default("[]")
+  unplaced         Json     @default("[]")
   // Shakllantirish paytidagi sozlama + periods nusxasi. Keyin sozlama
   // o'zgarsa, bu variant QANDAY shartlarda tug'ilgani ma'lum bo'lib qoladi.
   settingsSnapshot Json     @default("{}") @map("settings_snapshot")
@@ -668,7 +667,7 @@ model PlannerLesson {
   teacherId String      @map("teacher_id") @db.Char(24) // soft ref → User
   // Qo'lda ko'chirilgan yoki ataylab qadalgan dars — qayta shakllantirishda
   // joyida qoladi.
-  isPinned Boolean @default(false) @map("is_pinned")
+  isPinned  Boolean     @default(false) @map("is_pinned")
 
   run PlannerRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -693,7 +692,7 @@ model PlannerLesson {
 // Doimiy saqlash MIJOZDA — localStorage. Bu jadval esa IXTIYORIY zaxira:
 // foydalanuvchi "Saqlash" tugmasini bosgandagina yoziladi (avtomatik emas).
 model PlannerDistribution {
-  id String @id @default("singleton") @db.VarChar(24)
+  id        String   @id @default("singleton") @db.VarChar(24)
   // { version, columns[], rows[], values{}, savedAt }
   data      Json     @default("{}")
   updatedBy String?  @map("updated_by") @db.Char(24)
@@ -741,21 +740,21 @@ model Attendance {
 }
 
 model AttendanceSettings {
-  id                         String   @id @default("singleton") @db.VarChar(24)
+  id                          String   @id @default("singleton") @db.VarChar(24)
   // { lat, lng }
-  officeLocation             Json?    @map("office_location")
-  officeRadius               Int      @default(100) @map("office_radius")
-  lateArrivalPenaltyPoints   Int      @default(1) @map("late_arrival_penalty_points")
-  lateArrivalGraceMinutes    Int      @default(10) @map("late_arrival_grace_minutes")
-  earlyDeparturePenaltyPoints Int     @default(1) @map("early_departure_penalty_points")
-  earlyDepartureGraceMinutes Int      @default(10) @map("early_departure_grace_minutes")
-  absentPenaltyPoints        Int      @default(2) @map("absent_penalty_points")
-  penaltyPaused              Boolean  @default(false) @map("penalty_paused")
-  pausedRoles                String[] @map("paused_roles")
-  pausedUsers                String[] @map("paused_users")
-  updatedBy                  String?  @map("updated_by") @db.Char(24)
-  createdAt                  DateTime @default(now()) @map("created_at")
-  updatedAt                  DateTime @updatedAt @map("updated_at")
+  officeLocation              Json?    @map("office_location")
+  officeRadius                Int      @default(100) @map("office_radius")
+  lateArrivalPenaltyPoints    Int      @default(1) @map("late_arrival_penalty_points")
+  lateArrivalGraceMinutes     Int      @default(10) @map("late_arrival_grace_minutes")
+  earlyDeparturePenaltyPoints Int      @default(1) @map("early_departure_penalty_points")
+  earlyDepartureGraceMinutes  Int      @default(10) @map("early_departure_grace_minutes")
+  absentPenaltyPoints         Int      @default(2) @map("absent_penalty_points")
+  penaltyPaused               Boolean  @default(false) @map("penalty_paused")
+  pausedRoles                 String[] @map("paused_roles")
+  pausedUsers                 String[] @map("paused_users")
+  updatedBy                   String?  @map("updated_by") @db.Char(24)
+  createdAt                   DateTime @default(now()) @map("created_at")
+  updatedAt                   DateTime @updatedAt @map("updated_at")
 
   @@map("attendance_settings")
 }
@@ -991,15 +990,15 @@ model PenaltyNotificationQueue {
 }
 
 model PenaltySettings {
-  id                            String   @id @default("singleton") @db.VarChar(24)
+  id                              String   @id @default("singleton") @db.VarChar(24)
   // Map<role, amount>
-  fineAmounts                   Json     @default("{}") @map("fine_amounts")
-  studentFineAmount             Int      @default(2100000) @map("student_fine_amount")
-  teacherFineAmount             Int      @default(2100000) @map("teacher_fine_amount")
-  premiumReductionDiscountPercent Int    @default(0) @map("premium_reduction_discount_percent")
-  updatedBy                     String?  @map("updated_by") @db.Char(24)
-  createdAt                     DateTime @default(now()) @map("created_at")
-  updatedAt                     DateTime @updatedAt @map("updated_at")
+  fineAmounts                     Json     @default("{}") @map("fine_amounts")
+  studentFineAmount               Int      @default(2100000) @map("student_fine_amount")
+  teacherFineAmount               Int      @default(2100000) @map("teacher_fine_amount")
+  premiumReductionDiscountPercent Int      @default(0) @map("premium_reduction_discount_percent")
+  updatedBy                       String?  @map("updated_by") @db.Char(24)
+  createdAt                       DateTime @default(now()) @map("created_at")
+  updatedAt                       DateTime @updatedAt @map("updated_at")
 
   @@map("penalty_settings")
 }
@@ -1066,17 +1065,17 @@ model DailyCoinStat {
 }
 
 model MarketProduct {
-  id          String   @id @db.Char(24)
+  id          String    @id @db.Char(24)
   name        String
-  description String   @default("")
+  description String    @default("")
   price       Int
   quantity    Int
-  isActive    Boolean  @default(true) @map("is_active")
-  isArchived  Boolean  @default(false) @map("is_archived")
-  createdBy   String   @map("created_by") @db.Char(24)
+  isActive    Boolean   @default(true) @map("is_active")
+  isArchived  Boolean   @default(false) @map("is_archived")
+  createdBy   String    @map("created_by") @db.Char(24)
   archivedAt  DateTime? @map("archived_at")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   images MarketProductImage[]
 
@@ -1552,7 +1551,7 @@ model MessageQueue {
   filePath        String?               @map("file_path")
   fileName        String?               @map("file_name")
   fileContentType String?               @map("file_content_type")
-  fileType        MessageQueueFileType?  @map("file_type")
+  fileType        MessageQueueFileType? @map("file_type")
   // Telegram reply_markup (Mixed)
   replyMarkup     Json?                 @map("reply_markup")
   status          MessageQueueStatus    @default(pending)
@@ -1652,21 +1651,21 @@ model WeeklyStatsClass {
 }
 
 model Holiday {
-  id          String      @id @db.Char(24)
-  name        String
-  description String?
-  type        HolidayType
-  date        DateTime?
-  startDate   DateTime?   @map("start_date")
-  endDate     DateTime?   @map("end_date")
+  id                 String      @id @db.Char(24)
+  name               String
+  description        String?
+  type               HolidayType
+  date               DateTime?
+  startDate          DateTime?   @map("start_date")
+  endDate            DateTime?   @map("end_date")
   // { month, day }
-  recurringDate      Json? @map("recurring_date")
-  recurringStartDate Json? @map("recurring_start_date")
-  recurringEndDate   Json? @map("recurring_end_date")
-  isActive    Boolean     @default(true) @map("is_active")
-  createdBy   String?     @map("created_by") @db.Char(24)
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
+  recurringDate      Json?       @map("recurring_date")
+  recurringStartDate Json?       @map("recurring_start_date")
+  recurringEndDate   Json?       @map("recurring_end_date")
+  isActive           Boolean     @default(true) @map("is_active")
+  createdBy          String?     @map("created_by") @db.Char(24)
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
 
   @@map("holidays")
 }
@@ -1683,8 +1682,8 @@ model Image {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  profileUsers   User[]               @relation("UserProfileImage")
-  productImages  MarketProductImage[]
+  profileUsers  User[]               @relation("UserProfileImage")
+  productImages MarketProductImage[]
 
   @@index([uploadedBy])
   @@index([createdAt(sort: Desc)])
@@ -1725,15 +1724,15 @@ model Premium {
 }
 
 model PremiumSettings {
-  id           String   @id @default("singleton") @db.VarChar(24)
-  isEnabled    Boolean  @default(true) @map("is_enabled")
-  coinCost     Int      @default(100) @map("coin_cost")
-  durationDays Int      @default(30) @map("duration_days")
+  id                String   @id @default("singleton") @db.VarChar(24)
+  isEnabled         Boolean  @default(true) @map("is_enabled")
+  coinCost          Int      @default(100) @map("coin_cost")
+  durationDays      Int      @default(30) @map("duration_days")
   // allowedNameColors[] — { key, label, hex, isActive }
-  allowedNameColors Json @default("[]") @map("allowed_name_colors")
-  updatedBy    String?  @map("updated_by") @db.Char(24)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  allowedNameColors Json     @default("[]") @map("allowed_name_colors")
+  updatedBy         String?  @map("updated_by") @db.Char(24)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@map("premium_settings")
 }
@@ -1836,7 +1835,7 @@ enum StudentEnrollmentEndReason {
 // `endDate` INKLYUZIV — oxirgi o'qigan kun. Shu sababli [.., 09-30] va
 // [10-01, ..] KESISHMAYDI: o'quvchi ertasiga qayta yozilishi mumkin.
 model StudentEnrollment {
-  id String @id @db.Char(24)
+  id        String @id @db.Char(24)
   // soft ref → User (role = "student"), StudentTariff uslubi. FK YO'Q:
   // arxivlangan o'quvchining o'qish tarixi ham qolishi kerak.
   studentId String @map("student_id") @db.Char(24)
@@ -1929,7 +1928,6 @@ model StudentDiscount {
 model FinanceSettings {
   id String @id @default("singleton") @db.VarChar(24)
 
-
   // Oyning nechanchi kunida majburiyat shakllanadi. 1..28 bilan cheklanadi —
   // 29-31 fevralda hech qachon kelmaydi. Cron IFODASIDA emas, HANDLER'da
   // o'qiladi: sozlama bazada, cron ifodasi esa startup'da qotib qoladi.
@@ -1945,7 +1943,6 @@ model FinanceSettings {
   // Qattiq pol: bu oydan oldin hech qachon hisob-faktura shakllanmaydi —
   // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
   firstInvoiceMonth Int? @map("first_invoice_month")
-
 
   // Yangi hisob-faktura chiqqanda o'quvchining oldindan to'langan qoldig'i
   // avtomatik yechilsinmi. O'chirilsa — depozit qo'lda qo'llanadi.
@@ -1993,7 +1990,7 @@ model VacationMonth {
 // shakl. QATOR YO'Q = FAOL: faqat istisnolar (muzlatish/chetlatish) yoziladi,
 // shuning uchun jadval kichik qoladi va cron'ning istisno so'rovi arzon.
 model StudentFinanceStatus {
-  id String @id @db.Char(24)
+  id        String @id @db.Char(24)
   // soft ref → User (role = "student"). FK YO'Q — moliyaviy tarix o'quvchi
   // arxivlansa/o'chirilsa ham qolishi kerak (StudentTariff uslubi).
   studentId String @map("student_id") @db.Char(24)
@@ -2058,12 +2055,12 @@ model MonthlyInvoice {
   // `discountAmount` ga teng bo'lmay qolardi (discount.helpers.js).
   proratedAmount Decimal @map("prorated_amount") @db.Decimal(14, 2)
 
-  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  discountAmount   Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
   // [{ discountId, name, type, value, nominalAmount, appliedAmount }] —
   // chiqarilgan paytdagi chegirmalar. `appliedAmount`lar yig'indisi AYNAN
   // discountAmount ga teng (oxirgisiga qoldiq beriladi), lekin ustunlar
   // orasidagi hakam — discountAmount, snapshot esa taqsimot izohi.
-  discountSnapshot Json? @map("discount_snapshot")
+  discountSnapshot Json?   @map("discount_snapshot")
 
   // MUHRLANGAN summa = proratedAmount − discountAmount.
   // (Proratsiyagacha bu `baseAmount − discountAmount` edi.)
@@ -2140,11 +2137,11 @@ model PaymentAccount {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  entries       AccountEntry[]
-  payments      Payment[]
-  refunds       Refund[]
-  transfersFrom AccountTransfer[] @relation("TransferFrom")
-  transfersTo   AccountTransfer[] @relation("TransferTo")
+  entries         AccountEntry[]
+  payments        Payment[]
+  refunds         Refund[]
+  transfersFrom   AccountTransfer[] @relation("TransferFrom")
+  transfersTo     AccountTransfer[] @relation("TransferTo")
   externalIncomes ExternalIncome[]
   salaryPayments  SalaryPayment[]
   expenses        Expense[]
@@ -2163,7 +2160,7 @@ model IncomeCategory {
   id   String @id @db.Char(24)
   name String @unique
 
-  isActive Boolean @default(true) @map("is_active")
+  isActive   Boolean @default(true) @map("is_active")
   // Kategoriya HECH QACHON o'chirilmaydi — arxivlanadi. O'tgan kirimlar
   // unga ishora qiladi, shuning uchun FK Restrict.
   isArchived Boolean @default(false) @map("is_archived")
@@ -2240,7 +2237,7 @@ model ExternalIncome {
 // ⚠️ Tarifdan FARQI: summa shu yerda SAQLANADI. Tarif — katalog (ko'p
 // o'quvchiga bitta narx), xodim oyligi esa har kimda o'ziniki.
 model StaffSalary {
-  id String @id @db.Char(24)
+  id      String @id @db.Char(24)
   // soft ref → User (role != student). FK YO'Q: xodim arxivlansa ham
   // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
   staffId String @map("staff_id") @db.Char(24)
@@ -2271,7 +2268,7 @@ model StaffSalary {
 // ⚠️ Kun proratsiyasi YO'Q. "Fiksa" — qat'iy summa, oy aniqligida. Oy
 // o'rtasida ishga kirgan xodim uchun `startMonth` keyingi oydan qo'yiladi.
 model PayrollEntry {
-  id String @id @db.Char(24)
+  id      String @id @db.Char(24)
   staffId String @map("staff_id") @db.Char(24)
   month   Int // YYYYMM
 
@@ -2310,7 +2307,7 @@ model PayrollEntry {
 // tushunchasi qo'shilmagani uchun ortiqcha pulni saqlaydigan joy ham
 // kerak emas. Bitta oylikni bir necha marta to'lash esa MUMKIN.
 model SalaryPayment {
-  id String @id @db.Char(24)
+  id        String @id @db.Char(24)
   staffId   String @map("staff_id") @db.Char(24)
   accountId String @map("account_id") @db.Char(24)
 
@@ -2342,7 +2339,7 @@ model SalaryPayment {
 
 // To'lov qaysi oylikni yopdi — `PaymentAllocation` ning ko'zgusi.
 model SalaryAllocation {
-  id String @id @db.Char(24)
+  id             String @id @db.Char(24)
   paymentId      String @map("payment_id") @db.Char(24)
   payrollEntryId String @map("payroll_entry_id") @db.Char(24)
   staffId        String @map("staff_id") @db.Char(24)
@@ -2467,22 +2464,22 @@ model AccountEntry {
   // Registr `seq` bo'yicha, hisobot `occurredAt` bo'yicha.
   seq BigInt @default(autoincrement())
 
-  accountId String           @map("account_id") @db.Char(24)
-  type      AccountEntryType
+  accountId    String           @map("account_id") @db.Char(24)
+  type         AccountEntryType
   // ISHORALI: + kirim, − chiqim. SUM() hisobotlarni ahamiyatsiz qiladi.
   // Ishora tipga mos kelishi assertSignMatchesType bilan tekshiriladi.
-  amount    Decimal          @db.Decimal(14, 2)
+  amount       Decimal          @db.Decimal(14, 2)
   // "seq raqamli yozuvdan keyingi qoldiq" — nazoratchi ustunni pastga
   // qarab o'qiy oladi. Qiymat `paymentAccount.update({increment})` dan
   // QAYTGAN post-image'dan olinadi (o'qi→hisobla→yoz EMAS).
-  balanceAfter Decimal @map("balance_after") @db.Decimal(14, 2)
+  balanceAfter Decimal          @map("balance_after") @db.Decimal(14, 2)
 
   // BIZNES sanasi (to'lovda = payment.paidAt) — hisobot filtri shunga tayanadi
   occurredAt DateTime @map("occurred_at")
 
-  paymentId  String? @map("payment_id") @db.Char(24)
-  transferId String? @map("transfer_id") @db.Char(24)
-  refundId   String? @map("refund_id") @db.Char(24)
+  paymentId        String? @map("payment_id") @db.Char(24)
+  transferId       String? @map("transfer_id") @db.Char(24)
+  refundId         String? @map("refund_id") @db.Char(24)
   externalIncomeId String? @map("external_income_id") @db.Char(24)
   salaryPaymentId  String? @map("salary_payment_id") @db.Char(24)
   expenseId        String? @map("expense_id") @db.Char(24)
@@ -2495,13 +2492,13 @@ model AccountEntry {
   // Restrict, Cascade EMAS: Cascade pul logini hisob bilan birga
   // olib ketardi. AccountEntry — hisobning egalik ostidagi bolasi
   // (TariffVersion→Tariff uslubi), shuning uchun soft ref emas, haqiqiy FK.
-  account  PaymentAccount   @relation(fields: [accountId], references: [id], onDelete: Restrict)
-  payment  Payment?         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
-  transfer AccountTransfer? @relation(fields: [transferId], references: [id], onDelete: Restrict)
-  externalIncome ExternalIncome? @relation(fields: [externalIncomeId], references: [id], onDelete: Restrict)
-  salaryPayment  SalaryPayment?  @relation(fields: [salaryPaymentId], references: [id], onDelete: Restrict)
-  expense        Expense?        @relation(fields: [expenseId], references: [id], onDelete: Restrict)
-  damagePayment  DamagePayment?  @relation(fields: [damagePaymentId], references: [id], onDelete: Restrict)
+  account        PaymentAccount   @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  payment        Payment?         @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  transfer       AccountTransfer? @relation(fields: [transferId], references: [id], onDelete: Restrict)
+  externalIncome ExternalIncome?  @relation(fields: [externalIncomeId], references: [id], onDelete: Restrict)
+  salaryPayment  SalaryPayment?   @relation(fields: [salaryPaymentId], references: [id], onDelete: Restrict)
+  expense        Expense?         @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  damagePayment  DamagePayment?   @relation(fields: [damagePaymentId], references: [id], onDelete: Restrict)
 
   @@index([accountId, seq(sort: Desc)]) // registr + running balance
   @@index([accountId, occurredAt]) // "X–Y oralig'idagi kirim"
@@ -2547,7 +2544,7 @@ model Payment {
   // FK: hisob o'chirilmaydi (arxivlanadi), dangling pointer qoldiqni buzardi
   accountId String @map("account_id") @db.Char(24)
 
-  amount Decimal @db.Decimal(14, 2)
+  amount          Decimal @db.Decimal(14, 2)
   // HOSILA, tezlik uchun denormalizatsiya:
   //   allocatedAmount = Σ (isVoided = false) allocations
   //   depositAmount   = amount − allocatedAmount
@@ -2557,11 +2554,11 @@ model Payment {
 
   // Pul qachon olindi. Orqaga sanash qonuniy: kassir kechagi to'lovni
   // bugun kiritishi mumkin.
-  paidAt DateTime @map("paid_at")
-  note   String   @default("")
+  paidAt          DateTime @map("paid_at")
+  note            String   @default("")
   // { firstName, lastName, username, classId, className } — hisobot
   // o'quvchi qatori bo'lmasa ham ishlashi uchun
-  studentSnapshot Json @map("student_snapshot")
+  studentSnapshot Json     @map("student_snapshot")
 
   // QISMAN BEKOR QILISH YO'Q: xato summa → to'liq bekor + qayta kiritish.
   // Qisman bekor qilish bu tizimlarni auditsiz qiladigan asosiy yo'l.
@@ -2574,7 +2571,7 @@ model Payment {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  account     PaymentAccount     @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  account     PaymentAccount      @relation(fields: [accountId], references: [id], onDelete: Restrict)
   allocations PaymentAllocation[]
   entries     AccountEntry[]
 
@@ -2592,11 +2589,11 @@ model PaymentAllocation {
   // Denormalizatsiya: o'quvchining balans harakatlari uchun
   studentId String @map("student_id") @db.Char(24)
 
-  amount Decimal          @db.Decimal(14, 2)
-  source AllocationSource @default(payment)
+  amount    Decimal          @db.Decimal(14, 2)
+  source    AllocationSource @default(payment)
   // To'lov sanasidan FARQ QILADI: `deposit` manbali qator keyingi oy
   // yaratiladi. Balans harakatlari tarixi shu bo'yicha tuziladi.
-  appliedAt DateTime @map("applied_at")
+  appliedAt DateTime         @map("applied_at")
 
   isVoided  Boolean   @default(false) @map("is_voided")
   voidedAt  DateTime? @map("voided_at")
@@ -2620,7 +2617,7 @@ model PaymentAllocation {
 //     StudentAccount → MonthlyInvoice (month asc, id asc) → PaymentAccount
 // O'quvchilar bir-biri bilan to'qnashmagani uchun deadlock imkonsiz.
 model StudentAccount {
-  id String @id @db.Char(24)
+  id        String @id @db.Char(24)
   // soft ref → User
   studentId String @unique @map("student_id") @db.Char(24)
 
@@ -2761,6 +2758,29 @@ enum InventoryDamageKind {
   missing // yo'qoldi
 }
 
+// ZARAR SABABI — `kind` dan MUSTAQIL ikkinchi o'lchov.
+//
+// ⚠️ NIMA UCHUN `kind` GA QO'SHILMAGAN. `InventoryDamageKind` XATLOVGA
+// TA'SIRNI bildiradi (broken → jami o'zgarmaydi/yaroqsiz ortadi,
+// missing → jami kamayadi), sabab esa NIMA BO'LGANINI bildiradi.
+// Ikkalasi bir enumga qo'shilsa, "yaroqlilik muddati tugadi" ni yozish
+// uchun uning xatlovga ta'sirini ham tanlash kerak bo'lardi va bitta
+// noto'g'ri tanlov "xonada nechta piyola bor" degan javobni buzardi.
+//
+// Toifa + erkin izoh — `StudentEnrollment` ning ketish sababi bilan aynan
+// bir xil naqsh: toifa bo'lmasa "bu yil nechta jihoz yaroqlilik muddati
+// tugagani uchun chiqdi" degan savolga javob bo'lmaydi, erkin matn
+// bo'lmasa esa ro'yxatga sig'maydigan holat yozilmay qolardi.
+enum InventoryDamageReason {
+  broken // sindi / singan holatga keldi
+  expired // yaroqlilik muddati tugadi
+  worn_out // eskirdi, tabiiy yeyilish
+  misused // noto'g'ri foydalanish natijasida
+  lost // yo'qoldi
+  stolen // o'g'irlandi
+  other // boshqa — izoh MAJBURIY
+}
+
 enum InventoryDamageStatus {
   pending // aybdor hali aniqlanmagan
   charged // aybdor(lar)ga qarz yozilgan
@@ -2829,10 +2849,11 @@ model InventoryItem {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  category  InventoryCategory  @relation(fields: [categoryId], references: [id], onDelete: Restrict)
-  stocks    InventoryStock[]
-  damages   InventoryDamage[]
-  movements InventoryMovement[]
+  category      InventoryCategory       @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  stocks        InventoryStock[]
+  damages       InventoryDamage[]
+  movements     InventoryMovement[]
+  transferLines InventoryTransferLine[]
 
   @@index([categoryId, isArchived, sortOrder])
   @@index([isArchived, name])
@@ -2849,7 +2870,7 @@ model InventoryLocation {
   name String                @unique
   type InventoryLocationType @default(classroom)
 
-  classId String? @map("class_id") @db.Char(24)
+  classId       String? @map("class_id") @db.Char(24)
   // MAS'UL SHAXS — kunlik hisobotni kim yuboradi (soft ref → User).
   // U AYBDOR EMAS: mas'ullik hisobot berishga tegishli, zarar esa
   // aniq odamga alohida yoziladi (`DamageCharge`).
@@ -2863,10 +2884,12 @@ model InventoryLocation {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  stocks    InventoryStock[]
-  checks    InventoryCheck[]
-  damages   InventoryDamage[]
-  movements InventoryMovement[]
+  stocks        InventoryStock[]
+  checks        InventoryCheck[]
+  damages       InventoryDamage[]
+  movements     InventoryMovement[]
+  transfersFrom InventoryTransfer[] @relation("InventoryTransferFrom")
+  transfersTo   InventoryTransfer[] @relation("InventoryTransferTo")
 
   @@index([isArchived, type, sortOrder])
   @@index([responsibleId])
@@ -2896,8 +2919,8 @@ model InventoryStock {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  location  InventoryLocation   @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  item      InventoryItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  location  InventoryLocation    @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  item      InventoryItem        @relation(fields: [itemId], references: [id], onDelete: Restrict)
   movements InventoryMovement[]
   damages   InventoryDamage[]
   lines     InventoryCheckLine[]
@@ -2928,7 +2951,7 @@ model InventoryMovement {
   // `occurredAt` bo'yicha.
   seq BigInt @default(autoincrement())
 
-  stockId String @map("stock_id") @db.Char(24)
+  stockId    String @map("stock_id") @db.Char(24)
   // Denormalizatsiya: "shu xonada bu oy nima bo'ldi" hisoboti `stockId`
   // orqali join qilmasin.
   locationId String @map("location_id") @db.Char(24)
@@ -2946,8 +2969,13 @@ model InventoryMovement {
 
   occurredAt DateTime @map("occurred_at")
 
-  checkId  String? @map("check_id") @db.Char(24)
-  damageId String? @map("damage_id") @db.Char(24)
+  checkId               String? @map("check_id") @db.Char(24)
+  damageId              String? @map("damage_id") @db.Char(24)
+  // O'TKAZMA HUJJATI — ikkala qator (chiqim va kirim) bitta `transferId`
+  // ga ishora qiladi. `counterpartLocationId` faqat "qaysi xonaga" degan
+  // savolga javob beradi, hujjat esa "kim topshirdi, kim qabul qildi,
+  // qanday izoh bilan" degan savollarni ham saqlaydi.
+  transferId            String? @map("transfer_id") @db.Char(24)
   // Xonalar orasidagi o'tkazmada juftini ko'rsatadi (ikki qator, bitta hodisa)
   counterpartLocationId String? @map("counterpart_location_id") @db.Char(24)
 
@@ -2957,11 +2985,12 @@ model InventoryMovement {
 
   // Restrict, Cascade EMAS: Cascade xatlov tarixini xona bilan birga
   // olib ketardi (`AccountEntry` bilan bir xil mulohaza).
-  stock    InventoryStock    @relation(fields: [stockId], references: [id], onDelete: Restrict)
-  location InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  item     InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  check    InventoryCheck?   @relation(fields: [checkId], references: [id], onDelete: Restrict)
-  damage   InventoryDamage?  @relation(fields: [damageId], references: [id], onDelete: Restrict)
+  stock    InventoryStock     @relation(fields: [stockId], references: [id], onDelete: Restrict)
+  location InventoryLocation  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  item     InventoryItem      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  check    InventoryCheck?    @relation(fields: [checkId], references: [id], onDelete: Restrict)
+  damage   InventoryDamage?   @relation(fields: [damageId], references: [id], onDelete: Restrict)
+  transfer InventoryTransfer? @relation(fields: [transferId], references: [id], onDelete: Restrict)
 
   @@index([stockId, seq(sort: Desc)]) // registr + running qoldiq
   @@index([locationId, occurredAt(sort: Desc)])
@@ -2969,7 +2998,108 @@ model InventoryMovement {
   @@index([occurredAt])
   @@index([checkId])
   @@index([damageId])
+  @@index([transferId])
   @@map("inventory_movements")
+}
+
+// JIHOZLARNI O'TKAZISH — TOPSHIRISH-QABUL QILISH AKTI.
+//
+// `AccountTransfer` ning aynan ko'zgusi: bitta HODISA, ikkita daftar
+// qatori. U yerda pul bir kassadan ikkinchisiga o'tadi, bu yerda jihoz
+// bir xonadan ikkinchisiga.
+//
+// ⚠️ NIMA UCHUN ALOHIDA HUJJAT, IKKITA `InventoryMovement` EMAS.
+// Daftar qatori faqat MIQDORNI biladi. O'tkazma esa uch narsani saqlashi
+// kerak: qaysi xonaga, KIMGA topshirildi va NIMA UCHUN. Bularni daftar
+// qatorining `note` matniga yozsak, "shu xodimga nima topshirilgan"
+// degan savolga javob matn qidiruvi bo'lib qolardi.
+//
+// ⚠️ BIR AKTDA BIR NECHTA JIHOZ. Amalda "1-A dan 2-B ga 10 ta parta va
+// 20 ta stul" bitta hodisa: bitta izoh, bitta topshiruvchi, bitta sana.
+// Har birini alohida o'tkazma qilish uchala maydonni uch marta
+// takrorlashni talab qilardi (`addStock` ning `lines[]` bilan bir xil
+// mulohaza).
+//
+// ⚠️ BEKOR QILISH YO'Q va bu ATAYLAB. Xato o'tkazma TESKARI o'tkazma
+// bilan tuzatiladi — daftar append-only bo'lgani uchun baribir ikkita
+// yangi qator yoziladi, ya'ni "bekor qilish" tugmasi shu ikki qatorni
+// ko'rinmas qilardi. Teskari o'tkazmada esa izohga sabab yoziladi.
+model InventoryTransfer {
+  id             String @id @db.Char(24)
+  fromLocationId String @map("from_location_id") @db.Char(24)
+  toLocationId   String @map("to_location_id") @db.Char(24)
+
+  // KIMGA TOPSHIRILDI — ixtiyoriy soft ref → User (xodim).
+  //
+  // Ixtiyoriy, chunki "singan partalar omborga" degan o'tkazmada aniq
+  // qabul qiluvchi bo'lmasligi mumkin. Berilganda esa bu JAVOBGARLIK
+  // fakti: "10 ta parta Aliyevga topshirildi".
+  //
+  // ⚠️ Bu `InventoryLocation.responsibleId` NI O'ZGARTIRMAYDI. Xona
+  // mas'uli — kim kunlik hisobot beradi degan alohida qaror; uni
+  // o'tkazma bilan jimgina almashtirsak, hisobot ertasiga boshqa odamdan
+  // talab qilinardi.
+  toPersonId     String? @map("to_person_id") @db.Char(24)
+  personSnapshot Json?   @map("person_snapshot")
+
+  occurredAt DateTime @map("occurred_at")
+  note       String   @default("")
+
+  // HOSILA sanoqchilar — registr ekranida har bir akt uchun satrlarni
+  // o'qimaslik uchun. Yaratishda bir marta hisoblanadi va o'zgarmaydi
+  // (akt muhrlangan, `InventoryCheck` sanoqchilari bilan bir xil qaror).
+  linesCount    Int @default(0) @map("lines_count")
+  totalQuantity Int @default(0) @map("total_quantity")
+
+  // Xona qayta nomlansa/arxivlansa ham akt o'z matnini saqlaydi
+  fromSnapshot Json @map("from_snapshot")
+  toSnapshot   Json @map("to_snapshot")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  fromLocation InventoryLocation       @relation("InventoryTransferFrom", fields: [fromLocationId], references: [id], onDelete: Restrict)
+  toLocation   InventoryLocation       @relation("InventoryTransferTo", fields: [toLocationId], references: [id], onDelete: Restrict)
+  lines        InventoryTransferLine[]
+  movements    InventoryMovement[]
+
+  @@index([occurredAt(sort: Desc)])
+  @@index([fromLocationId, occurredAt(sort: Desc)])
+  @@index([toLocationId, occurredAt(sort: Desc)])
+  @@index([toPersonId, occurredAt(sort: Desc)])
+  @@map("inventory_transfers")
+}
+
+// O'tkazma aktining bitta jihoz bo'yicha satri.
+//
+// `itemName`/`unit` — SURAT: jihoz qayta nomlansa ham akt o'z matnida
+// qoladi (`InventoryCheckLine` bilan bir xil qaror).
+model InventoryTransferLine {
+  id         String @id @db.Char(24)
+  transferId String @map("transfer_id") @db.Char(24)
+  itemId     String @map("item_id") @db.Char(24)
+
+  itemName String @map("item_name")
+  unit     String @default("dona")
+
+  quantity       Int
+  // Yaroqsizlaridan nechtasi — "singan partalar omborga" holati.
+  // `quantity` ICHIDA (undan ayrilmaydi): jami 10 ta ko'chirildi,
+  // shundan 3 tasi singan.
+  brokenQuantity Int @default(0) @map("broken_quantity")
+
+  note String @default("")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  transfer InventoryTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  item     InventoryItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  // Bitta aktda bitta jihoz BIR MARTA — ikkita qator bir-birini
+  // "to'ldirib", nima ko'chirilgani noaniq bo'lib qolardi
+  @@unique([transferId, itemId])
+  @@index([itemId])
+  @@map("inventory_transfer_lines")
 }
 
 // KUNLIK HISOBOT — mas'ul shaxsning "bugun shu xonada nima holatda" akti.
@@ -3001,11 +3131,11 @@ model InventoryCheck {
 
   // HOSILA sanoqchilar — ro'yxat ekranida har bir hisobot uchun satrlarni
   // o'qimaslik uchun. Yuborish paytida bir marta hisoblanadi va o'zgarmaydi.
-  linesCount     Int     @default(0) @map("lines_count")
-  brokenCount    Int     @default(0) @map("broken_count")
-  missingCount   Int     @default(0) @map("missing_count")
-  repairedCount  Int     @default(0) @map("repaired_count")
-  damageAmount   Decimal @default(0) @map("damage_amount") @db.Decimal(14, 2)
+  linesCount    Int     @default(0) @map("lines_count")
+  brokenCount   Int     @default(0) @map("broken_count")
+  missingCount  Int     @default(0) @map("missing_count")
+  repairedCount Int     @default(0) @map("repaired_count")
+  damageAmount  Decimal @default(0) @map("damage_amount") @db.Decimal(14, 2)
 
   // Xona arxivlansa/qayta nomlansa ham o'tgan hisobot o'qilishi kerak
   locationSnapshot Json @map("location_snapshot")
@@ -3048,10 +3178,23 @@ model InventoryCheckLine {
   missingQuantity  Int @default(0) @map("missing_quantity") // bugun yo'qolgani
   repairedQuantity Int @default(0) @map("repaired_quantity") // bugun ta'mirlangani
 
-  note String @default("")
+  // SABAB — har bir tur uchun ALOHIDA va bu ataylab.
+  //
+  // Bitta satrda ikkala tur bir vaqtda bo'lishi mumkin ("3 tasi sindi,
+  // 1 tasi yo'qoldi") va ular BOSHQA-BOSHQA zarar hodisasiga aylanadi.
+  // Bitta umumiy `reason` ustuni bo'lsa, yuborishda ikkala hodisaga bir
+  // xil sabab muhrlanib, "nega yo'qoldi?" degan savolga "sindi" deb
+  // javob berilardi.
+  //
+  // NULL faqat tegishli miqdor NOL bo'lganda qonuniy — miqdor kiritilgan
+  // bo'lsa sabab MAJBURIY (`inventoryCheck.service.js`).
+  brokenReason  InventoryDamageReason? @map("broken_reason")
+  missingReason InventoryDamageReason? @map("missing_reason")
+
+  note        String @default("")
   // attachments[] — { key, url, type, originalName, sizeBytes }
   // Rasm/tafsilot: "qanday singan" degan savolga javob (Penalty uslubi)
-  attachments Json @default("[]")
+  attachments Json   @default("[]")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -3083,7 +3226,18 @@ model InventoryDamage {
   kind   InventoryDamageKind   @default(broken)
   status InventoryDamageStatus @default(pending)
 
-  quantity Int
+  // SABAB — `kind` dan MUSTAQIL o'lchov (`InventoryDamageReason` izohiga
+  // qarang). Hodisa bilan birga MUHRLANADI: keyin "aslida eskirgan ekan"
+  // deb o'zgartirilmaydi, zarar bekor qilinib qayta kiritiladi.
+  //
+  // `@default(broken)` — faqat MIGRATSIYA uchun (eski qatorlar sababsiz
+  // yozilgan). Yangi hodisada sabab MAJBURIY va service tekshiradi.
+  // Erkin izoh alohida ustun EMAS: u `description` da, ya'ni "boshqa"
+  // tanlanganda `description` majburiy bo'ladi. Ikkinchi izoh ustuni
+  // bo'lsa, xodim qaysi biriga yozishini bilmasdi.
+  reason InventoryDamageReason @default(broken)
+
+  quantity  Int
   // Hodisa PAYTIDAGI narx — katalogdan olingan surat
   unitPrice Decimal @map("unit_price") @db.Decimal(14, 2)
   amount    Decimal @db.Decimal(14, 2) // = quantity × unitPrice
@@ -3130,6 +3284,7 @@ model InventoryDamage {
   @@index([status, occurredAt(sort: Desc)])
   @@index([locationId, occurredAt(sort: Desc)])
   @@index([itemId, occurredAt(sort: Desc)])
+  @@index([reason, occurredAt(sort: Desc)])
   @@index([checkId])
   @@map("inventory_damages")
 }
@@ -3149,11 +3304,11 @@ model DamageCharge {
 
   // soft ref → User. O'quvchi ham, xodim ham bo'lishi mumkin — shuning
   // uchun `studentId`/`staffId` deb ikkiga bo'linmagan.
-  personId String @map("person_id") @db.Char(24)
+  personId       String @map("person_id") @db.Char(24)
   // Hodisa paytidagi rol — keyin o'zgarsa ham hisobot kesimi buzilmaydi
-  personRole String @map("person_role")
+  personRole     String @map("person_role")
   // { firstName, lastName, username, role, className }
-  personSnapshot Json @map("person_snapshot")
+  personSnapshot Json   @map("person_snapshot")
 
   // Nechta jihoz uchun javobgar — MA'LUMOT uchun (summa mustaqil muhrlanadi:
   // uch kishi bittada 1/3 dan to'lashi mumkin)
@@ -3164,7 +3319,7 @@ model DamageCharge {
 
   status DamageChargeStatus @default(unpaid)
 
-  note String @default("")
+  note    String    @default("")
   // Qachongacha to'lansin — eslatma va "muddati o'tgan" kesimi uchun
   dueDate DateTime? @map("due_date") @db.Date
 
@@ -3268,9 +3423,9 @@ model InventorySettings {
   dailyCheckEnabled Boolean @default(true) @map("daily_check_enabled")
   // Eslatma vaqti — "HH:mm", Toshkent devor-soati. Cron ifodasi QOTIB
   // QOLMASLIGI uchun vaqt bazadan o'qiladi (changelog job'i bilan bir xil).
-  reminderTime String @default("17:00") @map("reminder_time")
+  reminderTime      String  @default("17:00") @map("reminder_time")
   // Eslatma Telegramga ketadimi
-  reminderEnabled Boolean @default(false) @map("reminder_enabled")
+  reminderEnabled   Boolean @default(false) @map("reminder_enabled")
 
   // Zarar qayd etilganda rasm MAJBURIYMI. "Bugun 1 ta sindi" degan
   // yozuv rasmsiz bo'lsa, keyin uni tekshirib bo'lmaydi.

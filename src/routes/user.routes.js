@@ -40,14 +40,24 @@ router.put("/me", protect, updateMe);
 // all-short — qisqa ma'lumotnoma (id, ism, rol). Tanlagichlar uchun:
 //   - xonaga mas'ul xodim biriktirish   (`inventory.locations`)
 //   - zararni aybdorga yozish           (`damages.charge`)
-// Bu ikkalasi `users.view` siz ham ishlashi kerak: xo'jalik mudiri odamni
-// tanlash uchun butun foydalanuvchilar bo'limiga kirish huquqini olmasligi
-// kerak. Ro'yxatda parol, telefon yoki ruxsatlar YO'Q.
+//   - jihozni xodimga topshirish        (`inventory.transfer`)
+// Bularning hammasi `users.view` siz ham ishlashi kerak: xo'jalik mudiri
+// odamni tanlash uchun butun foydalanuvchilar bo'limiga kirish huquqini
+// olmasligi kerak. Ro'yxatda parol, telefon yoki ruxsatlar YO'Q.
+//
+// ⚠️ Bu ro'yxatga YANGI TANLAGICH qo'shilganda uning ruxsat kaliti ham shu
+// yerga qo'shilishi SHART — aks holda tanlagich ekranda turadi-yu, 403
+// tufayli bo'sh qoladi va foydalanuvchi sababini bilmaydi.
 router.get(
   "/all-short",
   protect,
   authorizeAnyPermission(
-    [PERMISSIONS.USERS_VIEW, PERMISSIONS.INVENTORY_LOCATIONS, PERMISSIONS.DAMAGES_CHARGE],
+    [
+      PERMISSIONS.USERS_VIEW,
+      PERMISSIONS.INVENTORY_LOCATIONS,
+      PERMISSIONS.INVENTORY_TRANSFER,
+      PERMISSIONS.DAMAGES_CHARGE,
+    ],
     ROLES.TEACHER,
     ROLES.RECEPTION,
   ),

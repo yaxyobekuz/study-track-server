@@ -40,11 +40,6 @@ const adjustStock = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message: "Xatlov to'g'rilandi" });
 });
 
-const transferStock = asyncHandler(async (req, res) => {
-  const data = await stockService.transferStock(req.body, req.user.id);
-  res.json({ success: true, data, message: "Jihoz ko'chirildi" });
-});
-
 module.exports = {
   getStocks,
   getStockByLocation,
@@ -53,5 +48,4 @@ module.exports = {
   repairStock,
   writeOffStock,
   adjustStock,
-  transferStock,
 };

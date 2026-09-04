@@ -51,8 +51,10 @@ const { parseDayDate, currentDayDate } = require("../helpers/month.helpers");
 const { formatDateUz } = require("../helpers/date.helpers");
 const {
   parseOptionalQuantity,
+  parseDamageReason,
   damageAmountOf,
   locationSnapshotOf,
+  DAMAGE_REASON_LABELS,
 } = require("../helpers/inventory.helpers");
 const { uploadAttachments, deleteAttachments } = require("./file.service");
 const { assertActiveLocation, RESPONSIBLE_SELECT } = require("./inventoryLocation.service");
@@ -84,6 +86,14 @@ const serializeLine = (row) => ({
   expectedServiceable: row.expectedQuantity - row.expectedBroken,
   hasChange:
     row.brokenQuantity > 0 || row.missingQuantity > 0 || row.repairedQuantity > 0,
+  // Yorliq SERVERDA hisoblanadi — Telegram xabari va Excel ustuni ham shu
+  // javobdan o'qiydi (`DAMAGE_KIND_LABELS` bilan bir xil qaror)
+  brokenReasonLabel: row.brokenReason
+    ? DAMAGE_REASON_LABELS[row.brokenReason] ?? row.brokenReason
+    : null,
+  missingReasonLabel: row.missingReason
+    ? DAMAGE_REASON_LABELS[row.missingReason] ?? row.missingReason
+    : null,
 });
 
 /**
@@ -375,12 +385,31 @@ const updateCheckLines = async (id, data, userId) => {
       `"${line.itemName}" ta'mirlangan miqdori`,
     );
 
+    // SABAB — qoralamada YUMSHOQ tekshiriladi: qiymat enumga va turga mos
+    // bo'lishi shart, lekin bo'sh qolishi mumkin va "boshqa" uchun izoh
+    // hozircha talab qilinmaydi. Mas'ul shaxs xonani aylanib chiqib
+    // raqamlarni kiritadi, izohni esa oxirida yozadi — qat'iy tekshiruv
+    // shu yerda bo'lsa varaqni saqlab qo'yib bo'lmasdi. Qat'iy tekshiruv
+    // YUBORISHDA (`submitCheck`).
+    const brokenReason = parseDamageReason(raw.brokenReason, "broken", {
+      allowEmpty: true,
+      requireNote: false,
+      label: `"${line.itemName}" singan sababi`,
+    });
+    const missingReason = parseDamageReason(raw.missingReason, "missing", {
+      allowEmpty: true,
+      requireNote: false,
+      label: `"${line.itemName}" yo'qolgan sababi`,
+    });
+
     updates.push({
       id: line.id,
       data: {
         brokenQuantity,
         missingQuantity,
         repairedQuantity,
+        ...(raw.brokenReason !== undefined ? { brokenReason } : {}),
+        ...(raw.missingReason !== undefined ? { missingReason } : {}),
         ...(raw.note !== undefined ? { note: raw.note?.trim() || "" } : {}),
         ...(raw.attachments !== undefined
           ? { attachments: Array.isArray(raw.attachments) ? raw.attachments : [] }
@@ -487,6 +516,48 @@ const submitCheck = async (id, data, userId) => {
     orderBy: { itemId: "asc" }, // determinlashgan lock tartibi
   });
 
+  // ── SABAB TEKSHIRUVI — TRANZAKSIYADAN OLDIN, hammasi birdan.
+  //
+  // Nima uchun sikldan oldin: xodim 40 ta satrni to'ldirib "Yuborish"
+  // bosganda, 37-satrdagi sabab yo'qligi uchun tranzaksiya yarim yo'lda
+  // uzilsa — u faqat bitta xatoni ko'radi, tuzatadi, keyin yana bittasini.
+  // Bu yerda esa BARCHA yetishmayotgan sabablar bitta xabarda chiqadi.
+  //
+  // ⚠️ Sabab MAJBURIY: aynan shu talab uchun qo'shilgan — "nima bo'lganini
+  // yozadi" degan savolga javob bo'lmasa, zarar registri "1 ta piyola"
+  // degan javobsiz qatorlar to'plamiga aylanardi.
+  const reasonErrors = [];
+  const reasonByLine = new Map();
+
+  for (const line of lines) {
+    const entry = {};
+
+    for (const [kind, quantity, field, label] of [
+      ["broken", line.brokenQuantity, "brokenReason", "singan"],
+      ["missing", line.missingQuantity, "missingReason", "yo'qolgan"],
+    ]) {
+      if (quantity <= 0) continue;
+
+      try {
+        entry[kind] = parseDamageReason(line[field], kind, {
+          required: true,
+          // "Boshqa" tanlangan bo'lsa izoh MAJBURIY — muhrlanadigan
+          // hodisa izohsiz "boshqa" bo'lib qolmasin
+          note: line.note,
+          label: `"${line.itemName}" — ${label} sababi`,
+        });
+      } catch (error) {
+        reasonErrors.push(error.message);
+      }
+    }
+
+    reasonByLine.set(line.id, entry);
+  }
+
+  if (reasonErrors.length > 0) {
+    throw new BadRequestError(reasonErrors.join("; "));
+  }
+
   // Hisobot sanasi @db.Date (UTC yarim tun); daftar esa INSTANT bilan
   // ishlaydi. Kun boshlanishi biznes sanasi sifatida yetarli va
   // aniq: "12-sentabr hisoboti" → 12-sentabr.
@@ -561,6 +632,8 @@ const submitCheck = async (id, data, userId) => {
             item: stock.item,
             stock,
             kind,
+            // Sabab hodisaga MUHRLANADI — yuqorida tekshirilgan qiymat
+            reason: reasonByLine.get(line.id)?.[kind],
             quantity,
             occurredAt,
             description: line.note,

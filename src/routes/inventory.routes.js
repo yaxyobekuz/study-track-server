@@ -43,13 +43,19 @@ const {
   repairStock,
   writeOffStock,
   adjustStock,
-  transferStock,
 } = require("../controllers/inventoryStock.controller");
+
+const {
+  getTransfers,
+  getTransferById,
+  createTransfer,
+} = require("../controllers/inventoryTransfer.controller");
 
 const {
   getSummary,
   getByLocation,
   getByItem,
+  getByReason,
   getDebtors,
   getMonitoringReport,
   getSettings,
@@ -80,6 +86,9 @@ const ANY_INVENTORY_VIEW = [
 router.get("/summary", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getSummary);
 router.get("/reports/locations", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getByLocation);
 router.get("/reports/items", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getByItem);
+// "Nega yo'qotdik" kesimi — jihoz kesimi bilan bir xil ruxsatda: ikkalasi
+// ham xatlov ma'lumoti, pul kesimi emas
+router.get("/reports/reasons", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getByReason);
 router.get("/reports/monitoring", authorizePermission(PERMISSIONS.MONITORING_REPORTS), getMonitoringReport);
 router.get("/reports/debtors", authorizePermission(PERMISSIONS.DAMAGES_REPORTS), getDebtors);
 
@@ -133,7 +142,15 @@ router.post("/stocks", authorizePermission(PERMISSIONS.INVENTORY_STOCK), addStoc
 router.post("/stocks/repair", authorizePermission(PERMISSIONS.INVENTORY_REPAIR), repairStock);
 router.post("/stocks/write-off", authorizePermission(PERMISSIONS.INVENTORY_WRITEOFF), writeOffStock);
 router.post("/stocks/adjust", authorizePermission(PERMISSIONS.INVENTORY_ADJUST), adjustStock);
-router.post("/stocks/transfer", authorizePermission(PERMISSIONS.INVENTORY_TRANSFER), transferStock);
+
+// ─── O'tkazma — TOPSHIRISH-QABUL QILISH AKTI ─
+// Xatlovdan alohida hujjat: qaysi xonaga, KIMGA topshirildi va nima uchun.
+// `POST /stocks/transfer` — ESKI manzil, o'sha hujjatni yaratadi va
+// saqlanib qolgan (mijoz yangilanmaguncha ishlamay qolmasin).
+router.get("/transfers", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getTransfers);
+router.get("/transfers/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_VIEW), getTransferById);
+router.post("/transfers", authorizePermission(PERMISSIONS.INVENTORY_TRANSFER), createTransfer);
+router.post("/stocks/transfer", authorizePermission(PERMISSIONS.INVENTORY_TRANSFER), createTransfer);
 
 // ─── Miqdor daftari (append-only registr) ────
 router.get("/movements", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getMovements);

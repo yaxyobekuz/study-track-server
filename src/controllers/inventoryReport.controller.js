@@ -19,6 +19,11 @@ const getByItem = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
+const getByReason = asyncHandler(async (req, res) => {
+  const data = await reportService.getByReason(req.query);
+  res.json({ success: true, ...data });
+});
+
 const getDebtors = asyncHandler(async (req, res) => {
   const data = await reportService.getDebtors(req.query);
   res.json({ success: true, ...data });
@@ -48,6 +53,7 @@ module.exports = {
   getSummary,
   getByLocation,
   getByItem,
+  getByReason,
   getDebtors,
   getMonitoringReport,
   getSettings,

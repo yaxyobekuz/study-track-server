@@ -15,6 +15,8 @@
  *   4. InventoryDamage.chargedAmount = Σ (status≠cancelled) DamageCharge.amount
  *      (va chargedAmount <= amount)
  *   5. DamageCharge.paidAmount       = Σ (isVoided=false) DamageAllocation.amount
+ *   6. InventoryTransfer.totalQuantity = Σ InventoryTransferLine.quantity
+ *      (va linesCount = satrlar soni)
  *
  * 03:20 — moliyaviy tekshiruvdan (03:00) keyin, hisob-faktura passidan
  * (06:00) oldin.
@@ -208,16 +210,73 @@ async function runInventoryReconcilePass() {
     }
   }
 
+  // ── 6. O'tkazma aktining sanoqchilari satrlar bilan mos ──
+  //
+  // Sanoqchilar yaratishda BIR MARTA hisoblanadi va keyin o'zgarmaydi
+  // (akt muhrlangan). Ular faqat ro'yxat ekranini tezlashtirish uchun
+  // bor, ya'ni nomuvofiqlik jimgina "10 ta parta o'tkazilgan" degan
+  // noto'g'ri raqamga aylanardi.
+  const [transfers, transferLineSums] = await Promise.all([
+    prisma.inventoryTransfer.findMany({
+      select: {
+        id: true,
+        linesCount: true,
+        totalQuantity: true,
+        fromSnapshot: true,
+        toSnapshot: true,
+      },
+    }),
+    prisma.inventoryTransferLine.groupBy({
+      by: ["transferId"],
+      _sum: { quantity: true },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const linesByTransfer = new Map(
+    transferLineSums.map((row) => [row.transferId, row]),
+  );
+
+  for (const transfer of transfers) {
+    const label =
+      `${transfer.fromSnapshot?.name ?? "?"} → ${transfer.toSnapshot?.name ?? "?"}`;
+    const sums = linesByTransfer.get(transfer.id);
+
+    const expectedQuantity = sums?._sum.quantity ?? 0;
+    const expectedLines = sums?._count._all ?? 0;
+
+    if (transfer.totalQuantity !== expectedQuantity) {
+      problems.push({
+        kind: "transfer_quantity",
+        id: transfer.id,
+        label,
+        stored: String(transfer.totalQuantity),
+        expected: String(expectedQuantity),
+      });
+    }
+    if (transfer.linesCount !== expectedLines) {
+      problems.push({
+        kind: "transfer_lines",
+        id: transfer.id,
+        label,
+        stored: String(transfer.linesCount),
+        expected: String(expectedLines),
+      });
+    }
+  }
+
   const checked = {
     stocks: stocks.length,
     damages: damages.length,
     charges: charges.length,
+    transfers: transfers.length,
   };
 
   if (problems.length === 0) {
     logger.info(
       `${tag} Invariantlar joyida — ${checked.stocks} xatlov qatori, ` +
-        `${checked.damages} zarar, ${checked.charges} qarz`,
+        `${checked.damages} zarar, ${checked.charges} qarz, ` +
+        `${checked.transfers} o'tkazma`,
     );
   } else {
     logger.error(

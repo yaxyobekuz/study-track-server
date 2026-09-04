@@ -25,6 +25,7 @@ const { Decimal, formatAmount, sumAmounts } = require("../helpers/money.helpers"
 const { currentDayDate } = require("../helpers/month.helpers");
 const {
   LOCATION_TYPE_LABELS,
+  DAMAGE_REASON_LABELS,
   displayNameOf,
 } = require("../helpers/inventory.helpers");
 const { PERSON_SELECT } = require("./damageCharge.service");
@@ -252,6 +253,62 @@ const getByItem = async (query = {}) => {
 };
 
 /**
+ * SABAB KESIMI — "nima uchun yo'qotdik".
+ *
+ * Jihoz kesimi (`getByItem`) "NIMA sinadi" degan savolga javob beradi,
+ * bu esa "NEGA" degan savolga. Ikkalasi boshqa qarorga olib boradi:
+ * ko'p sinadigan jihozni sifatliroqqa almashtirish kerak, yaroqlilik
+ * muddati ko'p tugaydigan mahsulotni esa kamroq sotib olish kerak.
+ *
+ * ⚠️ Turlar bo'yicha ajratilmaydi: sabab ALLAQACHON turni bildiradi
+ * ("yo'qoldi" faqat `missing` da, "sindi" faqat `broken` da bo'ladi —
+ * `REASONS_BY_KIND`). Ikkinchi kesim faqat "yaroqlilik muddati tugadi"
+ * qatorini ikkiga bo'lardi.
+ *
+ * @param {object} query - { from, to }
+ */
+const getByReason = async (query = {}) => {
+  const rows = await prisma.inventoryDamage.groupBy({
+    by: ["reason"],
+    where: { status: { not: "cancelled" }, ...periodWhere(query) },
+    _sum: { amount: true, quantity: true },
+    _count: { _all: true },
+  });
+
+  const byReason = new Map(rows.map((r) => [r.reason, r]));
+
+  // Katalog TARTIBIDA va TO'LIQ: nol qatorlar ham chiqadi. Aks holda
+  // "o'g'irlik yo'q" va "o'g'irlik hisobga olinmagan" bir xil ko'rinardi.
+  const items = Object.keys(DAMAGE_REASON_LABELS).map((reason) => {
+    const row = byReason.get(reason);
+
+    return {
+      reason,
+      reasonLabel: DAMAGE_REASON_LABELS[reason],
+      count: row?._count._all ?? 0,
+      quantity: row?._sum.quantity ?? 0,
+      amount: formatAmount(new Decimal(row?._sum.amount ?? 0)),
+      _sort: new Decimal(row?._sum.amount ?? 0),
+    };
+  });
+
+  const totalAmount = sumAmounts(items.map((i) => i._sort));
+  const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
+  const totalCount = items.reduce((sum, i) => sum + i.count, 0);
+
+  return {
+    items: items
+      .sort((a, b) => b._sort.comparedTo(a._sort))
+      .map(({ _sort, ...rest }) => rest),
+    totals: {
+      count: totalCount,
+      quantity: totalQuantity,
+      amount: formatAmount(totalAmount),
+    },
+  };
+};
+
+/**
  * QARZDORLAR — kim qancha qarzdor.
  *
  * `debtors` (o'qish to'lovi qarzdorlari) bilan CHALKASHMASIN: u yerda
@@ -385,6 +442,7 @@ module.exports = {
   getSummary,
   getByLocation,
   getByItem,
+  getByReason,
   getDebtors,
   getMonitoringReport,
 };

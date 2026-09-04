@@ -38,8 +38,10 @@ const logger = require("../utils/logger");
 const { Decimal, formatAmount, parseAmount, sumAmounts } = require("../helpers/money.helpers");
 const {
   parseQuantity,
+  parseDamageReason,
   damageAmountOf,
   DAMAGE_KIND_LABELS,
+  DAMAGE_REASON_LABELS,
   DAMAGE_STATUS_LABELS,
   itemSnapshotOf,
   locationSnapshotOf,
@@ -71,6 +73,7 @@ const serializeDamage = (row, { charges } = {}) => {
     // Hali hech kimga yozilmagan qism — "kim to'laydi?" savolining qoldig'i
     unchargedAmount: formatAmount(amount.minus(chargedAmount)),
     kindLabel: DAMAGE_KIND_LABELS[row.kind] ?? row.kind,
+    reasonLabel: DAMAGE_REASON_LABELS[row.reason] ?? row.reason,
     statusLabel: DAMAGE_STATUS_LABELS[row.status] ?? row.status,
     itemName: item?.name ?? row.itemSnapshot?.name ?? "Noma'lum",
     unit: item?.unit ?? row.itemSnapshot?.unit ?? "dona",
@@ -119,13 +122,23 @@ const parseKind = (value) => {
  * BITTA joyda).
  *
  * @param {object} tx
- * @param {object} params - { location, item, stock, kind, quantity, occurredAt,
- *                            description, attachments, checkId, unitPrice }
+ * @param {object} params - { location, item, stock, kind, reason, quantity,
+ *                            occurredAt, description, attachments, checkId, unitPrice }
  * @param {string} userId
  * @returns {Promise<object>} yaratilgan zarar (xom)
  */
 const createDamageInTx = async (tx, params, userId) => {
   const { location, item, stock, kind, quantity, occurredAt } = params;
+
+  // SABAB hodisa bilan birga MUHRLANADI (narx bilan bir xil qaror).
+  // Chaqiruvchilar uni allaqachon tekshirgan bo'ladi, lekin bu funksiya
+  // ikkita mustaqil yo'lning YAGONA umumiy nuqtasi — shuning uchun
+  // tekshiruv shu yerda ham takrorlanadi: bittasi tekshirmay qolsa,
+  // hodisa noto'g'ri sabab bilan muhrlanib ketardi.
+  const reason = parseDamageReason(params.reason, kind, {
+    note: params.description,
+    label: "Zarar sababi",
+  });
 
   // Narx hodisa PAYTIDA muhrlanadi. `params.unitPrice` — kunlik hisobot
   // varag'i ochilgan paytdagi narx (varaqni to'ldirish davomida katalog
@@ -143,6 +156,7 @@ const createDamageInTx = async (tx, params, userId) => {
       stockId: stock.id,
       checkId: params.checkId ?? null,
       kind,
+      reason,
       quantity,
       unitPrice,
       amount,
@@ -167,7 +181,9 @@ const createDamageInTx = async (tx, params, userId) => {
     itemName: item.name,
     damageId: damage.id,
     checkId: params.checkId ?? null,
-    note: `${DAMAGE_KIND_LABELS[kind]} · ${quantity} ${item.unit}`,
+    // Daftar qatorining izohida SABAB ham turadi: "shu jihoz bilan nima
+    // bo'ldi" registri sababsiz yarim javob berardi
+    note: `${DAMAGE_REASON_LABELS[reason] ?? DAMAGE_KIND_LABELS[kind]} · ${quantity} ${item.unit}`,
     createdBy: userId,
   });
 
@@ -178,8 +194,8 @@ const createDamageInTx = async (tx, params, userId) => {
  * Qo'lda zarar kiritish — kunlik hisobotdan TASHQARI hodisa uchun
  * ("darsdan keyin proyektor tushib ketdi").
  *
- * @param {object} data - { locationId, itemId, kind, quantity, occurredAt,
- *                          description, files }
+ * @param {object} data - { locationId, itemId, kind, reason, quantity,
+ *                          occurredAt, description, files }
  * @param {string} userId
  */
 const createDamage = async (data, userId) => {
@@ -190,6 +206,14 @@ const createDamage = async (data, userId) => {
   ]);
 
   const kind = parseKind(data.kind);
+  // Sabab berilmasa TURDAN kelib chiqadi (`DEFAULT_REASON_BY_KIND`).
+  // Kunlik hisobotda u MAJBURIY, bu yerda esa yumshoq: `POST /damages`
+  // ning eski shakli (sababsiz) birdaniga ishlamay qolmasin. Sabab
+  // ko'rsatilsa — turga mosligi va "boshqa" uchun izoh tekshiriladi.
+  const reason = parseDamageReason(data.reason, kind, {
+    note: data.description,
+    label: "Zarar sababi",
+  });
   const quantity = parseQuantity(data.quantity, "Miqdor");
   if (quantity <= 0) throw new BadRequestError("Miqdor noldan katta bo'lishi kerak");
 
@@ -222,6 +246,7 @@ const createDamage = async (data, userId) => {
           item,
           stock,
           kind,
+          reason,
           quantity,
           occurredAt,
           description: data.description,
@@ -238,7 +263,7 @@ const createDamage = async (data, userId) => {
   }
 
   logger.info(
-    `[inventory] Zarar: ${item.name} ×${quantity} (${kind}) · ${location.name} · ` +
+    `[inventory] Zarar: ${item.name} ×${quantity} (${kind}/${reason}) · ${location.name} · ` +
       `${formatAmount(damage.amount)} · actor=${userId}`,
   );
 
@@ -251,7 +276,7 @@ const createDamage = async (data, userId) => {
 
 /**
  * Zararlar registri (sahifalangan).
- * @param {object} req - query: { locationId, itemId, status, kind, from, to, page, limit }
+ * @param {object} req - query: { locationId, itemId, status, kind, reason, from, to, page, limit }
  */
 const getDamages = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
@@ -262,6 +287,7 @@ const getDamages = async (req) => {
   if (query.itemId) where.itemId = query.itemId;
   if (query.status) where.status = query.status;
   if (query.kind) where.kind = query.kind;
+  if (query.reason) where.reason = query.reason;
   if (query.checkId) where.checkId = query.checkId;
   // Bekor qilinganlari — XATO yozuvlar, standart holatda ko'rinmaydi
   if (query.includeCancelled !== "true" && !query.status) {
