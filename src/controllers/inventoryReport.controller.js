@@ -34,6 +34,11 @@ const getSettings = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+const getPaymentAccountOptions = asyncHandler(async (req, res) => {
+  const items = await settingsService.getPaymentAccountOptions();
+  res.json({ success: true, items });
+});
+
 const updateSettings = asyncHandler(async (req, res) => {
   const data = await settingsService.updateSettings(req.body, req.user.id);
   res.json({ success: true, data, message: "Sozlamalar saqlandi" });
@@ -46,5 +51,6 @@ module.exports = {
   getDebtors,
   getMonitoringReport,
   getSettings,
+  getPaymentAccountOptions,
   updateSettings,
 };

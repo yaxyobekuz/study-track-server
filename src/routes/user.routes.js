@@ -24,6 +24,7 @@ const {
   protect,
   authorize,
   authorizePermission,
+  authorizeAnyPermission,
   authorizeSection,
 } = require("../middleware/auth.middleware");
 const { PERMISSIONS, SECTIONS } = require("../utils/permissions");
@@ -36,8 +37,22 @@ router.get("/students", protect, authorizePermission(PERMISSIONS.USERS_VIEW, ROL
 // Own profile update - accessible to any authenticated user
 router.put("/me", protect, updateMe);
 
-// all-short - owner, teacher, reception uchun
-router.get("/all-short", protect, authorizePermission(PERMISSIONS.USERS_VIEW, ROLES.TEACHER, ROLES.RECEPTION), getAllUsersShort);
+// all-short — qisqa ma'lumotnoma (id, ism, rol). Tanlagichlar uchun:
+//   - xonaga mas'ul xodim biriktirish   (`inventory.locations`)
+//   - zararni aybdorga yozish           (`damages.charge`)
+// Bu ikkalasi `users.view` siz ham ishlashi kerak: xo'jalik mudiri odamni
+// tanlash uchun butun foydalanuvchilar bo'limiga kirish huquqini olmasligi
+// kerak. Ro'yxatda parol, telefon yoki ruxsatlar YO'Q.
+router.get(
+  "/all-short",
+  protect,
+  authorizeAnyPermission(
+    [PERMISSIONS.USERS_VIEW, PERMISSIONS.INVENTORY_LOCATIONS, PERMISSIONS.DAMAGES_CHARGE],
+    ROLES.TEACHER,
+    ROLES.RECEPTION,
+  ),
+  getAllUsersShort,
+);
 
 // Quyidagi route'lar: bo'limga umumiy kirish + har biriga aniq amal ruxsati
 router.use(protect);

@@ -37,6 +37,24 @@ const getSettings = async () => {
 };
 
 /**
+ * Faol to'lov turlari — FAQAT id va nom.
+ *
+ * Undiruv oynasi va "standart to'lov turi" tanlagichi uchun. `paymentAccount`
+ * registrining o'zi (`GET /payment-accounts`) qoldiqni ham qaytaradi va
+ * `finance.view` talab qiladi; undiruvni qabul qiladigan xodimga kassadagi
+ * pul miqdorini ko'rish huquqi berilmasligi kerak — shuning uchun alohida,
+ * qisqa ro'yxat.
+ *
+ * @returns {Promise<Array<{id: string, name: string}>>}
+ */
+const getPaymentAccountOptions = async () =>
+  prisma.paymentAccount.findMany({
+    where: { isArchived: false, isActive: true },
+    select: { id: true, name: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+
+/**
  * Sozlamalarni yangilaydi.
  *
  * @param {object} data - { dailyCheckEnabled, reminderTime, reminderEnabled,
@@ -91,4 +109,9 @@ const updateSettings = async (data, userId) => {
   return getSettings();
 };
 
-module.exports = { serializeSettings, getSettings, updateSettings };
+module.exports = {
+  serializeSettings,
+  getSettings,
+  getPaymentAccountOptions,
+  updateSettings,
+};

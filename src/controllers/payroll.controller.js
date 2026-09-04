@@ -1,6 +1,8 @@
 const asyncHandler = require("../middleware/async.middleware");
 const payrollService = require("../services/payroll.service");
 const salaryPaymentService = require("../services/salaryPayment.service");
+const { ROLES } = require("../utils/constants");
+const { ForbiddenError } = require("../utils/errors");
 
 // ── Majburiyatlar ────────────────────────────
 
@@ -11,6 +13,17 @@ const getEntries = asyncHandler(async (req, res) => {
 
 const getStaffEntries = asyncHandler(async (req, res) => {
   const data = await payrollService.getStaffEntries(req.params.staffId);
+  res.json({ success: true, data });
+});
+
+// O'ZIMNING oylik majburiyatlarim — xodim panelidagi profil sahifasi
+// (`getMySalary` bilan bir xil mulohaza: `payroll.view` siz, faqat o'zi).
+const getMyEntries = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Oylik faqat xodimlar uchun");
+  }
+
+  const data = await payrollService.getStaffEntries(req.user.id);
   res.json({ success: true, data });
 });
 
@@ -61,6 +74,7 @@ const getPayments = asyncHandler(async (req, res) => {
 module.exports = {
   getEntries,
   getStaffEntries,
+  getMyEntries,
   generate,
   cancelEntry,
   previewPayment,

@@ -4,6 +4,7 @@ const scheduleService = require("../services/schedule.service");
 const teacherWorkloadService = require("../services/teacherWorkload.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
+const { ForbiddenError } = require("../utils/errors");
 
 // Get all schedules for class
 const getScheduleByClass = asyncHandler(async (req, res) => {
@@ -131,6 +132,25 @@ const getTeacherWorkload = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// O'ZIMNING haftalik yuklamam — xodim panelidagi profil sahifasi.
+//
+// Ruxsat kaliti YO'Q: o'qituvchi o'z dars jadvalini va o'z oyligini
+// ko'rishi uchun `schedules.view` (butun maktab jadvali) yoki `payroll.view`
+// (butun shtat oyligi) berilishi shart emas — bu ikkalasi boshqa odamlarning
+// ma'lumotini ochadi. Identifikator so'rovdan EMAS, tokendan olinadi:
+// boshqa xodimning yuklamasini shu yo'l bilan ko'rib bo'lmaydi.
+const getMyWorkload = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Dars yuklamasi faqat xodimlar uchun");
+  }
+
+  const data = await teacherWorkloadService.getTeacherWorkload(req.user.id, {
+    withSalary: true,
+  });
+
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getScheduleByClass,
   getScheduleByDay,
@@ -143,4 +163,5 @@ module.exports = {
   exportScheduleByClass,
   getClassesBySubject,
   getTeacherWorkload,
+  getMyWorkload,
 };

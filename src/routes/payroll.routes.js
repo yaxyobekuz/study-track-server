@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getSalaries,
   getStaffHistory,
+  getMySalary,
   createSalary,
   updateSalary,
   closeSalary,
@@ -20,6 +21,7 @@ const {
 const {
   getEntries,
   getStaffEntries,
+  getMyEntries,
   generate,
   cancelEntry,
   previewPayment,
@@ -27,6 +29,13 @@ const {
   voidPayment,
   getPayments,
 } = require("../controllers/payroll.controller");
+
+// ── O'zimniki (xodim panelidagi profil) ──────
+// Ruxsat kaliti YO'Q: identifikator tokendan olinadi, o'quvchi controller'da
+// rad etiladi. `/salaries/staff/:staffId` va `/staff/:staffId` dan OLDIN —
+// "my" so'zi id deb o'qilmasligi uchun.
+router.get("/salaries/my", protect, getMySalary);
+router.get("/my", protect, getMyEntries);
 
 // ── Oylik qoidalari (kimga qancha) ───────────
 // `assign` ALOHIDA huquq: to'laydigan xodim oylik miqdorini o'zi
