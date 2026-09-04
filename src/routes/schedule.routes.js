@@ -11,6 +11,7 @@ const {
   updateCurrentTopic,
   exportScheduleByClass,
   getClassesBySubject,
+  getTeacherWorkload,
 } = require("../controllers/schedule.controller");
 const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
@@ -44,6 +45,15 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
   getScheduleByDay,
+);
+
+// O'qituvchining haftalik yuklamasi (profil sahifasi):
+// necha soat, qaysi sinflarda, qaysi kunlari.
+router.get(
+  "/teacher/:teacherId",
+  validateObjectId("teacherId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW),
+  getTeacherWorkload,
 );
 
 // Get all classes by subject (Owner only)

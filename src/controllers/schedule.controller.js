@@ -1,6 +1,9 @@
 const asyncHandler = require("../middleware/async.middleware");
 const ExcelService = require("../services/excel.service");
 const scheduleService = require("../services/schedule.service");
+const teacherWorkloadService = require("../services/teacherWorkload.service");
+const { ROLES } = require("../utils/constants");
+const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 
 // Get all schedules for class
 const getScheduleByClass = asyncHandler(async (req, res) => {
@@ -110,6 +113,24 @@ const updateCurrentTopic = asyncHandler(async (req, res) => {
   });
 });
 
+// O'qituvchining haftalik yuklamasi — profil sahifasi uchun
+//
+// Oylik ma'lumoti javobga FAQAT `payroll.view` bo'lsa qo'shiladi: dars
+// jadvalini ko'rish huquqi oylik summasini ochib bermasligi kerak
+// (moliya bo'limlari ataylab mayda bo'lingan).
+const getTeacherWorkload = asyncHandler(async (req, res) => {
+  const { role, permissions = [] } = req.user;
+  const withSalary =
+    role === ROLES.OWNER || hasPermission(permissions, PERMISSIONS.PAYROLL_VIEW);
+
+  const data = await teacherWorkloadService.getTeacherWorkload(
+    req.params.teacherId,
+    { withSalary },
+  );
+
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getScheduleByClass,
   getScheduleByDay,
@@ -121,4 +142,5 @@ module.exports = {
   updateCurrentTopic,
   exportScheduleByClass,
   getClassesBySubject,
+  getTeacherWorkload,
 };
