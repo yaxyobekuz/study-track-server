@@ -60,6 +60,36 @@ const parseOccurredAt = (value) => {
  * @param {string} userId
  * @returns {Promise<object>}
  */
+/**
+ * Mas'ul xodimni tekshiradi va nomini qaytaradi.
+ *
+ * ⚠️ Mas'ul IXTIYORIY: eski yozuvlarda u yo'q va yangi kirimni ham uni
+ * belgilamasdan kiritish mumkin bo'lishi kerak (kassir har doim ham kim
+ * javobgar ekanini bilmaydi). Belgilanmagani hisobotda alohida qatorga
+ * tushadi, jim yo'qolmaydi.
+ *
+ * ⚠️ O'QUVCHI MAS'UL BO'LA OLMAYDI — `staffSalary.assertStaff` bilan bir
+ * xil qoida: o'quvchi pul TO'LAYDI, xodim esa uni YIG'ADI.
+ */
+const resolveResponsible = async (responsibleId) => {
+  if (!responsibleId) return { id: null, name: "" };
+
+  const staff = await prisma.user.findUnique({
+    where: { id: responsibleId },
+    select: { id: true, firstName: true, lastName: true, role: true },
+  });
+
+  if (!staff) throw new NotFoundError("Mas'ul xodim topilmadi");
+  if (staff.role === "student") {
+    throw new BadRequestError("O'quvchini mas'ul qilib belgilab bo'lmaydi");
+  }
+
+  return {
+    id: staff.id,
+    name: `${staff.firstName} ${staff.lastName ?? ""}`.trim(),
+  };
+};
+
 const createIncome = async (data, userId) => {
   const amount = parseAmount(data.amount, "Summa");
   if (amount.lessThanOrEqualTo(0)) {
@@ -67,9 +97,10 @@ const createIncome = async (data, userId) => {
   }
 
   // Arxivlangan kategoriyaga ham, arxivlangan to'lov turiga ham yozib bo'lmaydi
-  const [category, account] = await Promise.all([
+  const [category, account, responsible] = await Promise.all([
     assertActiveCategory(data.categoryId),
     assertActiveAccount(data.accountId),
+    resolveResponsible(data.responsibleId),
   ]);
 
   const occurredAt = parseOccurredAt(data.occurredAt);
@@ -81,6 +112,10 @@ const createIncome = async (data, userId) => {
         accountId: account.id,
         amount,
         categoryName: category.name,
+        // Nom MUHRLANADI: xodim ketsa yoki familiyasi o'zgarsa ham o'tgan
+        // hisobot o'z yorlig'ini saqlaydi (`categoryName` doktrinasi)
+        responsibleId: responsible.id,
+        responsibleName: responsible.name,
         payer: data.payer?.trim() || "",
         note: data.note?.trim() || "",
         occurredAt,
@@ -179,6 +214,10 @@ const getIncomes = async (req) => {
   const where = {};
   if (query.categoryId) where.categoryId = query.categoryId;
   if (query.accountId) where.accountId = query.accountId;
+  // "none" — mas'uli belgilanmaganlari. Ular jim yo'qolmasligi kerak:
+  // aynan shu qatorlarga egasini topish kerak bo'ladi.
+  if (query.responsibleId === "none") where.responsibleId = null;
+  else if (query.responsibleId) where.responsibleId = query.responsibleId;
   if (query.includeVoided !== "true") where.isVoided = false;
 
   if (query.from || query.to) {
@@ -225,6 +264,7 @@ const getIncomes = async (req) => {
 };
 
 module.exports = {
+  resolveResponsible,
   serializeIncome,
   createIncome,
   voidIncome,

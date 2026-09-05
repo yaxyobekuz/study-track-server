@@ -71,7 +71,21 @@ const getPayments = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
+/**
+ * Bitta majburiyatni qayta shakllantirish — bekor qilinganini qaytarish
+ * yoki qoida to'g'rilangandan keyin summani yangilash.
+ */
+const regenerateEntry = asyncHandler(async (req, res) => {
+  const data = await payrollService.regenerateEntry(
+    req.params.id,
+    req.body?.reason,
+    req.user.id,
+  );
+  res.json({ success: true, message: "Majburiyat qayta shakllantirildi", data });
+});
+
 module.exports = {
+  regenerateEntry,
   getEntries,
   getStaffEntries,
   getMyEntries,

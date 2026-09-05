@@ -80,7 +80,17 @@ const resolveForStudentMonth = async (studentId, month) => {
   const version = await platformPrisma.tariffVersion.findFirst({
     where: { tariffId: assignment.tariffId, ...coveringMonthWhere(month) },
     orderBy: { startMonth: "desc" },
-    include: { tariff: { select: { id: true, name: true } } },
+    // Yo'nalish nomi hisob-fakturaga MUHRLANADI, shuning uchun narx
+    // bilan birga o'qiladi — keyin alohida so'rov yubormaslik uchun
+    include: {
+      tariff: {
+        select: {
+          id: true,
+          name: true,
+          direction: { select: { id: true, name: true } },
+        },
+      },
+    },
   });
 
   if (!version) {
@@ -166,7 +176,17 @@ const resolveManyForMonth = async (month, { studentIds } = {}) => {
     ? await platformPrisma.tariffVersion.findMany({
         where: { tariffId: { in: tariffIds }, ...coveringMonthWhere(month) },
         orderBy: { startMonth: "desc" },
-        include: { tariff: { select: { id: true, name: true } } },
+        // Yo'nalish nomi hisob-fakturaga MUHRLANADI, shuning uchun narx
+    // bilan birga o'qiladi — keyin alohida so'rov yubormaslik uchun
+    include: {
+      tariff: {
+        select: {
+          id: true,
+          name: true,
+          direction: { select: { id: true, name: true } },
+        },
+      },
+    },
       })
     : [];
 

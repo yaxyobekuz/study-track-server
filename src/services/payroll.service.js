@@ -70,7 +70,7 @@ const emptySummary = (month, reason) => ({
   eligible: 0,
   created: 0,
   totalAmount: "0.00",
-  skipped: { alreadyExists: 0, noSalary: 0, archived: 0 },
+  skipped: { alreadyExists: 0, cancelled: 0, noSalary: 0, archived: 0 },
   durationMs: 0,
 });
 
@@ -125,11 +125,19 @@ const generateForMonth = async (monthInput, options = {}) => {
   }
 
   // 3 ── Allaqachon shakllantirilganlari
+  //
+  // ⚠️ BEKOR QILINGANI ham "mavjud" hisoblanadi (yuqoridagi izohga qarang),
+  // lekin ALOHIDA sanaladi: "hammasi bor" bilan "uchtasi bekor qilingan"
+  // butunlay boshqa xabar. Bekor qilinganini qaytarish uchun qatordagi
+  // "Qayta shakllantirish" ishlatiladi.
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
-    select: { staffId: true },
+    select: { staffId: true, status: true },
   });
   const existingIds = new Set(existing.map((e) => e.staffId));
+  const cancelledIds = new Set(
+    existing.filter((e) => e.status === "cancelled").map((e) => e.staffId),
+  );
 
   // 4 ── Qatorlarni yig'ish
   const rows = [];
@@ -137,7 +145,8 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   for (const person of staff) {
     if (existingIds.has(person.id)) {
-      summary.skipped.alreadyExists += 1;
+      if (cancelledIds.has(person.id)) summary.skipped.cancelled += 1;
+      else summary.skipped.alreadyExists += 1;
       continue;
     }
 
@@ -351,8 +360,102 @@ const cancelEntry = async (id, reason, userId) => {
   return serializeEntry(updated);
 };
 
+/**
+ * BITTA MAJBURIYATNI QAYTA SHAKLLANTIRISH.
+ *
+ * `invoice.service.regenerateInvoice` ning ko'zgusi. Doktrina bo'yicha
+ * summani o'zgartiradigan endpoint YO'Q; xato bo'lsa yo'l bitta:
+ * majburiyat bekor qilinadi → oylik qoidasi to'g'rilanadi → majburiyat
+ * QAYTA SHAKLLANTIRILADI (`finance.md` §10).
+ *
+ * ⚠️ Oylik passi bekor qilinganini QAYTA YOZMAYDI (u qaror, bo'shliq
+ * emas), shuning uchun qaytarishning yagona yo'li aynan shu — QO'LDA,
+ * sabab bilan, bitta qator uchun.
+ *
+ * ⚠️ O'CHIRIB QAYTA YARATILMAYDI, JOYIDA yangilanadi. `PayrollEntry` da
+ * `replaces` ko'rsatkichi yo'q: o'chirilsa bekor qilish izi butunlay
+ * yo'qolardi. `restoreInvoice` bilan bir xil mulohaza — butun tarix
+ * bitta qatorda qoladi.
+ *
+ * ⚠️ TO'LOV TUSHGAN majburiyat qayta shakllantirilmaydi: summani
+ * o'zgartirish to'lov taqsimotini yolg'onga aylantirardi.
+ *
+ * @param {string} id
+ * @param {string} reason
+ * @param {string} userId
+ */
+const regenerateEntry = async (id, reason, userId) => {
+  const entry = await prisma.payrollEntry.findUnique({ where: { id } });
+  if (!entry) throw new NotFoundError("Oylik majburiyati topilmadi");
+
+  const trimmed = reason?.trim();
+  if (!trimmed) throw new BadRequestError("Qayta shakllantirish sababi majburiy");
+
+  if (new Decimal(entry.paidAmount).greaterThan(0)) {
+    throw new BadRequestError(
+      "Bu majburiyatga to'lov tushgan — avval to'lovni bekor qiling",
+    );
+  }
+
+  // Xodim hali ham oylik oladimi va qoidasi qanday
+  const [staff, salaries] = await Promise.all([
+    prisma.user.findUnique({ where: { id: entry.staffId }, select: STAFF_SELECT }),
+    resolveSalariesForMonth(entry.month),
+  ]);
+
+  if (!staff) throw new NotFoundError("Xodim topilmadi");
+  if (staff.isArchived) {
+    throw new BadRequestError(
+      "Xodim arxivlangan — majburiyatni qayta shakllantirmang, bekor qiling",
+    );
+  }
+
+  const salary = salaries.get(entry.staffId);
+  if (!salary) {
+    throw new BadRequestError(
+      `${formatMonthKey(entry.month)} uchun oylik qoidasi yo'q — ` +
+        "avval qoidani belgilang",
+    );
+  }
+
+  const amount = new Decimal(salary.amount);
+
+  logger.warn(
+    `[payroll] Majburiyat qayta shakllantirildi: entry=${id} ` +
+      `staff=${entry.staffId} oy=${entry.month} ` +
+      `eski=${formatAmount(entry.amount)} yangi=${formatAmount(amount)} ` +
+      `eskiHolat=${entry.status} actor=${userId} sabab="${trimmed}"`,
+  );
+
+  const updated = await prisma.payrollEntry.update({
+    where: { id },
+    data: {
+      amount,
+      salaryType: salary.type,
+      // To'lov yo'q (yuqorida tekshirildi) — holat har doim "unpaid"
+      status: "unpaid",
+      paidAmount: 0,
+      paidAt: null,
+      // Bekor qilish izi tozalanadi: qator endi amaldagi majburiyat
+      cancelReason: "",
+      cancelledAt: null,
+      cancelledBy: null,
+      staffSnapshot: {
+        firstName: staff.firstName,
+        lastName: staff.lastName ?? "",
+        username: staff.username,
+        role: staff.role,
+      },
+      note: entry.note,
+    },
+  });
+
+  return serializeEntry(updated, { staff });
+};
+
 module.exports = {
   STATUS_LABELS,
+  regenerateEntry,
   serializeEntry,
   generateForMonth,
   getEntries,

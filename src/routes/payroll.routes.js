@@ -24,6 +24,7 @@ const {
   getMyEntries,
   generate,
   cancelEntry,
+  regenerateEntry,
   previewPayment,
   createPayment,
   voidPayment,
@@ -59,5 +60,8 @@ router.post("/generate", protect, authorizePermission(PERMISSIONS.PAYROLL_GENERA
 router.get("/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffEntries);
 router.get("/", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getEntries);
 router.post("/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_CANCEL), cancelEntry);
+// Qayta shakllantirish — SHAKLLANTIRISH huquqi bilan: u yangi majburiyat
+// yaratish bilan bir xil og'irlikdagi amal (bekor qilish emas).
+router.post("/:id/regenerate", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_GENERATE), regenerateEntry);
 
 module.exports = router;

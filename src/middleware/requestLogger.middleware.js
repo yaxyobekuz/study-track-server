@@ -32,13 +32,22 @@ const requestLogger = (req, res, next) => {
       logData.userRole = req.user.role;
     }
 
-    // Status code bo'yicha log level tanlash
+    // ⚠️ BIRINCHI ARGUMENT — TAYYOR SATR, obyekt emas.
+    // `logger.warn(obj)` chaqirilganda winston obyektni `message` ga
+    // qo'yadi va konsolda `warn: [object Object]` chiqardi: so'rov logi
+    // butunlay foydasiz bo'lib qolgan edi. Tuzilgan ma'lumot IKKINCHI
+    // argument sifatida beriladi — u fayl (JSON) transportiga to'liq
+    // tushadi, konsolda esa qisqa satr ko'rinadi.
+    const line =
+      `${logData.method} ${logData.url} ${logData.statusCode} · ${logData.duration}` +
+      (logData.userId ? ` · user=${logData.userId}` : "");
+
     if (res.statusCode >= 500) {
-      logger.error(logData);
+      logger.error(line, logData);
     } else if (res.statusCode >= 400) {
-      logger.warn(logData);
+      logger.warn(line, logData);
     } else {
-      logger.info(logData);
+      logger.info(line, logData);
     }
   });
 

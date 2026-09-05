@@ -39,7 +39,9 @@ const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { sumIncome, sumExpense, AGING_BUCKETS } = require("./financeReport.service");
 const { ENTRY_TYPE_LABELS } = require("./paymentAccount.service");
 const { getDebtors } = require("./invoice.service");
-const { loadTargetMap } = require("./financeTarget.service");
+const { loadTargetMap, loadCustomTargets } = require("./financeTarget.service");
+const { loadBudgetSummary } = require("./expenseBudget.service");
+const { loadPlanSummary } = require("./incomePlan.service");
 
 /** Trend diagrammasidagi oylar soni (dizayndagi "12 oylik"). */
 const DEFAULT_TREND_MONTHS = 12;
@@ -378,8 +380,12 @@ const buildRevenueStructure = async ({ from, to }, totalExpense) => {
   const [allocRows, paymentAgg, externalAgg, damageAgg] = await Promise.all([
     // ⚠️ ORDER BY ustun raqami bo'yicha EMAS: `amount` text'ga o'girilgan va
     // alifbo tartibida saralanib, 272 mln 91 mln dan pastda turib qolardi.
+    // ⚠️ YO'NALISH bo'yicha guruhlanadi, tarif esa ZAXIRA. Yo'nalish
+    // tushunchasi keyin qo'shilgani uchun eski hisob-fakturalarda
+    // `direction_name` bo'sh: ular tarif nomi bilan guruhlanaveradi va
+    // o'tgan oylarning hisoboti buzilmaydi.
     prisma.$queryRawUnsafe(
-      `SELECT COALESCE(NULLIF(i.tariff_name, ''), $3) AS name,
+      `SELECT COALESCE(NULLIF(i.direction_name, ''), NULLIF(i.tariff_name, ''), $3) AS name,
               SUM(a.amount)::text                     AS amount,
               COUNT(DISTINCT a.student_id)::int       AS student_count
          FROM payment_allocations a
@@ -749,6 +755,95 @@ const buildAccrual = async (months, month) => {
 };
 
 /**
+ * NARX INTIZOMI — yo'nalish bo'yicha o'rtacha chek va tarif narxi.
+ *
+ * Savol: "Maktab yo'nalishida tarif 1 000 000 so'm, lekin bitta o'quvchidan
+ * o'rtacha qancha yozyapmiz?" Farq — chegirma va kirish proratsiyasining
+ * jami ta'siri. U kattalashsa, narx siyosati amalda buzilyapti degani.
+ *
+ * ⚠️ "Tavsiya etilgan chek" — ALOHIDA SOZLAMA EMAS, u hisob-fakturaga
+ * MUHRLANGAN `baseAmount` (chegirmagacha va proratsiyagacha bo'lgan to'liq
+ * tarif narxi). Buni yangi jadvalga qo'lda kiritish ikkinchi haqiqat manbai
+ * bo'lardi: tarif narxi o'zgarganda kimdir uni yangilashni unutar edi.
+ *
+ * ⚠️ Bu blok MAJBURIYAT o'lchovida (hisob-faktura), kassa emas: "narx"
+ * degani qancha YOZILGANI, qancha kelgani emas.
+ *
+ * @param {number} month
+ */
+const buildPricing = async (month) => {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT COALESCE(NULLIF(direction_name, ''), NULLIF(tariff_name, ''), $2) AS name,
+            COUNT(DISTINCT student_id)::int      AS students,
+            SUM(amount)::text                    AS invoiced,
+            SUM(base_amount)::text               AS base_total,
+            SUM(paid_amount)::text               AS collected,
+            SUM(discount_amount)::text           AS discount
+       FROM monthly_invoices
+      WHERE month = $1 AND status <> 'cancelled'
+      GROUP BY 1
+      ORDER BY SUM(amount) DESC`,
+    month,
+    NO_TARIFF_LABEL,
+  );
+
+  let required = new Decimal(0);
+  let recommended = new Decimal(0);
+  let collected = new Decimal(0);
+  let students = 0;
+
+  const items = rows.map((row) => {
+    const invoiced = new Decimal(row.invoiced ?? 0);
+    const baseTotal = new Decimal(row.base_total ?? 0);
+    const paid = new Decimal(row.collected ?? 0);
+    const count = row.students ?? 0;
+
+    required = required.plus(invoiced);
+    recommended = recommended.plus(baseTotal);
+    collected = collected.plus(paid);
+    students += count;
+
+    const averageCheck = count > 0 ? invoiced.div(count) : new Decimal(0);
+    const recommendedCheck = count > 0 ? baseTotal.div(count) : new Decimal(0);
+
+    return {
+      key: row.name,
+      label: row.name,
+      studentCount: count,
+      invoiced: formatAmount(invoiced),
+      collected: formatAmount(paid),
+      discount: formatAmount(new Decimal(row.discount ?? 0)),
+      averageCheck: formatAmount(averageCheck),
+      recommendedCheck: formatAmount(recommendedCheck),
+      // Manfiy = chegirma/proratsiya narxni yeyayapti
+      gap: formatAmount(averageCheck.minus(recommendedCheck)),
+      gapRate: rateOf(averageCheck.minus(recommendedCheck), recommendedCheck),
+      collectionRate: rateOf(paid, invoiced),
+    };
+  });
+
+  return {
+    items,
+    totals: {
+      studentCount: students,
+      // "Umumiy yig'ilish kerak summa" — shu oyning majburiyati
+      required: formatAmount(required),
+      // "Tavsiya etilgan summa" — chegirmasiz, to'liq tarif bo'yicha
+      recommended: formatAmount(recommended),
+      diff: formatAmount(required.minus(recommended)),
+      collected: formatAmount(collected),
+      collectionRate: rateOf(collected, required),
+      averageCheck: formatAmount(
+        students > 0 ? required.div(students) : new Decimal(0),
+      ),
+      recommendedCheck: formatAmount(
+        students > 0 ? recommended.div(students) : new Decimal(0),
+      ),
+    },
+  };
+};
+
+/**
  * SO'NGGI MOLIYAVIY OPERATSIYALAR — kassa daftarining oxirgi qatorlari.
  *
  * ⚠️ Tartib `seq` bo'yicha, `occurredAt` bo'yicha EMAS: `balanceAfter`
@@ -848,7 +943,11 @@ const getDashboard = async (query = {}) => {
     accounts,
     debt,
     accrual,
+    pricing,
+    expenseBudget,
+    incomePlan,
     targets,
+    customTargets,
     recent,
   ] = await Promise.all([
     balanceAt(current.to),
@@ -862,7 +961,11 @@ const getDashboard = async (query = {}) => {
     buildAccounts(current.to, previous.to),
     buildDebt(month),
     buildAccrual(months, month),
+    buildPricing(month),
+    loadBudgetSummary(month),
+    loadPlanSummary(month),
     loadTargetMap(month),
+    loadCustomTargets(month),
     buildRecent(),
   ]);
 
@@ -1016,6 +1119,9 @@ const getDashboard = async (query = {}) => {
     accounts,
     debt,
     accrual,
+    pricing,
+    expenseBudget,
+    incomePlan,
     recent,
 
     // ── Byudjet ijrosi ──────────────────────────────────────────────
@@ -1051,6 +1157,33 @@ const getDashboard = async (query = {}) => {
               ? Number(diff.toFixed(1))
               : formatAmount(diff),
         rate: planRateOf(row.actual, plan),
+      };
+    }),
+
+    // ── Rahbar qo'lda qo'shgan qatorlar ─────────────────────────────
+    // Ularning AMALDAGI qiymati ham qo'lda kiritiladi: tizimda manbasi
+    // yo'q. Kiritilmagan bo'lsa "—" turadi, nol EMAS — nol "reja
+    // bajarilmadi" degan yolg'on xulosa berardi.
+    customBudget: customTargets.map((row) => {
+      const isPercent = row.kind === "percent";
+      const diff = row.actual == null ? null : row.actual.minus(row.plan);
+
+      return {
+        key: row.key,
+        label: row.label,
+        unit: row.kind,
+        inverse: false,
+        isCustom: true,
+        plan: isPercent ? Number(row.plan.toFixed(1)) : formatAmount(row.plan),
+        actual:
+          row.actual == null
+            ? null
+            : isPercent
+              ? Number(row.actual.toFixed(1))
+              : formatAmount(row.actual),
+        diff:
+          diff == null ? null : isPercent ? Number(diff.toFixed(1)) : formatAmount(diff),
+        rate: row.actual == null ? null : planRateOf(row.actual, row.plan),
       };
     }),
   };

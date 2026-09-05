@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const tariffService = require("../services/tariff.service");
+const directionService = require("../services/tariffDirection.service");
 const tariffResolutionService = require("../services/tariffResolution.service");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const { parseMonthKey, currentMonthKey } = require("../helpers/month.helpers");
@@ -136,7 +137,38 @@ const resolveMonthSheet = asyncHandler(async (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────────
+// Yo'nalishlar (tarif ustidagi daraja)
+// ─────────────────────────────────────────────
+
+const getDirections = asyncHandler(async (req, res) => {
+  const data = await directionService.getDirections(req.query);
+  res.json({ success: true, ...data });
+});
+
+const createDirection = asyncHandler(async (req, res) => {
+  const data = await directionService.createDirection(req.body, req.user.id);
+  res.status(201).json({ success: true, message: "Yo'nalish qo'shildi", data });
+});
+
+const updateDirection = asyncHandler(async (req, res) => {
+  const data = await directionService.updateDirection(req.params.id, req.body);
+  res.json({ success: true, message: "Yo'nalish yangilandi", data });
+});
+
+const archiveDirection = asyncHandler(async (req, res) => {
+  const data = await directionService.setDirectionArchived(
+    req.params.id,
+    req.body?.isArchived !== false,
+  );
+  res.json({ success: true, message: data.message, data });
+});
+
 module.exports = {
+  getDirections,
+  createDirection,
+  updateDirection,
+  archiveDirection,
   getTariffs,
   getTariff,
   createTariff,

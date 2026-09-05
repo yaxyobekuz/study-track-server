@@ -167,6 +167,10 @@ const buildInvoiceRow = ({
       tariffId: item.tariff.id,
       tariffVersionId: item.version.id,
       tariffName: item.tariff.name,
+      // Yo'nalish nomi ham MUHRLANADI. Bo'sh bo'lishi mumkin: tarifga
+      // yo'nalish biriktirilmagan. Hisobot bunday qatorni tarif nomi
+      // bilan guruhlaydi.
+      directionName: item.tariff.direction?.name ?? "",
       baseAmount: computed.baseAmount,
       // Proratsiya bo'lmasa null — "kun koordinatasi qo'llanmagan" degani
       billableDays: computed.isProrated ? enrollment.billableDays : null,

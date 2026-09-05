@@ -186,9 +186,50 @@ enum DiscountType {
   fixed // qat'iy summa (so'm)
 }
 
+// YO'NALISH — tarif ustidagi daraja: "Maktab", "Bog'cha", "Yotoqxona",
+// "O'quv markazi".
+//
+// NIMA UCHUN KERAK: bitta yo'nalishda bir NECHTA narx darajasi bo'ladi
+// ("Maktab / Birinchi", "Maktab / Ikkinchi", "Maktab grand"). Rahbar
+// hisobotni YO'NALISH kesimida ko'radi, buxgalter esa tarif kesimida.
+// Ikkalasini bitta ro'yxatga tiqib qo'ysak, biri ikkinchisini ko'rsata
+// olmasdi.
+//
+// ⚠️ PLATFORMADA yashaydi — `Tariff` bilan bir joyda. Narx katalogi
+// barcha filiallarga umumiy, ya'ni uning guruhlagichi ham umumiy
+// bo'lishi kerak.
+//
+// ⚠️ Yo'nalish IXTIYORIY: tarifga biriktirilmagan bo'lsa, hisobotda
+// tarifning o'z nomi bilan turadi. Majburiy qilinsa, mavjud tariflar
+// birdaniga "noto'g'ri" bo'lib qolardi.
+model TariffDirection {
+  id   String @id @db.Char(24)
+  name String @unique
+
+  description String @default("")
+  // Hisobotdagi tartib — rahbar ko'radigan ketma-ketlik biznes qarori
+  sortOrder   Int    @default(0) @map("sort_order")
+
+  isActive   Boolean   @default(true) @map("is_active")
+  // O'CHIRILMAYDI — arxivlanadi: o'tgan hisob-fakturalar unga ishora qiladi
+  isArchived Boolean   @default(false) @map("is_archived")
+  archivedAt DateTime? @map("archived_at")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tariffs Tariff[]
+
+  @@index([isArchived, isActive, sortOrder])
+  @@map("tariff_directions")
+}
+
 model Tariff {
   id          String    @id @db.Char(24)
   name        String    @unique
+  // Yo'nalish — ixtiyoriy. `Restrict`: yo'nalish o'chirilmaydi, arxivlanadi
+  directionId String?   @map("direction_id") @db.Char(24)
   description String    @default("")
   currency    String    @default("UZS") @db.Char(3)
   isActive    Boolean   @default(true) @map("is_active")
@@ -198,10 +239,12 @@ model Tariff {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  versions TariffVersion[]
+  versions  TariffVersion[]
+  direction TariffDirection? @relation(fields: [directionId], references: [id], onDelete: Restrict)
 
   // Katalogda narx maydoni YO'Q — versiyalashning butun mohiyati shu.
   @@index([isArchived, isActive, name])
+  @@index([directionId])
   @@map("tariffs")
 }
 

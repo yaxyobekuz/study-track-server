@@ -2,6 +2,8 @@ const asyncHandler = require("../middleware/async.middleware");
 const financeReportService = require("../services/financeReport.service");
 const financeDashboardService = require("../services/financeDashboard.service");
 const financeTargetService = require("../services/financeTarget.service");
+const expenseBudgetService = require("../services/expenseBudget.service");
+const incomePlanService = require("../services/incomePlan.service");
 
 const getOverview = asyncHandler(async (req, res) => {
   const data = await financeReportService.getOverview(req.query);
@@ -57,7 +59,31 @@ const saveTargets = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Reja saqlandi", data });
 });
 
+const getExpenseBudgets = asyncHandler(async (req, res) => {
+  const data = await expenseBudgetService.getBudgets(req.query);
+  res.json({ success: true, data });
+});
+
+const saveExpenseBudgets = asyncHandler(async (req, res) => {
+  const data = await expenseBudgetService.upsertBudgets(req.body, req.user.id);
+  res.json({ success: true, message: "Limitlar saqlandi", data });
+});
+
+const getIncomePlans = asyncHandler(async (req, res) => {
+  const data = await incomePlanService.getPlans(req.query);
+  res.json({ success: true, data });
+});
+
+const saveIncomePlans = asyncHandler(async (req, res) => {
+  const data = await incomePlanService.upsertPlans(req.body, req.user.id);
+  res.json({ success: true, message: "Yig'ish rejasi saqlandi", data });
+});
+
 module.exports = {
+  getIncomePlans,
+  saveIncomePlans,
+  getExpenseBudgets,
+  saveExpenseBudgets,
   getDashboard,
   getKpiScorecard,
   getTargets,

@@ -12,6 +12,7 @@
 // shuning uchun "nechta o'quvchiga biriktirilgan" savoli filiallar bo'ylab
 // hisoblanadi — `catalogUsage.service.js`.
 const platformPrisma = require("../config/platformPrisma");
+const { assertActiveDirection } = require("./tariffDirection.service");
 const catalogUsage = require("./catalogUsage.service");
 const {
   getPaginationParams,
@@ -189,6 +190,7 @@ const getTariffs = async (req) => {
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
       skip,
       take: limit,
+      include: { direction: { select: { id: true, name: true } } },
     }),
     platformPrisma.tariff.count({ where: filter }),
   ]);
@@ -297,10 +299,16 @@ const createTariff = async (data, userId) => {
     };
   }
 
+  // Yo'nalish ixtiyoriy, lekin berilgan bo'lsa FAOL bo'lishi shart —
+  // arxivlangan yo'nalishga tarif biriktirilsa, u tanlagichda ko'rinmay
+  // "yo'nalishi bor-u ro'yxatda yo'q" holati paydo bo'lardi
+  const direction = await assertActiveDirection(data.directionId);
+
   try {
     const tariff = await platformPrisma.tariff.create({
       data: {
         name,
+        directionId: direction?.id ?? null,
         description: data.description?.trim() || "",
         isActive: data.isActive !== false,
         createdBy: userId,
@@ -332,6 +340,15 @@ const updateTariff = async (id, data) => {
     payload.description = data.description?.trim() || "";
   }
   if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
+
+  // ⚠️ Yo'nalishni o'zgartirish KELAJAKKA ta'sir qiladi: o'tgan
+  // hisob-fakturalarda yo'nalish nomi MUHRLANGAN va qayta yozilmaydi
+  // (`tariffName` doktrinasi). Shu sababli eski hisobot o'z kesimida
+  // qolaveradi.
+  if (data.directionId !== undefined) {
+    const direction = await assertActiveDirection(data.directionId || null);
+    payload.directionId = direction?.id ?? null;
+  }
 
   try {
     const updated = await platformPrisma.tariff.update({ where: { id }, data: payload });

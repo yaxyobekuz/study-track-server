@@ -275,6 +275,81 @@ const loadStudentMap = async (invoices) => {
  * @param {object} req
  * @returns {Promise<object>}
  */
+/**
+ * SAHIFADAGI hisob-fakturalarning TO'LOV TURI kesimi.
+ *
+ * "Bu o'quvchi shu oy 700 000 ni naqd, 600 000 ni plastik to'ladi" degan
+ * savolga javob. Registrda ustun sifatida ko'rsatiladi.
+ *
+ * ⚠️ BITTA so'rov — sahifadagi hamma qator uchun. Har qatorga alohida
+ * so'rov yuborilsa, 50 qatorli sahifa 50 marta bazaga borardi.
+ *
+ * ⚠️ `payment.accountId` bo'yicha guruhlanadi, `allocation` ning o'zida
+ * to'lov turi yo'q: pul QAYSI kassaga tushgani chekda yozilgan.
+ * `source: deposit` taqsimoti ham o'z chekining turiga tushadi — pul
+ * o'sha kassaga o'sha chek bilan kirgan.
+ *
+ * @param {string[]} invoiceIds
+ * @returns {Promise<Map<string, Array<{accountId: string, name: string, amount: string}>>>}
+ */
+const loadPaidByAccount = async (invoiceIds) => {
+  if (invoiceIds.length === 0) return new Map();
+
+  const rows = await prisma.paymentAllocation.groupBy({
+    by: ["invoiceId"],
+    where: { invoiceId: { in: invoiceIds }, isVoided: false },
+    _sum: { amount: true },
+  });
+
+  // Prisma `groupBy` bog'langan jadval ustuni bo'yicha guruhlay olmaydi,
+  // shuning uchun to'lov turi xom so'rov bilan olinadi
+  const perAccount = await prisma.$queryRawUnsafe(
+    `SELECT a.invoice_id AS invoice_id,
+            p.account_id  AS account_id,
+            SUM(a.amount)::text AS amount
+       FROM payment_allocations a
+       JOIN payments p ON p.id = a.payment_id
+      WHERE a.is_voided = false
+        AND p.is_voided = false
+        AND a.invoice_id = ANY($1::char(24)[])
+      GROUP BY 1, 2`,
+    invoiceIds,
+  );
+
+  const accountIds = [...new Set(perAccount.map((row) => row.account_id))];
+  const accounts = accountIds.length
+    ? await prisma.paymentAccount.findMany({
+        where: { id: { in: accountIds } },
+        select: { id: true, name: true },
+      })
+    : [];
+  const nameById = new Map(accounts.map((a) => [a.id, a.name]));
+
+  const byInvoice = new Map();
+  for (const row of perAccount) {
+    const list = byInvoice.get(row.invoice_id) ?? [];
+    list.push({
+      accountId: row.account_id,
+      name: nameById.get(row.account_id) ?? "Noma'lum",
+      amount: formatAmount(new Decimal(row.amount ?? 0)),
+    });
+    byInvoice.set(row.invoice_id, list);
+  }
+
+  // Yig'indi qatori bilan solishtirish uchun tartib barqaror bo'lsin
+  for (const list of byInvoice.values()) {
+    list.sort((a, b) => a.name.localeCompare(b.name, "uz"));
+  }
+
+  // `rows` faqat "umuman taqsimot bormi" ni bilish uchun — bo'sh massiv
+  // bilan null orasidagi farq frontendga kerak emas
+  for (const row of rows) {
+    if (!byInvoice.has(row.invoiceId)) byInvoice.set(row.invoiceId, []);
+  }
+
+  return byInvoice;
+};
+
 const getInvoices = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const settings = await getFinanceSettings();
@@ -302,14 +377,21 @@ const getInvoices = async (req) => {
     }),
   ]);
 
-  const studentMap = await loadStudentMap(rows);
+  const [studentMap, paidByAccount] = await Promise.all([
+    loadStudentMap(rows),
+    loadPaidByAccount(rows.map((row) => row.id)),
+  ]);
 
   const totalAmount = new Decimal(agg._sum.amount ?? 0);
   const totalPaid = new Decimal(agg._sum.paidAmount ?? 0);
 
   return {
     ...formatPaginationResponse(
-      rows.map((row) => serializeInvoice(row, { student: studentMap.get(row.studentId) })),
+      rows.map((row) => ({
+        ...serializeInvoice(row, { student: studentMap.get(row.studentId) }),
+        // To'lov turi kesimi — registrdagi "Naqd / Plastik" ustunlari
+        paidByAccount: paidByAccount.get(row.id) ?? [],
+      })),
       total,
       page,
       limit,

@@ -22,12 +22,23 @@ const {
   deleteVersion,
   resolveForStudent,
   resolveMonthSheet,
+  getDirections,
+  createDirection,
+  updateDirection,
+  archiveDirection,
 } = require("../controllers/tariff.controller");
 
 // DIQQAT: `/resolve` `/:id` dan OLDIN turishi shart — aks holda "resolve"
 // id sifatida o'qilib, validateObjectId da yiqiladi.
 router.get("/resolve", protect, authorizePermission(PERMISSIONS.TARIFFS_VIEW), resolveForStudent);
 router.get("/resolve/month/:month", protect, authorizePermission(PERMISSIONS.TARIFFS_VIEW), resolveMonthSheet);
+
+// YO'NALISHLAR — tarif ustidagi daraja. `/:id` dan OLDIN turishi shart,
+// aks holda "directions" id sifatida o'qilib, validateObjectId da yiqilardi.
+router.get("/directions", protect, authorizePermission(PERMISSIONS.TARIFFS_VIEW), getDirections);
+router.post("/directions", protect, authorizePermission(PERMISSIONS.TARIFFS_CREATE), createDirection);
+router.put("/directions/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.TARIFFS_UPDATE), updateDirection);
+router.patch("/directions/:id/archive", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.TARIFFS_UPDATE), archiveDirection);
 
 // Katalog
 router.get("/", protect, authorizePermission(PERMISSIONS.TARIFFS_VIEW), getTariffs);

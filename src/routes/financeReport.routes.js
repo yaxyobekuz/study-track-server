@@ -8,6 +8,10 @@ const { PERMISSIONS } = require("../utils/permissions");
 
 // Controller
 const {
+  getIncomePlans,
+  saveIncomePlans,
+  getExpenseBudgets,
+  saveExpenseBudgets,
   getDashboard,
   getKpiScorecard,
   getTargets,
@@ -34,6 +38,36 @@ router.get("/kpi", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getKp
 // hisobotni "bajarildi" ko'rinishiga keltirishning eng oson yo'li.
 router.get("/targets", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getTargets);
 router.put("/targets", protect, authorizePermission(PERMISSIONS.REPORTS_PLAN), saveTargets);
+
+// XARAJAT LIMITLARI — kategoriya bo'yicha oylik shift. Reja bilan bir xil
+// huquq: ikkalasi ham "qancha bo'lishi kerak edi" degan qaror.
+router.get(
+  "/expense-budgets",
+  protect,
+  authorizePermission(PERMISSIONS.REPORTS_VIEW),
+  getExpenseBudgets,
+);
+router.put(
+  "/expense-budgets",
+  protect,
+  authorizePermission(PERMISSIONS.REPORTS_PLAN),
+  saveExpenseBudgets,
+);
+
+// YIG'ISH REJASI — mas'ul xodim × kirim turi. Xarajat limiti bilan bir
+// xil huquq: ikkalasi ham "qancha bo'lishi kerak edi" degan qaror.
+router.get(
+  "/income-plans",
+  protect,
+  authorizePermission(PERMISSIONS.REPORTS_VIEW),
+  getIncomePlans,
+);
+router.put(
+  "/income-plans",
+  protect,
+  authorizePermission(PERMISSIONS.REPORTS_PLAN),
+  saveIncomePlans,
+);
 
 router.get("/overview", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getOverview);
 router.get("/cashflow", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getCashflow);

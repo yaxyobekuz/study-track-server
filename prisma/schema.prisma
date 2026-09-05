@@ -1989,9 +1989,19 @@ model FinanceTarget {
   id String @id @db.Char(24)
 
   month  Int // YYYYMM
-  metric String @db.VarChar(40) // financeMetrics.js dagi kalit
+  // `financeMetrics.js` dagi kalit YOKI "custom:<id>" — rahbar o'zi
+  // qo'shgan qator ("Arenda", "Tashqi qariz" kabi erkin satrlar)
+  metric String @db.VarChar(40)
+
+  // ⚠️ FAQAT "custom:" qatorlari uchun. Katalog metrikasining nomi va turi
+  // KODDA turadi (`financeMetrics.js`) — ularni bazaga ham yozib qo'ysak,
+  // yorliq o'zgarganda eski qatorlar eski nom bilan qolib ketardi.
+  label String @default("")
+  kind  String @default("money") @db.VarChar(12) // money | percent | count
 
   planValue   Decimal  @map("plan_value") @db.Decimal(14, 2)
+  // Hisoblanadigan ko'rsatkichda null. Qo'lda kiritiladiganlarda (NPS va
+  // barcha "custom:" qatorlari) — amaldagi qiymat.
   actualValue Decimal? @map("actual_value") @db.Decimal(14, 2)
 
   note String @default("")
@@ -2004,6 +2014,84 @@ model FinanceTarget {
   @@unique([month, metric])
   @@index([month])
   @@map("finance_targets")
+}
+
+// YIG'ISH REJASI — mas'ul xodim × kirim turi kesimida oylik reja.
+//
+// "Jasur, Undiruv bo'yicha shu oy 24 960 000 yig'ishi kerak" degan qaror.
+// Amaldagi yig'im `ExternalIncome` dan HISOBLANADI, qoldiq esa ayirma.
+//
+// ⚠️ `ExpenseBudget` ning KO'ZGUSI, faqat teskari tomonda: u yerda
+// "qancha sarflash mumkin" (yuqori chegara), bu yerda "qancha yig'ish
+// kerak" (quyi maqsad). Shuning uchun rang mantig'i ham teskari:
+// xarajatda limitdan oshish yomon, yig'imda rejadan oshish yaxshi.
+//
+// ⚠️ `studentCount` — REJAVIY son ("54 ta o'quvchidan yig'amiz"), amaldagi
+// o'quvchi soni EMAS. Tashqi kirim o'quvchiga bog'lanmaydi (u o'quvchi
+// to'lovi emas), shuning uchun uni tizimdan hisoblab bo'lmaydi.
+model IncomePlan {
+  id String @id @db.Char(24)
+
+  month Int // YYYYMM
+  // soft ref → User (xodim). FK YO'Q — `ExternalIncome.responsibleId`
+  // bilan bir xil mulohaza.
+  responsibleId String @map("responsible_id") @db.Char(24)
+  categoryId    String @map("category_id") @db.Char(24)
+
+  targetAmount Decimal @map("target_amount") @db.Decimal(14, 2)
+  studentCount Int     @default(0) @map("student_count")
+  note         String  @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Kategoriya o'chirilmaydi (arxivlanadi) — haqiqiy FK
+  category IncomeCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([month, responsibleId, categoryId])
+  @@index([month])
+  @@map("income_plans")
+}
+
+// XARAJAT LIMITI — kategoriya bo'yicha OYLIK shift.
+//
+// `FinanceTarget` butun maktab bo'yicha bitta raqamni ("bu oy 380 mln
+// xarajat qilamiz") saqlaydi. Bu esa uni KATEGORIYALARGA bo'ladi:
+// "ijaraga 60 mln, oziq-ovqatga 36 mln". Ikkalasi boshqa savol va ikkalasi
+// ham kerak — rahbar oy oxirida "xarajat rejadan oshdi" ni ko'radi,
+// buxgalter esa QAYSI kategoriya oshirganini.
+//
+// ⚠️ Limit HECH NARSANI TO'SMAYDI. Kassada pul yetarliligi tekshirilmagani
+// kabi (`finance.md` §10), limitdan oshgan xarajat ham qabul qilinadi va
+// shunchaki qizil bo'lib ko'rinadi. Bloklab qo'ysak, xodim haqiqiy
+// xarajatni tizimga kirita olmay qolardi va daftar haqiqatdan uzilardi.
+//
+// ⚠️ OYLIK BU YERDA EMAS. Xodimlar oyligi alohida mexanizm (`StaffSalary`
+// → `PayrollEntry`) va uning "limiti" — oylik qoidalarining yig'indisi,
+// ya'ni u allaqachon rejalashtirilgan. Bu jadvalga oylikni qo'shsak, bitta
+// raqam ikki joyda turib qolardi.
+model ExpenseBudget {
+  id String @id @db.Char(24)
+
+  month      Int    // YYYYMM
+  categoryId String @map("category_id") @db.Char(24)
+
+  limitAmount Decimal @map("limit_amount") @db.Decimal(14, 2)
+  note        String  @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Kategoriya o'chirilmaydi (arxivlanadi), shuning uchun haqiqiy FK
+  category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@unique([month, categoryId])
+  @@index([month])
+  @@map("expense_budgets")
 }
 
 // Ta'til oyi — MAKTAB BO'YICHA. O'sha oyda hech kimga hisob-faktura
@@ -2076,6 +2164,11 @@ model MonthlyInvoice {
   // Nomi ALOHIDA saqlanadi: tarif qayta nomlansa ham o'tgan hisob-faktura
   // yorlig'i o'zgarmaydi.
   tariffName      String  @default("") @map("tariff_name")
+  // YO'NALISH nomi ham MUHRLANADI (`tariffName` doktrinasi). Bo'sh bo'lishi
+  // mumkin: tarifga yo'nalish biriktirilmagan yoki bu qator yo'nalish
+  // tushunchasi paydo bo'lishidan oldin chiqarilgan. Hisobotda bunday
+  // qator tarif nomi bilan guruhlanadi.
+  directionName   String  @default("") @map("direction_name")
 
   // Chegirmagacha VA proratsiyagacha bo'lgan to'liq tarif narxi — "qancha
   // chegirma/proratsiya berdik?" savoliga javob berish uchun saqlanadi.
@@ -2209,6 +2302,7 @@ model IncomeCategory {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   incomes ExternalIncome[]
+  plans   IncomePlan[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("income_categories")
@@ -2230,6 +2324,18 @@ model ExternalIncome {
   // Kategoriya nomi MUHRLANADI (MonthlyInvoice.tariffName doktrinasi):
   // kategoriya keyin qayta nomlansa, o'tgan hisobot o'zgarmasligi kerak.
   categoryName String @default("") @map("category_name")
+
+  // MAS'UL XODIM — bu pulni yig'ish KIMNING zimmasida.
+  //
+  // ⚠️ `payer` (kim to'ladi) va `createdBy` (kim kiritdi) bilan
+  // CHALKASHTIRMANG. Uchalasi boshqa odam bo'lishi mumkin: kassir
+  // kiritadi, ota-ona to'laydi, javobgar esa yig'ishni tashkil qilgan
+  // xodim. "Bo'limlar bo'yicha yig'ish rejasi" aynan shu maydonga tayanadi.
+  //
+  // soft ref → User (xodim). FK YO'Q: xodim ketsa ham o'tgan kirimning
+  // egasi ko'rinib turishi kerak. Nomi shu sababli MUHRLANADI.
+  responsibleId   String? @map("responsible_id") @db.Char(24)
+  responsibleName String  @default("") @map("responsible_name")
 
   payer String @default("") // "Anvar aka", "Korzinka MCHJ"
   note  String @default("")
@@ -2254,6 +2360,7 @@ model ExternalIncome {
   @@index([occurredAt(sort: Desc)])
   @@index([categoryId, occurredAt(sort: Desc)])
   @@index([accountId, occurredAt(sort: Desc)])
+  @@index([responsibleId, occurredAt(sort: Desc)])
   @@map("external_incomes")
 }
 
@@ -2421,6 +2528,7 @@ model ExpenseCategory {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   expenses Expense[]
+  budgets  ExpenseBudget[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("expense_categories")
