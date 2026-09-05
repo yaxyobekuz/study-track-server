@@ -350,18 +350,26 @@ model User {
   profilePicture   String?   @map("profile_picture") @db.Char(24)
   emojiBadgeId     String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
   displayName      String?   @map("display_name")
+  // Kim qo'shgan. ⚠️ Bu AUDIT maydoni emas, RUXSAT maydoni: o'qituvchi
+  // faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
+  // (`assertCanManage`, user.service.js). Eski qatorlarda `null` —
+  // ular "hech kim qo'shmagan", ya'ni o'qituvchiga tegishli emas.
+  createdBy        String?   @map("created_by") @db.Char(24)
   nameColor        String?   @map("name_color")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  profileImage Image?        @relation("UserProfileImage", fields: [profilePicture], references: [id])
-  classes      UserClass[]
-  subjects     UserSubject[]
+  profileImage    Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
+  classes         UserClass[]
+  subjects        UserSubject[]
+  achievements    StudentAchievement[] @relation("StudentAchievements")
+  clubMemberships ClubMember[]         @relation("ClubMemberships")
 
   @@index([role, isActive])
   @@index([role, isArchived])
   @@index([isArchived])
   @@index([premiumIsActive])
+  @@index([createdBy])
   @@map("users")
 }
 
@@ -430,8 +438,10 @@ model Subject {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  topics   Topic[]
-  teachers UserSubject[]
+  topics       Topic[]
+  teachers     UserSubject[]
+  achievements StudentAchievement[]
+  clubs        Club[]
 
   @@map("subjects")
 }
@@ -2032,7 +2042,7 @@ model FinanceTarget {
 model IncomePlan {
   id String @id @db.Char(24)
 
-  month Int // YYYYMM
+  month         Int // YYYYMM
   // soft ref → User (xodim). FK YO'Q — `ExternalIncome.responsibleId`
   // bilan bir xil mulohaza.
   responsibleId String @map("responsible_id") @db.Char(24)
@@ -2075,7 +2085,7 @@ model IncomePlan {
 model ExpenseBudget {
   id String @id @db.Char(24)
 
-  month      Int    // YYYYMM
+  month      Int // YYYYMM
   categoryId String @map("category_id") @db.Char(24)
 
   limitAmount Decimal @map("limit_amount") @db.Decimal(14, 2)
@@ -3594,4 +3604,150 @@ model InventorySettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("inventory_settings")
+}
+
+// ─────────────────────────────────────────────
+// TA'LIM DASHBOARDI (akademik ko'rsatkichlar)
+// ─────────────────────────────────────────────
+
+// AKADEMIK REJA — ta'lim dashboardidagi "Reja:" raqamlari.
+//
+// `FinanceTarget` ning ko'zgusi, lekin ATAYLAB alohida jadval: moliya
+// rejasini moliyachi, akademik rejani o'quv bo'limi qo'yadi va ular bir
+// ekranda ham, bir ruxsat ostida ham uchrashmaydi. Bitta jadvalga
+// qo'shilsa, `reports.plan` ruxsati akademik rejani ham ochib berardi.
+//
+// ⚠️ Bu yerda faqat REJA turadi. Amaldagi qiymat HAR DOIM hisoblanadi
+// (baho, davomat, topshiriq jadvallaridan) — qo'lda yoziladigan "amalda"
+// ustuni yo'q, chunki u hisobotni yolg'onlashtirishning eng oson yo'li.
+model AcademicTarget {
+  id String @id @db.Char(24)
+
+  month  Int // YYYYMM
+  // `academicMetrics.js` dagi kalit. Yorliq va turi KODDA turadi —
+  // bazaga yozilsa, nom o'zgarganda eski qatorlar eski nom bilan qolardi.
+  metric String @db.VarChar(40)
+
+  planValue Decimal @map("plan_value") @db.Decimal(14, 2)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([month, metric])
+  @@index([month])
+  @@map("academic_targets")
+}
+
+// OLIMPIADA VA MUSOBAQA YUTUQLARI.
+//
+// ⚠️ `TestResult` EMAS: test — tizim ichidagi o'lchov, yutuq esa TASHQI
+// hodisa (tuman/viloyat/respublika bosqichi). Ikkalasini bitta jadvalga
+// qo'shsak, "bu yil nechta respublika o'rni oldik" degan savolga javob
+// test natijalari orasidan qidirib topiladigan bo'lib qolardi.
+//
+// Daraja va o'rin — TOIFA, erkin matn emas: hisobot aynan shu ikki kesim
+// bo'yicha yig'iladi ("4 ta xalqaro", "7 ta 1-o'rin").
+model StudentAchievement {
+  id String @id @db.Char(24)
+
+  studentId String  @map("student_id") @db.Char(24)
+  subjectId String? @map("subject_id") @db.Char(24)
+
+  title String
+  level AchievementLevel
+  place AchievementPlace @default(participant)
+
+  // Yutuq qachon qo'lga kiritildi — UTC yarim tunida saqlanadigan KUN
+  // (`@db.Date`, faqat `getUTC*` bilan o'qiladi).
+  date DateTime @db.Date
+
+  note String?
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  student User     @relation("StudentAchievements", fields: [studentId], references: [id], onDelete: Cascade)
+  subject Subject? @relation(fields: [subjectId], references: [id])
+
+  @@index([date(sort: Desc)])
+  @@index([studentId, date(sort: Desc)])
+  @@index([level, date(sort: Desc)])
+  @@map("student_achievements")
+}
+
+enum AchievementLevel {
+  school // Maktab
+  district // Tuman
+  city // Shahar
+  region // Viloyat
+  republic // Respublika
+  international // Xalqaro
+}
+
+enum AchievementPlace {
+  first
+  second
+  third
+  participant
+}
+
+// TO'GARAK VA QO'SHIMCHA DARSLAR.
+//
+// ⚠️ `Class` EMAS: sinf — o'quvchining doimiy joyi, to'garak esa ixtiyoriy
+// va bir o'quvchi bir nechtasiga qatnashadi. Sinfga qo'shib yuborilsa,
+// "9-A" ham, "Robototexnika" ham bitta ro'yxatda turib, davomat va baho
+// hisobotlari ikkalasini bir xil o'qib yuborardi.
+model Club {
+  id String @id @db.Char(24)
+
+  name        String  @unique
+  description String?
+  // Rahbar — xodim (odatda o'qituvchi). Majburiy emas: to'garak ochilib,
+  // rahbari keyin biriktirilishi mumkin.
+  teacherId   String? @map("teacher_id") @db.Char(24)
+  subjectId   String? @map("subject_id") @db.Char(24)
+
+  // Haftasiga necha soat. Dashboarddagi "haftalik dars soat" shundan.
+  weeklyHours Int     @default(0) @map("weekly_hours")
+  isActive    Boolean @default(true) @map("is_active")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  subject Subject?     @relation(fields: [subjectId], references: [id])
+  members ClubMember[]
+
+  @@index([isActive])
+  @@map("clubs")
+}
+
+// To'garak a'zoligi — sanasi bilan.
+//
+// ⚠️ `UserClass` dan farqli o'laroq SANALI: "shu oyda nechta o'quvchi
+// qatnashdi" degan savolga sanasiz M2M javob bera olmaydi, chiqib ketgan
+// o'quvchi o'tgan oy hisobotidan ham jimgina yo'qolib qolardi.
+model ClubMember {
+  id String @id @db.Char(24)
+
+  clubId    String @map("club_id") @db.Char(24)
+  studentId String @map("student_id") @db.Char(24)
+
+  // Kun koordinatasi — `@db.Date`, `endDate` INKLYUZIV (oxirgi qatnashgan kun).
+  startDate DateTime  @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  club    Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  student User @relation("ClubMemberships", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, startDate])
+  @@index([studentId, startDate])
+  @@map("club_members")
 }

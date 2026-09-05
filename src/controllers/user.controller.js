@@ -40,14 +40,16 @@ const getStaffReport = asyncHandler(async (req, res) => {
 
 // Get all users (Owner only)
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { users, pagination } = await userService.getAllUsers(req.query);
+  const { users, pagination } = await userService.getAllUsers(req.query, req.user);
 
   res.json({ success: true, data: users, pagination });
 });
 
 // Create new user (Owner only)
 const createUser = asyncHandler(async (req, res) => {
-  const user = await userService.createUser(req.body, req.user?.id);
+  // ⚠️ Aktyorning O'ZI ham beriladi: `createdBy` ni yozish uchun `id`,
+  // "o'qituvchi faqat o'quvchi qo'shadi" cheklovi uchun esa `role` kerak.
+  const user = await userService.createUser(req.body, req.user?.id, req.user);
 
   res.status(201).json({
     success: true,

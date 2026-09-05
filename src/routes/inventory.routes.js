@@ -27,6 +27,8 @@ const {
   createItem,
   updateItem,
   archiveItem,
+  deleteItem,
+  getItemUsage,
   getLocations,
   getActiveLocations,
   getLocationById,
@@ -43,6 +45,9 @@ const {
   repairStock,
   writeOffStock,
   adjustStock,
+  updateStock,
+  deleteStock,
+  getStockUsage,
 } = require("../controllers/inventoryStock.controller");
 
 const {
@@ -117,6 +122,12 @@ router.get("/items/active", authorizePermission(PERMISSIONS.INVENTORY_VIEW), get
 router.post("/items", authorizePermission(PERMISSIONS.INVENTORY_CATALOG), createItem);
 router.put("/items/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_CATALOG), updateItem);
 router.patch("/items/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_CATALOG), archiveItem);
+// O'CHIRISHDAN OLDINGI TEKSHIRUV — oyna tugmani bosishdan OLDIN o'qiydi
+router.get("/items/:id/usage", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_VIEW), getItemUsage);
+// ⚠️ O'CHIRISH — `catalog` EMAS, alohida `inventory.delete`: katalogni
+// boshqaradigan xodim arxivlaydi, yozuvni butunlay olib tashlash esa
+// faqat KIRITISH XATOSI uchun (`utils/permissions.js` dagi izoh).
+router.delete("/items/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_DELETE), deleteItem);
 
 // ─── Xonalar ─────────────────────────────────
 router.get("/locations", authorizePermission(PERMISSIONS.INVENTORY_VIEW), getLocations);
@@ -142,6 +153,21 @@ router.post("/stocks", authorizePermission(PERMISSIONS.INVENTORY_STOCK), addStoc
 router.post("/stocks/repair", authorizePermission(PERMISSIONS.INVENTORY_REPAIR), repairStock);
 router.post("/stocks/write-off", authorizePermission(PERMISSIONS.INVENTORY_WRITEOFF), writeOffStock);
 router.post("/stocks/adjust", authorizePermission(PERMISSIONS.INVENTORY_ADJUST), adjustStock);
+// TAHRIRLASH — ANIQ MIQDOR ("hozir 1 → 3"). Farqni server hisoblaydi va
+// daftarga `adjustment` qatorini yozadi. Yuqoridagi `POST /stocks/adjust`
+// (FARQ bilan) ATAYLAB saqlanadi — eski mijoz buzilmasin.
+// ⚠️ Body'da `locationId` / `itemId` ham kelishi mumkin (oynada ular ham
+// qayta tanlanadi). Juftlik o'zgarsa bu TAHRIR emas, KO'CHIRISH bo'ladi:
+// eskisidan chiqim, yangisiga kirim (`@@unique([locationId, itemId])` —
+// boshqa juftlik boshqa QATOR). Ruxsat baribir `inventory.adjust`: bu
+// hamon KIRITISH XATOSINI to'g'rilash, topshirish-qabul qilish akti emas
+// (u `inventory.transfer` da qoladi va hujjat yaratadi).
+router.put("/stocks/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_ADJUST), updateStock);
+// O'chirishdan oldingi tekshiruv — nima yo'qoladi, nima to'sib turibdi
+router.get("/stocks/:id/usage", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_VIEW), getStockUsage);
+// ⚠️ O'CHIRISH — `writeoff` EMAS: hisobdan chiqarish tarixni saqlaydi,
+// o'chirish esa yozuvning o'zini olib tashlaydi (kiritish xatosi).
+router.delete("/stocks/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.INVENTORY_DELETE), deleteStock);
 
 // ─── O'tkazma — TOPSHIRISH-QABUL QILISH AKTI ─
 // Xatlovdan alohida hujjat: qaysi xonaga, KIMGA topshirildi va nima uchun.

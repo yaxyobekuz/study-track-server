@@ -66,6 +66,21 @@ const archiveItem = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message });
 });
 
+// O'CHIRISH — ARXIVLASHDAN farqli: tarixi bo'lmagan, KIRITISH XATOSI
+// bo'lgan qator uchun (izohlar `inventoryItem.service.js` da).
+const deleteItem = asyncHandler(async (req, res) => {
+  const { message, ...data } = await itemService.deleteItem(
+    req.params.id,
+    req.user.id,
+  );
+  res.json({ success: true, data, message });
+});
+
+const getItemUsage = asyncHandler(async (req, res) => {
+  const data = await itemService.getItemUsage(req.params.id);
+  res.json({ success: true, data });
+});
+
 // ─── Xonalar ─────────────────────────────────
 
 const getLocations = asyncHandler(async (req, res) => {
@@ -111,6 +126,8 @@ module.exports = {
   createItem,
   updateItem,
   archiveItem,
+  deleteItem,
+  getItemUsage,
   getLocations,
   getActiveLocations,
   getLocationById,

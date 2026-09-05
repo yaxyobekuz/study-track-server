@@ -29,6 +29,7 @@ const {
 } = require("../middleware/auth.middleware");
 const { PERMISSIONS, SECTIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
+const { restrictUserScope } = require("../middleware/userScope.middleware");
 const { ROLES } = require("../utils/constants");
 
 // /students route is accessible to both owner and teacher
@@ -41,6 +42,8 @@ router.put("/me", protect, updateMe);
 //   - xonaga mas'ul xodim biriktirish   (`inventory.locations`)
 //   - zararni aybdorga yozish           (`damages.charge`)
 //   - jihozni xodimga topshirish        (`inventory.transfer`)
+//   - yutuqni o'quvchiga yozish         (`achievements.create/update`)
+//   - to'garakka rahbar va a'zo tanlash (`clubs.create/update/members`)
 // Bularning hammasi `users.view` siz ham ishlashi kerak: xo'jalik mudiri
 // odamni tanlash uchun butun foydalanuvchilar bo'limiga kirish huquqini
 // olmasligi kerak. Ro'yxatda parol, telefon yoki ruxsatlar YO'Q.
@@ -57,6 +60,11 @@ router.get(
       PERMISSIONS.INVENTORY_LOCATIONS,
       PERMISSIONS.INVENTORY_TRANSFER,
       PERMISSIONS.DAMAGES_CHARGE,
+      PERMISSIONS.ACHIEVEMENTS_CREATE,
+      PERMISSIONS.ACHIEVEMENTS_UPDATE,
+      PERMISSIONS.CLUBS_CREATE,
+      PERMISSIONS.CLUBS_UPDATE,
+      PERMISSIONS.CLUBS_MEMBERS,
     ],
     ROLES.TEACHER,
     ROLES.RECEPTION,
@@ -76,16 +84,22 @@ router.get("/", authorizePermission(PERMISSIONS.USERS_VIEW), getAllUsers);
 router.post("/", authorizePermission(PERMISSIONS.USERS_CREATE), createUser);
 
 router.get("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_VIEW), getUser);
-router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_UPDATE), updateUser);
-router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_DELETE), deleteUser);
+
+// ⚠️ EGALIK DARVOZASI — `authorizePermission` DAN KEYIN, controller'dan
+// OLDIN. Ruxsat "shu amalni qila olasanmi", egalik esa "aynan shu odamga
+// tega olasanmi" degan savol: o'qituvchi `users.update` olganda ham faqat
+// O'ZI QO'SHGAN o'quvchini tahrirlaydi. Ko'rish (`GET /:id`) darvozadan
+// o'tmaydi — ro'yxat baribir ochiq, yashiradigan narsa yo'q.
+router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_UPDATE), restrictUserScope, updateUser);
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_DELETE), restrictUserScope, deleteUser);
 
 // Parol — alohida ruxsat (plainPassword ochiladi)
-router.put("/:id/reset-password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), resetPassword);
-router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), getUserPassword);
+router.put("/:id/reset-password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), restrictUserScope, resetPassword);
+router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), restrictUserScope, getUserPassword);
 
 // Arxivlash / arxivdan qaytarish (o'quvchi ham, xodim ham — owner'dan tashqari)
-router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), archiveUser);
-router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restoreUser);
+router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), restrictUserScope, archiveUser);
+router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restrictUserScope, restoreUser);
 
 // Xodimni filiallarga biriktirish.
 //

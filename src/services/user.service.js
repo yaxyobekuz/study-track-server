@@ -12,6 +12,7 @@ const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
+const { ROLES } = require("../utils/constants");
 const { currentDayDate } = require("../helpers/month.helpers");
 
 // Junction M2M larni eski tekis shaklga qaytaradi:
@@ -170,9 +171,46 @@ async function getStats() {
 }
 
 /**
+ * "Bu odamni shu xodim boshqara oladimi?" — YAGONA JOY.
+ *
+ * ⚠️ Qoida FAQAT O'QITUVCHIGA tegishli. Qabulxona va ma'muriyat butun
+ * ro'yxatni boshqaradi (ularning ishi shu), o'qituvchi esa faqat O'ZI
+ * QO'SHGAN o'quvchini: `users.update` ruxsati unga berilganda ham u
+ * boshqa o'qituvchining o'quvchisini tahrirlay olmasligi kerak.
+ *
+ * ⚠️ `createdBy = null` — "hech kim qo'shmagan" (tizimga o'tishdan
+ * oldingi qatorlar). Ular o'qituvchiga OCHILMAYDI: eski ma'lumot
+ * egasizligi sababli hammaga ochiq bo'lib qolardi.
+ *
+ * Owner bu funksiyaga umuman kelmaydi — `authorizePermission` uni
+ * yuqorida o'tkazib yuboradi.
+ *
+ * @param {string} targetId - kimga tegilyapti
+ * @param {{ id: string, role: string }} actor - amalni bajarayotgan xodim
+ */
+async function assertCanManageUser(targetId, actor) {
+  if (!actor || actor.role !== ROLES.TEACHER) return;
+
+  const target = await prisma.user.findUnique({
+    where: { id: targetId },
+    select: { id: true, role: true, createdBy: true },
+  });
+
+  if (!target) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  if (target.role !== ROLES.STUDENT) {
+    throw new ForbiddenError("O'qituvchi faqat o'quvchilarni boshqara oladi");
+  }
+
+  if (target.createdBy !== actor.id) {
+    throw new ForbiddenError("Faqat o'zingiz qo'shgan o'quvchini boshqara olasiz");
+  }
+}
+
+/**
  * Barcha foydalanuvchilarni sahifalangan holda olish.
  */
-async function getAllUsers(query) {
+async function getAllUsers(query, actor = null) {
   const {
     role,
     class: classId,
@@ -180,9 +218,20 @@ async function getAllUsers(query) {
     limit = 24,
     search,
     archived,
+    createdBy,
   } = query;
 
   const where = {};
+
+  // "Faqat men qo'shganlar" — o'qituvchining ro'yxati. `me` ataylab
+  // qo'llab-quvvatlanadi: frontend o'z id sini bilishi shart emas va
+  // boshqa xodimning id sini yozib qo'yish ham mumkin bo'lmaydi.
+  if (createdBy === "me") {
+    // Aktyor yo'q bo'lsa (skript chaqiruvi) filtr qo'llanmaydi
+    if (actor?.id) where.createdBy = actor.id;
+  } else if (createdBy) {
+    where.createdBy = String(createdBy);
+  }
   // "staff" — rol emas, guruh: o'quvchilardan boshqa hamma (admin paneldagi
   // "Xodimlar" tabi shu bilan ishlaydi). Owner ham xodim — ro'yxatdan
   // yo'qolmasligi uchun chiqarib tashlanmaydi.
@@ -275,10 +324,16 @@ async function getAllUsers(query) {
  * Shuning uchun ikkalasi BITTA TRANZAKSIYADA yoziladi — yarim yaratilgan
  * o'quvchi (bor, lekin to'lov yozilmaydi) paydo bo'lishi mumkin emas.
  *
+ * ⚠️ `createdBy` — AUDIT emas, RUXSAT maydoni: o'qituvchi keyinchalik
+ * faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
+ * (`assertCanManageUser`). Shuning uchun u `actorId` bo'lmaganda ham
+ * (skript, seed) `null` bo'lib qoladi — "hech kim qo'shmagan" degani.
+ *
  * @param {object} data
- * @param {string} [actorId] - kim yaratdi (o'qish davri auditi uchun)
+ * @param {string} [actorId] - kim yaratdi (o'qish davri auditi va egalik uchun)
+ * @param {{ role?: string }} [actor] - yaratuvchining o'zi (rol cheklovi uchun)
  */
-async function createUser(data, actorId) {
+async function createUser(data, actorId, actor = null) {
   const {
     username,
     password,
@@ -299,6 +354,15 @@ async function createUser(data, actorId) {
 
   if (role === "owner") {
     throw new BadRequestError("Owner rolini yaratish mumkin emas");
+  }
+
+  // ⚠️ O'QITUVCHI FAQAT O'QUVCHI QO'SHADI. `users.create` ruxsati unga
+  // berilishi mumkin (qabulxona yo'q kichik filialda o'qituvchining o'zi
+  // yozadi), lekin xodim yaratish huquqi bu bilan birga ketmasligi kerak:
+  // aks holda o'qituvchi o'ziga ikkinchi, to'liq ruxsatli hisob ochib
+  // olardi.
+  if (actor?.role === ROLES.TEACHER && role !== ROLES.STUDENT) {
+    throw new ForbiddenError("O'qituvchi faqat o'quvchi qo'sha oladi");
   }
 
   const roleExists = await platformPrisma.role.findUnique({
@@ -354,6 +418,7 @@ async function createUser(data, actorId) {
           lastName,
           role,
           gender: gender || null,
+          createdBy: actorId ?? null,
           ...(role === "student" && userClasses && userClasses.length > 0
             ? {
                 classes: {
@@ -1044,6 +1109,7 @@ async function detachFromBranch(userId, branchId) {
 }
 
 module.exports = {
+  assertCanManageUser,
   getStats,
   // Bitta foydalanuvchi — classes VA subjects bilan (`loadUser` nomining
   // tashqi ko'rinishi). Controller o'z so'rovini yozmasligi kerak: aynan

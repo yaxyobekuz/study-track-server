@@ -42,6 +42,7 @@ const tariffRoutes = require("./tariff.routes");
 const studentTariffRoutes = require("./studentTariff.routes");
 const financeSettingsRoutes = require("./financeSettings.routes");
 const financeReportRoutes = require("./financeReport.routes");
+const academicDashboardRoutes = require("./academicDashboard.routes");
 const incomeCategoryRoutes = require("./incomeCategory.routes");
 const externalIncomeRoutes = require("./externalIncome.routes");
 const payrollRoutes = require("./payroll.routes");
@@ -101,6 +102,8 @@ router.use("/tariffs", tariffRoutes);
 router.use("/student-tariffs", studentTariffRoutes);
 router.use("/finance-settings", financeSettingsRoutes);
 router.use("/finance-reports", financeReportRoutes);
+// TA'LIM DASHBOARDI — moliya dashboardining akademik ko'zgusi.
+router.use("/education", academicDashboardRoutes);
 router.use("/income-categories", incomeCategoryRoutes);
 router.use("/external-incomes", externalIncomeRoutes);
 router.use("/payroll", payrollRoutes);

@@ -22,6 +22,7 @@ const {
   formatPaginationResponse,
 } = require("../utils/pagination");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+const logger = require("../utils/logger");
 const { parseAmount, formatAmount, Decimal } = require("../helpers/money.helpers");
 
 const serializeItem = (row, { stockCount, totalQuantity } = {}) => {
@@ -249,6 +250,187 @@ const archiveItem = async (id, isArchived) => {
   };
 };
 
+// ─────────────────────────────────────────────
+// O'CHIRISH — ARXIVLASHDAN FARQLI
+// ─────────────────────────────────────────────
+
+/**
+ * Jihoz bilan bog'liq hamma narsani bitta o'qishda sanaydi.
+ *
+ * `deleteItem` ham, `getItemUsage` ham SHU funksiyani chaqiradi: to'siq
+ * matni ikki joyda yozilsa, oyna "o'chirish mumkin" deb ko'rsatib turgan
+ * qator serverda rad etilib qolardi.
+ *
+ * @param {string} itemId
+ * @param {object} [client=prisma] - `prisma` yoki TRANZAKSIYA klienti.
+ *   `deleteItem` uni tranzaksiya ICHIDA chaqiradi: sanoq tashqarida
+ *   o'qilsa, "sanadim → omborchi jihoz kiritdi → o'chirdim" oynasi
+ *   ochilib qolardi.
+ */
+const countItemUsage = async (itemId, client = prisma) => {
+  const [stockAgg, occupiedRooms, movements, transferLines, damages, submitted, drafts] =
+    await Promise.all([
+      client.inventoryStock.aggregate({
+        where: { itemId },
+        _sum: { quantity: true },
+        _count: { _all: true },
+      }),
+      client.inventoryStock.count({ where: { itemId, quantity: { gt: 0 } } }),
+      client.inventoryMovement.count({ where: { itemId } }),
+      client.inventoryTransferLine.count({ where: { itemId } }),
+      client.inventoryDamage.count({ where: { itemId } }),
+      client.inventoryCheckLine.count({
+        where: { itemId, check: { submittedAt: { not: null } } },
+      }),
+      client.inventoryCheckLine.count({
+        where: { itemId, check: { submittedAt: null } },
+      }),
+    ]);
+
+  return {
+    stockRows: stockAgg._count._all ?? 0,
+    totalQuantity: stockAgg._sum.quantity ?? 0,
+    occupiedRooms,
+    movements,
+    transferLines,
+    damages,
+    submittedCheckLines: submitted,
+    draftCheckLines: drafts,
+  };
+};
+
+/**
+ * To'siqlar — foydalanuvchiga ko'rsatiladigan jumlalar.
+ *
+ * ⚠️ Hammasi BITTA ro'yxatda sanab o'tiladi: birinchisini tuzatib qaytgan
+ * xodim ikkinchisiga urilsa, bu "har safar boshqa xato" degan taassurot
+ * qoldirardi.
+ */
+const itemDeleteBlockers = (name, usage) => {
+  const blockers = [];
+
+  if (usage.totalQuantity > 0) {
+    blockers.push(
+      `"${name}" hozir ${usage.occupiedRooms} ta xonada ` +
+        `${usage.totalQuantity} ta turibdi — avval hisobdan chiqaring.`,
+    );
+  }
+  if (usage.damages > 0) {
+    blockers.push(
+      `"${name}" bo'yicha ${usage.damages} ta zarar yozuvi bor — ` +
+        `bu pul bilan bog'liq.`,
+    );
+  }
+  if (usage.transferLines > 0) {
+    blockers.push(
+      `"${name}" ${usage.transferLines} ta topshirish-qabul qilish aktida ` +
+        `qayd etilgan — akt muhrlangan hujjat.`,
+    );
+  }
+  if (usage.submittedCheckLines > 0) {
+    blockers.push(
+      `"${name}" ${usage.submittedCheckLines} ta yuborilgan kunlik hisobotda ` +
+        `qayd etilgan — o'chirish muhrlangan hisobotni qayta yozardi.`,
+    );
+  }
+
+  return blockers;
+};
+
+/**
+ * KATALOGDAN O'CHIRISH — "bu jihoz umuman bo'lmasligi kerak edi".
+ *
+ * ⚠️ Bu ARXIVLASH EMAS. Arxivlash jihozni tanlagichlardan olib tashlaydi,
+ * lekin tarixni saqlaydi: o'tgan zararlar, aktlar va hisobotlar unga
+ * ishora qilib turaveradi. O'chirish esa KIRITISH XATOSI uchun —
+ * "Proyekter" deb xato yozilgan, ikki marta kiritilgan, sinab ko'rilgan
+ * qator. Shuning uchun tarixi bor jihoz O'CHIRILMAYDI, arxivlanadi.
+ *
+ * @param {string} id
+ * @param {string} userId
+ */
+const deleteItem = async (id, userId) => {
+  const item = await prisma.inventoryItem.findUnique({ where: { id } });
+  if (!item) throw new NotFoundError("Jihoz topilmadi");
+
+  const result = await prisma.$transaction(async (tx) => {
+    // ⚠️ TO'SIQLAR TRANZAKSIYA ICHIDA sanaladi. Tashqarida sanalganda
+    // "sanadim → omborchi 20 ta parta kiritdi → o'chirdim" oynasi ochiq
+    // qolardi va omborchiga muvaffaqiyat deb aytilgan kirim daftar
+    // qatori bilan birga jimgina yo'q bo'lardi.
+    const usage = await countItemUsage(id, tx);
+    const blockers = itemDeleteBlockers(item.name, usage);
+
+    if (blockers.length > 0) {
+      throw new BadRequestError(
+        `${blockers.join(" ")} O'chirish o'rniga arxivlang.`,
+      );
+    }
+
+    // Faqat QORALAMA satrlar o'chadi — filtr MAJBURIY, yuqoridagi sanoqqa
+    // ishonib qolmaydi (`deleteStock` dagi bilan bir xil mulohaza).
+    const checkLines = await tx.inventoryCheckLine.deleteMany({
+      where: { itemId: id, check: { submittedAt: null } },
+    });
+    const movements = await tx.inventoryMovement.deleteMany({ where: { itemId: id } });
+    // ⚠️ FAQAT BO'SH xatlov qatorlari. Sanoq bilan o'chirish orasida
+    // kiritilgan miqdor shu filtrda QOLADI va `InventoryStock.item`
+    // dagi `Restrict` FK butun tranzaksiyani yiqitadi — jihozni miqdori
+    // bilan birga o'chirish STRUKTURAVIY IMKONSIZ bo'ladi.
+    const stocks = await tx.inventoryStock.deleteMany({
+      where: { itemId: id, quantity: 0 },
+    });
+    await tx.inventoryItem.delete({ where: { id } });
+
+    return {
+      checkLines: checkLines.count,
+      movements: movements.count,
+      stocks: stocks.count,
+    };
+    // Uzoq katalog tarixi bo'lsa uchta `deleteMany` standart 5 soniyaga
+    // sig'masligi mumkin — xatlov tomonidagi `TX_OPTIONS` bilan bir xil.
+  }, { timeout: 20000 });
+
+  logger.warn(
+    `[inventory] Katalogdan O'CHIRILDI: "${item.name}" · ` +
+      `daftar=${result.movements} qator · xatlov=${result.stocks} qator · ` +
+      `qoralama=${result.checkLines} satr · actor=${userId}`,
+  );
+
+  return {
+    id,
+    name: item.name,
+    movementsDeleted: result.movements,
+    stocksDeleted: result.stocks,
+    message: `"${item.name}" o'chirildi`,
+  };
+};
+
+/**
+ * O'CHIRISHDAN OLDINGI TEKSHIRUV — oyna tugmani bosishdan OLDIN o'qiydi.
+ * @param {string} id
+ */
+const getItemUsage = async (id) => {
+  const item = await prisma.inventoryItem.findUnique({ where: { id } });
+  if (!item) throw new NotFoundError("Jihoz topilmadi");
+
+  const usage = await countItemUsage(id);
+  const blockers = itemDeleteBlockers(item.name, usage);
+
+  return {
+    item: { id: item.id, name: item.name, unit: item.unit },
+    stockRows: usage.stockRows,
+    totalQuantity: usage.totalQuantity,
+    movements: usage.movements,
+    transferLines: usage.transferLines,
+    damages: usage.damages,
+    submittedCheckLines: usage.submittedCheckLines,
+    draftCheckLines: usage.draftCheckLines,
+    canDelete: blockers.length === 0,
+    blockers,
+  };
+};
+
 module.exports = {
   serializeItem,
   getItems,
@@ -257,4 +439,6 @@ module.exports = {
   createItem,
   updateItem,
   archiveItem,
+  deleteItem,
+  getItemUsage,
 };

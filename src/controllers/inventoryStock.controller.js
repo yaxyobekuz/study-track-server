@@ -40,6 +40,39 @@ const adjustStock = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message: "Xatlov to'g'rilandi" });
 });
 
+// TAHRIRLASH — ANIQ MIQDOR bilan (`adjustStock` esa FARQ bilan; ikkalasi
+// ham bitta `adjustment` qatorini yozadi, eski mijoz buzilmasin deb
+// ikkalasi ham qoladi).
+//
+// ⚠️ Xona yoki jihoz almashtirilgan bo'lsa bu TAHRIR emas, KO'CHIRISH
+// (`data.moved === true`) — xabar ham boshqa bo'lishi kerak, aks holda
+// xodim "yangilandi" degan matnni o'qib, miqdor boshqa xonaga o'tganini
+// bilmay qolardi.
+const updateStock = asyncHandler(async (req, res) => {
+  const data = await stockService.updateStock(req.params.id, req.body, req.user.id);
+  res.json({
+    success: true,
+    data,
+    message: data.moved
+      ? `"${data.itemName}" ${data.locationName} xonasiga ko'chirildi`
+      : "Xatlov qatori yangilandi",
+  });
+});
+
+const deleteStock = asyncHandler(async (req, res) => {
+  const { message, ...data } = await stockService.deleteStock(
+    req.params.id,
+    req.body,
+    req.user.id,
+  );
+  res.json({ success: true, data, message });
+});
+
+const getStockUsage = asyncHandler(async (req, res) => {
+  const data = await stockService.getStockUsage(req.params.id);
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getStocks,
   getStockByLocation,
@@ -48,4 +81,7 @@ module.exports = {
   repairStock,
   writeOffStock,
   adjustStock,
+  updateStock,
+  deleteStock,
+  getStockUsage,
 };

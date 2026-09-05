@@ -20,6 +20,9 @@ const SECTIONS = {
   STATISTICS: "statistics",
   ATTENDANCE: "attendance",
   GRADES: "grades",
+  EDUCATION: "education",
+  ACHIEVEMENTS: "achievements",
+  CLUBS: "clubs",
   SCHEDULES: "schedules",
   PLANNER: "planner",
   TOPICS: "topics",
@@ -137,6 +140,44 @@ const PERMISSION_SECTIONS = [
     label: "Baholar jurnali",
     group: "Ta'lim",
     actions: [A.view, A.create, A.update, A.delete, A.export],
+  },
+  {
+    // TA'LIM DASHBOARDI — bitta ekranda butun maktabning o'quv manzarasi.
+    //
+    // ⚠️ `grades.view` DAN ALOHIDA: baholar jurnalini ko'rish huquqi bitta
+    // sinfning kunlik ishi, dashboard esa butun maktabning kesimi
+    // (o'qituvchilar KPI si, sinflar reytingi). Moliya tomonida ham
+    // `reports.view` shu sababdan `finance.view` dan ajratilgan.
+    //
+    // `plan` — reja belgilash. Amaldagi qiymat DOIM hisoblanadi, reja esa
+    // "bajarildi" ko'rinishini o'zgartiradi, shuning uchun alohida amal.
+    key: SECTIONS.EDUCATION,
+    label: "Ta'lim dashboardi",
+    group: "Ta'lim",
+    actions: [A.view, { key: "plan", label: "Reja belgilash" }],
+  },
+  {
+    // Olimpiada va musobaqa yutuqlari — tashqi hodisa qaydi.
+    key: SECTIONS.ACHIEVEMENTS,
+    label: "Olimpiada yutuqlari",
+    group: "Ta'lim",
+    actions: [A.view, A.create, A.update, A.delete],
+  },
+  {
+    // To'garaklar va ularning a'zolari.
+    //
+    // `members` ALOHIDA amal: to'garak ochish — ma'muriy qaror, a'zo
+    // biriktirish esa kunlik ish va uni to'garak rahbariga berish mumkin.
+    key: SECTIONS.CLUBS,
+    label: "To'garaklar",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      { key: "members", label: "A'zolarni boshqarish" },
+    ],
   },
   {
     key: SECTIONS.SCHEDULES,
@@ -433,6 +474,15 @@ const PERMISSION_SECTIONS = [
       { key: "repair", label: "Ta'mirlanganini belgilash" },
       { key: "writeoff", label: "Hisobdan chiqarish" },
       { key: "adjust", label: "Qo'lda to'g'rilash" },
+      // ⚠️ O'CHIRISH — `writeoff` EMAS va u bilan almashtirilmaydi.
+      // Hisobdan chiqarish HODISANI qayd etadi: jihoz bor edi, endi yo'q —
+      // daftarga qator yoziladi va tarix saqlanadi ("qachon, kim, nechta").
+      // O'chirish esa yozuvning O'ZI bo'lmasligi kerakligini bildiradi
+      // (KIRITISH XATOSI: noto'g'ri xonaga kiritilgan qator, ikki marta
+      // kiritilgan jihoz) — u daftar qatorlarini ham olib tashlaydi.
+      // Shuning uchun alohida kalit: hisobdan chiqara oladigan xo'jalik
+      // mudiri tarixni o'chira olmasligi kerak.
+      A.delete,
       A.export,
       A.settings,
     ],
