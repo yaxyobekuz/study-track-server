@@ -101,6 +101,9 @@ const createCategory = async (data, userId) => {
   const row = await prisma.expenseCategory.create({
     data: {
       name,
+      // EBITDA'dan chiqarish — soliq va amortizatsiya uchun. Sukut false:
+      // belgilanmagunicha EBITDA sof foydaga teng bo'lib turadi.
+      excludeFromEbitda: Boolean(data.excludeFromEbitda),
       sortOrder: Number.isInteger(Number(data.sortOrder)) ? Number(data.sortOrder) : 0,
       createdBy: userId,
     },
@@ -127,6 +130,12 @@ const updateCategory = async (id, data) => {
   }
   if (data.isActive !== undefined) payload.isActive = Boolean(data.isActive);
   if (data.sortOrder !== undefined) payload.sortOrder = Number(data.sortOrder) || 0;
+  // ⚠️ Bayroq JORIY qaror, snapshot emas: uni o'zgartirish o'tgan oylarning
+  // EBITDA raqamini ham qayta hisoblaydi. Bu ATAYLAB — "soliqni EBITDA'ga
+  // qo'shib yuborgan ekanmiz" degan xato butun tarixda tuzatilishi kerak.
+  if (data.excludeFromEbitda !== undefined) {
+    payload.excludeFromEbitda = Boolean(data.excludeFromEbitda);
+  }
 
   const updated = await prisma.expenseCategory.update({ where: { id }, data: payload });
   return serializeCategory(updated);

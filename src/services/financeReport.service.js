@@ -1006,6 +1006,13 @@ module.exports = {
   getExternalIncome,
   getDebt,
   getTariffBreakdown,
+  // ⚠️ Rahbar dashboardi (`financeDashboard.service.js`) SHU IKKALASINI
+  // chaqiradi va o'z yig'masini YOZMAYDI. Sabab shu faylning tepasidagi
+  // qoida bilan bir xil: kirim manbalari ro'yxati bitta joyda tursin, aks
+  // holda yangi manba qo'shilganda dashboard "Jami tushum" i hisobotdagi
+  // "Jami tushum" dan farq qilib qolardi.
+  sumIncome,
+  sumExpense,
   // Sinov uchun ochiladi
   parseMonthRange,
   AGING_BUCKETS,

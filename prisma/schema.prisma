@@ -1968,6 +1968,44 @@ model FinanceSettings {
   @@map("finance_settings")
 }
 
+// MOLIYAVIY REJA (byudjet) — rahbar dashboardidagi "Reja:" qatorlari.
+//
+// NIMA UCHUN ALOHIDA JADVAL: dashboarddagi HAR BIR raqamning AMALDAGI
+// qiymati tizimdan hisoblanadi (to'lov, xarajat, baho, davomat), lekin
+// "shuncha bo'lishi kerak edi" degan raqam hech qayerdan chiqmaydi — u
+// rahbarning QARORI. Uni sozlamalar singletoniga tiqib bo'lmaydi, chunki
+// reja HAR OY boshqacha.
+//
+// ⚠️ `actualValue` — ISTISNO, sukut bo'yicha null. U faqat tizimda MANBASI
+// YO'Q ko'rsatkich uchun ishlatiladi (hozircha bittasi: NPS — ota-onalar
+// so'rovi tizimda yuritilmaydi). Manbasi bor ko'rsatkichga qo'lda "amalda"
+// yozib qo'yish — hisobotni yolg'onlashtirishning eng oson yo'li, shuning
+// uchun service uni faqat `manualActual` metrikalarida qabul qiladi
+// (`helpers/financeMetrics.js`).
+//
+// Pul va foiz BITTA ustunda: ikkalasi ham Decimal(14,2) ga sig'adi va
+// metrika kaliti qaysi biri ekanini bir ma'noda aytadi.
+model FinanceTarget {
+  id String @id @db.Char(24)
+
+  month  Int // YYYYMM
+  metric String @db.VarChar(40) // financeMetrics.js dagi kalit
+
+  planValue   Decimal  @map("plan_value") @db.Decimal(14, 2)
+  actualValue Decimal? @map("actual_value") @db.Decimal(14, 2)
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([month, metric])
+  @@index([month])
+  @@map("finance_targets")
+}
+
 // Ta'til oyi — MAKTAB BO'YICHA. O'sha oyda hech kimga hisob-faktura
 // shakllanmaydi (o'quvchi bo'yicha to'xtatish — StudentFinanceStatus.frozen).
 //
@@ -2364,6 +2402,14 @@ model SalaryAllocation {
 model ExpenseCategory {
   id   String @id @db.Char(24)
   name String @unique
+
+  // EBITDA = sof foyda + SHU bayroqli kategoriyalardagi xarajatlar.
+  // Foiz, soliq va amortizatsiya alohida jadvalda yuritilmaydi — ular ham
+  // oddiy xarajat qatori. Shuning uchun "EBITDA dan chiqarib tashlanadi"
+  // qarori KATEGORIYA darajasida beriladi: buxgalter "Soliqlar" va
+  // "Amortizatsiya" ni belgilaydi, qolgan hamma narsa operatsion xarajat.
+  // Sukut bo'yicha false — hech nima belgilanmagunicha EBITDA sof foydaga teng.
+  excludeFromEbitda Boolean @default(false) @map("exclude_from_ebitda")
 
   isActive   Boolean @default(true) @map("is_active")
   // O'CHIRILMAYDI — arxivlanadi. O'tgan xarajatlar unga ishora qiladi.

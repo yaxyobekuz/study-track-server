@@ -16,7 +16,8 @@
     "platform:migrate": "prisma migrate deploy --schema=prisma/platform/schema.prisma",
     "branch:migrate": "node src/scripts/branch-migrate/index.js",
     "branch:bootstrap": "node src/scripts/branch-bootstrap/index.js",
-    "enrollment:backfill": "node src/scripts/backfill-enrollments.js"
+    "enrollment:backfill": "node src/scripts/backfill-enrollments.js",
+    "finance:demo": "node src/scripts/seed-finance-demo/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",

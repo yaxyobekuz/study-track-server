@@ -358,7 +358,13 @@ const PERMISSION_SECTIONS = [
     key: SECTIONS.REPORTS,
     label: "Moliya hisobotlari",
     group: "Moliya",
-    actions: [A.view],
+    actions: [
+      A.view,
+      // REJA (byudjet) — ko'rishdan ALOHIDA. Rejani o'zgartirish
+      // "bajarilish 78%" ni "bajarilish 100%" ga aylantiradigan yagona
+      // tugma, ya'ni hisobotni chiroyli qilib qo'yish yo'li.
+      { key: "plan", label: "Reja (byudjet) belgilash" },
+    ],
   },
   {
     // Tashqi kirim — o'quvchi to'lovi BO'LMAGAN pul (ijara, sotuv, homiylik).
