@@ -3751,3 +3751,51 @@ model ClubMember {
   @@index([studentId, startDate])
   @@map("club_members")
 }
+
+// HAFTALIK AI TAHLIL — o'quv bo'limi uchun ish rejasi.
+//
+// ⚠️ IKKI QATLAM. Raqamlarni QOIDA hisoblaydi (`helpers/academicFacts.js`),
+// matnni esa model yozadi. Shu sababli jadvalda `facts` (xom raqamlar) ham,
+// `insights`/`actions` (matn) ham saqlanadi: keyin "model nega shunday
+// yozdi" degan savolga javob beradigan yagona narsa — o'sha paytdagi
+// faktlar. Ular saqlanmasa, tahlilni qayta tekshirib bo'lmasdi.
+//
+// ⚠️ `source` MAJBURIY: model chaqirilmagan (kalit yo'q) yoki javobi
+// validatsiyadan o'tmagan holatda ham qator YOZILADI, faqat "rules" bilan.
+// Ekran hech qachon bo'sh qolmaydi va qaysi matn kimniki ekani yashirilmaydi.
+//
+// ⚠️ HAFTA — kalit. `@@unique([weekStart])`: cron bir haftada ikki marta
+// ishlasa ham (qayta ishga tushirish, qo'lda yangilash) ikkinchi qator
+// paydo bo'lmaydi, ustiga yoziladi. Tarix haftama-hafta o'sadi.
+model AcademicInsight {
+  id String @id @db.Char(24)
+
+  // Toshkent dushanbasi, UTC yarim tunida (`dates.md` §4 — `getUTC*` bilan
+  // o'qiladi, `formatDateUz(v, { utc: true })` bilan ko'rsatiladi).
+  weekStart DateTime @map("week_start") @db.Date
+
+  // Tahlil qilingan moliya oyi (YYYYMM) — dashboard bilan bir xil o'lchov.
+  month Int
+
+  // "ai" | "rules" — matnni kim yozgani.
+  source String  @default("rules") @db.VarChar(10)
+  // Audit: qaysi model. Qoidalar yozganda bo'sh satr.
+  model  String  @default("") @db.VarChar(60)
+
+  facts    Json // qoidalar hisoblagan XOM faktlar (modelga aynan shu ketgan)
+  insights Json // [{ id, tone, text }] — dashboarddagi bilan bir xil shakl
+  actions  Json // [{ id, title, owner, dueLabel, priority }]
+
+  summary String @default("") @db.Text
+
+  generatedAt DateTime @default(now()) @map("generated_at")
+  // Qo'lda yangilangan bo'lsa — aktyor. Cron yozganda bo'sh satr.
+  // ⚠️ `Char(24)` EMAS, `VarChar(24)`: CHAR bo'sh satrni 24 ta probel
+  // bilan to'ldiradi va "kim yangiladi" ustuni hech qachon bo'sh
+  // ko'rinmasdi. Bu yerda bo'shlik normal holat — cron aktyorsiz ishlaydi.
+  createdBy   String   @default("") @map("created_by") @db.VarChar(24)
+
+  @@unique([weekStart])
+  @@index([generatedAt(sort: Desc)])
+  @@map("academic_insights")
+}

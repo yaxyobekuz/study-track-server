@@ -81,6 +81,24 @@ class ConflictError extends Error {
 }
 
 /**
+ * Juda tez-tez so'rov — chastota chegarasi.
+ *
+ * Qimmat va HAFTALIK amallar uchun (masalan AI tahlilini qo'lda
+ * yangilash): tugmani bosaverib tashqi API ni sarflab bo'lmasin.
+ * Bu 400 emas — so'rovda xato yo'q, faqat VAQTI kelmagan.
+ *
+ * HTTP status code: 429
+ */
+class TooManyRequestsError extends Error {
+  constructor(message = "Juda ko'p so'rov yuborildi, keyinroq urinib ko'ring") {
+    super(message);
+    this.name = "TooManyRequestsError";
+    this.statusCode = 429;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+/**
  * Server ichki xatosi uchun
  * HTTP status code: 500
  */
@@ -100,5 +118,6 @@ module.exports = {
   ForbiddenError,
   BadRequestError,
   ConflictError,
+  TooManyRequestsError,
   InternalServerError,
 };

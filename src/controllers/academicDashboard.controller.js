@@ -3,6 +3,7 @@ const academicDashboardService = require("../services/academicDashboard.service"
 const academicTargetService = require("../services/academicTarget.service");
 const achievementService = require("../services/achievement.service");
 const clubService = require("../services/club.service");
+const academicInsightService = require("../services/academicInsight.service");
 
 // ─────────────────────────────────────────────
 // Dashboard va reja
@@ -21,6 +22,24 @@ const getTargets = asyncHandler(async (req, res) => {
 const saveTargets = asyncHandler(async (req, res) => {
   const data = await academicTargetService.upsertTargets(req.body, req.user.id);
   res.json({ success: true, message: "Reja saqlandi", data });
+});
+
+// ─────────────────────────────────────────────
+// Haftalik AI tahlil
+// ─────────────────────────────────────────────
+
+// ⚠️ O'QISH SO'ROVI YOZMAYDI: shu hafta uchun snapshot bo'lmasa, servis
+// jonli qoidalar natijasini qaytaradi va bazaga tegmaydi.
+const getInsights = asyncHandler(async (req, res) => {
+  const data = await academicInsightService.getWeeklyInsight();
+  res.json({ success: true, data });
+});
+
+// Qo'lda yangilash — model chaqiriladi, natija haftaning qatoriga
+// yoziladi. Sovish muddati servisda tekshiriladi (429).
+const refreshInsights = asyncHandler(async (req, res) => {
+  const data = await academicInsightService.generateWeeklyInsight({ actorId: req.user.id });
+  res.json({ success: true, message: "Haftalik tahlil yangilandi", data });
 });
 
 // ─────────────────────────────────────────────
@@ -109,6 +128,8 @@ module.exports = {
   getOverview,
   getTargets,
   saveTargets,
+  getInsights,
+  refreshInsights,
   getAchievements,
   getAchievementOptions,
   createAchievement,

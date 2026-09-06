@@ -33,6 +33,7 @@ const {
   monthEndDate,
 } = require("../helpers/month.helpers");
 const { BadRequestError } = require("../utils/errors");
+const { buildInsights } = require("../helpers/academicInsights");
 const { loadTargetMap } = require("./academicTarget.service");
 const {
   ACHIEVEMENT_LEVEL_LABELS,
@@ -146,9 +147,14 @@ const fullName = (user) =>
  * ⚠️ `groupBy` UCH KALIT BO'YICHA: keyin JS'da istalgan kesimga
  * yig'iladi. Har kesim uchun alohida so'rov yuborilsa, bitta ekran
  * baholar jadvaliga besh marta borardi.
+ *
+ * ⚠️ IKKINCHI SINF KESIMI (`classId` + `grade`) ATAYLAB ALOHIDA: "A'lo va
+ * yaxshi" ulushi baho RAQAMINI talab qiladi, u esa birinchi so'rovning
+ * guruh kalitida yo'q. Uni birinchi so'rovga qo'shib qo'ysak, guruhlar
+ * soni besh barobar oshib, fan/o'qituvchi kesimlari behuda maydalanardi.
  */
 const loadGradeFacts = async (month) => {
-  const [groups, distribution] = await Promise.all([
+  const [groups, distribution, byClassGrade, byStudent] = await Promise.all([
     prisma.grade.groupBy({
       by: ["classId", "subjectId", "teacherId"],
       where: { date: monthDayRange(month) },
@@ -158,6 +164,24 @@ const loadGradeFacts = async (month) => {
     prisma.grade.groupBy({
       by: ["grade"],
       where: { date: monthDayRange(month) },
+      _count: { _all: true },
+    }),
+    prisma.grade.groupBy({
+      by: ["classId", "grade"],
+      where: { date: monthDayRange(month) },
+      _count: { _all: true },
+    }),
+    // ⚠️ O'QUVCHI KESIMI — halqa diagrammasi uchun va u ATAYLAB
+    // yuqoridagi `distribution` dan alohida. Ikkalasi ikki xil savolga
+    // javob beradi: `distribution` "shu oyda nechta beshlik qo'yildi",
+    // bu esa "nechta o'quvchi a'lochi" — bir o'quvchi o'nlab baho oladi,
+    // shuning uchun ular hech qachon teng bo'lmaydi. Halqa maketda
+    // o'quvchilarni sanaydi, KPI dagi "Jami o'quvchilar" bilan bir xil
+    // maxrajda turishi uchun.
+    prisma.grade.groupBy({
+      by: ["studentId"],
+      where: { date: monthDayRange(month) },
+      _sum: { grade: true },
       _count: { _all: true },
     }),
   ]);
@@ -176,6 +200,20 @@ const loadGradeFacts = async (month) => {
     if (row.grade >= 4) good += row._count._all;
   }
 
+  // Sinf kesimi: yig'indi, soni va "4-5" soni — sinflar va bosqichlar
+  // jadvalidagi uchala ustun shu bitta chelakdan chiqadi, ya'ni ular
+  // hech qachon boshqa-boshqa maxrajga tayanib qolmaydi.
+  const byClass = new Map();
+  for (const row of byClassGrade) {
+    const bucket = byClass.get(row.classId) ?? { sum: 0, count: 0, good: 0 };
+
+    bucket.count += row._count._all;
+    bucket.sum += row.grade * row._count._all;
+    if (row.grade >= 4) bucket.good += row._count._all;
+
+    byClass.set(row.classId, bucket);
+  }
+
   return {
     groups: groups.map((row) => ({
       classId: row.classId,
@@ -183,6 +221,14 @@ const loadGradeFacts = async (month) => {
       teacherId: row.teacherId,
       sum: row._sum.grade ?? 0,
       count: row._count._all,
+    })),
+    byClass,
+    // O'quvchi bo'yicha o'rtacha baho — yaxlitlab chelaklarga bo'linadi
+    // (4.5 va yuqorisi "a'lo"). `ROUND_HALF_UP`: 4.5 pastga tushsa,
+    // yarmi a'lochi bo'lgan o'quvchi "yaxshi" safiga o'tib qolardi.
+    studentGrades: byStudent.map((row) => ({
+      studentId: row.studentId,
+      average: (row._sum.grade ?? 0) / row._count._all,
     })),
     total: { sum, count, good },
     distribution: distribution.map((row) => ({
@@ -376,8 +422,27 @@ const buildKpi = ({ current, previous, targets }) => {
   };
 };
 
-/** Fanlar kesimi — o'rtacha baho va o'tgan oy bilan farqi. */
-const buildSubjects = ({ current, previous, subjects }) => {
+/**
+ * Fan ichidagi eng past sinf darajasi xulosaga tushishi uchun kerakli
+ * eng kam baho soni — ikkita bahodan "7-8 sinflarda muammo" degan gap
+ * chiqmasligi uchun.
+ */
+const MIN_SUBJECT_LEVEL_GRADES = 10;
+
+/**
+ * Fanlar kesimi — o'rtacha baho va o'tgan oy bilan farqi.
+ *
+ * Har bir fanga `weakestLevel` ham qo'shiladi: o'sha fan eng past
+ * natija ko'rsatgan sinf darajasi. ⚠️ U "AI tahlil" bloki uchun kerak —
+ * u yerda "7-8 sinflarda Ona tili past" deyilganda daraja AYNAN SHU FAN
+ * bo'yicha topilgan bo'lishi shart. Umumiy eng past daraja bilan
+ * almashtirilsa, ikkita bog'liq bo'lmagan fakt bitta jumlada
+ * sabab-oqibatdek ko'rinib qolardi.
+ *
+ * ⚠️ "Boshqa" guruh (raqami o'qilmagan sinflar) bu yerda hisobga
+ * olinmaydi: uni ayblash hech qanday harakatga olib bormaydi.
+ */
+const buildSubjects = ({ current, previous, subjects, classes }) => {
   const fold = (facts) => {
     const map = new Map();
 
@@ -389,6 +454,51 @@ const buildSubjects = ({ current, previous, subjects }) => {
     }
 
     return map;
+  };
+
+  const levelOfClass = new Map(
+    [...(classes?.entries() ?? [])].map(([classId, name]) => [
+      classId,
+      levelKeyOf(levelOfClassName(name)),
+    ]),
+  );
+  const levelLabels = new Map(CLASS_LEVELS.map((row) => [row.key, row.label]));
+
+  // subjectId → levelKey → { sum, count }
+  const bySubjectLevel = new Map();
+  for (const row of current.grades.groups) {
+    const levelKey = levelOfClass.get(row.classId) ?? "other";
+    if (levelKey === "other") continue;
+
+    const levels = bySubjectLevel.get(row.subjectId) ?? new Map();
+    const bucket = levels.get(levelKey) ?? { sum: 0, count: 0 };
+    bucket.sum += row.sum;
+    bucket.count += row.count;
+    levels.set(levelKey, bucket);
+    bySubjectLevel.set(row.subjectId, levels);
+  }
+
+  const weakestLevelOf = (subjectId) => {
+    const levels = bySubjectLevel.get(subjectId);
+    if (!levels) return null;
+
+    let worst = null;
+    for (const [key, bucket] of levels) {
+      if (bucket.count < MIN_SUBJECT_LEVEL_GRADES) continue;
+
+      const value = average(bucket.sum, bucket.count);
+      if (value == null) continue;
+      if (!worst || value < worst.average) {
+        worst = {
+          key,
+          label: levelLabels.get(key) ?? key,
+          average: value,
+          gradeCount: bucket.count,
+        };
+      }
+    }
+
+    return worst;
   };
 
   const currentMap = fold(current.grades);
@@ -404,6 +514,7 @@ const buildSubjects = ({ current, previous, subjects }) => {
         average: average(bucket.sum, bucket.count),
         previousAverage: before ? average(before.sum, before.count) : null,
         gradeCount: bucket.count,
+        weakestLevel: weakestLevelOf(subjectId),
       };
     })
     // Ko'p baho qo'yilgan fan ishonchliroq — diagrammaga o'shalar tushadi
@@ -412,45 +523,22 @@ const buildSubjects = ({ current, previous, subjects }) => {
     .sort((a, b) => (b.average ?? 0) - (a.average ?? 0));
 };
 
-/** Sinflar jadvali — o'quvchi soni, o'rtacha baho, sifat, davomat. */
-const buildClasses = ({ grades, attendance, classes, studentsByClass }) => {
-  const byClass = new Map();
-
-  for (const row of grades.groups) {
-    const bucket = byClass.get(row.classId) ?? { sum: 0, count: 0 };
-    bucket.sum += row.sum;
-    bucket.count += row.count;
-    byClass.set(row.classId, bucket);
-  }
-
-  return [...classes.entries()]
-    .map(([classId, name]) => {
-      const grade = byClass.get(classId);
-      const visits = attendance.byClass.get(classId);
-
-      return {
-        classId,
-        name,
-        level: levelOfClassName(name),
-        studentCount: studentsByClass.get(classId) ?? 0,
-        average: grade ? average(grade.sum, grade.count) : null,
-        gradeCount: grade?.count ?? 0,
-        attendanceRate: visits ? rate(visits.present, visits.total) : null,
-      };
-    })
-    .filter((row) => row.studentCount > 0 || row.gradeCount > 0)
-    .sort((a, b) => {
-      // Bosqich bo'yicha, ichida nom bo'yicha — "10-A" "9-A" dan keyin
-      // turishi uchun (matn saralashda "10" < "9" bo'lib qolardi)
-      if (a.level != null && b.level != null && a.level !== b.level) return a.level - b.level;
-      if (a.level == null) return 1;
-      if (b.level == null) return -1;
-      return a.name.localeCompare(b.name, "uz");
-    });
-};
-
-/** Sinf darajalari kesimi — dizayndagi "1-4 / 5-6 / 7-8 / 9-11" jadvali. */
-const buildLevels = ({ grades, attendance, classes, studentsByClass }) => {
+/**
+ * Sinf darajalari kesimi — dizayndagi "1-4 / 5-6 / 7-8 / 9-11" jadvali.
+ *
+ * ⚠️ `studentCount` ustuni JAMI qatoriga TENG BO'LISHI SHART. Shuning
+ * uchun ikki narsa qilinadi: (a) har o'quvchi faqat BITTA sinfga
+ * sanaladi (`studentsByClass` shunday quriladi), (b) sinfga umuman
+ * biriktirilmaganlar "Boshqa sinflar" qatoriga tushadi. Aks holda
+ * foydalanuvchi to'rt qatorni qo'shib chiqib, oxirgi qatorga to'g'ri
+ * kelmasligini ko'rardi va qaysi raqamga ishonishni bilmasdi.
+ *
+ * ⚠️ "A'lo va yaxshi" — `grades.byClass` dagi `good` ulushi. U bosqichdagi
+ * BAHOLAR soniga bo'linadi (o'quvchilar soniga emas): butun maktab
+ * kesimidagi `kpi.qualityRate` ham aynan shu maxrajni ishlatadi, ya'ni
+ * JAMI qatori ustun bilan bir xil ma'noda o'qiladi.
+ */
+const buildLevels = ({ grades, attendance, classes, studentsByClass, unassignedStudents = 0 }) => {
   const levelOfClass = new Map(
     [...classes.entries()].map(([classId, name]) => [classId, levelKeyOf(levelOfClassName(name))]),
   );
@@ -458,7 +546,7 @@ const buildLevels = ({ grades, attendance, classes, studentsByClass }) => {
   const buckets = new Map();
   const bucketOf = (key) => {
     if (!buckets.has(key)) {
-      buckets.set(key, { sum: 0, count: 0, present: 0, total: 0, students: 0 });
+      buckets.set(key, { sum: 0, count: 0, good: 0, present: 0, total: 0, students: 0 });
     }
     return buckets.get(key);
   };
@@ -467,10 +555,15 @@ const buildLevels = ({ grades, attendance, classes, studentsByClass }) => {
     bucketOf(key).students += studentsByClass.get(classId) ?? 0;
   }
 
-  for (const row of grades.groups) {
-    const bucket = bucketOf(levelOfClass.get(row.classId) ?? "other");
-    bucket.sum += row.sum;
-    bucket.count += row.count;
+  // Sinfga biriktirilmagan o'quvchi ham JAMI ga kiradi — u jimgina
+  // yo'qolib ketmasligi uchun "Boshqa sinflar" qatoriga qo'shiladi.
+  if (unassignedStudents > 0) bucketOf("other").students += unassignedStudents;
+
+  for (const [classId, grade] of grades.byClass) {
+    const bucket = bucketOf(levelOfClass.get(classId) ?? "other");
+    bucket.sum += grade.sum;
+    bucket.count += grade.count;
+    bucket.good += grade.good;
   }
 
   for (const [classId, visits] of attendance.byClass) {
@@ -489,6 +582,7 @@ const buildLevels = ({ grades, attendance, classes, studentsByClass }) => {
         label: level.label,
         studentCount: bucket.students,
         average: average(bucket.sum, bucket.count),
+        qualityRate: rate(bucket.good, bucket.count),
         attendanceRate: rate(bucket.present, bucket.total),
       };
     })
@@ -503,9 +597,6 @@ const buildLevels = ({ grades, attendance, classes, studentsByClass }) => {
  * Qo'yilmagan baholar KIRMAYDI: taqsimot faqat qo'yilganini bo'ladi.
  */
 const buildDistribution = (grades) => {
-  const total = grades.total.count;
-  const byGrade = new Map(grades.distribution.map((row) => [row.grade, row.count]));
-
   const LABELS = {
     5: "A'lo",
     4: "Yaxshi",
@@ -514,8 +605,26 @@ const buildDistribution = (grades) => {
     1: "Yomon",
   };
 
+  // ⚠️ O'QUVCHILAR sanaladi, BAHOLAR emas — va bu ataylab.
+  //
+  // "Baholar taqsimoti" degan savolning ikki o'qilishi bor: "nechta
+  // beshlik qo'yildi" va "nechta o'quvchi a'lochi". Rahbarga ikkinchisi
+  // kerak: birinchisida ko'p dars oladigan sinf butun taqsimotni o'ziga
+  // tortib ketardi. Shu sababli maxraj KPI dagi "Jami o'quvchilar" bilan
+  // bir xil bo'ladi va halqa markazidagi son ham o'quvchilarni ko'rsatadi.
+  const buckets = new Map([5, 4, 3, 2, 1].map((grade) => [grade, 0]));
+
+  for (const row of grades.studentGrades) {
+    // ROUND_HALF_UP: 4.5 → 5. Pastga yaxlitlansa, yarmi a'lo bo'lgan
+    // o'quvchi "yaxshi" safiga tushib qolardi.
+    const bucket = Math.min(5, Math.max(1, Math.floor(row.average + 0.5)));
+    buckets.set(bucket, buckets.get(bucket) + 1);
+  }
+
+  const total = grades.studentGrades.length;
+
   return [5, 4, 3, 2, 1].map((grade) => {
-    const count = byGrade.get(grade) ?? 0;
+    const count = buckets.get(grade);
 
     return {
       grade,
@@ -736,10 +845,18 @@ const buildTeachers = async ({ grades, tasks, staffAttendance, subjects }) => {
 const buildAchievements = async ({ month, previousMonth }) => {
   const range = monthDayRange(month);
 
-  const [levels, places, previousCount, recent] = await Promise.all([
+  const [levels, previousLevels, places, previousCount, recent] = await Promise.all([
     prisma.studentAchievement.groupBy({
       by: ["level"],
       where: { date: range },
+      _count: { _all: true },
+    }),
+    // ⚠️ O'tgan oy kesimi BITTA qo'shimcha `groupBy` bilan olinadi.
+    // Har daraja uchun alohida `count` yuborilsa, oltita darajaga oltita
+    // so'rov ketardi — plitkalar soni ortishi bilan so'rovlar ham ortardi.
+    prisma.studentAchievement.groupBy({
+      by: ["level"],
+      where: { date: monthDayRange(previousMonth) },
       _count: { _all: true },
     }),
     prisma.studentAchievement.groupBy({
@@ -771,6 +888,7 @@ const buildAchievements = async ({ month, previousMonth }) => {
   ]);
 
   const byLevel = new Map(levels.map((row) => [row.level, row._count._all]));
+  const byPreviousLevel = new Map(previousLevels.map((row) => [row.level, row._count._all]));
   const byPlace = new Map(places.map((row) => [row.place, row._count._all]));
   const total = levels.reduce((acc, row) => acc + row._count._all, 0);
 
@@ -778,11 +896,20 @@ const buildAchievements = async ({ month, previousMonth }) => {
     total,
     previousTotal: previousCount,
     change: changeOf(total, previousCount, { unit: "count" }),
-    levels: Object.entries(ACHIEVEMENT_LEVEL_LABELS).map(([key, label]) => ({
-      key,
-      label,
-      count: byLevel.get(key) ?? 0,
-    })),
+    levels: Object.entries(ACHIEVEMENT_LEVEL_LABELS).map(([key, label]) => {
+      const value = byLevel.get(key) ?? 0;
+      const previousValue = byPreviousLevel.get(key) ?? 0;
+
+      return {
+        key,
+        label,
+        count: value,
+        previousCount: previousValue,
+        // ⚠️ O'tgan oyda nol bo'lsa `changeOf` `null` qaytaradi: noldan
+        // o'sishning foizi yo'q va uni "100%" deb ko'rsatish soxta bo'lardi.
+        change: changeOf(value, previousValue, { unit: "count" }),
+      };
+    }),
     places: Object.entries(ACHIEVEMENT_PLACE_LABELS).map(([key, label]) => ({
       key,
       label,
@@ -810,7 +937,14 @@ const buildAchievements = async ({ month, previousMonth }) => {
  * natijasi va tizimda so'rov yuritilmaydi. Bo'lmagan raqamni ko'rsatish
  * o'rniga o'lchanadigan ko'rsatkich qo'yildi.
  */
-const buildClubs = async ({ month, previousMonth, studentCount }) => {
+const buildClubs = async ({
+  month,
+  previousMonth,
+  studentIds,
+  previousStudentIds,
+  studentTotal,
+  previousStudentTotal,
+}) => {
   // Shu oyda FAOL a'zolik: davr oy bilan kesishadi (`endDate` inklyuziv)
   const overlapping = (target) => {
     const range = monthDayRange(target);
@@ -819,6 +953,14 @@ const buildClubs = async ({ month, previousMonth, studentCount }) => {
       OR: [{ endDate: null }, { endDate: { gte: range.gte } }],
     };
   };
+
+  // ⚠️ QAMROV SURATI VA MAXRAJI BITTA TO'PLAMDAN. A'zolik yopilmasdan
+  // maktabdan ketgan o'quvchi `ClubMember` da qolib ketadi, maxraj esa
+  // (`studentTotal`) faqat shu oyda o'qish davri ochiq bo'lganlarni
+  // sanaydi — filtrsiz qoldirilsa qamrov 100% dan oshib, ekranda
+  // "118.4%" turardi.
+  const enrolled = new Set(studentIds ?? []);
+  const previousEnrolled = new Set(previousStudentIds ?? []);
 
   const [clubs, members, previousMembers, byClub] = await Promise.all([
     prisma.club.findMany({
@@ -848,15 +990,41 @@ const buildClubs = async ({ month, previousMonth, studentCount }) => {
 
   const countByClub = new Map(byClub.map((row) => [row.clubId, row._count._all]));
   const weeklyHours = clubs.reduce((acc, row) => acc + row.weeklyHours, 0);
-  const studentsInClubs = members.length;
+  const studentsInClubs = members.filter((row) => enrolled.has(row.studentId)).length;
+  const previousStudentsInClubs = previousMembers.filter((row) =>
+    previousEnrolled.has(row.studentId),
+  ).length;
+
+  // ⚠️ `Club` da DAVR MAYDONI YO'Q — faqat `isActive` bayrog'i bor, ya'ni
+  // "to'garaklar ro'yxati" hozirgi holatning surati. O'tgan oyda nechta
+  // to'garak bo'lganini bu jadvaldan BILIB BO'LMAYDI, shuning uchun
+  // `null` qaytariladi va ekranda "—" turadi.
+  // ⚠️ Bir vaqtlar bu yerda joriy qiymatning NUSXASI turardi: ekranda
+  // "O'tgan oy: 12 · 0%" degan yozuv paydo bo'lib, u har oy o'zgarmas
+  // nol ko'rsatardi — ya'ni yo'q faktni tasdiqlab turardi.
+  // (A'zolik `ClubMember` da davr bilan yotadi — o'quvchi soni va qamrov
+  // haqiqiy o'tgan oy kesimidan hisoblanadi.)
+  // To'garak tarixi kerak bo'lsa, `Club` ga davr ustunlari qo'shilishi
+  // va shu ikki qator o'sha davr bo'yicha sanashi kerak.
+  const previousClubCount = null;
+  const previousWeeklyHours = null;
+  const coverage = rate(studentsInClubs, studentTotal);
+  const previousCoverage = rate(previousStudentsInClubs, previousStudentTotal);
 
   return {
     clubCount: clubs.length,
+    previousClubCount,
+    clubChange: null,
     studentCount: studentsInClubs,
-    previousStudentCount: previousMembers.length,
-    studentChange: changeOf(studentsInClubs, previousMembers.length, { unit: "count" }),
+    previousStudentCount: previousStudentsInClubs,
+    studentChange: changeOf(studentsInClubs, previousStudentsInClubs, { unit: "count" }),
     weeklyHours,
-    coverage: rate(studentsInClubs, studentCount),
+    previousWeeklyHours,
+    weeklyHoursChange: null,
+    coverage,
+    previousCoverage,
+    // Qamrov — foizli ko'rsatkich, shuning uchun o'zgarish PUNKTDA
+    coverageChange: changeOf(coverage, previousCoverage, { unit: "percent" }),
     items: clubs
       .map((row) => ({
         id: row.id,
@@ -923,12 +1091,14 @@ const getOverview = async (query = {}) => {
     await Promise.all([
       prisma.subject.findMany({ select: { id: true, name: true } }),
       prisma.class.findMany({ select: { id: true, name: true } }),
-      // Sinf bo'yicha o'quvchi soni — FAQAT shu oyda o'qiganlar
+      // Sinf bo'yicha o'quvchi soni — FAQAT shu oyda o'qiganlar.
+      // ⚠️ `groupBy` EMAS, qatorlarning O'ZI: `UserClass` — M2M va ikki
+      // sinfga biriktirilgan o'quvchi guruhlangan sanoqda ikki marta
+      // sanalardi, natijada jadval ustuni JAMI qatoridan katta chiqardi.
       enrollment.studentIds.length > 0
-        ? prisma.userClass.groupBy({
-            by: ["classId"],
+        ? prisma.userClass.findMany({
             where: { userId: { in: enrollment.studentIds } },
-            _count: { _all: true },
+            select: { userId: true, classId: true },
           })
         : Promise.resolve([]),
       prisma.studentAchievement.count({ where: { date: monthDayRange(month) } }),
@@ -937,7 +1107,23 @@ const getOverview = async (query = {}) => {
 
   const subjects = new Map(subjectRows.map((row) => [row.id, row.name]));
   const classes = new Map(classRows.map((row) => [row.id, row.name]));
-  const studentsByClass = new Map(studentClassRows.map((row) => [row.classId, row._count._all]));
+
+  // ⚠️ HAR O'QUVCHI FAQAT BITTA SINFDA sanaladi (kalit bo'yicha eng
+  // kichigi — tanlov deterministik bo'lishi uchun). Sinf kesimlarining
+  // yig'indisi shu tufayli KPI dagi o'quvchilar soniga TENG bo'ladi.
+  const classOfStudent = new Map();
+  for (const row of studentClassRows) {
+    const chosen = classOfStudent.get(row.userId);
+    if (chosen == null || row.classId < chosen) classOfStudent.set(row.userId, row.classId);
+  }
+
+  const studentsByClass = new Map();
+  for (const classId of classOfStudent.values()) {
+    studentsByClass.set(classId, (studentsByClass.get(classId) ?? 0) + 1);
+  }
+
+  // Sinfga umuman biriktirilmaganlar — "Boshqa sinflar" qatoriga
+  const unassignedStudents = enrollment.studentIds.length - classOfStudent.size;
 
   const summarize = (facts) => ({
     students: facts.enrollment.studentIds.length,
@@ -949,6 +1135,14 @@ const getOverview = async (query = {}) => {
     attendanceTotal: facts.attendance.total,
     taskCompletion: rate(facts.tasks.done, facts.tasks.total),
     taskTotal: facts.tasks.total,
+    // ⚠️ Xom SANOQLAR ham saqlanadi (foizdan tashqari). Ular haftalik
+    // tahlilga (`helpers/academicFacts.js`) kerak: "topshiriqning 78% i
+    // bajarilgan" degan foizdan "nechta topshiriq yopilmagan" degan
+    // vazifani chiqarib bo'lmaydi — foizdan qayta hisoblansa, yaxlitlash
+    // tufayli reja qatorida bir dona farq bilan yolg'on son turardi.
+    taskDone: facts.tasks.done,
+    attendancePresent: facts.attendance.present,
+    goodGrades: facts.grades.total.good,
     achievements: facts.achievements,
   });
 
@@ -971,6 +1165,7 @@ const getOverview = async (query = {}) => {
     current: { grades },
     previous: { grades: previousGrades },
     subjects,
+    classes,
   });
 
   // ── Og'irroq bloklar — yuqoridagi natijalarga tayanadi ────────────
@@ -983,8 +1178,36 @@ const getOverview = async (query = {}) => {
     }),
     buildTeachers({ grades, tasks, staffAttendance, subjects }),
     buildAchievements({ month, previousMonth: compareMonth }),
-    buildClubs({ month, previousMonth: compareMonth, studentCount: current.students }),
+    buildClubs({
+      month,
+      previousMonth: compareMonth,
+      studentIds: enrollment.studentIds,
+      previousStudentIds: previousEnrollment.studentIds,
+      studentTotal: current.students,
+      previousStudentTotal: previous.students,
+    }),
   ]);
+
+  const kpi = buildKpi({ current, previous, targets });
+  const levelRowsBuilt = buildLevels({
+    grades,
+    attendance,
+    classes,
+    studentsByClass,
+    unassignedStudents,
+  });
+  const distribution = buildDistribution(grades);
+
+  const totals = {
+    students: current.students,
+    admissions: current.admissions,
+    gradeCount: current.gradeCount,
+    goodGrades: current.goodGrades,
+    attendanceMarks: current.attendanceTotal,
+    attendancePresent: current.attendancePresent,
+    taskTotal: current.taskTotal,
+    taskDone: current.taskDone,
+  };
 
   return {
     month,
@@ -992,24 +1215,37 @@ const getOverview = async (query = {}) => {
     compareMonth,
     compareMonthLabel: formatMonthKey(compareMonth),
 
-    kpi: buildKpi({ current, previous, targets }),
+    kpi,
     subjects: subjectRowsBuilt,
-    classes: buildClasses({ grades, attendance, classes, studentsByClass }),
-    levels: buildLevels({ grades, attendance, classes, studentsByClass }),
-    distribution: buildDistribution(grades),
+    levels: levelRowsBuilt,
+    distribution,
     attendanceTrend,
     topStudents,
     teachers,
     achievements,
     clubs,
 
-    totals: {
-      students: current.students,
-      admissions: current.admissions,
-      gradeCount: current.gradeCount,
-      attendanceMarks: current.attendanceTotal,
-      taskTotal: current.taskTotal,
-    },
+    // "AI TAHLIL VA TAVSIYALAR" — yuqoridagi bloklardan QOIDA asosida
+    // tug'iladi (`helpers/academicInsights.js`), model chaqirilmaydi.
+    // Bu yerda hisoblash yo'q: xulosalar sof funksiyaga topshiriladi,
+    // shuning uchun ularni bazasiz sinovda tekshirib bo'ladi.
+    insights: buildInsights({
+      kpi,
+      subjects: subjectRowsBuilt,
+      levels: levelRowsBuilt,
+      distribution,
+      attendanceTrend,
+      teachers,
+      achievements,
+      clubs,
+      totals,
+      // ⚠️ Taqqoslash oyining YORLIG'I ham uzatiladi: xulosa matni
+      // "o'tgan oyga nisbatan" deb yozib qo'ysa, foydalanuvchi 2025-yil
+      // yanvarni tanlaganda yolg'on jumla o'qirdi.
+      compareMonthLabel: formatMonthKey(compareMonth),
+    }),
+
+    totals,
   };
 };
 

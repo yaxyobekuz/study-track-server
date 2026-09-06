@@ -12,6 +12,8 @@ const {
   getOverview,
   getTargets,
   saveTargets,
+  getInsights,
+  refreshInsights,
   getAchievements,
   getAchievementOptions,
   createAchievement,
@@ -43,6 +45,18 @@ router.get("/overview", authorizePermission(PERMISSIONS.EDUCATION_VIEW), getOver
 // turadi), YOZISH esa alohida: reja "bajarildi" ko'rinishini o'zgartiradi.
 router.get("/targets", authorizePermission(PERMISSIONS.EDUCATION_VIEW), getTargets);
 router.put("/targets", authorizePermission(PERMISSIONS.EDUCATION_PLAN), saveTargets);
+
+// HAFTALIK AI TAHLIL.
+//
+// Ko'rish — dashboard bilan bir xil huquq: tahlil o'sha ekrandagi
+// raqamlardan tug'iladi va yangi ma'lumot ochmaydi.
+//
+// ⚠️ YANGILASH — `education.plan`: u tashqi API ni sarflaydi va butun
+// maktab ko'radigan haftalik matnni QAYTA YOZADI. Ko'rish huquqiga
+// qo'shib yuborilsa, ekranni ochgan har kim modelni chaqira olardi.
+// Ustiga servis 10 daqiqalik sovish muddatini qo'yadi (429).
+router.get("/insights", authorizePermission(PERMISSIONS.EDUCATION_VIEW), getInsights);
+router.post("/insights/refresh", authorizePermission(PERMISSIONS.EDUCATION_PLAN), refreshInsights);
 
 // ─────────────────────────────────────────────
 // OLIMPIADA YUTUQLARI

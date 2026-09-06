@@ -13,3 +13,6 @@ src/scripts/*
 src/generated
 !src/scripts/branch-migrate/
 !src/scripts/branch-bootstrap/
+# ⚠️ package.json dagi `seed:academic` shu faylga ishora qiladi — istisnosiz
+# u toza klonga yetib bormay, buyruq "Cannot find module" bilan yiqilardi.
+!src/scripts/seedAcademicDemo.js
