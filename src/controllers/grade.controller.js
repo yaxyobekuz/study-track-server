@@ -1,4 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
+const { hasRole } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
@@ -317,8 +319,17 @@ const getGrades = asyncHandler(async (req, res) => {
   if (subjectId) where.subjectId = subjectId;
   if (classId) where.classId = classId;
 
-  // If teacher, can only see their own grades
-  if (req.user.role === "teacher") {
+  // ⚠️ `req.user.role === "teacher"` EMAS, `hasRole` — ko'p rollilik.
+  //
+  // Darvoza (`authorizePermission(..., ROLES.TEACHER)`) qo'shimcha
+  // rolni ham o'tkazadi. Agar cheklov faqat ASOSIY rolga qarasa,
+  // qo'shimcha `teacher` roli olgan odam darvozadan o'tib, cheklovga
+  // TUSHMASDAN qolardi — ya'ni HAQIQIY o'qituvchidan ko'proq huquq
+  // olardi (bu yerda: barcha o'qituvchilarning baholarini ko'rardi).
+  //
+  // Qoida: "o'qituvchi sifatida ish qila olasanmi" degan savolga
+  // darvoza ham, cheklov ham BIR XIL javob berishi shart.
+  if (hasRole(req.user, ROLES.TEACHER)) {
     where.teacherId = req.user.id;
   }
 
@@ -459,8 +470,8 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  // Only teacher can add grades
-  if (req.user.role !== "teacher") {
+  // Only teacher can add grades (ko'p rollilik — `hasRole`)
+  if (!hasRole(req.user, ROLES.TEACHER)) {
     throw new ForbiddenError("Faqat o'qituvchilar baho qo'ya oladi");
   }
 
@@ -536,10 +547,7 @@ const createGrade = asyncHandler(async (req, res) => {
   }
 
   // Check grading time window (only if enabled in config)
-  const {
-    GRADE_TIME_LIMIT_MINUTES,
-    ENABLE_SCHEDULE_TIME_VALIDATION,
-  } = require("../utils/constants");
+  const { GRADE_TIME_LIMIT_MINUTES, ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
 
   if (ENABLE_SCHEDULE_TIME_VALIDATION) {
     const { checkGradingTimeWindow } = require("../helpers/date.helpers");
@@ -651,8 +659,8 @@ const updateGrade = asyncHandler(async (req, res) => {
     throw new NotFoundError("Baho topilmadi");
   }
 
-  // Only teacher can edit
-  if (req.user.role !== "teacher") {
+  // Only teacher can edit (ko'p rollilik — `hasRole`)
+  if (!hasRole(req.user, ROLES.TEACHER)) {
     throw new ForbiddenError("Faqat o'qituvchi baho tahrirlashi mumkin");
   }
 
@@ -781,8 +789,12 @@ const deleteGrade = asyncHandler(async (req, res) => {
     throw new NotFoundError("Baho topilmadi");
   }
 
-  // If teacher role, apply restrictions
-  if (req.user.role === "teacher") {
+  // ⚠️ ENG MUHIM JOY. Darvoza qo'shimcha rolni o'tkazgani holda bu
+  // shart faqat asosiy rolga qarasa, qo'shimcha `teacher` roli olgan
+  // odam IKKALA cheklovdan ham — "faqat o'z bahosi" va "faqat
+  // bugungi baho" — qutulib qolardi va istalgan o'qituvchining
+  // istalgan sanadagi bahosini o'chira olardi.
+  if (hasRole(req.user, ROLES.TEACHER)) {
     // Can only delete own grades
     if (grade.teacherId !== req.user.id) {
       throw new ForbiddenError("Bu bahoni o'chirish uchun ruxsatingiz yo'q");
@@ -875,7 +887,7 @@ const getStudentGrades = asyncHandler(async (req, res) => {
 const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   const { classId } = req.params;
 
-  if (req.user.role !== "teacher") {
+  if (!hasRole(req.user, ROLES.TEACHER)) {
     throw new ForbiddenError("Faqat o'qituvchilar uchun");
   }
 

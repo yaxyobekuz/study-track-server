@@ -1,5 +1,5 @@
 const asyncHandler = require("../middleware/async.middleware");
-const { NotFoundError } = require("../utils/errors");
+const { NotFoundError, BadRequestError } = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 const staffReportService = require("../services/staffReport.service");
@@ -81,6 +81,31 @@ const updateUser = asyncHandler(async (req, res) => {
 });
 
 // Reset user password (Owner only)
+// QO'SHIMCHA ROLLAR — faqat owner (route darajasida `authorize(OWNER)`).
+//
+// ⚠️ To'liq ro'yxat yuboriladi, "qo'sh"/"olib tashla" emas: qisman
+// amallarda ikkita parallel so'rov bir-birining natijasini yo'q qilardi
+// (ikkinchisi birinchisi ko'rmagan ro'yxat ustiga yozardi).
+const setUserRoles = asyncHandler(async (req, res) => {
+  const { extraRoles } = req.body;
+
+  if (!Array.isArray(extraRoles)) {
+    throw new BadRequestError("extraRoles massiv bo'lishi kerak");
+  }
+
+  const user = await userService.setExtraRoles(
+    req.params.id,
+    extraRoles,
+    req.user,
+  );
+
+  res.json({
+    success: true,
+    message: "Rollar yangilandi",
+    data: user,
+  });
+});
+
 const resetPassword = asyncHandler(async (req, res) => {
   await userService.resetPassword(req.params.id, req.body.newPassword);
 
@@ -253,6 +278,7 @@ const detachUserFromBranch = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  setUserRoles,
   getAllUsers,
   getAllUsersShort,
   getUser,

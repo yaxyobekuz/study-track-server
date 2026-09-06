@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const {
   BadRequestError,
@@ -194,7 +195,7 @@ async function createAssignment(data, createdBy) {
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
   if (!subjectDoc) throw new NotFoundError("Fan topilmadi");
   if (!teacherDoc) throw new NotFoundError("O'qituvchi topilmadi");
-  if (teacherDoc.role !== ROLES.TEACHER) {
+  if (!hasRole(teacherDoc, ROLES.TEACHER)) {
     throw new BadRequestError("Tanlangan foydalanuvchi o'qituvchi emas");
   }
 
@@ -375,7 +376,7 @@ async function updateAssignment(id, data) {
   if (teacher !== undefined) {
     const teacherDoc = await prisma.user.findUnique({ where: { id: teacher } });
     if (!teacherDoc) throw new NotFoundError("O'qituvchi topilmadi");
-    if (teacherDoc.role !== ROLES.TEACHER) {
+    if (!hasRole(teacherDoc, ROLES.TEACHER)) {
       throw new BadRequestError("Tanlangan foydalanuvchi o'qituvchi emas");
     }
     update.teacherId = teacher;

@@ -13,6 +13,9 @@
  */
 
 const platformPrisma = require("../config/platformPrisma");
+// Qo'shimcha rollar HAR FILIALNING `users` jadvalida — yo'naltirgichda emas
+const prisma = require("../config/prisma");
+const { mapBranches } = require("../helpers/branchIterator");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { validatePermissions } = require("./permission.service");
 
@@ -30,11 +33,34 @@ function handleUnique(error) {
 
 /**
  * Rol qiymati bo'yicha BARCHA filiallardagi foydalanuvchilar soni.
+ *
+ * ⚠️ IKKI MANBA. Yo'naltirgichdagi `UserDirectory.role` faqat ASOSIY
+ * rolni biladi; qo'shimcha rollar esa har filialning o'z `users` jadvalida
+ * (`extraRoles`). Faqat birinchisiga qarasak, kimningdir IKKINCHI roli
+ * bo'lgan rolni owner bemalol o'chirib yuborardi va xato chiqmasdi —
+ * `User.role` oddiy String, FK yo'q (`catalogUsage.service.js` dagi
+ * bilan bir xil tuzoq).
+ *
+ * ⚠️ Sanoq YIG'INDI EMAS, MAKSIMUM emas — ikkalasi ham noto'g'ri
+ * bo'lardi. Bizga faqat "hech kimda bormi" degan savol kerak, shuning
+ * uchun asosiy sanoqqa qo'shimcha rol egalarining soni QO'SHILADI:
+ * ikkisi kesishmaydi (asosiy rol `extraRoles` ga tushmaydi —
+ * `user.service.js` dagi `setExtraRoles` uni filtrlaydi).
+ *
  * @param {string} value
  * @returns {Promise<number>}
  */
 async function countUsersWithRole(value) {
-  return platformPrisma.userDirectory.count({ where: { role: value } });
+  const [primary, extraResults] = await Promise.all([
+    platformPrisma.userDirectory.count({ where: { role: value } }),
+    mapBranches(
+      () => prisma.user.count({ where: { extraRoles: { has: value } } }),
+      { label: "[Role]" },
+    ),
+  ]);
+
+  const extra = extraResults.reduce((sum, r) => sum + (r.value ?? 0), 0);
+  return primary + extra;
 }
 
 /**
@@ -57,11 +83,37 @@ async function getAllRoles() {
   const creatorMap = new Map(creators.map((c) => [c.id, c]));
 
   // Bitta groupBy — rol soniga qarab N ta count so'rovi EMAS.
-  const counts = await platformPrisma.userDirectory.groupBy({
-    by: ["role"],
-    _count: { _all: true },
-  });
+  //
+  // ⚠️ QO'SHIMCHA ROLLAR HAM SANALADI. Yo'naltirgich faqat ASOSIY
+  // rolni biladi; qo'shimchalari har filialning `users` jadvalida.
+  // Faqat birinchisiga qarasak, bitta ekranda ikkita har xil sanoq
+  // chiqardi: ro'yxatda "0", o'chirishga urinishda esa "3 ta
+  // foydalanuvchi mavjud" (`countUsersWithRole` allaqachon ikkalasini
+  // qo'shadi).
+  const [counts, extraResults] = await Promise.all([
+    platformPrisma.userDirectory.groupBy({
+      by: ["role"],
+      _count: { _all: true },
+    }),
+    mapBranches(
+      () =>
+        prisma.user.findMany({
+          where: { NOT: { extraRoles: { isEmpty: true } } },
+          select: { extraRoles: true },
+        }),
+      { label: "[Role]" },
+    ),
+  ]);
+
   const countMap = new Map(counts.map((c) => [c.role, c._count._all]));
+
+  for (const { value } of extraResults) {
+    for (const row of value ?? []) {
+      for (const key of row.extraRoles ?? []) {
+        countMap.set(key, (countMap.get(key) ?? 0) + 1);
+      }
+    }
+  }
 
   return roles.map((role) => ({
     ...role,

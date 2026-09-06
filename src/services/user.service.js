@@ -13,6 +13,7 @@ const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
 const { ROLES } = require("../utils/constants");
+const { allRoles, expandLegacyKeys, normalizePermissions, hasRole } = require("../utils/permissions");
 const { currentDayDate } = require("../helpers/month.helpers");
 
 // Junction M2M larni eski tekis shaklga qaytaradi:
@@ -170,6 +171,184 @@ async function getStats() {
   return { telegramUsers, workers, students, premiumUsers };
 }
 
+// ─────────────────────────────────────────────
+// KO'P ROLLILIK
+// ─────────────────────────────────────────────
+//
+// Bir odam bir vaqtning o'zida bir nechta rolda bo'lishi mumkin:
+// o'qituvchi + ma'muriyat, qabulxona + kassir.
+//
+// ⚠️ `role` ASOSIY BO'LIB QOLADI va uning ma'nosi zarracha o'zgarmadi.
+// Butun tizimda 120 dan ortiq joy unga qarab shoxlanadi, 78 tasi esa
+// BAZA DARAJASIDAGI filtr (`where: { role: "student" }`,
+// `{ notIn: ["owner","student"] }`) va ular `@@index([role, isActive])`
+// ga tayanadi. Massivga ko'chirilsa: (a) indekslar ishlamay qolardi,
+// (b) bitta unutilgan joyda jimgina ruxsat ochilardi. `extraRoles` esa
+// FAQAT AVTORIZATSIYA uchun (`hasRole`) — bitta ham filtr o'zgarmaydi.
+//
+// ⚠️ FILIALGA XOS. `permissions` bilan bir xil qoida: odam Chilonzorda
+// o'qituvchi + kassir, Yunusobodda esa faqat o'qituvchi bo'lishi
+// mumkin. Shu sababli `IDENTITY_FIELDS` ga KIRMAYDI.
+//
+// ⚠️ FAQAT OWNER TAHRIRLAYDI (`user.routes.js` dagi `authorize(OWNER)`).
+
+/**
+ * ⚠️ QO'SHIMCHA ROL SIFATIDA HAR QANDAY ROL BERILADI — cheklov YO'Q.
+ *
+ * Ilgari `owner` va `student` taqiqlangan edi. Taqiq OLIB TASHLANDI:
+ * bu ro'yxatni faqat tizim EGASI tahrirlaydi (`authorize(ROLES.OWNER)`)
+ * va u nima qilayotganini biladi — "kim kimga nima bera oladi" degan
+ * qaror unga tegishli, kodga emas.
+ *
+ * Ikki holatning oqibati foydalanuvchiga OCHIQ aytiladi (admin
+ * paneldagi oyna ogohlantiradi):
+ *
+ *   owner   — TO'LIQ HUQUQ. To'rtala ruxsat darvozasi uni ko'rganda
+ *             hech narsa tekshirmasdan o'tkazadi (`hasRole(user,
+ *             ROLES.OWNER)`), ya'ni bu odam butun tizimga va barcha
+ *             filiallarga ega bo'ladi.
+ *
+ *   student — O'quvchi panelining yo'llarini ochadi, LEKIN moliya
+ *             invariantlariga TEGMAYDI: "bu odam o'quvchimi" degan
+ *             savol butun kodbazada `role === "student"` skalyari
+ *             bilan o'qiladi (`hasRole` bilan HECH QAYERDA emas), ya'ni
+ *             xodimga hisob-faktura ochilmaydi va o'qish davri
+ *             yaratilmaydi.
+ *
+ * ⚠️ ASOSIY ROLI `owner` bo'lgan qatorga baribir tegilmaydi — u har
+ * filialda avtomatik seed qilinadi (`initOwner`) va uni tahrirlash
+ * boshqa mexanizmni buzardi.
+ */
+
+/**
+ * Foydalanuvchining qo'shimcha rollarini almashtiradi (to'liq ro'yxat).
+ *
+ * ⚠️ RUXSATLAR QO'SHILADI, KAMAYTIRILMAYDI. Yangi rol berilganda o'sha
+ * rolning boshlang'ich ruxsatlari mavjudlariga QO'SHILADI; rol olib
+ * tashlanganda esa ruxsatlar TEGILMAYDI. Sabab: ruxsat — mustaqil
+ * qaror (Ruxsatlar sahifasida qo'lda sozlanadi), rol esa faqat
+ * boshlang'ich to'plamni beradi. Rol olib tashlanganda ruxsatni ham
+ * yechib olsak, xodimning qo'lda berilgan huquqlari jimgina yo'qolardi.
+ *
+ * @param {string} userId
+ * @param {string[]} extraRoles - yangi to'liq ro'yxat
+ * @param {object} actor - amalni bajarayotgan (owner)
+ * @returns {Promise<object>} - yangilangan foydalanuvchi
+ */
+async function setExtraRoles(userId, extraRoles, actor) {
+  const target = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, role: true, extraRoles: true, permissions: true },
+  });
+  if (!target) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  if (target.role === ROLES.OWNER) {
+    throw new ForbiddenError("Owner rollarini o'zgartirib bo'lmaydi");
+  }
+
+  const wanted = [
+    ...new Set((extraRoles || []).map((r) => String(r).trim()).filter(Boolean)),
+  ];
+
+  // Asosiy rol ro'yxatda takrorlanmasin — aks holda "ikkita rol" ko'rinib,
+  // aslida bitta bo'lardi
+  const next = wanted.filter((r) => r !== target.role);
+
+  // Rollar PLATFORMADA — mavjudligini o'sha yerdan tekshiramiz
+  if (next.length > 0) {
+    const known = await platformPrisma.role.findMany({
+      where: { value: { in: next } },
+      select: { value: true },
+    });
+    const knownSet = new Set(known.map((r) => r.value));
+    const unknown = next.filter((r) => !knownSet.has(r));
+    if (unknown.length > 0) {
+      throw new BadRequestError(`Noma'lum rol: ${unknown.join(", ")}`);
+    }
+  }
+
+  const before = target.extraRoles || [];
+  const added = next.filter((r) => !before.includes(r));
+  const removed = before.filter((r) => !next.includes(r));
+
+  // ── RUXSATLARNI QAYTA HISOBLASH ──────────────────────────────────
+  //
+  // Rol berilganda uning ruxsatlari QO'SHILADI, olib tashlanganda esa
+  // QAYTARIB OLINADI — ikkalasi ham avtomatik. Ilgari faqat qo'shish
+  // avtomat edi va olib tashlangan rolning huquqlari xodimda qolib
+  // ketardi: rol ro'yxatda ko'rinmasa-yu, u bergan bo'limlar ochiq
+  // tursa, "bu odam nimaga kira oladi" degan savolga javob
+  // ro'yxatdan chiqmasdi.
+  //
+  // ⚠️ QAYSI RUXSAT QAYTARIB OLINADI. Faqat olib tashlangan rolning
+  // standart ruxsatlari va faqat ular QOLGAN rollarning birortasida
+  // BO'LMASA. Ya'ni asosiy rol yoki boshqa qo'shimcha rol o'sha
+  // ruxsatni baribir berayotgan bo'lsa, u joyida qoladi — aks holda
+  // ikkita rolga ega odamdan bittasini olish uni ikkalasidan ham
+  // mahrum qilardi.
+  //
+  // ⚠️ CHEKLOV, ochiq aytilgan: ruxsatning "kimdan kelgani" saqlanmaydi.
+  // Agar xodimga "Ruxsatlar" tabidan QO'LDA berilgan ruxsat olib
+  // tashlanayotgan rolning standartida ham bo'lsa, u ham qaytarib
+  // olinadi. Provenansni saqlash uchun alohida jadval kerak bo'lardi;
+  // amalda esa qo'lda berilgan ruxsat rol standartidan tashqarida
+  // bo'ladi, shuning uchun bu holat kamdan-kam uchraydi.
+  const roleValues = [...new Set([target.role, ...next, ...removed])];
+  const roleRows = roleValues.length
+    ? await platformPrisma.role.findMany({
+        where: { value: { in: roleValues } },
+        select: { value: true, permissions: true },
+      })
+    : [];
+
+  const defaultsOf = new Map(
+    roleRows.map((row) => [row.value, expandLegacyKeys(row.permissions || [])]),
+  );
+
+  // Qoladigan rollar bergan ruxsatlar — ular hech qachon o'chirilmaydi
+  const keep = new Set(
+    [target.role, ...next].flatMap((value) => defaultsOf.get(value) ?? []),
+  );
+
+  // Olib tashlangan rollar bergan, lekin qolganlarda YO'Q ruxsatlar
+  const revoke = new Set(
+    removed
+      .flatMap((value) => defaultsOf.get(value) ?? [])
+      .filter((key) => !keep.has(key)),
+  );
+
+  const granted = added.flatMap((value) => defaultsOf.get(value) ?? []);
+
+  // ⚠️ `expandLegacyKeys` `normalizePermissions` DAN OLDIN turadi.
+  // Eski yozuvlarda ruxsat amalga bo'linmagan bare bo'lim kaliti
+  // bo'lishi mumkin (`"users"` — "users bo'limining hammasi").
+  // `normalizePermissions` esa faqat katalogdagi aniq kalitlarni
+  // qoldiradi, ya'ni bare kalit JIMGINA TASHLANARDI va xodim rol
+  // berilgan zahoti eski huquqlarini yo'qotardi.
+  //
+  // ⚠️ FILTR `normalizePermissions` DAN OLDIN: u har bo'limga
+  // `.view` ni avtomat qo'shadi, ya'ni filtrdan keyin ishlatilsa
+  // olib tashlangan bo'limning `.view` i qaytib kelardi.
+  const permissions = normalizePermissions(
+    expandLegacyKeys([...(target.permissions || []), ...granted]).filter(
+      (key) => !revoke.has(key),
+    ),
+  );
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { extraRoles: next, permissions },
+  });
+
+  logger.info(
+    `[roles] ${userId} qo'shimcha rollari: [${next.join(", ") || "—"}] ` +
+      `(+${added.length} / -${removed.length}, ` +
+      `${revoke.size} ruxsat qaytarib olindi, aktyor: ${actor?.id ?? "—"})`,
+  );
+
+  return loadUser(userId);
+}
+
 /**
  * "Bu odamni shu xodim boshqara oladimi?" — YAGONA JOY.
  *
@@ -189,7 +368,10 @@ async function getStats() {
  * @param {{ id: string, role: string }} actor - amalni bajarayotgan xodim
  */
 async function assertCanManageUser(targetId, actor) {
-  if (!actor || actor.role !== ROLES.TEACHER) return;
+  // Ko'p rollilik — qo'shimcha `teacher` roli olgan odam ham shu
+  // cheklovga tushadi, aks holda u haqiqiy o'qituvchidan ko'proq
+  // huquq olardi
+  if (!actor || !hasRole(actor, ROLES.TEACHER)) return;
 
   const target = await prisma.user.findUnique({
     where: { id: targetId },
@@ -361,7 +543,7 @@ async function createUser(data, actorId, actor = null) {
   // yozadi), lekin xodim yaratish huquqi bu bilan birga ketmasligi kerak:
   // aks holda o'qituvchi o'ziga ikkinchi, to'liq ruxsatli hisob ochib
   // olardi.
-  if (actor?.role === ROLES.TEACHER && role !== ROLES.STUDENT) {
+  if (hasRole(actor, ROLES.TEACHER) && role !== ROLES.STUDENT) {
     throw new ForbiddenError("O'qituvchi faqat o'quvchi qo'sha oladi");
   }
 
@@ -1095,7 +1277,13 @@ async function detachFromBranch(userId, branchId) {
           where: { id: userId },
           // Ruxsatlar ham tozalanadi: biriktirish qaytarilsa ular rolning
           // standartidan qayta boshlanishi kerak, eskisi tirilib qolmasin.
-          data: { isActive: false, permissions: [] },
+          // ⚠️ `extraRoles` HAM tozalanadi. Darvozalar rolni ruxsatdan
+          // MUSTAQIL o'tkazadi (`hasRole` `permissions` ga umuman
+          // qaramaydi), shuning uchun faqat `permissions` ni bo'shatish
+          // yetarli emas edi: filialdan chiqarilgan odam qayta
+          // biriktirilganda eski qo'shimcha roli tirilib, u bilan
+          // birga o'sha rolga bog'langan hamma joy qayta ochilardi.
+          data: { isActive: false, permissions: [], extraRoles: [] },
         })
         .catch(() => {}),
     );
@@ -1109,6 +1297,7 @@ async function detachFromBranch(userId, branchId) {
 }
 
 module.exports = {
+  setExtraRoles,
   assertCanManageUser,
   getStats,
   // Bitta foydalanuvchi — classes VA subjects bilan (`loadUser` nomining

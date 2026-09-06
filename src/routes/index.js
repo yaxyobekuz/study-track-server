@@ -61,6 +61,8 @@ const inventoryCheckRoutes = require("./inventoryCheck.routes");
 const damageRoutes = require("./damage.routes");
 const changelogRoutes = require("./changelog.routes");
 const changelogSettingsRoutes = require("./changelogSettings.routes");
+const activityRoutes = require("./activity.routes");
+const securityRoutes = require("./security.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -122,6 +124,11 @@ router.use("/inventory-checks", inventoryCheckRoutes);
 router.use("/damages", damageRoutes);
 router.use("/changelogs", changelogRoutes);
 router.use("/changelog-settings", changelogSettingsRoutes);
+// FAOLLIK — "tizimdan kim foydalanyapti", XAVFSIZLIK — "hisobga kim kirdi".
+// Ikkalasi alohida bo'lim: birinchisi kadrlar savoli, ikkinchisi shaxsiy
+// ma'lumot bilan ishlaydi (IP, qurilma, kirish vaqti).
+router.use("/activity", activityRoutes);
+router.use("/security", securityRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

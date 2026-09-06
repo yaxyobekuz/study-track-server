@@ -66,7 +66,7 @@ model Branch {
   // Reyestrda bittadan ortiq default bo'lishi mumkin emas (service tekshiradi).
   isDefault Boolean @default(false) @map("is_default")
 
-  isActive Boolean @default(true) @map("is_active")
+  isActive   Boolean   @default(true) @map("is_active")
   // Filial HECH QACHON o'chirilmaydi — ortida moliyaviy tarix bor
   // (PaymentAccount uslubi). Arxivlangan filialga login qilib bo'lmaydi,
   // lekin yig'ma hisobotda ko'rinadi.
@@ -81,6 +81,7 @@ model Branch {
   users         UserDirectory[]
   telegramLinks TelegramDirectory[]
   staffAccess   UserBranchAccess[]
+  sessions      UserSession[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("branches")
@@ -119,7 +120,7 @@ model UserDirectory {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch       Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   // Qaysi filiallarda ishlay oladi (uy filiali ham shu ro'yxatda)
   branchAccess UserBranchAccess[]
 
@@ -425,4 +426,243 @@ model UserBranchAccess {
   @@id([userId, branchId])
   @@index([branchId, role])
   @@map("user_branch_access")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// XAVFSIZLIK — SEANS, KIRISH URINISHI, OGOHLANTIRISH
+// ═════════════════════════════════════════════════════════════════════
+//
+// ⚠️ NIMA UCHUN PLATFORMADA, FILIALDA EMAS — uch sabab:
+//
+//   1. MAVJUD BO'LMAGAN LOGIN bilan urinishda filial KONTEKSTI YO'Q.
+//      `auth.service.js` avval username bo'yicha filialni topadi; nom
+//      umuman mavjud bo'lmasa, `config/prisma.js` Proxy'si "Filial
+//      konteksti yo'q" xatosini tashlaydi. Filial jadvaliga yozmoqchi
+//      bo'lsak, aynan eng qimmatli hodisa — noma'lum nom bilan
+//      brute-force — YOZILMAY qolardi.
+//
+//   2. XODIM BIR NECHTA FILIALDA ishlaydi. "Bitta hisobda ikkita seans"
+//      savoli filial ichida berilsa, Chilonzor va Yunusobodda ochilgan
+//      ikki seans bir-birini KO'RMASDI — qoida esa aynan shuni topadi.
+//
+//   3. Odam — global tushuncha (`UserDirectory`), filial esa uning ish
+//      joyi. Xavfsizlik ODAM haqida.
+//
+// ⚠️ KO'RISH HUQUQI BARIBIR FILIAL BO'YICHA. `User.permissions` har
+// filialda alohida, shuning uchun so'rovlarda `branchId` filtri bor
+// (`securityDashboard.service.js`): Chilonzorda `security.view` olgan
+// xodim Yunusobodning seanslarini ko'rmaydi. Owner — istisno.
+//
+// ⚠️ FK YO'Q va bo'lishi ham mumkin emas: `userId` filial schema'sidagi
+// `User.id` ga ishora qiladi, u esa boshqa schema'da. `UserDirectory`
+// ga FK qo'yish mumkin edi, lekin u login yo'naltirgichi va o'chirilishi
+// mumkin — xavfsizlik tarixi esa qolishi kerak.
+
+/**
+ * Kanal — qaysi paneldan/ilovadan kelgan.
+ * ⚠️ Filial schema'sidagi `ActivityChannel` ning NUSXASI. Ikki alohida
+ * Prisma schema bitta enumni bo'lisha olmaydi. Qiymatlar `utils/constants.js`
+ * dagi `ACTIVITY_CHANNELS` bilan bir xil bo'lishi shart — u yagona
+ * validatsiya nuqtasi.
+ */
+enum SessionChannel {
+  bot
+  admin
+  teacher
+  student
+  reception
+  worker
+}
+
+/**
+ * Seans qanday tugadi. `active` — hali ochiq.
+ */
+enum SessionEndReason {
+  active
+  logout
+  revoked
+  expired
+  superseded
+}
+
+/**
+ * KIRISH SEANSI — har muvaffaqiyatli login uchun BITTA qator.
+ * ⚠️ TOKEN BILAN BOG'LANGAN: `jti` — JWT ichidagi noyob identifikator.
+ * Usiz "bu seansni tugat" tugmasi ishlamasdi, chunki chiqarilgan token
+ * hech qayerda ro'yxatga olinmagan bo'lardi.
+ * ⚠️ ESKI TOKENLAR `jti` SIZ. Ular ishlashda davom etadi (hech kim
+ * tizimdan uchib chiqmaydi), lekin seans ro'yxatida ko'rinmaydi va
+ * bekor qilinmaydi — muddati tugagach o'zi yo'qoladi. Bu ataylab:
+ * xavfsizlik bo'limini yoqish butun maktabni tizimdan chiqarib
+ * yubormasligi kerak.
+ * ⚠️ `expiresAt` TOKENNING O'ZIDAN olinadi (`decoded.exp`), qo'lda
+ * hisoblanmaydi: `JWT_EXPIRES_IN` o'zgarsa ikkita haqiqat manbai
+ * paydo bo'lardi.
+ * ⚠️ FILIAL ALMASHTIRISH — YANGI SEANS. `POST /auth/switch-branch` yangi
+ * token beradi, eskisi esa `superseded` bilan yopiladi. Aks holda bir
+ * odamning bitta brauzerdagi ishi "ikkita bir vaqtdagi seans" bo'lib
+ * ko'rinardi va ogohlantirish soxta bo'lardi.
+ */
+model UserSession {
+  id String @id @db.Char(24)
+
+  // Filial schema'sidagi `User.id` (FK EMAS — boshqa schema).
+  userId   String @map("user_id") @db.Char(24)
+  // Qidiruv va ro'yxat uchun — filial bazasiga bormaslik kerak.
+  username String @default("") @db.VarChar(120)
+  // Qaysi filialga kirdi.
+  branchId String @map("branch_id") @db.Char(24)
+
+  // JWT `jti` — token bilan seansni bog'laydigan yagona ip.
+  jti String @unique @db.VarChar(32)
+
+  channel SessionChannel @default(admin)
+
+  ip        String? @db.VarChar(45)
+  userAgent String? @map("user_agent") @db.VarChar(400)
+  // "Chrome · Windows" — ro'yxatda o'qiladigan yorliq.
+  device    String? @db.VarChar(120)
+
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+  expiresAt  DateTime @map("expires_at")
+
+  endedAt   DateTime?        @map("ended_at")
+  endReason SessionEndReason @default(active) @map("end_reason")
+  // Kim tugatdi (admin bekor qilganda).
+  endedBy   String?          @map("ended_by") @db.Char(24)
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([branchId, endReason, lastSeenAt(sort: Desc)])
+  @@index([endReason, expiresAt])
+  @@index([createdAt(sort: Desc)])
+  @@map("user_sessions")
+}
+
+/**
+ * KIRISH URINISHI — muvaffaqiyatli ham, muvaffaqiyatsiz ham.
+ * ⚠️ IKKALASI BITTA JADVALDA. "Bu hisobga 14 marta noto'g'ri parol
+ * bilan urinildi, 15-chisi o'tdi" degan ketma-ketlik faqat ikkalasi
+ * BITTA vaqt o'qida turgandagina ko'rinadi.
+ * ⚠️ `branchId` IXTIYORIY: noma'lum login bilan kelgan urinishda hech
+ * qanday filial yo'q va uni "taxmin qilish" yolg'on bo'lardi. Bunday
+ * qatorlar faqat owner'ga ko'rinadi.
+ * ⚠️ PAROL HECH QACHON YOZILMAYDI (hatto noto'g'risi ham).
+ */
+model LoginAttempt {
+  id String @id @db.Char(24)
+
+  username String  @db.VarChar(120)
+  userId   String? @map("user_id") @db.Char(24)
+  branchId String? @map("branch_id") @db.Char(24)
+
+  success Boolean
+  // "ok" | "bad_password" | "unknown_user" | "inactive" | "archived" | "rate_limited"
+  reason  String  @default("ok") @db.VarChar(24)
+
+  channel   SessionChannel @default(admin)
+  ip        String?        @db.VarChar(45)
+  userAgent String?        @map("user_agent") @db.VarChar(400)
+  device    String?        @db.VarChar(120)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  day       DateTime @map("day") @db.Date
+
+  @@index([day, success])
+  @@index([branchId, createdAt(sort: Desc)])
+  @@index([username, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([ip, createdAt(sort: Desc)])
+  @@map("login_attempts")
+}
+
+/**
+ * Ogohlantirish turi.
+ */
+enum SecurityAlertType {
+  concurrent_session
+  new_device
+  new_ip
+  brute_force
+  rapid_switch
+  night_login
+  dormant_login
+}
+
+/**
+ * Jiddiylik — ro'yxat tartibi va rang shu yerdan.
+ */
+enum SecurityAlertSeverity {
+  low
+  medium
+  high
+  critical
+}
+
+/**
+ * Ogohlantirish holati.
+ */
+enum SecurityAlertStatus {
+  open
+  acknowledged
+  resolved
+}
+
+/**
+ * XAVFSIZLIK OGOHLANTIRISHI.
+ * ⚠️ TIZIM HECH NARSANI TO'XTATMAYDI — u faqat QAYD ETADI va ko'rsatadi
+ * (`financeReconcile.job.js` bilan bir xil doktrina). Ikkinchi seansni
+ * avtomatik uzib qo'ysak, direktor telefonidan kirganida kompyuteridagi
+ * ishi yo'qolardi; "bu parol tarqalganmi yoki odam ikkita qurilmadami"
+ * degan savolga faqat ODAM javob bera oladi. Uzish tugmasi bor, lekin
+ * uni odam bosadi (`security.revoke`).
+ * ⚠️ BIR HODISAGA BIR OGOHLANTIRISH: `dedupeKey` unikal. Bitta hisobga
+ * bir kunda o'n marta kirilsa ham ro'yxatda bitta qator turadi, ichidagi
+ * `hitCount` esa o'sadi. Aks holda ekran bitta hodisaning nusxalari
+ * bilan to'lib ketardi va IKKINCHI, haqiqiy muammo ko'rinmay qolardi.
+ * ⚠️ `dedupeKey` ICHIDA KUN BOR. Xodim "bu direktorning ikkinchi
+ * telefoni, tushundim" deb yopgan holat ertasiga yana qalqib chiqmasligi
+ * kerak — lekin ertangi hodisa YANGI kalit oladi va yangi qator bo'lib
+ * chiqadi. Ya'ni "yopdim" bugun uchun amal qiladi, abadiy emas.
+ */
+model SecurityAlert {
+  id String @id @db.Char(24)
+
+  type     SecurityAlertType
+  severity SecurityAlertSeverity @default(medium)
+  status   SecurityAlertStatus   @default(open)
+
+  userId   String? @map("user_id") @db.Char(24)
+  username String  @default("") @db.VarChar(120)
+  branchId String? @map("branch_id") @db.Char(24)
+
+  // Ogohlantirishni keltirib chiqargan seans (bo'lsa).
+  sessionId String? @map("session_id") @db.Char(24)
+
+  // "<tur>:<userId>:<kun>" — takrorni to'sadi.
+  dedupeKey String @unique @map("dedupe_key") @db.VarChar(140)
+
+  title  String @db.VarChar(160)
+  detail String @default("") @db.Text
+
+  // Hodisaning o'sha paytdagi xom tafsiloti (IP lar, qurilmalar, sanoq).
+  meta Json?
+
+  hitCount    Int      @default(1) @map("hit_count")
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+  day         DateTime @map("day") @db.Date
+
+  acknowledgedBy String?   @map("acknowledged_by") @db.Char(24)
+  acknowledgedAt DateTime? @map("acknowledged_at")
+  resolvedAt     DateTime? @map("resolved_at")
+  note           String    @default("") @db.Text
+
+  @@index([status, severity, lastSeenAt(sort: Desc)])
+  @@index([branchId, status, lastSeenAt(sort: Desc)])
+  @@index([userId, lastSeenAt(sort: Desc)])
+  @@index([day, type])
+  @@map("security_alerts")
 }

@@ -56,6 +56,7 @@ const {
 const {
   startChangelogNotificationCron,
 } = require("./src/jobs/changelogNotification.job");
+const { startSecuritySweepCron } = require("./src/jobs/securitySweep.job");
 
 // ================================
 
@@ -85,6 +86,19 @@ app.use(
       : undefined,
   ),
 );
+// ⚠️ TANA PARSERI `xss()` DAN OLDIN. `xss-clean` middleware'i
+// `if (req.body) req.body = clean(req.body)` shaklida ishlaydi —
+// tana hali parse qilinmagan bo'lsa, u faqat `req.query` va
+// `req.params` ni tozalab, TANANI umuman ko'rmasdi. Ya'ni butun
+// tizim bo'ylab POST/PUT tanalari sanitizatsiyadan o'tmagan edi.
+//
+// ⚠️ Limiterdan OLDIN ham turadi va bu ataylab: 429 qaytganda ham
+// xavfsizlik jurnaliga `username` yozilishi kerak. Tana hajmi
+// `express.json()` ning standart 100kb chegarasi bilan cheklangan,
+// shuning uchun bu qo'shimcha yuk ahamiyatsiz.
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 app.use(xss());
 
 // Rate limiting
@@ -96,18 +110,34 @@ const limiter = rateLimit({
 app.use("/api", limiter);
 
 // Stricter rate limit for login (brute force protection)
+//
+// ⚠️ `handler` MAJBURIY: limiter 429 qaytarganda so'rov CONTROLLERGA
+// yetib bormaydi, ya'ni o'sha urinishlar xavfsizlik jurnaliga tushmasdi
+// — va aynan hujum eng qizigan paytda jurnal "jim" bo'lib qolardi.
 const loginLimiter = rateLimit({
   max: 10,
   windowMs: 15 * 60 * 1000,
   message: {
     message: "Juda ko'p urinish. 15 daqiqadan so'ng qayta urinib ko'ring.",
   },
+  handler: (req, res) => {
+    const securityService = require("./src/services/security.service");
+    const { clientInfo } = require("./src/helpers/request.helpers");
+
+    securityService.recordAttempt({
+      username: String(req.body?.username || "").slice(0, 120),
+      success: false,
+      reason: "rate_limited",
+      client: clientInfo(req),
+    });
+
+    res.status(429).json({
+      success: false,
+      message: "Juda ko'p urinish. 15 daqiqadan so'ng qayta urinib ko'ring.",
+    });
+  },
 });
 app.use("/api/auth/login", loginLimiter);
-
-// Body parser
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 // Request logger (har bir so'rovni log qiladi)
 app.use(requestLogger);
@@ -153,6 +183,7 @@ const bootstrap = async () => {
   startInventoryReconcileCron();
   startInventoryCheckReminderCron();
   startChangelogNotificationCron();
+  startSecuritySweepCron();
 
   // Navbatlar: modul yuklanganda filial konteksti yo'q, shuning uchun
   // "qotib qolgan" yozuvlarni tiklash va navbatni uyg'otish BOOTSTRAP'da,

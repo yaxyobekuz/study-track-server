@@ -1,4 +1,6 @@
 const prisma = require("../config/prisma");
+const { ROLES } = require("../utils/constants");
+const { hasRole } = require("../utils/permissions");
 const { getTestSettings } = require("./settings.service");
 const {
   BadRequestError,
@@ -521,7 +523,8 @@ async function getResultById(id, user) {
     if (result.studentId !== user.id.toString()) {
       throw new ForbiddenError("Bu natija sizga tegishli emas");
     }
-  } else if (user.role === "teacher") {
+    // Ko'p rollilik — darvoza bilan bir xil savol (`hasRole`)
+  } else if (hasRole(user, ROLES.TEACHER)) {
     if ((test?.teacherId || null) !== user.id.toString()) {
       throw new ForbiddenError("Bu natija sizning testingizga tegishli emas");
     }

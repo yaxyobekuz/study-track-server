@@ -19,6 +19,7 @@ const {
   getUserBranches,
   attachUserToBranch,
   detachUserFromBranch,
+  setUserRoles,
 } = require("../controllers/user.controller");
 const {
   protect,
@@ -100,6 +101,24 @@ router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSI
 // Arxivlash / arxivdan qaytarish (o'quvchi ham, xodim ham — owner'dan tashqari)
 router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), restrictUserScope, archiveUser);
 router.put("/:id/restore", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_RESTORE), restrictUserScope, restoreUser);
+
+// KO'P ROLLILIK — faqat OWNER.
+//
+// ⚠️ `authorizePermission` EMAS, `authorize(ROLES.OWNER)`. Sabab: rol
+// berish — ruxsat berishdan KUCHLIROQ amal. `users.update` olgan
+// qabulxona xodimi o'ziga "o'qituvchi + ma'muriyat" rolini yozib,
+// o'sha rollarga bog'langan hamma joyga kirib olardi. Rollar sahifasi
+// (`role.routes.js`) va ruxsatlar sahifasi ham shu naqshda: butun
+// router `authorize(ROLES.OWNER)` bilan yopilgan.
+//
+// ⚠️ `restrictUserScope` bu yerda KERAK EMAS: owner'dan tashqari hech
+// kim bu yo'lga yetib kelmaydi, owner esa hamma odamga tegadi.
+router.put(
+  "/:id/roles",
+  validateObjectId("id"),
+  authorize(ROLES.OWNER),
+  setUserRoles,
+);
 
 // Xodimni filiallarga biriktirish.
 //

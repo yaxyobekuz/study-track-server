@@ -4,8 +4,15 @@ const { verifyToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
-const { hasPermission, hasSection } = require("../utils/permissions");
+const {
+  hasPermission,
+  hasSection,
+  hasRole,
+} = require("../utils/permissions");
 const branchService = require("../services/branch.service");
+const securityService = require("../services/security.service");
+const activityService = require("../services/activity.service");
+const { clientChannel } = require("../helpers/request.helpers");
 
 /**
  * JWT token orqali foydalanuvchini autentifikatsiya qiladi.
@@ -82,8 +89,39 @@ const protect = asyncHandler(async (req, res, next) => {
     // Junction M2M → eski `classes: [Class]` shakliga flatten (frontend mosligi)
     user.classes = (user.classes || []).map((uc) => uc.class);
 
+    // ── SEANS TEKSHIRUVI ────────────────────────────────────────────
+    // ⚠️ Aynan shu bitta shart "seansni tugat" tugmasini HAQIQIY qiladi:
+    // usiz tugma faqat ro'yxatdan qatorni o'chirgan bo'lardi, token esa
+    // 30 kun ishlashda davom etardi.
+    //
+    // ⚠️ `jti` SIZ ESKI TOKENLAR O'TADI. Xavfsizlik bo'limini yoqish
+    // butun maktabni tizimdan chiqarib yubormasligi kerak — ular
+    // muddati tugagach o'zi yo'qoladi.
+    //
+    // ⚠️ Tekshiruv 2 daqiqalik oyna bilan siqilgan (`security.service.js`):
+    // har so'rovda seansni o'qish auth'ni ikki barobar qimmatlashtirardi.
+    if (decoded.jti) {
+      const alive = await securityService.touchSession(decoded.jti);
+      if (!alive) {
+        throw new UnauthorizedError(
+          "Seans tugatilgan — qaytadan tizimga kiring",
+        );
+      }
+    }
+
     req.user = user;
     req.branch = branch;
+    // Filial almashtirish eski seansni shu qiymat bilan yopadi
+    req.tokenJti = decoded.jti || null;
+
+    // ── FAOLLIK ─────────────────────────────────────────────────────
+    // ⚠️ "Yozib qo'y va unut": 5 daqiqalik oynaga siqilgan va so'rovni
+    // KUTIB TURMAYDI (`activity.service.js` dagi izoh).
+    activityService.touchPanel({
+      userId: user.id,
+      channel: clientChannel(req),
+    });
+
     next();
   });
 });
@@ -95,7 +133,10 @@ const protect = asyncHandler(async (req, res, next) => {
  */
 const authorize = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    // ⚠️ `roles.includes(req.user.role)` EMAS: odamda bir nechta rol
+    // bo'lishi mumkin (`User.extraRoles`) va to'g'ridan-to'g'ri
+    // taqqoslash ikkinchisini ko'rmasdi — `hasRole` yagona javob beradi.
+    if (!hasRole(req.user, roles)) {
       throw new ForbiddenError(`${req.user.role} roli uchun ruxsat berilmagan`);
     }
     next();
@@ -119,10 +160,10 @@ const authorize = (...roles) => {
  */
 const authorizePermission = (permission, ...extraRoles) => {
   return (req, res, next) => {
-    const { role, permissions: userPermissions = [] } = req.user;
+    const { permissions: userPermissions = [] } = req.user;
 
-    if (role === ROLES.OWNER) return next();
-    if (extraRoles.includes(role)) return next();
+    if (hasRole(req.user, ROLES.OWNER)) return next();
+    if (hasRole(req.user, extraRoles)) return next();
     if (hasPermission(userPermissions, permission)) return next();
 
     throw new ForbiddenError("Bu amal uchun ruxsatingiz yo'q");
@@ -145,10 +186,10 @@ const authorizePermission = (permission, ...extraRoles) => {
  */
 const authorizeAnyPermission = (permissions = [], ...extraRoles) => {
   return (req, res, next) => {
-    const { role, permissions: userPermissions = [] } = req.user;
+    const { permissions: userPermissions = [] } = req.user;
 
-    if (role === ROLES.OWNER) return next();
-    if (extraRoles.includes(role)) return next();
+    if (hasRole(req.user, ROLES.OWNER)) return next();
+    if (hasRole(req.user, extraRoles)) return next();
     if (permissions.some((key) => hasPermission(userPermissions, key))) {
       return next();
     }
@@ -168,10 +209,10 @@ const authorizeAnyPermission = (permissions = [], ...extraRoles) => {
  */
 const authorizeSection = (section, ...extraRoles) => {
   return (req, res, next) => {
-    const { role, permissions: userPermissions = [] } = req.user;
+    const { permissions: userPermissions = [] } = req.user;
 
-    if (role === ROLES.OWNER) return next();
-    if (extraRoles.includes(role)) return next();
+    if (hasRole(req.user, ROLES.OWNER)) return next();
+    if (hasRole(req.user, extraRoles)) return next();
     if (hasSection(userPermissions, section)) return next();
 
     throw new ForbiddenError("Bu bo'lim uchun ruxsatingiz yo'q");

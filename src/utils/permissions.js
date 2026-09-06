@@ -51,6 +51,8 @@ const SECTIONS = {
   MESSAGES: "messages",
   SOCIAL: "social",
   LEADS: "leads",
+  ACTIVITY: "activity",
+  SECURITY: "security",
 };
 
 // Tez-tez takrorlanadigan amal nomlari (qisqartma uchun).
@@ -592,6 +594,50 @@ const PERMISSION_SECTIONS = [
       { key: "taxonomy", label: "Manba / yo'nalish / kategoriya" },
     ],
   },
+  {
+    // FAOLLIK — "tizimdan KIM foydalanyapti?".
+    //
+    // ⚠️ `statistics.view` DAN ALOHIDA: statistika NATIJANI o'lchaydi
+    // (baho, davomat, tushum), faollik esa JALB QILINGANLIKNI — ota-ona
+    // botni ochdimi, o'qituvchi panelga kirdimi. Ikkinchisi kadrlar
+    // qarori: "bu o'qituvchi bir oydan beri tizimga kirmagan".
+    //
+    // ⚠️ `roster` ALOHIDA AMAL. Umumiy foizni ko'rish huquqi FOYDALANMA-
+    // YOTGANLARNING ISM-ROʻYXATINI ochmasligi kerak: birinchisi hisobot,
+    // ikkinchisi esa aniq odamlar haqidagi ma'lumot va u bilan
+    // ota-onaga qo'ng'iroq qilinadi.
+    key: SECTIONS.ACTIVITY,
+    label: "Faollik",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "roster", label: "Foydalanmayotganlar ro'yxati" },
+      { key: "sessions", label: "Foydalanuvchi tafsiloti" },
+      A.export,
+    ],
+  },
+  {
+    // XAVFSIZLIK — "hisobga KIM kirdi?".
+    //
+    // ⚠️ AMALLAR ATAYLAB MAYDA (moliyadagi bilan bir xil mantiq):
+    // `view` — manzara, `sessions` — ochiq seanslar ro'yxati (IP va
+    // qurilma bilan), `revoke` — birovni tizimdan CHIQARIB YUBORISH,
+    // `alerts` — ogohlantirishlarni yopish. `revoke` alohida turadi,
+    // chunki u boshqa odamning ishini uzadi.
+    //
+    // ⚠️ Bu bo'lim shaxsiy ma'lumot (IP, qurilma, kirish vaqti) bilan
+    // ishlaydi — uni "hamma ko'rsin" degan bo'limga qo'shib bo'lmaydi.
+    key: SECTIONS.SECURITY,
+    label: "Xavfsizlik",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "sessions", label: "Seanslar ro'yxati" },
+      { key: "revoke", label: "Seansni tugatish" },
+      { key: "alerts", label: "Ogohlantirishlarni boshqarish" },
+      A.export,
+    ],
+  },
 ];
 
 const SECTION_KEYS = PERMISSION_SECTIONS.map((s) => s.key);
@@ -615,6 +661,44 @@ const PERMISSIONS = PERMISSION_SECTIONS.reduce((acc, s) => {
   }
   return acc;
 }, {});
+
+/**
+ * KO'P ROLLILIK — "bu odam shu rolda ishlaydimi?" degan YAGONA javob.
+ *
+ * ⚠️ `user.role === "teacher"` DEB YOZMANG. Bir odam bir vaqtning o'zida
+ * o'qituvchi ham, ma'muriyat ham bo'lishi mumkin (`User.extraRoles`).
+ * To'g'ridan-to'g'ri taqqoslash uning ikkinchi rolini KO'RMAYDI va
+ * xodim o'zi ega bo'lgan huquqdan mahrum bo'lardi.
+ *
+ * ⚠️ FAQAT QO'SHADI. `role` — ASOSIY rol va uning ma'nosi o'zgarmagan:
+ * profil, ro'yxatdagi yorliq, hisobotlardagi kesim hammasi o'shanga
+ * qarab qoladi. `extraRoles` esa faqat "yana nima qila oladi" degan
+ * savolga javob beradi.
+ *
+ * @param {{ role?: string, extraRoles?: string[] }} user
+ * @param {...string} roles - qidirilayotgan rollar (bittasi yetarli)
+ * @returns {boolean}
+ */
+function hasRole(user, ...roles) {
+  if (!user || roles.length === 0) return false;
+  const wanted = roles.flat();
+  if (wanted.includes(user.role)) return true;
+  const extra = Array.isArray(user.extraRoles) ? user.extraRoles : [];
+  return extra.some((r) => wanted.includes(r));
+}
+
+/**
+ * Odamning BARCHA rollari — asosiy birinchi, keyin qo'shimchalari.
+ * Javoblarda va frontend yorliqlarida shu ro'yxat ishlatiladi.
+ *
+ * @param {{ role?: string, extraRoles?: string[] }} user
+ * @returns {string[]}
+ */
+function allRoles(user) {
+  if (!user) return [];
+  const extra = Array.isArray(user.extraRoles) ? user.extraRoles : [];
+  return [...new Set([user.role, ...extra].filter(Boolean))];
+}
 
 /**
  * Foydalanuvchida berilgan ruxsat bormi?
@@ -692,6 +776,8 @@ module.exports = {
   KEYS_BY_SECTION,
   hasPermission,
   hasSection,
+  hasRole,
+  allRoles,
   expandLegacyKeys,
   normalizePermissions,
 };

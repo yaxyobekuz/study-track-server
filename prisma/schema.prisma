@@ -330,6 +330,22 @@ model User {
   lastName         String?   @map("last_name")
   telegramIds      String[]  @map("telegram_ids")
   role             String // Role.value ga ishora (FK emas, service validatsiya)
+  // QO'SHIMCHA ROLLAR — bitta odam bir nechta rolda bo'lishi mumkin
+  // (o'qituvchi + ma'muriyat). `role` ASOSIY bo'lib qoladi va uning
+  // ma'nosi o'zgarmaydi: butun tizimda 160 dan ortiq joy unga qarab
+  // shoxlanadi, ularni massivga ko'chirish bitta unutilgan joyda
+  // jimgina ruxsat ochib yuborardi.
+  //
+  // ⚠️ Faqat QO'SHADI, hech qachon KAMAYTIRMAYDI: rol tekshiruvi
+  // `hasRole()` orqali "asosiy YOKI qo'shimchalarda bormi" deb
+  // o'qiladi (utils/permissions.js).
+  //
+  // ⚠️ FILIALGA XOS — `permissions` bilan bir xil qoida: odam
+  // Chilonzorda o'qituvchi + kassir, Yunusobodda esa faqat o'qituvchi
+  // bo'lishi mumkin. Shu sababli `IDENTITY_FIELDS` ga KIRMAYDI.
+  //
+  // ⚠️ Faqat OWNER tahrirlaydi (`user.routes.js`).
+  extraRoles       String[]  @default([]) @map("extra_roles")
   // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
   permissions      String[]  @default([]) @map("permissions")
   isActive         Boolean   @default(true) @map("is_active")
@@ -367,6 +383,10 @@ model User {
 
   @@index([role, isActive])
   @@index([role, isArchived])
+  // ⚠️ GIN: "shu rol kimlarda bor" savoli massiv ichini qidiradi
+  // (`extraRoles: { has: value }`) va B-tree unga xizmat qilmaydi.
+  // Savol rolni o'chirishdan oldingi tekshiruvda beriladi.
+  @@index([extraRoles(ops: ArrayOps)], type: Gin)
   @@index([isArchived])
   @@index([premiumIsActive])
   @@index([createdBy])
@@ -3778,9 +3798,9 @@ model AcademicInsight {
   month Int
 
   // "ai" | "rules" — matnni kim yozgani.
-  source String  @default("rules") @db.VarChar(10)
+  source String @default("rules") @db.VarChar(10)
   // Audit: qaysi model. Qoidalar yozganda bo'sh satr.
-  model  String  @default("") @db.VarChar(60)
+  model  String @default("") @db.VarChar(60)
 
   facts    Json // qoidalar hisoblagan XOM faktlar (modelga aynan shu ketgan)
   insights Json // [{ id, tone, text }] — dashboarddagi bilan bir xil shakl
@@ -3799,3 +3819,111 @@ model AcademicInsight {
   @@index([generatedAt(sort: Desc)])
   @@map("academic_insights")
 }
+
+// ═════════════════════════════════════════════════════════════════════
+// FAOLLIK VA XAVFSIZLIK
+// ═════════════════════════════════════════════════════════════════════
+//
+// Ikki bo'lim, bitta savolning ikki yarmi:
+//
+//   FAOLLIK     — "tizimdan KIM foydalanyapti?"  (qamrov, jalb qilinganlik)
+//   XAVFSIZLIK  — "hisobga KIM kirdi?"           (seans, qurilma, shubha)
+//
+// ⚠️ ULAR ATAYLAB ALOHIDA JADVALLAR. Bitta "audit log" ga qo'shilsa,
+// "bugun 4-A sinfning nechta ota-onasi botga kirdi" degan savol
+// "kimningdir hisobiga ikkinchi qurilmadan kirildi" degan savol bilan
+// bitta indeksda yashagan bo'lardi: birinchisi KUNLIK YIG'MA (millionlab
+// qator, oy kesimida guruhlanadi), ikkinchisi esa HODISA (kam, lekin har
+// biri o'qiladi va holati o'zgaradi).
+
+// ─────────────────────────────────────────────
+// FAOLLIK
+// ─────────────────────────────────────────────
+
+/**
+ * Faollik qaysi kanaldan kelgani.
+ * ⚠️ `bot` — ota-ona kanali, qolganlari xodim/o'quvchi panellari.
+ * Ikkisi bitta enumda, chunki "Faollik" bo'limining butun mazmuni —
+ * ULARNI BIR EKRANDA taqqoslash: bot qamrovi 78%, o'qituvchilar 91%.
+ */
+enum ActivityChannel {
+  bot
+  admin
+  teacher
+  student
+  reception
+  worker
+}
+
+/**
+ * FAOLLIK HODISASI — append-only.
+ * ⚠️ HAR SO'ROVGA BITTA QATOR EMAS. Panel tomonida yozuv 5 daqiqalik
+ * OYNAGA siqiladi (`activity.service.js` dagi `TOUCH_WINDOW_MS`): bir
+ * xodim ish kunida 40 emas, ~100 qator yozardi va jadval jimgina o'sib
+ * ketardi. Bot tomonida esa har tugma bosilishi yoziladi — u yerda
+ * hodisa kam va MA'NOLI ("ota-ona baholarni ochdi").
+ * ⚠️ `day` — `@db.Date`, UTC yarim tunida (`dates.md` §4). Yig'ma
+ * so'rovlar aynan shu ustun bo'yicha guruhlanadi: `occurredAt` bo'yicha
+ * `date_trunc` har safar butun jadvalni skan qilardi.
+ * ⚠️ SUBYEKT IKKI XIL: xodim/o'quvchida `userId`, ota-onada
+ * `telegramId` + `studentId`. Bittasi doim bo'sh — bu normal holat va
+ * `actorKey` (`user:<id>` yoki `tg:<id>`) uni yagona kalitga keltiradi,
+ * shunda "nechta noyob odam" degan savol bitta `COUNT(DISTINCT)` bo'ladi.
+ */
+model ActivityEvent {
+  id String @id @db.Char(24)
+
+  channel ActivityChannel
+  // Nima qilindi: "bot.grades", "bot.start", "panel.request", "panel.login"
+  action  String          @db.VarChar(48)
+
+  // Yagona subyekt kaliti — "user:<id>" yoki "tg:<telegramId>".
+  // COUNT(DISTINCT actor_key) uchun; ikkita ustunni COALESCE qilish
+  // indeksdan foydalanishni buzardi.
+  actorKey String @map("actor_key") @db.VarChar(40)
+
+  // Xodim/o'quvchi paneli — `User` qatori.
+  userId     String? @map("user_id") @db.Char(24)
+  // Bot — ota-onaning Telegram hisobi.
+  telegramId String? @map("telegram_id")
+  // Bot — ota-ona qaysi o'quvchiga bog'langan (sinf kesimi shundan chiqadi).
+  studentId  String? @map("student_id") @db.Char(24)
+
+  occurredAt DateTime @default(now()) @map("occurred_at")
+  day        DateTime @map("day") @db.Date
+
+  meta Json?
+
+  @@index([day, channel])
+  @@index([channel, occurredAt(sort: Desc)])
+  @@index([userId, day])
+  @@index([telegramId, day])
+  @@index([studentId, day])
+  @@index([actorKey, day])
+  @@map("activity_events")
+}
+
+// ─────────────────────────────────────────────
+// XAVFSIZLIK — BU YERDA EMAS
+// ─────────────────────────────────────────────
+//
+// ⚠️ `UserSession`, `LoginAttempt` va `SecurityAlert` PLATFORMA
+// schema'sida (`prisma/platform/schema.prisma`), filialda EMAS. Uch sabab:
+//
+//   1. MAVJUD BO'LMAGAN LOGIN bilan urinishda filial KONTEKSTI YO'Q —
+//      `auth.service.js` avval username bo'yicha filialni topadi, ya'ni
+//      noma'lum nom bilan kelgan urinishda hali hech qanday filial yo'q.
+//      Filial jadvaliga yozmoqchi bo'lsak, aynan eng qimmatli hodisa —
+//      mavjud bo'lmagan login bilan brute-force — yozilmay qolardi.
+//
+//   2. XODIM BIR NECHTA FILIALDA ishlaydi va har filialda o'z tokeni
+//      bo'lishi mumkin. "Bitta hisobda ikkita seans" savoli filial ichida
+//      berilsa, Chilonzor va Yunusobodda ochilgan ikki seans bir-birini
+//      KO'RMASDI — qoida esa aynan shuni topishi kerak.
+//
+//   3. Odam — global tushuncha (`platform.user_directory`), filial esa
+//      uning ish joyi. Xavfsizlik ODAM haqida, uning ish joyi haqida emas.
+//
+// Ko'rish huquqi baribir filial bo'yicha chegaralanadi: so'rovlarda
+// `branchId` filtri bor (`securityDashboard.service.js`), owner esa
+// hammasini ko'radi.

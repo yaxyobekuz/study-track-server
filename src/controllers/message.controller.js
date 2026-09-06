@@ -1,5 +1,7 @@
 const prisma = require("../config/prisma");
 
+const { ROLES } = require("../utils/constants");
+const { hasRole } = require("../utils/permissions");
 // Services
 const messageQueueService = require("../services/messageQueue.service");
 const fileStorage = require("../services/fileStorage.service");
@@ -76,7 +78,9 @@ const sendMessage = asyncHandler(async (req, res) => {
 
   // Check permissions
   const isOwner = req.user.role === "owner";
-  const isTeacher = req.user.role === "teacher";
+  // Ko'p rollilik — darvoza qo'shimcha rolni ham o'tkazadi, cheklov ham
+  // AYNAN SHU savolga javob berishi kerak (`grade.controller.js` dagi izoh)
+  const isTeacher = hasRole(req.user, ROLES.TEACHER);
 
   if (!isOwner && !isTeacher) {
     throw new ForbiddenError("Ruxsat berilmagan");
@@ -256,7 +260,7 @@ const getMessages = asyncHandler(async (req, res) => {
   const query = {};
 
   // If teacher, only show their own messages
-  if (req.user.role === "teacher") {
+  if (hasRole(req.user, ROLES.TEACHER)) {
     query.sentBy = req.user.id;
   }
 
@@ -355,7 +359,7 @@ const getMessageById = asyncHandler(async (req, res) => {
 
   // Check permissions (sentBy hali scalar id)
   if (
-    req.user.role === "teacher" &&
+    hasRole(req.user, ROLES.TEACHER) &&
     rawMessage.sentBy.toString() !== req.user.id.toString()
   ) {
     throw new ForbiddenError("Ruxsat berilmagan");
@@ -414,7 +418,10 @@ const cancelMessage = asyncHandler(async (req, res) => {
   }
 
   // Owner can cancel any message; teacher can cancel only their own
-  if (req.user.role === "teacher" && message.sentBy.toString() !== req.user.id.toString()) {
+  if (
+    hasRole(req.user, ROLES.TEACHER) &&
+    message.sentBy.toString() !== req.user.id.toString()
+  ) {
     throw new ForbiddenError("Ruxsat berilmagan");
   }
 

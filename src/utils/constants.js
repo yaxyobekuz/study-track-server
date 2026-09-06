@@ -9,6 +9,33 @@ const ROLES = {
   RECEPTION: "reception",
 };
 
+/**
+ * FAOLLIK KANALLARI — `ActivityChannel` enumining nusxasi.
+ *
+ * ⚠️ Prisma enumini `require` qilib bo'lmaydi (u generatsiya qilingan
+ * tipda, ish vaqtida qiymat sifatida yo'q), shuning uchun ro'yxat shu
+ * yerda. Schema o'zgarsa ikkalasi ham tahrirlanadi — `permissions.js`
+ * bilan admin paneli o'rtasidagi qo'lda sinxron bilan bir xil qoida.
+ */
+const ACTIVITY_CHANNELS = [
+  "bot",
+  "admin",
+  "teacher",
+  "student",
+  "reception",
+  "worker",
+];
+
+/** Kanal → foydalanuvchiga ko'rinadigan nom. */
+const ACTIVITY_CHANNEL_LABELS = {
+  bot: "Telegram bot",
+  admin: "Admin panel",
+  teacher: "O'qituvchi paneli",
+  student: "O'quvchi paneli",
+  reception: "Qabulxona",
+  worker: "Xodim paneli",
+};
+
 // Days of the week
 const DAYS = {
   MONDAY: "dushanba",
@@ -92,6 +119,8 @@ const ENABLE_SCHEDULE_TIME_VALIDATION = config.enableScheduleTimeValidation;
 
 module.exports = {
   ROLES,
+  ACTIVITY_CHANNELS,
+  ACTIVITY_CHANNEL_LABELS,
   DAYS,
   DAYS_UZ,
   MONTHS_UZ,

@@ -1,4 +1,6 @@
 const prisma = require("../config/prisma");
+const { ROLES } = require("../utils/constants");
+const { hasRole } = require("../utils/permissions");
 const {
   BadRequestError,
   NotFoundError,
@@ -86,7 +88,8 @@ async function getTestById(id, user) {
     : null;
 
   if (
-    user.role === "teacher" &&
+    // Ko'p rollilik — darvoza bilan bir xil savol (`hasRole`)
+    hasRole(user, ROLES.TEACHER) &&
     test.teacherId.toString() !== user.id.toString()
   ) {
     throw new ForbiddenError("Bu test sizga tegishli emas");
