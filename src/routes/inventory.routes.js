@@ -56,6 +56,8 @@ const {
   createTransfer,
 } = require("../controllers/inventoryTransfer.controller");
 
+const { getOverview: getDashboardOverview } = require("../controllers/inventoryDashboard.controller");
+
 const {
   getSummary,
   getByLocation,
@@ -84,6 +86,17 @@ const ANY_INVENTORY_VIEW = [
   PERMISSIONS.MONITORING_VIEW,
   PERMISSIONS.DAMAGES_VIEW,
 ];
+
+// ─── Dashboard ───────────────────────────────
+// ⚠️ `inventory.view` EMAS, `inventory.dashboard`: bu ekranda bazaning
+// PUL qiymati, zarar summasi va qarzdorlik qoldig'i turadi, xatlov
+// ekranida esa faqat dona. Ta'lim tomonida `education.view` ham
+// `grades.view` dan shu sababdan ajratilgan (`utils/permissions.js`).
+router.get(
+  "/dashboard/overview",
+  authorizePermission(PERMISSIONS.INVENTORY_DASHBOARD),
+  getDashboardOverview,
+);
 
 // ─── Hisobotlar ──────────────────────────────
 // `inventory.view` dan ALOHIDA emas: xatlov kesimlari xatlovning o'zi

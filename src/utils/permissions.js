@@ -467,6 +467,16 @@ const PERMISSION_SECTIONS = [
     group: "Inventar",
     actions: [
       A.view,
+      // ⚠️ DASHBOARD — `view` DAN ALOHIDA va bu ta'lim tomonidagi
+      // `education.view` ning `grades.view` dan ajratilgani bilan aynan
+      // bir xil mulohaza. `inventory.view` — xatlov ekrani: "shu xonada
+      // nechta parta bor" degan kundalik ish. Dashboard esa BUTUN
+      // BO'LIMNING kesimi va uning ichida PUL bor: bazaning qiymati,
+      // zarar summasi, qarzdorlik qoldig'i, undiruv darajasi. Xo'jalik
+      // mudiri partani sanaydi, lekin maktabning moddiy zarar
+      // registrini rahbar ko'radi — ikkalasi bitta kalitda bo'lsa,
+      // xatlovga kirish huquqi butun moliyaviy manzarani ochib berardi.
+      { key: "dashboard", label: "Dashboard (umumiy tahlil)" },
       { key: "catalog", label: "Jihoz katalogini boshqarish" },
       { key: "locations", label: "Xonalarni boshqarish" },
       { key: "stock", label: "Xatlovga jihoz kiritish" },
