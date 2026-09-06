@@ -68,6 +68,10 @@ const REASON_LABELS = {
   ok: "Muvaffaqiyatli",
   bad_password: "Noto'g'ri parol",
   unknown_user: "Mavjud bo'lmagan login",
+  // ⚠️ `auth.service.js` bu sababni "Username yoki parol noto'g'ri" xabari
+  // ostida yashiradi (mavjud login'ni oshkor qilmaslik uchun). Jurnalda esa
+  // u alohida turadi — nomsiz qolsa, ekranda xom kalit ko'rinardi.
+  branch_unusable: "Filial yaroqsiz (arxiv/yopiq/tayyor emas)",
   inactive: "Hisob faol emas",
   archived: "Hisob arxivlangan",
   rate_limited: "Limitdan oshdi",
