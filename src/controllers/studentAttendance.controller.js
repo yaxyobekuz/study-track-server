@@ -33,6 +33,18 @@ const getTodayAllStudents = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+// Belgilash uchun to'liq ro'yxat (sinf bo'yicha yoki barcha sinflar)
+const getMarkList = asyncHandler(async (req, res) => {
+  const { date, status, search, classId } = req.query;
+  const result = await studentAttendanceService.getMarkList({
+    date: date || null,
+    status: status || null,
+    search: search || null,
+    classId: classId || null,
+  });
+  res.json({ success: true, ...result });
+});
+
 const getClasses = asyncHandler(async (req, res) => {
   const result = await studentAttendanceService.getClassList();
   res.json({ success: true, data: result });
@@ -70,6 +82,7 @@ module.exports = {
   updateRecord,
   getTodayClass,
   getTodayAllStudents,
+  getMarkList,
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,

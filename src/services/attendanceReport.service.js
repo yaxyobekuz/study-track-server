@@ -3,30 +3,50 @@ const {
   getTodayNormalized,
   getTodayAllRecords,
 } = require("./attendance.service");
-const { getLessonDayMap } = require("./schedule.service");
-const { DAYS_UZ } = require("../utils/constants");
+const { buildExpectedResolver } = require("./studentAttendance.service");
 
 // Xavfli guruh chegaralari: 3+ kun ketma-ket yoki oyda 5+ kun qoldirish
 const RISK_CONSECUTIVE_DAYS = 3;
 const RISK_MONTHLY_MISSED_DAYS = 5;
 
-// Davomat foizi: (keldi + kech keldi) / belgilangan yozuvlar
-function attendancePercent({ present = 0, late = 0, absent = 0, excused = 0 }) {
-  const total = present + late + absent + excused;
-  if (!total) return null;
-  return Math.round(((present + late) / total) * 1000) / 10;
+const EMPTY_SET = new Set();
+
+// Davomat foizi: kelganlar (keldi + kech keldi) / KUTILGAN o'quvchi-kunlar.
+// Belgilanganlarga nisbatan EMAS: belgilanmagan o'quvchi kelmagan hisoblanadi.
+function attendancePercent({ came = 0, expected = 0 }) {
+  if (!expected) return null;
+  return Math.round((came / expected) * 1000) / 10;
 }
 
 function emptyCounts() {
-  return { present: 0, late: 0, absent: 0, excused: 0, total: 0 };
+  return {
+    present: 0,
+    late: 0,
+    absent: 0,
+    excused: 0,
+    total: 0,
+    came: 0,
+    expected: 0,
+    unmarked: 0,
+  };
 }
 
-// Yozuv sinfida o'sha kuni dars bormi? Dars bo'lmagan kun (masalan yakshanba
-// yoki jadvalda darsi yo'q sinf kunlari) davomatsizlik hisobiga kirmaydi.
-// (Yakshanba jadval enum'ida umuman yo'q - avtomatik chiqarib tashlanadi.)
-function isLessonDayRecord(lessonDays, rec) {
-  const dayName = DAYS_UZ[new Date(rec.date).getUTCDay()];
-  return lessonDays.has(`${rec.classId}|${dayName}`);
+// Hosila ko'rsatkichlar: came = present + late, unmarked = expected − total, percent
+function finalizeCounts(counts) {
+  counts.came = counts.present + counts.late;
+  counts.unmarked = Math.max(0, counts.expected - counts.total);
+  counts.percent = attendancePercent(counts);
+  return counts;
+}
+
+function addCounts(target, src) {
+  target.present += src.present;
+  target.late += src.late;
+  target.absent += src.absent;
+  target.excused += src.excused;
+  target.total += src.total;
+  target.expected += src.expected;
+  return target;
 }
 
 // Yozuvlarni statuslar kesimida sanaydi
@@ -37,6 +57,51 @@ function countStatuses(records) {
     counts.total++;
   }
   return counts;
+}
+
+function dayKey(date) {
+  return new Date(date).toISOString().slice(0, 10);
+}
+
+// 1=Dushanba ... 6=Shanba, 0=Yakshanba
+function weekdayOf(key) {
+  return new Date(`${key}T00:00:00Z`).getUTCDay();
+}
+
+// Ikki to'plam birlashmasining o'lchami
+function unionSize(a, b) {
+  let size = a.size;
+  for (const x of b) if (!a.has(x)) size++;
+  return size;
+}
+
+/**
+ * Kun kesimi: yozuvlarni kun bo'yicha sanaydi va har kunga kutilganlarni qo'shadi.
+ * O'quv kuni = maktab bo'ylab kamida bitta yozuvi bor kun; yozuvsiz kun
+ * (bayram, yakshanba) ro'yxatga kirmaydi.
+ * Kun uchun kutilganlar = jadval bo'yicha kutilganlar ∪ o'sha kuni belgilanganlar:
+ * belgilangan o'quvchi (jadvalda bo'lmasa ham) shubhasiz kutilgan edi — shu
+ * tufayli `total ≤ expected` invarianti buzilmaydi.
+ * Har kun `recorded` (belgilangan o'quvchilar to'plami) bilan qaytadi.
+ */
+function aggregateByDay(records, resolver) {
+  const dayMap = new Map();
+  for (const rec of records) {
+    const key = dayKey(rec.date);
+    if (!dayMap.has(key)) {
+      dayMap.set(key, { date: key, ...emptyCounts(), recorded: new Set() });
+    }
+    const day = dayMap.get(key);
+    if (day[rec.status] !== undefined) day[rec.status]++;
+    day.total++;
+    day.recorded.add(rec.studentId);
+  }
+  for (const day of dayMap.values()) {
+    const { ids } = resolver.forWeekday(weekdayOf(day.date));
+    day.expected = unionSize(ids, day.recorded);
+    finalizeCounts(day);
+  }
+  return dayMap;
 }
 
 function monthRange(month, year) {
@@ -53,6 +118,7 @@ function monthRange(month, year) {
 /**
  * O'quvchilar davomati bo'yicha to'liq hisobot.
  * Kunlik/haftalik ko'rsatkichlar joriy kunga, qolganlari tanlangan oyga tegishli.
+ * Barcha foizlar KUTILGAN o'quvchi-kunlarga nisbatan (`buildExpectedResolver`).
  * @param {number|string} month - 1-12
  * @param {number|string} year
  */
@@ -64,76 +130,72 @@ async function getStudentReport(month, year) {
   const mondayOffset = (today.getUTCDay() + 6) % 7;
   const weekStart = new Date(today.getTime() - mondayOffset * 86400000);
 
-  // Sinf+kun bo'yicha dars mavjudligi xaritasi (jadvaldan)
-  const lessonDays = await getLessonDayMap();
+  // Kutilgan o'quvchilar resolveri (faol o'quvchilar + jadval, bir marta)
+  const resolver = await buildExpectedResolver();
+  const totalStudents = resolver.allStudentIds.size;
 
-  const [totalStudents, todayRecordsRaw, weekRecordsRaw, monthRecordsRaw] =
-    await Promise.all([
-      prisma.user.count({ where: { role: "student", isActive: true } }),
-      prisma.studentAttendance.findMany({
-        where: { date: today },
-        select: { classId: true, status: true, date: true },
-      }),
-      prisma.studentAttendance.findMany({
-        where: { date: { gte: weekStart, lte: today } },
-        select: { classId: true, status: true, date: true },
-      }),
-      // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
-      prisma.studentAttendance.findMany({
-        where: { date: { gte: start, lt: end } },
-        select: {
-          studentId: true,
-          classId: true,
-          status: true,
-          date: true,
-          absenceReason: true,
-        },
-        orderBy: { date: "asc" },
-      }),
-    ]);
+  const [todayRecords, weekRecords, monthRecords] = await Promise.all([
+    prisma.studentAttendance.findMany({
+      where: { date: today },
+      select: { studentId: true, classId: true, status: true, date: true },
+    }),
+    prisma.studentAttendance.findMany({
+      where: { date: { gte: weekStart, lte: today } },
+      select: { studentId: true, classId: true, status: true, date: true },
+    }),
+    // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
+    prisma.studentAttendance.findMany({
+      where: { date: { gte: start, lt: end } },
+      select: {
+        studentId: true,
+        classId: true,
+        status: true,
+        date: true,
+        absenceReason: true,
+      },
+      orderBy: { date: "asc" },
+    }),
+  ]);
 
-  // Dars bo'lmagan kun/sinf yozuvlarini barcha hisob-kitoblardan chiqarib tashlaymiz
-  const todayRecords = todayRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
-  const weekRecords = weekRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
-  const monthRecords = monthRecordsRaw.filter((r) => isLessonDayRecord(lessonDays, r));
-
+  // ── Kunlik (bugun): kutilgan = bugungi kutilganlar, yozuv bo'lmasa ham ──
+  // "Hali belgilanmagan" holati bugun ma'noli. Yakshanba/jadvalsiz kun → 0 → null.
   const dailyCounts = countStatuses(todayRecords);
-  const weeklyCounts = countStatuses(weekRecords);
+  dailyCounts.expected = unionSize(
+    resolver.forWeekday(today.getUTCDay()).ids,
+    new Set(todayRecords.map((r) => r.studentId)),
+  );
+  finalizeCounts(dailyCounts);
 
-  // ── Kun bo'yicha hisob ────────────────────────────────────────────
-  const dayMap = new Map();
-  for (const rec of monthRecords) {
-    const key = new Date(rec.date).toISOString().slice(0, 10);
-    if (!dayMap.has(key)) dayMap.set(key, { date: key, ...emptyCounts() });
-    const day = dayMap.get(key);
-    if (day[rec.status] !== undefined) day[rec.status]++;
-    day.total++;
+  // ── Haftalik: o'quv kunlari bo'yicha yig'indi ──────────────────────
+  const weeklyCounts = emptyCounts();
+  for (const day of aggregateByDay(weekRecords, resolver).values()) {
+    addCounts(weeklyCounts, day);
   }
-  const byDay = [...dayMap.values()]
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((d) => ({ ...d, percent: attendancePercent(d) }));
+  finalizeCounts(weeklyCounts);
+
+  // ── Kun bo'yicha hisob (oy) ───────────────────────────────────────
+  const monthDayMap = aggregateByDay(monthRecords, resolver);
+  const monthDays = [...monthDayMap.values()].sort((a, b) =>
+    a.date.localeCompare(b.date),
+  );
+  const byDay = monthDays.map(({ recorded, ...d }) => d);
 
   // Oylik umumiy yig'indi
   const monthlyCounts = emptyCounts();
-  for (const d of byDay) {
-    monthlyCounts.present += d.present;
-    monthlyCounts.late += d.late;
-    monthlyCounts.absent += d.absent;
-    monthlyCounts.excused += d.excused;
-    monthlyCounts.total += d.total;
-  }
+  for (const d of monthDays) addCounts(monthlyCounts, d);
+  finalizeCounts(monthlyCounts);
 
   // ── Hafta kunlari bo'yicha qoldirish trendi ───────────────────────
-  // 1=Dushanba ... 6=Shanba, 0=Yakshanba
+  // missed = kutilgan − kelgan (belgilanmagan ham qoldirgan hisoblanadi)
   const weekdayMap = new Map();
   for (const d of byDay) {
-    const dow = new Date(`${d.date}T00:00:00Z`).getUTCDay();
+    const dow = weekdayOf(d.date);
     if (!weekdayMap.has(dow)) {
       weekdayMap.set(dow, { dayOfWeek: dow, missed: 0, total: 0 });
     }
     const entry = weekdayMap.get(dow);
-    entry.missed += d.absent + d.excused;
-    entry.total += d.total;
+    entry.missed += Math.max(0, d.expected - d.came);
+    entry.total += d.expected;
   }
   const weekdayOrder = [1, 2, 3, 4, 5, 6, 0];
   const weekdayTrend = weekdayOrder
@@ -149,14 +211,50 @@ async function getStudentReport(month, year) {
     });
 
   // ── Sinf kesimi ───────────────────────────────────────────────────
+  // Yozuvlar sinf bo'yicha; kutilgan esa o'quv kunlari × shu kuni darsi bor
+  // sinf o'quvchilari. Kutilgan-u umuman belgilanmagan sinf ham ro'yxatga kiradi.
   const classMap = new Map();
+  const ensureClass = (classId) => {
+    if (!classMap.has(classId)) {
+      classMap.set(classId, { classId, ...emptyCounts() });
+    }
+    return classMap.get(classId);
+  };
+  // kun → sinf → belgilangan o'quvchilar
+  const dayClassRecorded = new Map();
   for (const rec of monthRecords) {
-    const key = String(rec.classId);
-    if (!classMap.has(key)) classMap.set(key, { classId: key, ...emptyCounts() });
-    const cls = classMap.get(key);
+    const classId = String(rec.classId);
+    const cls = ensureClass(classId);
     if (cls[rec.status] !== undefined) cls[rec.status]++;
     cls.total++;
+
+    const key = dayKey(rec.date);
+    if (!dayClassRecorded.has(key)) dayClassRecorded.set(key, new Map());
+    const perClass = dayClassRecorded.get(key);
+    if (!perClass.has(classId)) perClass.set(classId, new Set());
+    perClass.get(classId).add(rec.studentId);
   }
+
+  // Har bir o'quvchi uchun kutilgan kunlar soni (eng yaxshilar foizi uchun)
+  const perStudentExpected = new Map();
+  const bumpExpected = (id) =>
+    perStudentExpected.set(id, (perStudentExpected.get(id) || 0) + 1);
+
+  for (const day of monthDays) {
+    const { ids, byClass } = resolver.forWeekday(weekdayOf(day.date));
+    const recordedByClass = dayClassRecorded.get(day.date) || new Map();
+
+    const classIdsToday = new Set([...byClass.keys(), ...recordedByClass.keys()]);
+    for (const classId of classIdsToday) {
+      const scheduled = byClass.get(classId) || EMPTY_SET;
+      const recorded = recordedByClass.get(classId) || EMPTY_SET;
+      ensureClass(classId).expected += unionSize(scheduled, recorded);
+    }
+
+    for (const id of ids) bumpExpected(id);
+    for (const id of day.recorded) if (!ids.has(id)) bumpExpected(id);
+  }
+
   const classDocs = await prisma.class.findMany({
     where: { id: { in: [...classMap.keys()] } },
     select: { id: true, name: true },
@@ -166,9 +264,8 @@ async function getStudentReport(month, year) {
   );
   const byClass = [...classMap.values()]
     .map((c) => ({
-      ...c,
+      ...finalizeCounts(c),
       className: classNameMap[c.classId] || "-",
-      percent: attendancePercent(c),
     }))
     .sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1));
 
@@ -180,11 +277,7 @@ async function getStudentReport(month, year) {
     if (!perStudent.has(key)) {
       perStudent.set(key, {
         studentId: key,
-        present: 0,
-        late: 0,
-        absent: 0,
-        excused: 0,
-        total: 0,
+        ...emptyCounts(),
         streak: 0,
         maxStreak: 0,
       });
@@ -201,6 +294,10 @@ async function getStudentReport(month, year) {
       s.streak = 0;
     }
   }
+  for (const s of perStudent.values()) {
+    s.expected = perStudentExpected.get(s.studentId) || s.total;
+    finalizeCounts(s);
+  }
 
   const riskGroup = [...perStudent.values()]
     .map((s) => ({ ...s, missedTotal: s.absent + s.excused }))
@@ -216,7 +313,6 @@ async function getStudentReport(month, year) {
   const minRecords = Math.max(1, Math.ceil(byDay.length / 2));
   const topStudents = [...perStudent.values()]
     .filter((s) => s.total >= minRecords)
-    .map((s) => ({ ...s, percent: attendancePercent(s) }))
     .sort(
       (a, b) =>
         (b.percent ?? -1) - (a.percent ?? -1) ||
@@ -296,9 +392,9 @@ async function getStudentReport(month, year) {
     year: y,
     totalStudents,
     overall: {
-      daily: { ...dailyCounts, percent: attendancePercent(dailyCounts) },
-      weekly: { ...weeklyCounts, percent: attendancePercent(weeklyCounts) },
-      monthly: { ...monthlyCounts, percent: attendancePercent(monthlyCounts) },
+      daily: dailyCounts,
+      weekly: weeklyCounts,
+      monthly: monthlyCounts,
     },
     byDay,
     byClass,
@@ -402,7 +498,10 @@ async function getStaffReport(month, year) {
   const minRecords = Math.max(1, Math.ceil(distinctDates.length / 2));
   const topStaffRaw = [...perUser.values()]
     .filter((u) => u.total >= minRecords)
-    .map((u) => ({ ...u, percent: attendancePercent(u) }))
+    .map((u) => ({
+      ...u,
+      percent: attendancePercent({ came: u.present + u.late, expected: u.total }),
+    }))
     .sort(
       (a, b) =>
         (b.percent ?? -1) - (a.percent ?? -1) ||

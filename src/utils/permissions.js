@@ -100,6 +100,12 @@ const PERMISSION_SECTIONS = [
       { key: "archive", label: "Arxivlash" },
       { key: "restore", label: "Arxivdan qaytarish" },
       { key: "password", label: "Parolni ko'rish / tiklash" },
+      // TELEFON — `update` DAN ALOHIDA. Raqam maktabdan TASHQARIGA
+      // qo'ng'iroq qilish yo'li (davomatdagi "Qo'ng'iroq" tugmasi shu
+      // raqamga boradi), shuning uchun uni kim tahrirlashini owner o'zi
+      // hal qiladi. Boshida faqat owner'da bo'ladi. O'quvchi o'z raqamini
+      // o'zgartira olmaydi.
+      { key: "phone", label: "Telefon raqamini tahrirlash" },
       // Hisobotlar — ro'yxatning KESIMI emas, butun shtat manzarasi: tarkib,
       // xodimlar oqimi, jarima va topshiriq intizomi bitta ekranda. Shuning
       // uchun `users.view` bilan birga berilmaydi (davomat bo'limidagi

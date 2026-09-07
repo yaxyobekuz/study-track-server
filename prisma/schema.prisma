@@ -366,6 +366,15 @@ model User {
   profilePicture   String?   @map("profile_picture") @db.Char(24)
   emojiBadgeId     String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
   displayName      String?   @map("display_name")
+  // TELEFON RAQAMLARI — o'quvchi va ota-ona. Ikkalasi ixtiyoriy:
+  // eski qatorlarda bo'sh turadi va profildan qo'lda to'ldiriladi.
+  // ⚠️ Tahrirlash ALOHIDA ruxsat (`users.phone`), `users.update` EMAS:
+  // raqam maktabdan tashqariga qo'ng'iroq qilish yo'li, shuning uchun
+  // owner uni kimga berishni o'zi hal qiladi. O'quvchi o'z raqamini
+  // O'ZGARTIRA OLMAYDI (`updateSelfProfile` bu maydonlarni qabul qilmaydi).
+  // Identifikatsiya maydoni — barcha filiallarga tarqaladi (IDENTITY_FIELDS).
+  phone            String?   @map("phone")
+  parentPhone      String?   @map("parent_phone")
   // Kim qo'shgan. ⚠️ Bu AUDIT maydoni emas, RUXSAT maydoni: o'qituvchi
   // faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
   // (`assertCanManage`, user.service.js). Eski qatorlarda `null` —

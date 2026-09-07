@@ -6,6 +6,7 @@ const {
   getUser,
   createUser,
   updateUser,
+  updateUserPhone,
   resetPassword,
   getUserPassword,
   deleteUser,
@@ -97,6 +98,13 @@ router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.US
 // Parol — alohida ruxsat (plainPassword ochiladi)
 router.put("/:id/reset-password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), restrictUserScope, resetPassword);
 router.get("/:id/password", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PASSWORD), restrictUserScope, getUserPassword);
+
+// Telefon raqamlari — alohida ruxsat (`users.phone`), `users.update` EMAS:
+// raqam maktabdan tashqariga qo'ng'iroq qilish yo'li, uni kim tahrirlashini
+// owner o'zi hal qiladi. Ko'rish esa hammaga ochiq (user obyektida keladi).
+// `restrictUserScope` shu yerda ham: o'qituvchi faqat o'zi qo'shgan
+// o'quvchining raqamini o'zgartiradi.
+router.put("/:id/phone", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_PHONE), restrictUserScope, updateUserPhone);
 
 // Arxivlash / arxivdan qaytarish (o'quvchi ham, xodim ham — owner'dan tashqari)
 router.put("/:id/archive", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_ARCHIVE), restrictUserScope, archiveUser);
