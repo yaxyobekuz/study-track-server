@@ -16,3 +16,7 @@ src/generated
 # ⚠️ package.json dagi `seed:academic` shu faylga ishora qiladi — istisnosiz
 # u toza klonga yetib bormay, buyruq "Cannot find module" bilan yiqilardi.
 !src/scripts/seedAcademicDemo.js
+# ⚠️ Login tashxisi PRODDA ishga tushiriladi — istisnosiz u serverga
+# yetib bormasdi va aynan kerak bo'lgan joyda qo'lda ko'chirish talab qilinardi.
+!src/scripts/diagnose-login.js
+!src/scripts/backfill-user-directory.js
