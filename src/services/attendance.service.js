@@ -635,16 +635,17 @@ async function markStaffAttendance({ date, records }, markedBy) {
 
   const results = [];
   for (const rec of records) {
-    const { userId, status, excuseReason, absenceReason } = rec;
+    const { userId, status, excuseReason } = rec;
 
     if (!validStatuses.includes(status)) {
       throw new BadRequestError(`Noto'g'ri status: ${status}`);
     }
 
-    // "Sababli" holatda sabab (kategoriya) majburiy
-    if (status === "excused" && !absenceReason) {
-      throw new BadRequestError("'Sababli' holat uchun sabab tanlanishi shart");
-    }
+    // ⚠️ Sabab KATEGORIYASI qo'lda belgilashdan olib tashlandi (o'quvchi
+    // tomonidagi `resolveReasonFields` bilan bir xil qoida): izoh ixtiyoriy
+    // va har qanday holatda yoziladi. Kategoriya faqat "Uzrli so'rovlar"
+    // oqimida qoladi — tasdiqlangan so'rov uni o'zi yozadi.
+    const note = typeof excuseReason === "string" ? excuseReason.trim() : "";
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -657,14 +658,12 @@ async function markStaffAttendance({ date, records }, markedBy) {
       );
     }
 
-    const isExcused = status === "excused";
-
     const updated = await prisma.attendance.upsert({
       where: { userId_date: { userId, date: normalizedDate } },
       update: {
         status,
-        absenceReason: isExcused ? absenceReason : null,
-        excuseReason: isExcused ? excuseReason || null : null,
+        absenceReason: null,
+        excuseReason: note || null,
         autoMarked: false,
         lastModifiedBy: markedBy,
       },
@@ -672,8 +671,8 @@ async function markStaffAttendance({ date, records }, markedBy) {
         userId,
         date: normalizedDate,
         status,
-        absenceReason: isExcused ? absenceReason : null,
-        excuseReason: isExcused ? excuseReason || null : null,
+        absenceReason: null,
+        excuseReason: note || null,
         autoMarked: false,
         lastModifiedBy: markedBy,
         createdBy: markedBy,

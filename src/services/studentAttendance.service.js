@@ -143,19 +143,27 @@ function resolveDay(dateInput) {
   return day;
 }
 
-// Sababli holat uchun sabab majburiy; boshqa holatda ikkala maydon tozalanadi
-function resolveReasonFields(status, { absenceReason, excuseReason }) {
+/**
+ * IZOH — ixtiyoriy va HAR QANDAY holatda yoziladi.
+ *
+ * ⚠️ Sabab KATEGORIYASI (`AbsenceReason`) qo'lda belgilashdan OLIB TASHLANDI.
+ * Avval "Sababli" uchun katalogdan kategoriya tanlash MAJBURIY edi va bu
+ * oddiy tuzatishni to'sib qo'yardi: kelmagan bolani keyin "keldi" qilmoqchi
+ * bo'lgan xodim ro'yxatdan nimadir tanlashga majbur bo'lardi. Endi izoh
+ * yoziladi yoki bo'sh qoldiriladi — boshqa hech narsa so'ralmaydi.
+ *
+ * Kategoriya faqat "Uzrli so'rovlar" oqimida qoladi: u yerda tanlov
+ * so'rovning MA'NOSI (xodim o'zi yuboradi, ma'muriyat ko'rib chiqadi).
+ *
+ * Qo'lda belgilashda kategoriya YOZILMAYDI va eskisi tozalanadi — izoh
+ * bilan birga qolgan eski kategoriya chalkashlik tug'dirardi.
+ */
+function resolveReasonFields(status, { excuseReason }) {
   if (!STUDENT_STATUSES.includes(status)) {
     throw new BadRequestError(`Noto'g'ri status: ${status}`);
   }
-  const isExcused = status === "excused";
-  if (isExcused && !absenceReason) {
-    throw new BadRequestError("'Sababli' holat uchun sabab tanlanishi shart");
-  }
-  return {
-    absenceReason: isExcused ? absenceReason : null,
-    excuseReason: isExcused ? excuseReason || null : null,
-  };
+  const note = typeof excuseReason === "string" ? excuseReason.trim() : "";
+  return { absenceReason: null, excuseReason: note || null };
 }
 
 /**
@@ -195,9 +203,9 @@ async function markAttendance({ classId, date, records }, markedBy) {
   const results = [];
 
   for (const rec of records) {
-    const { studentId, status, excuseReason, absenceReason } = rec;
+    const { studentId, status, excuseReason } = rec;
     const recClassId = rec.classId || classId;
-    const reasonFields = resolveReasonFields(status, { absenceReason, excuseReason });
+    const reasonFields = resolveReasonFields(status, { excuseReason });
 
     const updated = await prisma.studentAttendance.upsert({
       where: { studentId_date: { studentId, date: normalizedDate } },
@@ -231,16 +239,16 @@ async function markAttendance({ classId, date, records }, markedBy) {
 }
 
 /**
- * Bitta yozuvni tahrirlash — sabab qoidasi markAttendance bilan bir xil:
- * `excused` bo'lsa `absenceReason` majburiy, aks holda ikkalasi `null`.
+ * Bitta yozuvni tahrirlash — izoh qoidasi markAttendance bilan bir xil:
+ * ixtiyoriy, har qanday holatda yoziladi, kategoriya so'ralmaydi.
  */
-async function updateRecord(recordId, { status, excuseReason, absenceReason }, modifiedBy) {
+async function updateRecord(recordId, { status, excuseReason }, modifiedBy) {
   const record = await prisma.studentAttendance.findUnique({
     where: { id: recordId },
   });
   if (!record) throw new NotFoundError("Davomat yozuvi topilmadi");
 
-  const reasonFields = resolveReasonFields(status, { absenceReason, excuseReason });
+  const reasonFields = resolveReasonFields(status, { excuseReason });
 
   return prisma.studentAttendance.update({
     where: { id: recordId },

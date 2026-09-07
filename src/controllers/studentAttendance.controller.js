@@ -11,10 +11,10 @@ const mark = asyncHandler(async (req, res) => {
 });
 
 const updateRecord = asyncHandler(async (req, res) => {
-  const { status, excuseReason, absenceReason } = req.body;
+  const { status, excuseReason } = req.body;
   const record = await studentAttendanceService.updateRecord(
     req.params.id,
-    { status, excuseReason, absenceReason },
+    { status, excuseReason },
     req.user.id
   );
   res.json({ success: true, data: record });
