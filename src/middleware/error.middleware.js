@@ -63,9 +63,14 @@ const errorHandler = (err, req, res, next) => {
   }
 
   // Default error
+  //
+  // `details` — operatsion xatoning MASHINA O'QIYDIGAN qo'shimchasi
+  // (`AppError` sinflari ixtiyoriy ravishda qo'yadi). Mijoz uni ro'yxat
+  // qilib chizadi; xabar matnini parse qilishga majbur bo'lmasin.
   res.status(err.statusCode || 500).json({
     success: false,
     message: err.message || "Server xatosi",
+    ...(err.details ? { details: err.details } : {}),
     ...(config.isDevelopment && { stack: err.stack }),
   });
 };

@@ -1,6 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const ExcelService = require("../services/excel.service");
 const scheduleService = require("../services/schedule.service");
+const scheduleDraftService = require("../services/scheduleDraft.service");
 const teacherWorkloadService = require("../services/teacherWorkload.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
@@ -151,8 +152,74 @@ const getMyWorkload = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// Dars biriktirish uchun o'qituvchilar ma'lumotnomasi (fanlari bilan).
+//
+// Forma fan tanlangandan keyin ro'yxatni SHU FANGA biriktirilganlar bilan
+// cheklaydi. Javobda faqat id, ism va fan id'lari bor — telefon, parol
+// holati va ruxsatlar YO'Q, shuning uchun uni `users.view` siz ham berish
+// mumkin: jadvalni ko'rish huquqi allaqachon xodimlarning ismini ochadi.
+const getTeacherOptions = asyncHandler(async (req, res) => {
+  const data = await scheduleService.getTeacherOptions();
+
+  res.json({ success: true, data });
+});
+
+// ── QORALAMA (tugallanmagan tahrirning zaxirasi) ──
+//
+// Qoralama FAQAT uni yozgan odamniki: identifikator so'rovdan emas,
+// tokendan olinadi. Shu sababli boshqa xodimning tugallanmagan ishini
+// o'qib ham, bosib ketib ham bo'lmaydi.
+
+// Qoralamani olish. Javobda `isStale` bor: qoralama turgan payt jadval
+// boshqa odam tomonidan o'zgartirilgan bo'lsa, mijoz ogohlantiradi —
+// aks holda eski nusxa yangi jadvalni jimgina bosib ketardi.
+const getScheduleDraft = asyncHandler(async (req, res) => {
+  const { classId } = req.params;
+
+  const [draft, schedules] = await Promise.all([
+    scheduleDraftService.getDraft(classId, req.user.id),
+    scheduleService.getScheduleByClass(classId),
+  ]);
+
+  const currentHash = scheduleService.hashSchedules(schedules);
+
+  res.json({
+    success: true,
+    data: {
+      draft,
+      currentHash,
+      isStale: Boolean(draft?.baseHash) && draft.baseHash !== currentHash,
+    },
+  });
+});
+
+// Qoralamani saqlash — forma buni AVTOMATIK, tahrir tinchigach chaqiradi.
+const saveScheduleDraft = asyncHandler(async (req, res) => {
+  const { week, baseHash } = req.body;
+
+  const data = await scheduleDraftService.saveDraft(
+    req.params.classId,
+    req.user.id,
+    week,
+    baseHash,
+  );
+
+  res.json({ success: true, data });
+});
+
+// Qoralamani tashlab, saqlangan jadvalga qaytish.
+const deleteScheduleDraft = asyncHandler(async (req, res) => {
+  await scheduleDraftService.deleteDraft(req.params.classId, req.user.id);
+
+  res.json({ success: true, message: "Qoralama o'chirildi" });
+});
+
 module.exports = {
   getScheduleByClass,
+  getTeacherOptions,
+  getScheduleDraft,
+  saveScheduleDraft,
+  deleteScheduleDraft,
   getScheduleByDay,
   createOrUpdateSchedule,
   saveClassSchedule,

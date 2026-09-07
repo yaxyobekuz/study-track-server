@@ -1,6 +1,22 @@
+const crypto = require("crypto");
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
+const { DAYS, ROLES } = require("../utils/constants");
+const { hasRole } = require("../utils/permissions");
+
+// Jadval kunlari — YAGONA manba (`ScheduleDay` enumi bilan bir xil tartib).
+const VALID_DAYS = Object.values(DAYS);
+
+/**
+ * Kun nomini yorliq ko'rinishiga keltiradi: "dushanba" → "Dushanba".
+ * @param {string} day
+ * @returns {string}
+ */
+function dayLabel(day) {
+  if (!day) return "";
+  return day.charAt(0).toUpperCase() + day.slice(1);
+}
 
 /**
  * ScheduleLesson child yozuvlarini eski `subjects[]` embedded shakliga xaritalaydi.
@@ -148,152 +164,344 @@ async function getScheduleByDay(classId, day) {
 }
 
 /**
- * O'qituvchining parallel to'qnashuvini tekshirish.
- * Bir o'qituvchi bir kunda bir xil tartib (order) raqamida turli sinflarda
- * band bo'lsa, xato beriladi.
- * @param {string} classId - joriy sinf ID (o'zini tekshirmaslik uchun)
- * @param {string} day - kun nomi
- * @param {Array} subjects - kiritilayotgan darslar
- * @returns {Promise<void>}
+ * Saqlangan jadvalning IMZOSI (qoralama uchun tayanch nuqta).
+ *
+ * Qoralama "shu holat ustiga" qurilgan bo'ladi. Qoralama turgan payt boshqa
+ * xodim jadvalni o'zgartirsa, imzo mos kelmaydi va tiklashda ogohlantirish
+ * beriladi — aks holda eski nusxa yangi jadvalni jimgina bosib ketardi.
+ *
+ * Imzo TARTIBGA BOG'LIQ EMAS: kunlar va darslar saralanadi, shuning uchun
+ * bir xil jadval har doim bir xil imzo beradi.
+ *
+ * @param {Array} formatted - `getScheduleByClass` natijasi
+ * @returns {string} 64 belgili hex
  */
-async function ensureNoTeacherConflicts(classId, day, subjects) {
-  const otherSchedules = await prisma.schedule.findMany({
-    where: {
-      day,
-      classId: { not: classId },
-    },
-    include: { lessons: true },
-  });
+function hashSchedules(formatted = []) {
+  const canonical = [...formatted]
+    .filter((s) => (s.subjects || []).length > 0)
+    .sort((a, b) => String(a.day).localeCompare(String(b.day)))
+    .map((s) => {
+      const lessons = [...(s.subjects || [])]
+        .map((l) =>
+          [
+            Number(l.order) || 0,
+            l.subject?.id || "",
+            l.teacher?.id || "",
+            l.startTime || "",
+            l.endTime || "",
+          ].join(":"),
+        )
+        .sort();
+      return `${s.day}|${lessons.join(",")}`;
+    })
+    .join(";");
 
-  // Boshqa sinflarning nomlari va band o'qituvchilar uchun refs'ni yuklaymiz
-  const classIds = [
-    ...new Set(otherSchedules.map((s) => s.classId).filter(Boolean)),
-  ];
-  const teacherIds = new Set();
-  for (const schedule of otherSchedules) {
-    for (const lesson of schedule.lessons || []) {
-      if (lesson.teacherId) teacherIds.add(lesson.teacherId);
-    }
-  }
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
 
-  const [classes, teachers] = await Promise.all([
-    prisma.class.findMany({
-      where: { id: { in: classIds } },
-      select: { id: true, name: true },
-    }),
-    prisma.user.findMany({
-      where: { id: { in: [...teacherIds] } },
-      select: { id: true, firstName: true, lastName: true },
-    }),
-  ]);
+/**
+ * Bir kunlik darslarni MA'LUMOTLAR BAZASISIZ tekshirish: tartib raqamlari
+ * va vaqtlar. Bazaga tegadigan tekshiruvlar (fan/o'qituvchi, bandlik)
+ * ataylab alohida — ular butun hafta uchun bir marta ishlaydi.
+ *
+ * @param {Array} subjects - bir kun uchun darslar
+ * @param {string} day - kun nomi (xato matnida ko'rsatiladi)
+ */
+function validateDayShape(subjects, day) {
+  const prefix = day ? `${dayLabel(day)}, ` : "";
 
-  const classNameMap = new Map(classes.map((c) => [c.id, c.name]));
-  const teacherMap = new Map(teachers.map((t) => [t.id, t]));
-
-  // Map: "teacherId-order" -> { className, teacherName }
-  const occupied = new Map();
-  for (const schedule of otherSchedules) {
-    for (const item of schedule.lessons || []) {
-      const teacherId = String(item.teacherId);
-      const teacher = teacherMap.get(item.teacherId);
-      const key = `${teacherId}-${item.order}`;
-      occupied.set(key, {
-        className: classNameMap.get(schedule.classId) || "",
-        teacherName: teacher
-          ? `${teacher.firstName} ${teacher.lastName || ""}`.trim()
-          : "",
-      });
-    }
-  }
-
+  // Tartib raqamlari: 1..100, kun ichida takrorlanmaydi
+  const seenOrders = new Set();
   for (const item of subjects) {
-    const teacherId = String(item.teacher);
-    const conflict = occupied.get(`${teacherId}-${Number(item.order)}`);
-    if (conflict) {
+    const order = Number(item.order);
+    if (!Number.isInteger(order) || order < 1 || order > 100) {
       throw new BadRequestError(
-        `${conflict.teacherName} o'qituvchisi shu kuni ${item.order}-tartibda "${conflict.className}" sinfida band. Parallel dars belgilab bo'lmaydi`,
+        `${prefix}dars tartibi 1 dan 100 gacha bo'lgan butun son bo'lishi kerak`,
+      );
+    }
+    if (seenOrders.has(order)) {
+      throw new BadRequestError(
+        `${prefix}${order}-tartib bir necha marta ishlatilgan. Har bir dars tartibi takrorlanmasligi kerak`,
+      );
+    }
+    seenOrders.add(order);
+  }
+
+  // Vaqtlar
+  for (const item of subjects) {
+    if (!item.startTime && !item.endTime) continue;
+
+    if (!item.startTime || !item.endTime) {
+      throw new BadRequestError(
+        `${prefix}${item.order}-dars: boshlanish va tugash vaqti ikkalasi ham kiritilishi kerak`,
+      );
+    }
+
+    const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
+    if (!timeRegex.test(item.startTime) || !timeRegex.test(item.endTime)) {
+      throw new BadRequestError(
+        `${prefix}${item.order}-dars: vaqt formati noto'g'ri (HH:mm formatida bo'lishi kerak)`,
+      );
+    }
+
+    if (item.startTime >= item.endTime) {
+      throw new BadRequestError(
+        `${prefix}${item.order}-dars: boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak`,
+      );
+    }
+  }
+
+  // Vaqtlar to'qnashuvi (bir kun ichida)
+  const withTimes = subjects.filter((s) => s.startTime && s.endTime);
+  const sorted = [...withTimes].sort((a, b) =>
+    a.startTime.localeCompare(b.startTime),
+  );
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (sorted[i].endTime > sorted[i + 1].startTime) {
+      throw new BadRequestError(
+        `${prefix}darslar vaqtlari to'qnashib ketdi: ${sorted[i].order}-dars (${sorted[i].startTime}-${sorted[i].endTime}) va ${sorted[i + 1].order}-dars (${sorted[i + 1].startTime}-${sorted[i + 1].endTime})`,
       );
     }
   }
 }
 
 /**
- * Bir kunlik darslar ro'yxatini tekshirish: tartib raqamlari, vaqtlar,
- * fan/o'qituvchi mavjudligi va vaqtlar to'qnashuvi.
- * O'qituvchining boshqa sinflar bilan to'qnashuvi bu yerda tekshirilmaydi.
- * @param {Array} subjects - bir kun uchun darslar
- * @returns {Promise<void>}
+ * Fan va o'qituvchi havolalarini tekshirish — BUTUN HAFTA uchun BITTA marta.
+ *
+ * Uch narsa tekshiriladi:
+ *   1. Fan bazada bormi;
+ *   2. O'qituvchi bormi va u haqiqatan O'QITUVCHIMI;
+ *   3. ⚠️ O'qituvchi SHU FANDAN dars beradimi (`user_subjects`).
+ *
+ * (3) — "matematika o'qituvchisiga ingliz tilidan dars qo'yib qo'yish" ni
+ * to'xtatadi. Bu tekshiruv SERVERDA turishi shart: interfeys ro'yxatni
+ * filtrlaydi, lekin so'rov to'g'ridan-to'g'ri ham kelishi mumkin.
+ *
+ * ⚠️ O'qituvchida fan UMUMAN biriktirilmagan bo'lsa, tekshiruv o'tkazib
+ * yuboriladi: bu "noto'g'ri fan" emas, "ma'lumot to'liq emas" holati va
+ * uni bloklash butun jadvalni saqlashni to'xtatib qo'yardi.
+ *
+ * ⚠️ Rol `hasRole` orqali tekshiriladi: bir odam bir vaqtda o'qituvchi ham,
+ * ma'muriyat ham bo'lishi mumkin (`User.extraRoles`) va to'g'ridan-to'g'ri
+ * `role === "teacher"` taqqoslash uni ko'rmasdi.
+ *
+ * @param {Array} entries - [{ day, subjects }] (darslari bor kunlar)
  */
-async function validateScheduleSubjects(subjects) {
-  // Validate lesson order numbers (manual 1..100, no duplicates within a day)
-  const seenOrders = new Set();
-  for (const item of subjects) {
-    const order = Number(item.order);
-    if (!Number.isInteger(order) || order < 1 || order > 100) {
-      throw new BadRequestError(
-        "Dars tartibi 1 dan 100 gacha bo'lgan butun son bo'lishi kerak",
-      );
-    }
-    if (seenOrders.has(order)) {
-      throw new BadRequestError(
-        `${order}-tartib bir necha marta ishlatilgan. Har bir dars tartibi takrorlanmasligi kerak`,
-      );
-    }
-    seenOrders.add(order);
-  }
+async function validateLessonRefs(entries) {
+  const subjectIds = new Set();
+  const teacherIds = new Set();
 
-  // Validate times, subjects and teachers
-  for (const item of subjects) {
-    if (item.startTime || item.endTime) {
-      if (!item.startTime || !item.endTime) {
+  for (const entry of entries) {
+    for (const item of entry.subjects) {
+      if (!item.subject) {
         throw new BadRequestError(
-          `${item.order}-dars: boshlanish va tugash vaqti ikkalasi ham kiritilishi kerak`,
+          `${dayLabel(entry.day)}, ${item.order}-dars: fan tanlanmagan`,
         );
       }
-
-      const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
-      if (!timeRegex.test(item.startTime) || !timeRegex.test(item.endTime)) {
+      if (!item.teacher) {
         throw new BadRequestError(
-          `${item.order}-dars: vaqt formati noto'g'ri (HH:mm formatida bo'lishi kerak)`,
+          `${dayLabel(entry.day)}, ${item.order}-dars: o'qituvchi tanlanmagan`,
         );
       }
-
-      if (item.startTime >= item.endTime) {
-        throw new BadRequestError(
-          `${item.order}-dars: boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak`,
-        );
-      }
-    }
-
-    const subject = await prisma.subject.findUnique({
-      where: { id: item.subject },
-    });
-    if (!subject) {
-      throw new NotFoundError(`Fan topilmadi: ${item.subject}`);
-    }
-
-    const teacher = await prisma.user.findFirst({
-      where: { id: item.teacher, role: "teacher" },
-    });
-    if (!teacher) {
-      throw new NotFoundError(`O'qituvchi topilmadi: ${item.teacher}`);
+      subjectIds.add(String(item.subject));
+      teacherIds.add(String(item.teacher));
     }
   }
 
-  // Check for time overlaps
-  const subjectsWithTimes = subjects.filter((s) => s.startTime && s.endTime);
-  if (subjectsWithTimes.length > 0) {
-    const sortedSubjects = [...subjectsWithTimes].sort((a, b) =>
-      a.startTime.localeCompare(b.startTime),
+  if (subjectIds.size === 0) return;
+
+  const [subjects, teachers, links] = await Promise.all([
+    prisma.subject.findMany({
+      where: { id: { in: [...subjectIds] } },
+      select: { id: true, name: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: [...teacherIds] } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        role: true,
+        extraRoles: true,
+      },
+    }),
+    prisma.userSubject.findMany({
+      where: { userId: { in: [...teacherIds] } },
+      select: { userId: true, subjectId: true },
+    }),
+  ]);
+
+  const subjectMap = new Map(subjects.map((s) => [s.id, s]));
+  const teacherMap = new Map(teachers.map((t) => [t.id, t]));
+
+  // teacherId -> Set(subjectId). Bo'sh to'plam = fan biriktirilmagan.
+  const assigned = new Map();
+  for (const link of links) {
+    if (!assigned.has(link.userId)) assigned.set(link.userId, new Set());
+    assigned.get(link.userId).add(link.subjectId);
+  }
+
+  for (const entry of entries) {
+    for (const item of entry.subjects) {
+      const prefix = `${dayLabel(entry.day)}, ${item.order}-dars`;
+
+      const subject = subjectMap.get(String(item.subject));
+      if (!subject) {
+        throw new NotFoundError(`${prefix}: fan topilmadi`);
+      }
+
+      const teacher = teacherMap.get(String(item.teacher));
+      if (!teacher) {
+        throw new NotFoundError(`${prefix}: o'qituvchi topilmadi`);
+      }
+      if (!hasRole(teacher, ROLES.TEACHER)) {
+        throw new BadRequestError(
+          `${prefix}: ${teacherName(teacher)} o'qituvchi emas`,
+        );
+      }
+
+      const teacherSubjects = assigned.get(teacher.id);
+      if (teacherSubjects?.size && !teacherSubjects.has(subject.id)) {
+        throw new BadRequestError(
+          `${prefix}: ${teacherName(teacher)} "${subject.name}" fanidan dars bermaydi. Fan biriktirilishi "Xodimlar" bo'limida o'zgartiriladi`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * O'qituvchining ismi — xato matnlari uchun.
+ * @param {{firstName?: string, lastName?: string}} teacher
+ * @returns {string}
+ */
+function teacherName(teacher) {
+  if (!teacher) return "O'qituvchi";
+  return `${teacher.firstName || ""} ${teacher.lastName || ""}`.trim();
+}
+
+/**
+ * O'qituvchining parallel bandligi — BUTUN HAFTA uchun BITTA so'rov.
+ *
+ * Bir o'qituvchi bir kunda bir xil tartib (order) raqamida ikkita sinfda
+ * tura olmaydi. Joriy sinfning o'zi tekshirilmaydi: u qayta yoziladi.
+ *
+ * ⚠️ Birinchi to'qnashuvda TO'XTAMAYDI — HAMMASI yig'ib qaytariladi.
+ * Aks holda foydalanuvchi bittasini tuzatib, qayta saqlab, keyingisini
+ * ko'rar edi va bu bir necha marta takrorlanardi.
+ *
+ * @param {string} classId - joriy sinf
+ * @param {Array} entries - [{ day, subjects }] (darslari bor kunlar)
+ * @returns {Promise<Array>} [{ day, dayLabel, order, classId, className, teacherId, teacherName }]
+ */
+async function collectTeacherConflicts(classId, entries) {
+  const days = entries.map((e) => e.day);
+  if (days.length === 0) return [];
+
+  const otherSchedules = await prisma.schedule.findMany({
+    where: { day: { in: days }, classId: { not: classId } },
+    include: { lessons: { select: { teacherId: true, order: true } } },
+  });
+
+  // Map: "day|teacherId|order" -> classId
+  const occupied = new Map();
+  for (const schedule of otherSchedules) {
+    for (const lesson of schedule.lessons || []) {
+      occupied.set(
+        `${schedule.day}|${lesson.teacherId}|${lesson.order}`,
+        schedule.classId,
+      );
+    }
+  }
+  if (occupied.size === 0) return [];
+
+  const conflicts = [];
+  for (const entry of entries) {
+    for (const item of entry.subjects) {
+      const teacherId = String(item.teacher);
+      const order = Number(item.order);
+      const busyClassId = occupied.get(`${entry.day}|${teacherId}|${order}`);
+      if (busyClassId) {
+        conflicts.push({ day: entry.day, order, teacherId, classId: busyClassId });
+      }
+    }
+  }
+  if (conflicts.length === 0) return [];
+
+  // Nomlar faqat HAQIQIY to'qnashuvlar uchun yuklanadi
+  const [classes, teachers] = await Promise.all([
+    prisma.class.findMany({
+      where: { id: { in: [...new Set(conflicts.map((c) => c.classId))] } },
+      select: { id: true, name: true },
+    }),
+    prisma.user.findMany({
+      where: { id: { in: [...new Set(conflicts.map((c) => c.teacherId))] } },
+      select: { id: true, firstName: true, lastName: true },
+    }),
+  ]);
+
+  const classNameMap = new Map(classes.map((c) => [c.id, c.name]));
+  const teacherNameMap = new Map(teachers.map((t) => [t.id, teacherName(t)]));
+
+  return conflicts.map((c) => ({
+    ...c,
+    dayLabel: dayLabel(c.day),
+    className: classNameMap.get(c.classId) || "",
+    teacherName: teacherNameMap.get(c.teacherId) || "",
+  }));
+}
+
+/**
+ * Butun haftani tekshiradi: kunlar, tartib raqamlari, vaqtlar, fan/o'qituvchi
+ * havolalari va parallel bandlik.
+ *
+ * Hech narsa YOZILMASDAN OLDIN chaqiriladi — bitta yaroqsiz kun yarim
+ * saqlangan jadval qoldirmasligi kerak.
+ *
+ * @param {string} classId
+ * @param {Array} schedules - [{ day, subjects }]
+ * @returns {Promise<Array>} darslari bor kunlar
+ */
+async function validateWeek(classId, schedules) {
+  const seenDays = new Set();
+  const filled = [];
+
+  for (const entry of schedules) {
+    const { day, subjects = [] } = entry;
+
+    if (!VALID_DAYS.includes(day)) {
+      throw new BadRequestError(`Noto'g'ri kun: ${day}`);
+    }
+    if (seenDays.has(day)) {
+      throw new BadRequestError(`${dayLabel(day)} kuni bir necha marta yuborildi`);
+    }
+    seenDays.add(day);
+
+    validateDayShape(subjects, day);
+    if (subjects.length > 0) filled.push({ day, subjects });
+  }
+
+  await validateLessonRefs(filled);
+
+  const conflicts = await collectTeacherConflicts(classId, filled);
+  if (conflicts.length > 0) {
+    const shown = conflicts
+      .slice(0, 5)
+      .map(
+        (c) =>
+          `${c.dayLabel}, ${c.order}-dars — ${c.teacherName} "${c.className}" sinfida band`,
+      )
+      .join("; ");
+    const rest =
+      conflicts.length > 5 ? ` va yana ${conflicts.length - 5} ta` : "";
+
+    throw new BadRequestError(
+      `Parallel dars belgilab bo'lmaydi: ${shown}${rest}`,
+      { conflicts },
     );
-    for (let i = 0; i < sortedSubjects.length - 1; i++) {
-      if (sortedSubjects[i].endTime > sortedSubjects[i + 1].startTime) {
-        throw new BadRequestError(
-          `Darslar vaqtlari to'qnashib ketdi: ${sortedSubjects[i].order}-dars (${sortedSubjects[i].startTime}-${sortedSubjects[i].endTime}) va ${sortedSubjects[i + 1].order}-dars (${sortedSubjects[i + 1].startTime}-${sortedSubjects[i + 1].endTime})`,
-        );
-      }
-    }
   }
+
+  return filled;
 }
 
 /**
@@ -314,10 +522,10 @@ async function createOrUpdateSchedule(data, createdBy) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  await validateScheduleSubjects(subjects);
-
-  // Check for teacher conflicts across other classes (same day + same order)
-  await ensureNoTeacherConflicts(classId, day, subjects);
+  // Tekshiruv bitta joyda — haftalik saqlash bilan AYNAN bir xil qoidalar.
+  // Ikkita mustaqil tekshirgich bo'lsa, yangi qoida faqat bittasiga
+  // qo'shilib qolardi.
+  await validateWeek(classId, [{ day, subjects }]);
 
   const existing = await prisma.schedule.findFirst({
     where: { classId, day },
@@ -369,62 +577,48 @@ async function saveClassSchedule(classId, schedules, createdBy) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const validDays = [
-    "dushanba",
-    "seshanba",
-    "chorshanba",
-    "payshanba",
-    "juma",
-    "shanba",
-  ];
+  // HAMMASI avval tekshiriladi: bitta yaroqsiz kun yarim saqlangan
+  // jadval qoldirmasligi kerak.
+  await validateWeek(classId, schedules);
 
-  // Validate everything first so a single bad day doesn't leave a partial save
-  const seenDays = new Set();
-  for (const entry of schedules) {
-    const { day, subjects = [] } = entry;
+  // Yozish BITTA tranzaksiyada: aks holda uzilish (tarmoq, xato) haftaning
+  // yarmini yangi, yarmini eski holatda qoldirardi va bunday jadval hech
+  // kimda bo'lmagan variant bo'lib chiqardi.
+  await prisma.$transaction(async (tx) => {
+    for (const entry of schedules) {
+      const { day, subjects = [] } = entry;
 
-    if (!validDays.includes(day)) {
-      throw new BadRequestError(`Noto'g'ri kun: ${day}`);
-    }
-    if (seenDays.has(day)) {
-      throw new BadRequestError(`${day} kuni bir necha marta yuborildi`);
-    }
-    seenDays.add(day);
+      // Bo'sh kun — o'sha kun jadvali butunlay olib tashlanadi
+      if (subjects.length === 0) {
+        await tx.schedule.deleteMany({ where: { classId, day } });
+        continue;
+      }
 
-    if (subjects.length === 0) continue;
-
-    await validateScheduleSubjects(subjects);
-    await ensureNoTeacherConflicts(classId, day, subjects);
-  }
-
-  // Persist: upsert days with lessons, delete days that were cleared
-  for (const entry of schedules) {
-    const { day, subjects = [] } = entry;
-
-    if (subjects.length === 0) {
-      await prisma.schedule.deleteMany({ where: { classId, day } });
-      continue;
+      const schedule = await tx.schedule.findFirst({ where: { classId, day } });
+      if (schedule) {
+        await tx.scheduleLesson.deleteMany({
+          where: { scheduleId: schedule.id },
+        });
+        await tx.scheduleLesson.createMany({
+          data: buildLessonRows(schedule.id, subjects),
+        });
+      } else {
+        const created = await tx.schedule.create({
+          data: { classId, day, createdBy },
+        });
+        await tx.scheduleLesson.createMany({
+          data: buildLessonRows(created.id, subjects),
+        });
+      }
     }
 
-    const schedule = await prisma.schedule.findFirst({
-      where: { classId, day },
-    });
-    if (schedule) {
-      await prisma.scheduleLesson.deleteMany({
-        where: { scheduleId: schedule.id },
-      });
-      await prisma.scheduleLesson.createMany({
-        data: buildLessonRows(schedule.id, subjects),
-      });
-    } else {
-      const created = await prisma.schedule.create({
-        data: { classId, day, createdBy },
-      });
-      await prisma.scheduleLesson.createMany({
-        data: buildLessonRows(created.id, subjects),
-      });
+    // Ish tugadi — shu odamning qoralamasi endi keraksiz. Qoldirilsa,
+    // keyingi kirishda "tugallanmagan tahrir bor" deb allaqachon
+    // saqlangan holatni qayta taklif qilardi.
+    if (createdBy) {
+      await tx.scheduleDraft.deleteMany({ where: { classId, userId: createdBy } });
     }
-  }
+  });
 
   return getScheduleByClass(classId);
 }
@@ -742,8 +936,50 @@ async function updateCurrentTopic(classId, subjectId, topicNumber) {
   };
 }
 
+/**
+ * DARS BIRIKTIRISH UCHUN O'QITUVCHILAR MA'LUMOTNOMASI.
+ *
+ * Jadval formasi fan tanlangandan keyin FAQAT o'sha fanga biriktirilgan
+ * o'qituvchilarni ko'rsatishi kerak. Buning uchun "kim qaysi fandan dars
+ * beradi" ma'lumoti kerak, lekin butun `GET /users` javobi (telefon, parol
+ * holati, ruxsatlar) kerak EMAS — shuning uchun alohida, tor ro'yxat.
+ *
+ * ⚠️ `isActive` ATAYLAB filtrlanmaydi (rejalashtirish moduli bilan bir xil
+ * qoida): logini vaqtincha o'chirilgan xodim ham jadvalda turgan bo'lishi
+ * mumkin va uni ro'yxatdan yo'qotib qo'ysak, o'sha darsni tahrirlash
+ * imkonsiz bo'lardi. Arxivlangan esa maktabdan ketgan — u chiqmaydi.
+ *
+ * ⚠️ Rol `extraRoles` bilan birga qidiriladi: asosiy roli "qabulxona"
+ * bo'lgan odam ham qo'shimcha o'qituvchi bo'lishi mumkin.
+ *
+ * @returns {Promise<Array>} [{ id, fullName, subjectIds }]
+ */
+async function getTeacherOptions() {
+  const teachers = await prisma.user.findMany({
+    where: {
+      isArchived: false,
+      OR: [{ role: ROLES.TEACHER }, { extraRoles: { has: ROLES.TEACHER } }],
+    },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      subjects: { select: { subjectId: true } },
+    },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
+
+  return teachers.map((t) => ({
+    id: t.id,
+    fullName: teacherName(t),
+    subjectIds: (t.subjects || []).map((s) => s.subjectId),
+  }));
+}
+
 module.exports = {
   getScheduleByClass,
+  getTeacherOptions,
+  hashSchedules,
   getScheduleByDay,
   createOrUpdateSchedule,
   saveClassSchedule,

@@ -13,6 +13,10 @@ const {
   getClassesBySubject,
   getTeacherWorkload,
   getMyWorkload,
+  getTeacherOptions,
+  getScheduleDraft,
+  saveScheduleDraft,
+  deleteScheduleDraft,
 } = require("../controllers/schedule.controller");
 const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
@@ -52,6 +56,14 @@ router.get(
   getScheduleByDay,
 );
 
+// Dars biriktirish uchun o'qituvchilar ma'lumotnomasi: id, ism va
+// BIRIKTIRILGAN FANLAR. Forma fan tanlangandan keyin ro'yxatni shu fandan
+// dars beradiganlar bilan cheklaydi.
+//
+// `users.view` talab qilinmaydi — javobda faqat ism va fan id'lari bor,
+// dars jadvalining o'zi esa allaqachon xodimlarning ismini ko'rsatadi.
+router.get("/teachers", authorizePermission(PERMISSIONS.SCHEDULES_VIEW), getTeacherOptions);
+
 // O'qituvchining haftalik yuklamasi (profil sahifasi):
 // necha soat, qaysi sinflarda, qaysi kunlari.
 router.get(
@@ -63,6 +75,30 @@ router.get(
 
 // Get all classes by subject (Owner only)
 router.get("/subject/:subjectId", validateObjectId("subjectId"), authorizePermission(PERMISSIONS.SCHEDULES_VIEW), getClassesBySubject);
+
+// ── QORALAMA (tugallanmagan tahrirning zaxirasi) ──
+//
+// Ruxsat — `schedules.update`: qoralama tahrirning bir qismi, alohida
+// huquq emas. Yozuv FAQAT tokendagi foydalanuvchiniki, shuning uchun
+// boshqa xodimning tugallanmagan ishiga bu yo'l bilan yetib bo'lmaydi.
+router.get(
+  "/class/:classId/draft",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
+  getScheduleDraft,
+);
+router.put(
+  "/class/:classId/draft",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
+  saveScheduleDraft,
+);
+router.delete(
+  "/class/:classId/draft",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
+  deleteScheduleDraft,
+);
 
 // CRUD operations - amal darajasidagi ruxsat bilan
 router.post("/", authorizePermission(PERMISSIONS.SCHEDULES_CREATE), createOrUpdateSchedule);

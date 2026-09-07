@@ -53,12 +53,19 @@ class ForbiddenError extends Error {
 /**
  * Noto'g'ri so'rov xatosi uchun
  * HTTP status code: 400
+ *
+ * `details` — MASHINA O'QIYDIGAN qo'shimcha (ixtiyoriy). Matn xabari odam
+ * uchun, `details` esa mijoz ekranda ro'yxat qilib chizishi mumkin bo'lgan
+ * tuzilma uchun: masalan dars jadvalidagi to'qnashuvlar (qaysi kun, qaysi
+ * sinf, qaysi o'qituvchi). Xabarni parse qilib ma'no chiqarish — jim
+ * buziladigan yo'l, shuning uchun tuzilma alohida yuboriladi.
  */
 class BadRequestError extends Error {
-  constructor(message) {
+  constructor(message, details = null) {
     super(message);
     this.name = "BadRequestError";
     this.statusCode = 400;
+    if (details) this.details = details;
     Error.captureStackTrace(this, this.constructor);
   }
 }

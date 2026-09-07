@@ -524,6 +524,42 @@ model ScheduleLesson {
   @@map("schedule_lessons")
 }
 
+// DARS JADVALI QORALAMASI — tahrir jarayonining zaxirasi.
+//
+// ⚠️ Bu AMALDAGI jadval EMAS. `Schedule`/`ScheduleLesson` — e'lon qilingan
+// fakt (butun maktab ko'radi), bu jadval esa TUGALLANMAGAN ish: faqat uni
+// yozgan odam ko'radi va o'quvchiga, o'qituvchiga, hisobotga chiqmaydi.
+//
+// Nima uchun kerak: jadval SAQLASHDA butunligicha tekshiriladi (o'qituvchi
+// parallel band bo'lsa butun hafta rad etiladi). Konfliktni bartaraf qilish
+// uchun BOSHQA sinf jadvaliga o'tish kerak bo'ladi va shu payt brauzer
+// xotirasidagi tahrir yo'qolardi — bir soatlik ish bir marta bosishda.
+// Qoralama shu bo'shliqni yopadi: tahrir avtomatik zaxiralanadi, odam
+// xohlagan joyiga borib qaytadi va o'sha joydan davom etadi.
+//
+// ⚠️ Har foydalanuvchi O'Z qoralamasi bilan ishlaydi (`@@unique([classId, userId])`):
+// bitta sinfni ikki xodim tahrir qilsa, ular bir-birining tugallanmagan
+// ishini ko'rmaydi va bosib ketmaydi.
+//
+// `baseHash` — qoralama olingan paytdagi SAQLANGAN jadvalning imzosi.
+// Qoralama turgan payt boshqa odam jadvalni o'zgartirsa, tiklashda
+// ogohlantirish beriladi — aks holda eski nusxa yangi jadvalni jimgina
+// bosib ketardi.
+model ScheduleDraft {
+  id        String   @id @db.Char(24)
+  classId   String   @map("class_id") @db.Char(24)
+  userId    String   @map("user_id") @db.Char(24)
+  // { week: { dushanba: [{ subject, teacher, order, startTime, endTime }], ... } }
+  data      Json     @default("{}")
+  baseHash  String?  @map("base_hash") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([classId, userId])
+  @@index([userId])
+  @@map("schedule_drafts")
+}
+
 model ScheduleSettings {
   id        String   @id @default("singleton") @db.VarChar(24)
   // periods[] — { order, startTime, endTime }
