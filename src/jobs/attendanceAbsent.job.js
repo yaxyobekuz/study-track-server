@@ -6,6 +6,7 @@ const logger = require("../utils/logger");
 const {
   getTodayNormalized,
   getEffectiveSchedule,
+  buildScheduleContext,
   isPenaltyPaused,
   createAttendancePenalty,
   getDayOfWeekTashkent,
@@ -51,10 +52,29 @@ async function runAbsentMarking(ownerUser) {
   let markedExcused = 0;
   let skipped = 0;
   let errors = 0;
+  let scheduleMissing = 0;
+
+  // Dars jadvalidan ishlaydigan xodimlarning haftalik oynasi — BITTA so'rovda.
+  // Sikl ichida yakka chaqiruv har xodimga bitta so'rov qo'shardi.
+  const ctx = await buildScheduleContext(users);
 
   for (const user of users) {
     try {
-      const schedule = await getEffectiveSchedule(user);
+      const schedule = await getEffectiveSchedule(user, today, ctx);
+
+      // Dars jadvaliga bog'langan-u jadvali umuman kiritilmagan xodim: bu
+      // "dam olish kuni" emas, ma'lumot to'liq emas. Yozuv yozilmaydi, lekin
+      // JIM ham qolinmaydi — aks holda odam davomatdan sezilmay chiqib ketardi.
+      if (schedule.scheduleMissing) {
+        scheduleMissing++;
+        const fullName = `${user.firstName || ""} ${user.lastName || ""}`.trim();
+        logger.warn(
+          `[AttendanceCron] ${fullName || user.id}: ish vaqti dars jadvalidan olinadi, ` +
+            "lekin jadvalda umuman darsi yo'q",
+        );
+        skipped++;
+        continue;
+      }
 
       // Bu foydalanuvchining ish kuni emasa, o'tkazib yuborish
       if (!schedule.workDays.includes(todayDayOfWeek)) {
@@ -121,7 +141,8 @@ async function runAbsentMarking(ownerUser) {
   }
 
   logger.info(
-    `[AttendanceCron] Tugadi: ${markedAbsent} absent, ${markedExcused} excused, ${skipped} o'tkazib yuborildi, ${errors} xato`
+    `[AttendanceCron] Tugadi: ${markedAbsent} absent, ${markedExcused} excused, ${skipped} o'tkazib yuborildi` +
+      `${scheduleMissing ? ` (shundan ${scheduleMissing} tasida dars jadvali yo'q)` : ""}, ${errors} xato`
   );
 }
 

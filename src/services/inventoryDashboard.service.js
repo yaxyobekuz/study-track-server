@@ -560,6 +560,12 @@ const buildCategories = (stocks, itemMeta, categories) => {
  * holati (yaroqsizlar ulushi) va hodisasi (davrdagi zarar). Ular bitta
  * "risk balli" ga QO'SHILMAYDI: ballning maxraji bo'lmaydi va ikki xil
  * xona bir xil ball bilan butunlay boshqa sababdan chiqib qolardi.
+ *
+ * ⚠️ `all` KESILMAYDI (`byDamage` / `byValue` dan farqli): xonalar
+ * kesimi bloki "hammasi qayerda turibdi" degan savolga javob beradi va
+ * sakkizta bilan cheklansa, ro'yxatdan tushib qolgan xona ekranda
+ * umuman mavjud emasdek ko'rinardi. Xonalar soni o'nlab bo'ladi
+ * (jihozlar emas), shuning uchun to'liq ro'yxat arzon.
  */
 const buildLocations = async (monthKey, stocks, itemMeta) => {
   const { from, to } = monthInstantRange(monthKey);
@@ -621,6 +627,13 @@ const buildLocations = async (monthKey, stocks, itemMeta) => {
       typeLabel: LOCATION_TYPE_LABELS[location.type] ?? location.type,
       quantity,
       brokenQuantity: broken,
+      // ⚠️ Ayirma SERVERDA hisoblanadi: "mavjud / yaroqli / yaroqsiz"
+      // uchligi xatlov endpointida ham shu nom bilan qaytadi
+      // (`inventoryStock.service.js` → `totals`). Frontend uni o'zi
+      // ayirsa, ikkita ekranda ikkita hisob-kitob bo'lib qolardi va
+      // biri (masalan, manfiyga tushib ketishdan himoya) ikkinchisiga
+      // qo'shilmay qolardi.
+      serviceableQuantity: Math.max(0, quantity - broken),
       itemCount: stock?.items ?? 0,
       value: formatAmount(stock?.value ?? new Decimal(0)),
       healthRate: rateOf(quantity - broken, quantity),
@@ -669,6 +682,30 @@ const buildLocations = async (monthKey, stocks, itemMeta) => {
 
   const stripped = rows.map(({ _damage, _value, ...rest }) => rest);
 
+  // ── JAMI — reytingdan emas, TO'LIQ ro'yxatdan ──
+  // ⚠️ `byDamage` / `byValue` kesilgan (`LOCATION_LIMIT`), shuning uchun
+  // jami ular ustidan hisoblanmaydi: "jami 8 ta xona" degan yolg'on
+  // raqam chiqardi. `withStock` esa alohida ma'no tashiydi — xatlovi
+  // umuman kiritilmagan xona nol yaroqsiz bilan "hammasi joyida"
+  // bo'lib ko'rinadi, holbuki u shunchaki TO'LDIRILMAGAN.
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.quantity += row.quantity;
+      acc.brokenQuantity += row.brokenQuantity;
+      acc.serviceableQuantity += row.serviceableQuantity;
+      acc.value = acc.value.plus(row._value);
+      if (row.quantity > 0) acc.withStock += 1;
+      return acc;
+    },
+    {
+      quantity: 0,
+      brokenQuantity: 0,
+      serviceableQuantity: 0,
+      withStock: 0,
+      value: new Decimal(0),
+    },
+  );
+
   return {
     // Zarar bo'yicha reyting — "qaysi xonada ko'proq sinadi"
     byDamage: [...rows]
@@ -687,6 +724,18 @@ const buildLocations = async (monthKey, stocks, itemMeta) => {
     types,
     all: stripped,
     total: locations.length,
+    totals: {
+      locations: locations.length,
+      withStock: totals.withStock,
+      // Xatlovi bo'sh xonalar — bu ko'rsatkich "ma'lumot to'liqmi"
+      // degan savolga javob beradi, holatga emas
+      empty: locations.length - totals.withStock,
+      quantity: totals.quantity,
+      brokenQuantity: totals.brokenQuantity,
+      serviceableQuantity: totals.serviceableQuantity,
+      value: formatAmount(totals.value),
+      healthRate: rateOf(totals.serviceableQuantity, totals.quantity),
+    },
   };
 };
 

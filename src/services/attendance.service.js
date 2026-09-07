@@ -13,6 +13,11 @@ const {
   ForbiddenError,
 } = require("../utils/errors");
 const logger = require("../utils/logger");
+const { WORK_TIME_SOURCE } = require("../utils/constants");
+const {
+  getScheduleWorkTime,
+  getScheduleWorkTimes,
+} = require("./scheduleWorkTime.service");
 
 function getTodayNormalized() {
   const now = new Date();
@@ -60,10 +65,70 @@ function getWeeklyOverride(weeklySchedule, dayOfWeek) {
   return null;
 }
 
-async function getEffectiveSchedule(user, forDate) {
+/**
+ * Ro'yxat bo'ylab ishlash uchun oldindan yuklangan kontekst.
+ *
+ * `getEffectiveSchedule()` ni ko'p foydalanuvchi uchun chaqirishdan OLDIN bir
+ * marta chaqiriladi: dars jadvalidan ishlaydiganlar bitta so'rovda yig'iladi.
+ * Bunday xodim bo'lmasa hech qanday so'rov ketmaydi.
+ *
+ * @param {Array<{id: string, workTimeSource?: string}>} users
+ * @returns {Promise<{scheduleWorkTimes: Map}|null>}
+ */
+async function buildScheduleContext(users) {
+  const ids = (users || [])
+    .filter((u) => u.workTimeSource === WORK_TIME_SOURCE.SCHEDULE)
+    .map((u) => String(u.id));
+
+  if (ids.length === 0) return null;
+
+  return { scheduleWorkTimes: await getScheduleWorkTimes(ids) };
+}
+
+/**
+ * Foydalanuvchining BERILGAN KUN uchun effektiv ish vaqtini hal qiladi.
+ *
+ * Uch manba, shu tartibda:
+ *   1. DARS JADVALI — `workTimeSource === "schedule"` bo'lsa, boshqa hech
+ *      narsaga qaralmaydi (`scheduleWorkTime.service.js`);
+ *   2. FOYDALANUVCHI o'zidagi vaqt (+ shu kunning `weeklySchedule` istisnosi);
+ *   3. ROL default'i (platformada, barcha filiallarga umumiy).
+ *
+ * ⚠️ (1) qolgan ikkitasidan USTUN va ularga QAYTMAYDI: darsi yo'q kun — ish
+ * kuni emas degan qaror aynan shu yerda amalga oshadi. Qaytish yo'li ochilsa,
+ * "dars jadvali = ish jadvali" qoidasi kunma-kun buzilib turardi.
+ *
+ * @param {object} user - `workTimeSource`, `workStartTime`, `workEndTime`,
+ *   `workDays`, `weeklySchedule`, `role` maydonlari bilan
+ * @param {Date} [forDate] - qaysi kun uchun (default: bugun)
+ * @param {object} [ctx] - oldindan yuklangan ma'lumot (cron uchun N+1 ga qarshi)
+ * @param {Map} [ctx.scheduleWorkTimes] - `getScheduleWorkTimes()` natijasi
+ * @returns {Promise<{workStartTime, workEndTime, workDays, source, scheduleMissing?}>}
+ */
+async function getEffectiveSchedule(user, forDate, ctx = null) {
   const dayOfWeek = getDayOfWeekTashkent(forDate);
 
-  // User darajasida override bo'lsa
+  // ── 1. DARS JADVALIDAN ──────────────────────
+  if (user.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
+    const fromSchedule =
+      ctx?.scheduleWorkTimes?.get(String(user.id)) ||
+      (await getScheduleWorkTime(user.id));
+
+    const day = fromSchedule?.byDay?.get(dayOfWeek) || null;
+
+    return {
+      workStartTime: day?.startTime ?? null,
+      workEndTime: day?.endTime ?? null,
+      workDays: fromSchedule?.workDays ?? [],
+      source: WORK_TIME_SOURCE.SCHEDULE,
+      // Jadvali UMUMAN kiritilmagan — bu "dam olish kuni" emas, "ma'lumot
+      // to'liq emas". Chaqiruvchi buni ko'rsatishi/log qilishi uchun ochiq
+      // bayroq: aks holda xodim davomatdan jimgina chiqib ketardi.
+      scheduleMissing: !fromSchedule?.hasLessons,
+    };
+  }
+
+  // ── 2. FOYDALANUVCHI darajasida override bo'lsa ──
   if (user.workStartTime && user.workEndTime) {
     let startTime = user.workStartTime;
     let endTime = user.workEndTime;
@@ -82,10 +147,11 @@ async function getEffectiveSchedule(user, forDate) {
         user.workDays && user.workDays.length > 0
           ? user.workDays
           : [1, 2, 3, 4, 5],
+      source: "user",
     };
   }
 
-  // Roldan olish
+  // ── 3. ROL default'i ────────────────────────
   const role = await platformPrisma.role.findFirst({ where: { value: user.role } });
 
   let startTime = role?.workStartTime ?? null;
@@ -105,6 +171,7 @@ async function getEffectiveSchedule(user, forDate) {
       role?.workDays && role.workDays.length > 0
         ? role.workDays
         : [1, 2, 3, 4, 5],
+    source: "role",
   };
 }
 
@@ -565,6 +632,7 @@ async function getTodayAllRecords(roleFilter, dateInput) {
       firstName: true,
       lastName: true,
       role: true,
+      workTimeSource: true,
       workStartTime: true,
       workEndTime: true,
       workDays: true,
@@ -582,10 +650,17 @@ async function getTodayAllRecords(roleFilter, dateInput) {
     recordByUser[r.userId] = r;
   });
 
+  // Dars jadvalidan ishlaydigan xodimlarning oynasi BITTA so'rovda — ro'yxat
+  // bo'ylab yakka chaqiruv N+1 bo'lib ketardi.
+  const ctx = await buildScheduleContext(allUsers);
+
   const rows = await Promise.all(
     allUsers.map(async (u) => {
       const rec = recordByUser[u.id];
-      const schedule = await getEffectiveSchedule(u);
+      // ⚠️ `day` uzatiladi, "bugun" EMAS: o'tgan kun so'ralganda o'sha
+      // kunning jadvali kerak, aks holda dushanba oynasi seshanba
+      // yozuvlariga qo'yilib, kechikish noto'g'ri ko'rinardi.
+      const schedule = await getEffectiveSchedule(u, day, ctx);
       return {
         user: {
           id: u.id,
@@ -603,6 +678,8 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         outOfOffice: rec?.outOfOffice || false,
         expectedStart: schedule.workStartTime || null,
         expectedEnd: schedule.workEndTime || null,
+        scheduleSource: schedule.source,
+        isWorkDay: schedule.workDays.includes(getDayOfWeekTashkent(day)),
       };
     }),
   );
@@ -1027,6 +1104,7 @@ module.exports = {
   reviewExcuse,
   getTodayNormalized,
   getEffectiveSchedule,
+  buildScheduleContext,
   getScheduleForUser,
   isPenaltyPaused,
   createAttendancePenalty,

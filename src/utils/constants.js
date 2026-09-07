@@ -46,6 +46,14 @@ const DAYS = {
   SATURDAY: "shanba",
 };
 
+// ISH VAQTI MANBAI — `WorkTimeSource` enumining ko'zgusi (schema.prisma).
+// Prisma enum qiymatlari matn sifatida keladi, shuning uchun taqqoslash
+// har joyda shu konstantalar orqali yoziladi.
+const WORK_TIME_SOURCE = {
+  MANUAL: "manual",
+  SCHEDULE: "schedule",
+};
+
 // Hafta kunlari massivi (o'zbek tilida)
 const DAYS_UZ = [
   "yakshanba", // 0 - Sunday
@@ -123,6 +131,7 @@ module.exports = {
   ACTIVITY_CHANNEL_LABELS,
   DAYS,
   DAYS_UZ,
+  WORK_TIME_SOURCE,
   MONTHS_UZ,
   MONTHS_UZ_CAP,
   MONTHS_UZ_SHORT,

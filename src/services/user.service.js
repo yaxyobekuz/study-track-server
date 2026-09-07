@@ -12,7 +12,7 @@ const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
-const { ROLES } = require("../utils/constants");
+const { ROLES, WORK_TIME_SOURCE } = require("../utils/constants");
 const {
   allRoles,
   expandLegacyKeys,
@@ -23,6 +23,11 @@ const {
 } = require("../utils/permissions");
 const { currentDayDate } = require("../helpers/month.helpers");
 const { normalizePhone, formatPhoneUz } = require("../helpers/phone.helpers");
+const {
+  getScheduleWorkTimes,
+  getScheduleWorkTime,
+  summarizeWeek,
+} = require("./scheduleWorkTime.service");
 
 // Junction M2M larni eski tekis shaklga qaytaradi:
 //   classes  → [{ id, name }]   (UserClass)
@@ -103,6 +108,34 @@ async function syncDirectory(id) {
 // ⚠️ Bu maydonlarga yozadigan har qanday kod `propagateIdentity()` dan
 // o'tishi kerak. To'g'ridan-to'g'ri `prisma.user.update` faqat JORIY
 // filialga yozadi va qolgan nusxalar jimgina eskirib qoladi.
+/**
+ * Ish vaqti manbaini tekshiradi va normallashtiradi.
+ *
+ * ⚠️ `schedule` FAQAT O'QITUVCHIGA berilishi mumkin. Dars jadvalida
+ * o'qituvchidan boshqa hech kim turolmaydi (`validateLessonRefs` shuni
+ * talab qiladi), ya'ni ma'muriyat xodimiga bu manbani qo'ysak, uning
+ * ish kunlari BO'SH bo'lib qolardi va davomat undan jimgina voz kechardi.
+ *
+ * @param {string|undefined} value - kiruvchi qiymat
+ * @param {{role: string, extraRoles?: string[]}} user - kimga qo'yilyapti
+ * @returns {string} normallashgan qiymat
+ */
+function normalizeWorkTimeSource(value, user) {
+  const next = value || WORK_TIME_SOURCE.MANUAL;
+
+  if (!Object.values(WORK_TIME_SOURCE).includes(next)) {
+    throw new BadRequestError("Ish vaqti manbai noto'g'ri");
+  }
+
+  if (next === WORK_TIME_SOURCE.SCHEDULE && !hasRole(user, ROLES.TEACHER)) {
+    throw new BadRequestError(
+      "Ish vaqtini dars jadvalidan olish faqat o'qituvchi uchun mumkin",
+    );
+  }
+
+  return next;
+}
+
 const IDENTITY_FIELDS = [
   "username",
   "password",
@@ -168,6 +201,61 @@ async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
       : { omit: { password: true, plainPassword: !withPlain } }),
   });
   return flattenRelations(user);
+}
+
+/**
+ * Bitta xodim — `effectiveSchedule` bilan birga.
+ *
+ * `loadUser` xom qatorni beradi, bu esa ustiga "ish vaqti AMALDA qanday" ni
+ * qo'shadi: dars jadvalidan ishlaydigan xodimda `workStartTime` ustuni bo'sh
+ * turadi va uni to'g'ridan-to'g'ri ko'rsatgan ekran "jadval belgilanmagan"
+ * deb yozib qo'yardi.
+ *
+ * Xodimlar RO'YXATIDAGI `effectiveSchedule` bilan bir xil shakl
+ * (`getAllUsers`) — ikkita ekran bir xil maydonni boshqa-boshqa o'qimasligi
+ * uchun.
+ *
+ * @param {string} id
+ * @returns {Promise<object|null>}
+ */
+async function getUserById(id) {
+  const user = await loadUser(id);
+  if (!user) return user;
+
+  if (user.role === ROLES.STUDENT || user.role === ROLES.OWNER) {
+    return { ...user, effectiveSchedule: null };
+  }
+
+  if (user.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
+    const window = await getScheduleWorkTime(id);
+    return {
+      ...user,
+      effectiveSchedule: {
+        ...summarizeWeek(window),
+        source: WORK_TIME_SOURCE.SCHEDULE,
+      },
+    };
+  }
+
+  const role = await platformPrisma.role.findFirst({
+    where: { value: user.role },
+    select: { workStartTime: true, workEndTime: true, workDays: true },
+  });
+  const hasUserOverride = user.workStartTime && user.workEndTime;
+
+  return {
+    ...user,
+    effectiveSchedule: {
+      workStartTime: hasUserOverride
+        ? user.workStartTime
+        : role?.workStartTime || null,
+      workEndTime: hasUserOverride
+        ? user.workEndTime
+        : role?.workEndTime || null,
+      workDays: user.workDays?.length ? user.workDays : role?.workDays || [],
+      source: hasUserOverride ? "user" : "role",
+    },
+  };
 }
 
 async function getStats() {
@@ -465,30 +553,56 @@ async function getAllUsers(query, actor = null) {
 
   // Har bir foydalanuvchi uchun effektiv default ish vaqti (rol → user merosi).
   const roles = await platformPrisma.role.findMany({
-    select: { value: true, workStartTime: true, workEndTime: true },
+    select: {
+      value: true,
+      workStartTime: true,
+      workEndTime: true,
+      workDays: true,
+    },
   });
   const roleMap = {};
   roles.forEach((r) => {
     roleMap[r.value] = r;
   });
 
+  // Dars jadvalidan ishlaydiganlarning oynasi — BITTA so'rovda (sahifadagi
+  // xodimlar uchun). Bunday xodim bo'lmasa so'rov umuman ketmaydi.
+  const scheduleWorkTimes = await getScheduleWorkTimes(
+    users
+      .filter((u) => u.workTimeSource === WORK_TIME_SOURCE.SCHEDULE)
+      .map((u) => u.id),
+  );
+
   const usersWithSchedule = users.map((u) => {
     const obj = flattenRelations(u);
     if (u.role === "student" || u.role === "owner") {
       obj.effectiveSchedule = null;
-    } else {
-      const role = roleMap[u.role];
-      const hasUserOverride = u.workStartTime && u.workEndTime;
-      obj.effectiveSchedule = {
-        workStartTime: hasUserOverride
-          ? u.workStartTime
-          : role?.workStartTime || null,
-        workEndTime: hasUserOverride
-          ? u.workEndTime
-          : role?.workEndTime || null,
-        source: hasUserOverride ? "user" : "role",
-      };
+      return obj;
     }
+
+    // ── Dars jadvalidan ──
+    // ⚠️ Bu yerdagi vaqtlar HAFTA BO'YICHA diapazon (`summarizeWeek` izohi):
+    // ro'yxatda odamga bitta qator ajraladi, kun-kunga ajratilgani `byDay` da.
+    if (u.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
+      obj.effectiveSchedule = {
+        ...summarizeWeek(scheduleWorkTimes.get(u.id)),
+        source: WORK_TIME_SOURCE.SCHEDULE,
+      };
+      return obj;
+    }
+
+    const role = roleMap[u.role];
+    const hasUserOverride = u.workStartTime && u.workEndTime;
+    obj.effectiveSchedule = {
+      workStartTime: hasUserOverride
+        ? u.workStartTime
+        : role?.workStartTime || null,
+      workEndTime: hasUserOverride
+        ? u.workEndTime
+        : role?.workEndTime || null,
+      workDays: u.workDays?.length ? u.workDays : role?.workDays || [],
+      source: hasUserOverride ? "user" : "role",
+    };
     return obj;
   });
 
@@ -639,6 +753,10 @@ async function createUser(data, actorId, actor = null) {
               }
             : {}),
           ...(role !== "student" && {
+            workTimeSource: normalizeWorkTimeSource(workTimeSource, {
+              role,
+              extraRoles: [],
+            }),
             workStartTime: workStartTime || null,
             workEndTime: workEndTime || null,
             workDays: workDays || [],
@@ -687,6 +805,7 @@ async function updateUser(id, data) {
     classes: userClasses,
     subjects: userSubjects,
     isActive,
+    workTimeSource,
     workStartTime,
     workEndTime,
     workDays,
@@ -718,6 +837,11 @@ async function updateUser(id, data) {
 
   // Ish jadvali override (davomat uchun)
   if (user.role !== "student") {
+    // ⚠️ Manba almashganda qo'lda kiritilgan vaqtlar O'CHIRILMAYDI: xodim
+    // dars jadvalidan qat'iy vaqtga qaytarilganda eski qiymatlari joyida
+    // turishi kerak, aks holda ularni qaytadan terish kerak bo'lardi.
+    if (workTimeSource !== undefined)
+      update.workTimeSource = normalizeWorkTimeSource(workTimeSource, user);
     if (workStartTime !== undefined)
       update.workStartTime = workStartTime || null;
     if (workEndTime !== undefined) update.workEndTime = workEndTime || null;
@@ -1177,12 +1301,22 @@ async function getUserBranches(userId) {
             role: true,
             permissions: true,
             isActive: true,
+            workTimeSource: true,
             workStartTime: true,
             workEndTime: true,
             workDays: true,
           },
         }),
       );
+
+      // ⚠️ Ish vaqti manbai HAR FILIALDA ALOHIDA (`permissions` bilan bir xil
+      // qoida): odam Chilonzorda o'qituvchi bo'lib dars jadvali bo'yicha,
+      // Yunusobodda ma'muriyat bo'lib qat'iy vaqt bilan ishlashi mumkin.
+      // Shu sababli oyna ham O'SHA filial kontekstida hisoblanadi.
+      const scheduleWindow =
+        profile?.workTimeSource === WORK_TIME_SOURCE.SCHEDULE
+          ? await runWithBranch(branch, () => getScheduleWorkTime(userId))
+          : null;
 
       return {
         branch: {
@@ -1197,11 +1331,17 @@ async function getUserBranches(userId) {
         permissions: profile?.permissions ?? [],
         isActive: profile?.isActive ?? true,
         effectiveSchedule: profile
-          ? {
-              workStartTime: profile.workStartTime,
-              workEndTime: profile.workEndTime,
-              workDays: profile.workDays,
-            }
+          ? scheduleWindow
+            ? {
+                ...summarizeWeek(scheduleWindow),
+                source: WORK_TIME_SOURCE.SCHEDULE,
+              }
+            : {
+                workStartTime: profile.workStartTime,
+                workEndTime: profile.workEndTime,
+                workDays: profile.workDays,
+                source: WORK_TIME_SOURCE.MANUAL,
+              }
           : null,
         profileMissing: !profile,
       };
@@ -1393,7 +1533,7 @@ module.exports = {
   // tashqi ko'rinishi). Controller o'z so'rovini yozmasligi kerak: aynan
   // shunday nusxa `subjects` ni unutgani uchun detal sahifasida fanlar
   // umuman ko'rinmay yurgan edi.
-  getUserById: loadUser,
+  getUserById,
   getAllUsers,
   createUser,
   updateUser,

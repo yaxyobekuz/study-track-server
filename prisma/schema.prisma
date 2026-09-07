@@ -228,6 +228,23 @@ enum ScheduleDay {
   shanba
 }
 
+// ISH VAQTI MANBAI — davomat qaysi jadvalga qarab tekshirilishini hal qiladi.
+//
+// `manual`   — `User.workStartTime/workEndTime/workDays` (bo'sh bo'lsa roldan
+//              meros). Butun tizimning eski va standart xatti-harakati.
+// `schedule` — DARS JADVALIDAN hisoblanadi: o'sha kundagi BIRINCHI darsning
+//              boshlanishi ish boshlanishi, OXIRGI darsning tugashi ish
+//              tugashi bo'ladi. Darsi yo'q kun ish kuni sanalmaydi.
+//
+// ⚠️ Bu FILIALGA XOS (`permissions` bilan bir xil qoida): odam Chilonzorda
+// o'qituvchi bo'lib dars jadvali bo'yicha, Yunusobodda esa ma'muriyat bo'lib
+// qat'iy ish vaqti bilan ishlashi mumkin. Shu sababli `IDENTITY_FIELDS` ga
+// KIRMAYDI va `propagateIdentity()` dan o'tmaydi.
+enum WorkTimeSource {
+  manual
+  schedule
+}
+
 // Moliyaviy holat — StudentFinanceStatus DAVR jadvalining qiymati.
 // Model nomi bilan to'qnashmasligi uchun `Enum` qo'shimchasi
 // (MessageDeliveryStatus / MessageDeliveryStatusEnum uslubi).
@@ -356,6 +373,11 @@ model User {
   archivedAt       DateTime? @map("archived_at")
   // { coinBalance, penaltyPoints } — arxivlashdan oldingi zaxira
   archiveSnapshot  Json?     @map("archive_snapshot")
+  // Ish vaqti QAYERDAN olinadi — `WorkTimeSource` izohiga qarang.
+  // `schedule` bo'lganda quyidagi uch maydon va `weeklySchedule` DAVOMATDA
+  // ishlatilmaydi (o'chirilmaydi ham: manbani qaytarganda qo'lda kiritilgan
+  // vaqt joyida turishi kerak).
+  workTimeSource   WorkTimeSource @default(manual) @map("work_time_source")
   workStartTime    String?   @map("work_start_time")
   workEndTime      String?   @map("work_end_time")
   workDays         Int[]     @map("work_days")
