@@ -80,6 +80,23 @@ const updateUser = asyncHandler(async (req, res) => {
   });
 });
 
+// Telefon raqamlari — alohida ruxsat (`users.phone`), `updateUser` dan
+// ajratilgan. Faqat kelgan kalit yoziladi; bo'sh satr = raqam o'chirildi.
+const updateUserPhone = asyncHandler(async (req, res) => {
+  const { phone, parentPhone } = req.body;
+
+  const user = await userService.updateUserPhone(req.params.id, {
+    phone,
+    parentPhone,
+  });
+
+  res.json({
+    success: true,
+    message: "Telefon raqamlari yangilandi",
+    data: user,
+  });
+});
+
 // Reset user password (Owner only)
 // QO'SHIMCHA ROLLAR — faqat owner (route darajasida `authorize(OWNER)`).
 //
@@ -181,6 +198,8 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 40 },
+      { header: "Telefon", key: "phone", width: 20 },
+      { header: "Ota-ona telefoni", key: "parentPhone", width: 20 },
       ...(withCoins
         ? [{ header: "Tangalar", key: "coinBalance", width: 12 }]
         : []),
@@ -212,6 +231,8 @@ const getStudents = asyncHandler(async (req, res) => {
 });
 
 // Update own profile (any authenticated user)
+// ⚠️ `phone` / `parentPhone` ATAYLAB olinmaydi: o'quvchi o'z raqamini
+// o'zgartira olmaydi (faqat `users.phone` ruxsati bilan, `PUT /:id/phone`).
 const updateMe = asyncHandler(async (req, res) => {
   const { firstName, lastName, username, currentPassword, newPassword } = req.body;
 
@@ -284,6 +305,7 @@ module.exports = {
   getUser,
   createUser,
   updateUser,
+  updateUserPhone,
   resetPassword,
   getUserPassword,
   deleteUser,

@@ -11,10 +11,10 @@ const mark = asyncHandler(async (req, res) => {
 });
 
 const updateRecord = asyncHandler(async (req, res) => {
-  const { status, excuseReason } = req.body;
+  const { status, excuseReason, absenceReason } = req.body;
   const record = await studentAttendanceService.updateRecord(
     req.params.id,
-    { status, excuseReason },
+    { status, excuseReason, absenceReason },
     req.user.id
   );
   res.json({ success: true, data: record });
@@ -30,6 +30,18 @@ const getTodayClass = asyncHandler(async (req, res) => {
 
 const getTodayAllStudents = asyncHandler(async (req, res) => {
   const result = await studentAttendanceService.getTodayAllStudents(req);
+  res.json({ success: true, ...result });
+});
+
+// Belgilash uchun to'liq ro'yxat (sinf bo'yicha yoki barcha sinflar)
+const getMarkList = asyncHandler(async (req, res) => {
+  const { date, status, search, classId } = req.query;
+  const result = await studentAttendanceService.getMarkList({
+    date: date || null,
+    status: status || null,
+    search: search || null,
+    classId: classId || null,
+  });
   res.json({ success: true, ...result });
 });
 
@@ -70,6 +82,7 @@ module.exports = {
   updateRecord,
   getTodayClass,
   getTodayAllStudents,
+  getMarkList,
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,

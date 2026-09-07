@@ -8,6 +8,7 @@ const {
   updateRecord,
   getTodayClass,
   getTodayAllStudents,
+  getMarkList,
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,
@@ -18,6 +19,8 @@ const {
 router.get("/classes", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW, ROLES.RECEPTION), getClasses);
 router.get("/today", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW, ROLES.RECEPTION), getTodayAllStudents);
 router.get("/today/:classId", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW, ROLES.RECEPTION), getTodayClass);
+// Belgilash ro'yxati (sahifalanmaydi) — belgilash ruxsati bilan
+router.get("/mark-list", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK, ROLES.RECEPTION), getMarkList);
 router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK, ROLES.RECEPTION), mark);
 router.put("/:id", protect, authorizePermission(PERMISSIONS.ATTENDANCE_UPDATE, ROLES.RECEPTION), updateRecord);
 

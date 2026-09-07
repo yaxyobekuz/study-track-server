@@ -13,8 +13,16 @@ const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
 const { ROLES } = require("../utils/constants");
-const { allRoles, expandLegacyKeys, normalizePermissions, hasRole } = require("../utils/permissions");
+const {
+  allRoles,
+  expandLegacyKeys,
+  normalizePermissions,
+  hasRole,
+  hasPermission,
+  PERMISSIONS,
+} = require("../utils/permissions");
 const { currentDayDate } = require("../helpers/month.helpers");
+const { normalizePhone, formatPhoneUz } = require("../helpers/phone.helpers");
 
 // Junction M2M larni eski tekis shaklga qaytaradi:
 //   classes  → [{ id, name }]   (UserClass)
@@ -102,6 +110,8 @@ const IDENTITY_FIELDS = [
   "firstName",
   "lastName",
   "gender",
+  "phone",
+  "parentPhone",
   "isActive",
   "isArchived",
 ];
@@ -513,7 +523,7 @@ async function getAllUsers(query, actor = null) {
  *
  * @param {object} data
  * @param {string} [actorId] - kim yaratdi (o'qish davri auditi va egalik uchun)
- * @param {{ role?: string }} [actor] - yaratuvchining o'zi (rol cheklovi uchun)
+ * @param {{ role?: string, extraRoles?: string[], permissions?: string[] }} [actor] - yaratuvchining o'zi (rol va ruxsat cheklovi uchun)
  */
 async function createUser(data, actorId, actor = null) {
   const {
@@ -523,6 +533,8 @@ async function createUser(data, actorId, actor = null) {
     lastName,
     role,
     gender,
+    phone,
+    parentPhone,
     classes: userClasses,
     workStartTime,
     workEndTime,
@@ -546,6 +558,22 @@ async function createUser(data, actorId, actor = null) {
   if (hasRole(actor, ROLES.TEACHER) && role !== ROLES.STUDENT) {
     throw new ForbiddenError("O'qituvchi faqat o'quvchi qo'sha oladi");
   }
+
+  // TELEFON — ALOHIDA RUXSAT (`users.phone`), `users.create` bilan birga
+  // kelmaydi. Raqam maktabdan tashqariga qo'ng'iroq qilish yo'li, shuning
+  // uchun uni kim kiritishini owner o'zi hal qiladi (`PUT /:id/phone` bilan
+  // bir xil darvoza). Ruxsati yo'q xodim raqam yubormasa — jim o'tadi,
+  // yuborsa — ochiq rad etiladi: jimgina tashlab yuborish "kiritdim-ku"
+  // degan chalkashlik tug'dirardi.
+  const canSetPhone =
+    hasRole(actor, ROLES.OWNER) ||
+    hasPermission(actor?.permissions ?? [], PERMISSIONS.USERS_PHONE);
+  const phoneGiven = (v) => v !== undefined && v !== null && String(v).trim() !== "";
+  if (!canSetPhone && (phoneGiven(phone) || phoneGiven(parentPhone))) {
+    throw new ForbiddenError("Telefon raqamini kiritish uchun ruxsatingiz yo'q");
+  }
+  const normalizedPhone = canSetPhone ? normalizePhone(phone) : null;
+  const normalizedParentPhone = canSetPhone ? normalizePhone(parentPhone) : null;
 
   const roleExists = await platformPrisma.role.findUnique({
     where: { value: role },
@@ -600,6 +628,8 @@ async function createUser(data, actorId, actor = null) {
           lastName,
           role,
           gender: gender || null,
+          phone: normalizedPhone,
+          parentPhone: normalizedParentPhone,
           createdBy: actorId ?? null,
           ...(role === "student" && userClasses && userClasses.length > 0
             ? {
@@ -645,6 +675,9 @@ async function createUser(data, actorId, actor = null) {
 
 /**
  * Foydalanuvchini yangilash.
+ *
+ * ⚠️ `phone` / `parentPhone` bu yerda QABUL QILINMAYDI (kelsa e'tiborsiz
+ * qoladi): ular alohida ruxsat ostida — `updateUserPhone`.
  */
 async function updateUser(id, data) {
   const {
@@ -769,6 +802,48 @@ async function updateUser(id, data) {
   // Yo'naltirgichdagi denormalizatsiyani yangilaymiz (ism/holat qidiruvda
   // va yig'ma hisobotda platformadan o'qiladi).
   await syncDirectory(id);
+
+  return loadUser(id);
+}
+
+/**
+ * Telefon raqamlarini yangilash (`PUT /users/:id/phone`).
+ *
+ * Alohida amal, `updateUser` ning bir qismi EMAS: ruxsati ham alohida
+ * (`users.phone`), sababi `schema.prisma` dagi izohda. Owner
+ * foydalanuvchisiga ham yoziladi — raqam login emas, uni cheklash shart emas.
+ *
+ * Faqat KELGAN kalit yoziladi: `{ parentPhone: null }` yuborilsa o'quvchi
+ * raqamiga tegilmaydi. Bo'sh satr ham `null` demak (raqam o'chirildi).
+ *
+ * Telefon — identifikatsiya maydoni: avval joriy filialga yoziladi, keyin
+ * `propagateIdentity` bilan xodimning qolgan filiallariga (mavjud
+ * `updateUser` naqshi).
+ *
+ * @param {string} id
+ * @param {{ phone?: string|null, parentPhone?: string|null }} data
+ */
+async function updateUserPhone(id, data = {}) {
+  const { phone, parentPhone } = data;
+
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (!user) {
+    throw new NotFoundError("Foydalanuvchi topilmadi");
+  }
+
+  const update = {};
+  if (phone !== undefined) update.phone = normalizePhone(phone);
+  if (parentPhone !== undefined) update.parentPhone = normalizePhone(parentPhone);
+
+  if (Object.keys(update).length === 0) {
+    throw new BadRequestError("Telefon raqami kiritilmadi");
+  }
+
+  await prisma.user.update({ where: { id }, data: update });
+  await propagateIdentity(id, update);
 
   return loadUser(id);
 }
@@ -958,6 +1033,9 @@ async function getUsersForExport(role) {
       user.classes && user.classes.length > 0
         ? user.classes.map((c) => c.class.name).join(", ")
         : "-",
+    // Ekran bilan bir xil ko'rinish (`+998 90 123 45 67`), bo'sh bo'lsa `—`
+    phone: formatPhoneUz(user.phone),
+    parentPhone: formatPhoneUz(user.parentPhone),
     // Ro'yxat jadvalidagi "Tangalar" va "Jarimalar" ustunlari bilan bir xil
     // manba: eksport shu ikki raqamsiz ro'yxatning to'liq nusxasi bo'lmaydi.
     coinBalance: user.coinBalance ?? 0,
@@ -1000,6 +1078,8 @@ async function getStudents(query) {
       firstName: true,
       lastName: true,
       username: true,
+      phone: true,
+      parentPhone: true,
       penaltyPoints: true,
       classes: { include: { class: { select: { id: true, name: true } } } },
     },
@@ -1012,6 +1092,9 @@ async function getStudents(query) {
 
 /**
  * Foydalanuvchining o'z profilini yangilash.
+ *
+ * ⚠️ `phone` / `parentPhone` QABUL QILINMAYDI: o'quvchi o'z raqamini
+ * o'zgartira olmaydi — u faqat `users.phone` ruxsati bilan yoziladi.
  */
 async function updateSelfProfile(userId, data) {
   const { firstName, lastName, username, currentPassword, newPassword } = data;
@@ -1180,6 +1263,8 @@ async function attachToBranch(userId, { branchId, role, actorId = null }) {
         firstName: true,
         lastName: true,
         gender: true,
+        phone: true,
+        parentPhone: true,
         isActive: true,
         isArchived: true,
       },
@@ -1212,6 +1297,8 @@ async function attachToBranch(userId, { branchId, role, actorId = null }) {
         firstName: source.firstName,
         lastName: source.lastName,
         gender: source.gender,
+        phone: source.phone,
+        parentPhone: source.parentPhone,
         role: nextRole,
         isActive: source.isActive,
         permissions: roleRow.permissions || [],
@@ -1228,6 +1315,8 @@ async function attachToBranch(userId, { branchId, role, actorId = null }) {
         plainPassword: source.plainPassword,
         firstName: source.firstName,
         lastName: source.lastName,
+        phone: source.phone,
+        parentPhone: source.parentPhone,
         isActive: source.isActive,
         isArchived: false,
       },
@@ -1308,6 +1397,7 @@ module.exports = {
   getAllUsers,
   createUser,
   updateUser,
+  updateUserPhone,
   resetPassword,
   getUserPassword,
   deleteUser,
