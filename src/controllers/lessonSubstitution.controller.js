@@ -39,6 +39,25 @@ const createSubstitution = asyncHandler(async (req, res) => {
   });
 });
 
+// TAHRIRLASH — faqat hali boshlanmagan yozuv (service tekshiradi)
+const updateSubstitution = asyncHandler(async (req, res) => {
+  const data = await substitutionService.updateSubstitution(
+    req.params.id,
+    req.body,
+    req.user.id,
+  );
+  res.json({ success: true, data, message: "O'rinbosarlik yangilandi" });
+});
+
+// O'CHIRISH — faqat hali boshlanmagan yozuv. Boshlangani BEKOR qilinadi.
+const deleteSubstitution = asyncHandler(async (req, res) => {
+  const data = await substitutionService.deleteSubstitution(
+    req.params.id,
+    req.user.id,
+  );
+  res.json({ success: true, ...data });
+});
+
 const cancelSubstitution = asyncHandler(async (req, res) => {
   const data = await substitutionService.cancelSubstitution(
     req.params.id,
@@ -54,5 +73,7 @@ module.exports = {
   getSubstitution,
   getAvailableLessons,
   createSubstitution,
+  updateSubstitution,
+  deleteSubstitution,
   cancelSubstitution,
 };

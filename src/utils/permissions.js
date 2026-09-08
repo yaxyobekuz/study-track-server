@@ -443,15 +443,22 @@ const PERMISSION_SECTIONS = [
     // Shuning uchun uni yaratish "jadvalni tahrirlash" bilan bir xil
     // og'irlikdagi amal emas, alohida qaror.
     //
-    // ⚠️ Bekor qilish ALOHIDA: u o'tgan davr uchun soatni egasiga
-    // qaytaradi, ya'ni pulga tegadi.
+    // ⚠️ `cancel` IKKI AMALNI qamraydi va ikkalasi ham "qarorni orqaga
+    // qaytarish": BEKOR QILISH (yozuv amalda bo'lgan — sababi bilan
+    // yopiladi, tarixda qoladi) va O'CHIRISH (yozuv hali boshlanmagan —
+    // hech qachon kuchga kirmagan, tarixda qolishi shart emas).
+    // Alohida kalit qo'shilmadi: o'chirish xavfliroq amal EMAS, u faqat
+    // hech narsa bo'lmagan holatda ochiq.
+    //
+    // ⚠️ TAHRIRLASH esa `create` bilan: bu "kim kimning o'rniga chiqadi"
+    // degan AYNI qarorni qayta qabul qilish.
     key: SECTIONS.SUBSTITUTIONS,
     label: "Dars o'rinbosarligi",
     group: "Ta'lim",
     actions: [
       A.view,
       { key: "create", label: "O'rinbosar biriktirish" },
-      { key: "cancel", label: "Bekor qilish" },
+      { key: "cancel", label: "Bekor qilish / o'chirish" },
     ],
   },
   {

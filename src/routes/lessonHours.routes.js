@@ -22,6 +22,8 @@ const {
   getSubstitution,
   getAvailableLessons,
   createSubstitution,
+  updateSubstitution,
+  deleteSubstitution,
   cancelSubstitution,
 } = require("../controllers/lessonSubstitution.controller");
 
@@ -80,6 +82,28 @@ router.get(
   validateObjectId("id"),
   authorizePermission(PERMISSIONS.SUBSTITUTIONS_VIEW),
   getSubstitution,
+);
+
+// TAHRIRLASH — YARATISH huquqi bilan: bu "kim kimning o'rniga chiqadi"
+// degan AYNI qarorni qayta qabul qilish, boshqa og'irlikdagi amal emas.
+// Yozuv boshlangan bo'lsa, service uni baribir rad etadi.
+router.put(
+  "/substitutions/:id",
+  protect,
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.SUBSTITUTIONS_CREATE),
+  updateSubstitution,
+);
+
+// O'CHIRISH — BEKOR QILISH huquqi bilan: ikkalasi ham "qarorni orqaga
+// qaytarish". O'chirish faqat HECH QACHON kuchga kirmagan yozuvda ochiq,
+// ya'ni u bekor qilishdan xavfliroq amal emas.
+router.delete(
+  "/substitutions/:id",
+  protect,
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.SUBSTITUTIONS_CANCEL),
+  deleteSubstitution,
 );
 
 // Bekor qilish ALOHIDA huquq: u o'tgan davr soatini egasiga qaytaradi,

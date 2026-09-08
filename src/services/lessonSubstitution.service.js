@@ -109,6 +109,7 @@ const serializeItem = (item) => ({
 
 const serialize = (row, { today = currentDayDate(), original, substitute } = {}) => {
   const items = (row.items ?? []).map(serializeItem);
+  const phase = phaseOf(row, today);
 
   return {
     id: row.id,
@@ -134,7 +135,12 @@ const serialize = (row, { today = currentDayDate(), original, substitute } = {})
     note: row.note,
     status: row.status,
     statusLabel: STATUS_LABELS[row.status] ?? row.status,
-    phase: phaseOf(row, today),
+    phase,
+    // ⚠️ TAHRIRLASH VA O'CHIRISH FAQAT BOSHLANMAGAN YOZUVDA. Boshlangan
+    // paytdan e'tiboran yozuv dalil bo'lib qoladi (`assertNotStarted`
+    // izohiga qarang) — panel tugmalarni shu bayroqqa qarab ko'rsatadi.
+    // Server baribir qayta tekshiradi; bu faqat UI qatlami.
+    canEdit: phase.key === "upcoming",
     cancelReason: row.cancelReason,
     cancelledAt: row.cancelledAt,
     createdAt: row.createdAt,
@@ -401,13 +407,24 @@ async function getTeacherOptions() {
 }
 
 /**
- * O'RINBOSARLIK YARATISH.
+ * TEKSHIRUV VA TAYYORLASH — yaratish ham, tahrirlash ham SHU YERDAN o'tadi.
+ *
+ * ⚠️ IKKI NUSXA BO'LMASLIGI SHART. Tekshiruvlar ro'yxati uzun (katak
+ * egasiniki, davrga tushadimi, boshqa o'rinbosardami, o'rinbosarning o'zi
+ * bandmi) va ular pulga ham, jurnal huquqiga ham ta'sir qiladi. Tahrirlash
+ * uchun alohida nusxa yozilsa, ertami-kechmi bittasiga qo'shilgan shart
+ * ikkinchisida unutilardi — va aynan tahrir yo'li orqali ikkita o'rinbosar
+ * bitta darsga tushib qolardi.
  *
  * @param {object} data - { originalTeacherId, substituteTeacherId, fromDate,
  *   toDate, reason, note, lessons: [{ classId, day, lessonOrder }] }
- * @param {string} userId
+ * @param {object} [options]
+ * @param {string} [options.excludeId] - tahrirlanayotgan yozuv: to'qnashuv
+ *   tekshiruvida u O'ZI bilan solishtirilmasligi kerak
+ * @returns {Promise<object>} { original, substitute, fromDate, toDate,
+ *   reason, note, itemRows }
  */
-async function createSubstitution(data, userId) {
+async function prepareSubstitution(data, { excludeId = null } = {}) {
   const [original, substitute] = await Promise.all([
     assertTeacher(data.originalTeacherId, "Dars egasi"),
     assertTeacher(data.substituteTeacherId, "O'rinbosar"),
@@ -435,6 +452,14 @@ async function createSubstitution(data, userId) {
   }
 
   const windowDays = daysWithinWindow(fromDate, toDate);
+
+  // Tahrirlashda yozuvning O'ZI to'qnashuv sifatida sanalmasligi kerak
+  const otherActive = {
+    status: "active",
+    fromDate: { lte: toDate },
+    toDate: { gte: fromDate },
+    ...(excludeId ? { id: { not: excludeId } } : {}),
+  };
 
   // ── 1. Tanlangan kataklar HAQIQATAN egasinikimi ──
   //
@@ -501,11 +526,7 @@ async function createSubstitution(data, userId) {
         day: p.day,
         lessonOrder: p.lessonOrder,
       })),
-      substitution: {
-        status: "active",
-        fromDate: { lte: toDate },
-        toDate: { gte: fromDate },
-      },
+      substitution: otherActive,
     },
     include: { substitution: { select: { fromDate: true, toDate: true } } },
   });
@@ -547,12 +568,7 @@ async function createSubstitution(data, userId) {
   // O'rinbosarning boshqa o'rinbosarligi bilan to'qnashuv
   const substituteBusy = await prisma.lessonSubstitutionItem.findMany({
     where: {
-      substitution: {
-        status: "active",
-        substituteTeacherId: substitute.id,
-        fromDate: { lte: toDate },
-        toDate: { gte: fromDate },
-      },
+      substitution: { ...otherActive, substituteTeacherId: substitute.id },
     },
     select: { day: true, lessonOrder: true },
   });
@@ -587,6 +603,88 @@ async function createSubstitution(data, userId) {
   const classMap = new Map(classes.map((c) => [c.id, c.name]));
   const subjectMap = new Map(subjects.map((s) => [s.id, s.name]));
 
+  const itemRows = picked.map((p) => {
+    const period = periodMap.get(p.lessonOrder);
+    return {
+      classId: p.classId,
+      subjectId: p.lesson.subjectId,
+      day: p.day,
+      lessonOrder: p.lessonOrder,
+      snapshot: {
+        className: classMap.get(p.classId) ?? null,
+        subjectName: subjectMap.get(p.lesson.subjectId) ?? null,
+        startTime: p.lesson.startTime || period?.startTime || null,
+        endTime: p.lesson.endTime || period?.endTime || null,
+      },
+    };
+  });
+
+  return { original, substitute, fromDate, toDate, reason, note, itemRows };
+}
+
+/** Yozuv uchun takrorlanish sonini hisoblaydi (bayram va ta'til chiqarilgan). */
+async function attachOccurrences(row) {
+  const [holidaySet, vacationSet] = await Promise.all([
+    buildHolidaySet(row.fromDate, row.toDate),
+    getVacationSet(),
+  ]);
+
+  row.occurrenceCount = countOccurrences(
+    row.items,
+    row.fromDate,
+    row.toDate,
+    holidaySet,
+    vacationSet,
+  );
+
+  return row;
+}
+
+/**
+ * YOZUV HALI BOSHLANMAGANMI — tahrirlash va o'chirishning YAGONA sharti.
+ *
+ * ⚠️ BOSHLANGAN YOZUV TAHRIRLANMAYDI HAM, O'CHIRILMAYDI HAM. Boshlangan
+ * paytdan e'tiboran u DALIL bo'lib qoladi: o'rinbosar o'sha kataklarga
+ * baho yozgan bo'lishi mumkin, soat esa oylik hisobiga o'tgan bo'ladi.
+ * Uni o'zgartirish o'tgan kunni qayta yozish degani bo'lardi — o'sha
+ * baholar endi "sababsiz" bo'lib qolardi.
+ *
+ * Boshlangan yozuvni to'xtatishning yagona yo'li — BEKOR QILISH
+ * (`cancelSubstitution`): u izni saqlaydi.
+ *
+ * Boshlanmagan yozuv esa hali REJA: hech kim unga tayanmagan, hech qanday
+ * soat yozilmagan. Uni to'g'rilash yoki olib tashlash mumkin.
+ *
+ * @param {object} row
+ * @param {string} action - xato xabaridagi amal nomi
+ */
+function assertNotStarted(row, action) {
+  if (row.status === "cancelled") {
+    throw new BadRequestError(`Bekor qilingan yozuvni ${action} mumkin emas`);
+  }
+
+  const today = currentDayDate();
+
+  if (row.fromDate.getTime() <= today.getTime()) {
+    throw new BadRequestError(
+      `O'rinbosarlik ${formatDateUz(row.fromDate, { utc: true })} da boshlangan — ` +
+        `uni ${action} mumkin emas. Kerak bo'lsa bekor qiling: shunda soat ` +
+        "egasiga qaytadi va yozuv tarixda qoladi.",
+    );
+  }
+}
+
+/**
+ * O'RINBOSARLIK YARATISH.
+ *
+ * @param {object} data - { originalTeacherId, substituteTeacherId, fromDate,
+ *   toDate, reason, note, lessons: [{ classId, day, lessonOrder }] }
+ * @param {string} userId
+ */
+async function createSubstitution(data, userId) {
+  const { original, substitute, fromDate, toDate, reason, note, itemRows } =
+    await prepareSubstitution(data);
+
   const created = await prisma.$transaction(async (tx) => {
     const row = await tx.lessonSubstitution.create({
       data: {
@@ -609,22 +707,7 @@ async function createSubstitution(data, userId) {
     });
 
     await tx.lessonSubstitutionItem.createMany({
-      data: picked.map((p) => {
-        const period = periodMap.get(p.lessonOrder);
-        return {
-          substitutionId: row.id,
-          classId: p.classId,
-          subjectId: p.lesson.subjectId,
-          day: p.day,
-          lessonOrder: p.lessonOrder,
-          snapshot: {
-            className: classMap.get(p.classId) ?? null,
-            subjectName: subjectMap.get(p.lesson.subjectId) ?? null,
-            startTime: p.lesson.startTime || period?.startTime || null,
-            endTime: p.lesson.endTime || period?.endTime || null,
-          },
-        };
-      }),
+      data: itemRows.map((item) => ({ ...item, substitutionId: row.id })),
     });
 
     return tx.lessonSubstitution.findUnique({
@@ -633,17 +716,7 @@ async function createSubstitution(data, userId) {
     });
   });
 
-  const [holidaySet, vacationSet] = await Promise.all([
-    buildHolidaySet(fromDate, toDate),
-    getVacationSet(),
-  ]);
-  created.occurrenceCount = countOccurrences(
-    created.items,
-    fromDate,
-    toDate,
-    holidaySet,
-    vacationSet,
-  );
+  await attachOccurrences(created);
 
   logger.info(
     `[substitution] ${fullName(original)} → ${fullName(substitute)}: ` +
@@ -652,6 +725,140 @@ async function createSubstitution(data, userId) {
   );
 
   return serialize(created, { original, substitute });
+}
+
+/**
+ * TAHRIRLASH — FAQAT BOSHLANMAGAN YOZUV.
+ *
+ * Yozuv butunlay qayta quriladi: ikkala o'qituvchi, davr, sabab va darslar
+ * ro'yxati. Tekshiruvlar yaratishdagi bilan AYNAN bir xil
+ * (`prepareSubstitution`), farq faqat shundaki, to'qnashuv qidiruvida
+ * yozuvning O'ZI hisobga olinmaydi.
+ *
+ * ⚠️ Darslar ro'yxati O'RNIGA QO'YILADI, qo'shilmaydi: eskilari
+ * o'chirilib, yangilari yoziladi. Yamash (qaysi qo'shildi, qaysi olindi)
+ * bir xil natijani ikki xil yo'l bilan berardi va "nega bu dars hali ham
+ * ro'yxatda" degan savolni tug'dirardi.
+ *
+ * @param {string} id
+ * @param {object} data
+ * @param {string} userId
+ */
+async function updateSubstitution(id, data, userId) {
+  const existing = await prisma.lessonSubstitution.findUnique({
+    where: { id },
+    include: { items: true },
+  });
+  if (!existing) throw new NotFoundError("O'rinbosarlik topilmadi");
+
+  assertNotStarted(existing, "tahrirlash");
+
+  const { original, substitute, fromDate, toDate, reason, note, itemRows } =
+    await prepareSubstitution(
+      {
+        // Berilmagan maydonlar eskisidan olinadi — panel faqat o'zgarganini
+        // yuborishi ham mumkin.
+        originalTeacherId: data.originalTeacherId ?? existing.originalTeacherId,
+        substituteTeacherId:
+          data.substituteTeacherId ?? existing.substituteTeacherId,
+        fromDate: data.fromDate ?? existing.fromDate.toISOString().split("T")[0],
+        toDate: data.toDate ?? existing.toDate.toISOString().split("T")[0],
+        reason: data.reason ?? existing.reason,
+        note: data.note ?? existing.note,
+        lessons:
+          data.lessons ??
+          existing.items.map((item) => ({
+            classId: item.classId,
+            day: item.day,
+            lessonOrder: item.lessonOrder,
+          })),
+      },
+      { excludeId: id },
+    );
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.lessonSubstitution.update({
+      where: { id },
+      data: {
+        originalTeacherId: original.id,
+        substituteTeacherId: substitute.id,
+        fromDate,
+        toDate,
+        reason,
+        note,
+        teacherSnapshot: {
+          original: { id: original.id, name: fullName(original), username: original.username },
+          substitute: {
+            id: substitute.id,
+            name: fullName(substitute),
+            username: substitute.username,
+          },
+        },
+      },
+    });
+
+    await tx.lessonSubstitutionItem.deleteMany({ where: { substitutionId: id } });
+    await tx.lessonSubstitutionItem.createMany({
+      data: itemRows.map((item) => ({ ...item, substitutionId: id })),
+    });
+
+    return tx.lessonSubstitution.findUnique({
+      where: { id },
+      include: { items: true },
+    });
+  });
+
+  await attachOccurrences(updated);
+
+  logger.info(
+    `[substitution] Tahrirlandi: id=${id} ` +
+      `${fullName(original)} → ${fullName(substitute)}, ` +
+      `${updated.items.length} ta dars, ${updated.occurrenceCount} soat, ` +
+      `${formatDateRangeUz(fromDate, toDate, { utc: true })}, actor=${userId}`,
+  );
+
+  return serialize(updated, { original, substitute });
+}
+
+/**
+ * O'CHIRISH — FAQAT BOSHLANMAGAN YOZUV.
+ *
+ * ⚠️ BEKOR QILISH BILAN CHALKASHMASIN, ikkalasi BOSHQA savolga javob
+ * beradi:
+ *
+ *   · o'chirish — yozuv HECH QACHON kuchga kirmagan. Xato kiritilgan
+ *     reja, uni saqlashning ma'nosi yo'q va tarixni ifloslantiradi.
+ *   · bekor qilish — yozuv AMALDA BO'LGAN yoki hozir amalda. U dalil:
+ *     jurnal huquqi ochilgan, soat hisoblangan. Sababi bilan yopiladi va
+ *     tarixda qoladi.
+ *
+ * Shu sababli o'chirish "xavfliroq amal" EMAS: aksincha, u faqat hech
+ * narsa bo'lmagan holatda ochiq. Ruxsati esa bekor qilish bilan bir xil
+ * (`substitutions.cancel`) — ikkalasi ham "qarorni orqaga qaytarish".
+ *
+ * Darslar `onDelete: Cascade` bilan o'zi o'chadi.
+ *
+ * @param {string} id
+ * @param {string} userId
+ */
+async function deleteSubstitution(id, userId) {
+  const row = await prisma.lessonSubstitution.findUnique({
+    where: { id },
+    include: { items: true },
+  });
+  if (!row) throw new NotFoundError("O'rinbosarlik topilmadi");
+
+  assertNotStarted(row, "o'chirish");
+
+  await prisma.lessonSubstitution.delete({ where: { id } });
+
+  logger.warn(
+    `[substitution] O'chirildi (hali boshlanmagan edi): id=${id} ` +
+      `${row.teacherSnapshot?.original?.name} → ${row.teacherSnapshot?.substitute?.name} ` +
+      `${formatDateRangeUz(row.fromDate, row.toDate, { utc: true })} actor=${userId}`,
+  );
+
+  return { message: "O'rinbosarlik o'chirildi" };
 }
 
 /**
@@ -811,9 +1018,8 @@ async function getSubstitution(id) {
   });
   if (!row) throw new NotFoundError("O'rinbosarlik topilmadi");
 
-  const [holidaySet, vacationSet, teachers] = await Promise.all([
-    buildHolidaySet(row.fromDate, row.toDate),
-    getVacationSet(),
+  const [, teachers] = await Promise.all([
+    attachOccurrences(row),
     prisma.user.findMany({
       where: { id: { in: [row.originalTeacherId, row.substituteTeacherId] } },
       select: TEACHER_SELECT,
@@ -821,13 +1027,6 @@ async function getSubstitution(id) {
   ]);
 
   const teacherMap = new Map(teachers.map((t) => [t.id, t]));
-  row.occurrenceCount = countOccurrences(
-    row.items,
-    row.fromDate,
-    row.toDate,
-    holidaySet,
-    vacationSet,
-  );
 
   return serialize(row, {
     original: teacherMap.get(row.originalTeacherId),
@@ -867,6 +1066,8 @@ async function getMySubstitutions(teacherId) {
 module.exports = {
   REASON_LABELS,
   getTeacherOptions,
+  updateSubstitution,
+  deleteSubstitution,
   STATUS_LABELS,
   MAX_WINDOW_DAYS,
   serialize,
