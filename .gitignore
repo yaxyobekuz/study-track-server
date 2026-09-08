@@ -20,3 +20,6 @@ src/generated
 # yetib bormasdi va aynan kerak bo'lgan joyda qo'lda ko'chirish talab qilinardi.
 !src/scripts/diagnose-login.js
 !src/scripts/backfill-user-directory.js
+# ⚠️ O'quvchilar soni tashxisi ham PRODDA ishga tushiriladi ("bir ekranda
+# 508, boshqasida 524"): u yerdagi ma'lumotsiz savolga javob yo'q.
+!src/scripts/diagnose-student-count.js

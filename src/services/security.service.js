@@ -258,18 +258,44 @@ function networkOf(ip) {
 }
 
 /**
- * "Qurilma o'sha-o'shami?" — IP va qurilma yorlig'ining birikmasi.
+ * QURILMA KIMLIGI — "bu qaysi qurilmadan kirilgan seans?".
  *
- * ⚠️ FAQAT IP YETARLI EMAS: mobil internetda IP har ulanishda o'zgaradi
- * va har kirish "yangi qurilma" bo'lib chiqardi. Faqat qurilma ham
- * yetarli emas: "Chrome · Windows" ikkita boshqa odamda ham bir xil.
- * Ikkalasining birikmasi — amaliy o'rta yechim.
+ * ⚠️ IP KALITGA KIRMAYDI. Ilgari kalit `ip|device` edi va aynan shu
+ * bitta qaror butun bo'limni shovqinga to'ldirgan: tizim Cloudflare
+ * orqasida turadi, ya'ni har so'rov boshqa chekka tugundan keladi
+ * (172.64.*, 172.69.*, 162.158.*), mobil internetda esa mijozning
+ * haqiqiy IP si ham ulanish davomida almashadi. Natijada BITTA telefon
+ * har kirishda "yangi qurilma" bo'lib sanalgan: bitta odamda "10 seans ·
+ * 7 qurilma" turgan va "bir vaqtda bir nechta seans" ogohlantirishi
+ * bekordan-bekor chiqqan.
+ *
+ * Kalitda ikki narsa bor:
+ *   `channel` — qaysi panel. Bitta telefondagi admin paneli va o'qituvchi
+ *               paneli — bu ikki ILOVA, ularni birlashtirish "kim qayerda
+ *               ishlayapti" savolini yo'q qilardi.
+ *   `device`  — "Chrome · Windows" ko'rinishidagi yorliq.
+ *
+ * ⚠️ Qurilma aniqlanmagan bo'lsa (UA yo'q, API mijozi) kalit IP ga
+ * tushadi: aks holda barcha noma'lum qurilmalar bitta "qurilma" bo'lib
+ * qo'shilib ketardi.
+ *
+ * Joylashuv o'zgarishini bu kalit EMAS, alohida qoida ushlaydi
+ * ("tanish qurilma, notanish tarmoq" — `new_network`).
+ *
+ * @param {{ip?: string|null, device?: string|null, channel?: string|null}} s
+ * @returns {string}
+ */
+const originKeyOf = (s = {}) =>
+  `${s.channel || "admin"}|${s.device || `ip:${s.ip || "?"}`}`;
+
+/**
+ * "Qurilma o'sha-o'shami?" — ikkala seansning qurilma kimligi bir xilmi.
  *
  * @param {object} a
  * @param {object} b
  * @returns {boolean}
  */
-const sameOrigin = (a, b) => a.ip === b.ip && a.device === b.device;
+const sameOrigin = (a, b) => originKeyOf(a) === originKeyOf(b);
 
 /**
  * YANGI SEANS OCHISH + QOIDALARNI ISHLATISH.
@@ -284,6 +310,12 @@ const sameOrigin = (a, b) => a.ip === b.ip && a.device === b.device;
  * ⚠️ FILIAL ALMASHTIRGANDA ESKI SEANS YOPILADI (`superseded`). Aks holda
  * bir odamning bitta brauzerdagi ishi "ikkita bir vaqtdagi seans" bo'lib
  * ko'rinardi va birinchi kunning o'zidayoq soxta ogohlantirish chiqardi.
+ *
+ * ⚠️ AYNI QURILMADAN QAYTA KIRILGANDA HAM ESKI SEANS YOPILADI. Bitta
+ * telefon = bitta seans: ilova qayta ochilgani, token yangilangani yoki
+ * brauzerda ikkinchi tab ochilgani "ikkinchi seans" emas. Usiz ro'yxatda
+ * bitta odamning o'ndan ortiq "ochiq" seansi yig'ilib qolardi va
+ * `concurrent_session` ogohlantirishi shu shovqindan chiqardi.
  *
  * @param {object} input
  * @param {object} input.user - `{ id, username, firstName, lastName, role }`
@@ -305,7 +337,28 @@ async function openSession({ user, branchId, jti, expiresAt, client = {}, supers
     // ⚠️ Tekshiruvlar uchun OLDINGI holat kerak — yangi qator qo'shilishidan
     // OLDIN o'qiladi, aks holda "bu birinchi seansmi" savoli har doim
     // "yo'q" bo'lardi.
-    const before = await liveSessions(user.id);
+    const live = await liveSessions(user.id);
+
+    // ── AYNI QURILMANING ESKI SEANSLARI ──────────────────────────────
+    // ⚠️ FILIAL HAM SOLISHTIRILADI: xodim ikkita filialda ishlashi
+    // mumkin va filial almashtirish o'z seansini `supersedeJti` bilan
+    // alohida yopadi. Filialni hisobga olmasak, Chilonzordagi ish
+    // Yunusoboddagi seansni jimgina yopib qo'yardi.
+    const originKey = originKeyOf({ ...client, channel: client.channel || "admin" });
+    const replaced = live.filter(
+      (s) => s.branchId === branchId && originKeyOf(s) === originKey,
+    );
+
+    if (replaced.length > 0) {
+      await closeSessions(
+        replaced.map((s) => s.id),
+        "superseded",
+      );
+    }
+
+    // Yopilganlari endi "oldingi holat" emas — ular shu qurilmaning
+    // o'zi. Qoidalar faqat BOSHQA qurilmalarni ko'rishi kerak.
+    const before = live.filter((s) => !replaced.some((r) => r.id === s.id));
 
     session = await platformPrisma.userSession.create({
       data: {
@@ -784,6 +837,31 @@ async function closeSession({ jti, sessionId, reason, actorId }) {
 }
 
 /**
+ * BIR NECHTA SEANSNI BIRDAN YOPISH — `id` ro'yxati bo'yicha.
+ *
+ * ⚠️ "Ko'rindi" oynasi TO'LIQ tozalanadi: yopilgan seanslarning `jti` si
+ * bu yerda qo'lda emas, shuning uchun ularni oynadan nuqtali olib
+ * tashlab bo'lmaydi. Oynasiz qolgan seans keyingi so'rovda bazadan
+ * o'qiladi — bu bir marta arzon o'qish, yopilgan seansning 2 daqiqa
+ * "tirik" bo'lib turishidan ko'ra to'g'ri.
+ *
+ * @param {string[]} ids
+ * @param {string} reason - `SessionEndReason`
+ * @returns {Promise<number>} - nechta seans yopildi
+ */
+async function closeSessions(ids, reason) {
+  if (!ids?.length) return 0;
+
+  const { count } = await platformPrisma.userSession.updateMany({
+    where: { id: { in: ids }, endReason: "active" },
+    data: { endReason: reason, endedAt: new Date(), endedBy: null },
+  });
+
+  if (count > 0) seenWindow.clear();
+  return count;
+}
+
+/**
  * "KO'RINDI" OYNASINI TOZALASH.
  *
  * ⚠️ `closeSession` dan chetlab o'tib yopilgan seanslar uchun
@@ -814,6 +892,51 @@ async function expireStaleSessions() {
   return count;
 }
 
+/**
+ * BITTA QURILMADAN QOLGAN ORTIQCHA SEANSLARNI YOPADI — cron chaqiradi.
+ *
+ * Yangi kirish o'z qurilmasining eski seansini `openSession` da darhol
+ * yopadi, lekin bu qoida joriy etilishidan OLDIN yig'ilib qolgan
+ * qatorlar bor: bitta telefondan o'nlab "ochiq" seans. Ular tokeni
+ * tugagunicha (30 kun) ro'yxatda turib, "ochiq seanslar" raqamini ham,
+ * "bir vaqtda bir nechta seans" ro'yxatini ham buzardi.
+ *
+ * ⚠️ ENG YANGISI QOLADI. Odam hozir aynan oxirgi tokeni bilan ishlab
+ * turibdi — eskisini qoldirib yangisini yopish uni tizimdan chiqarib
+ * yuborardi.
+ *
+ * ⚠️ Guruh kaliti — `foydalanuvchi + filial + qurilma kimligi`, ya'ni
+ * `openSession` dagi shart bilan AYNI. Ikki joyda ikki xil bo'lsa,
+ * kechasi supurgi kunduzi ochilgan seansni yopib yurardi.
+ *
+ * @returns {Promise<number>} - nechta ortiqcha seans yopildi
+ */
+async function dedupeLiveSessions() {
+  const sessions = await platformPrisma.userSession.findMany({
+    where: { endReason: "active", expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      userId: true,
+      branchId: true,
+      ip: true,
+      device: true,
+      channel: true,
+    },
+  });
+
+  const seen = new Set();
+  const extra = [];
+
+  for (const session of sessions) {
+    const key = `${session.userId}|${session.branchId}|${originKeyOf(session)}`;
+    if (seen.has(key)) extra.push(session.id);
+    else seen.add(key);
+  }
+
+  return closeSessions(extra, "superseded");
+}
+
 module.exports = {
   SEEN_WINDOW_MS,
   BRUTE_THRESHOLD,
@@ -821,6 +944,7 @@ module.exports = {
   RAPID_SWITCH_WINDOW_MS,
   RAPID_SWITCH_THRESHOLD,
   networkOf,
+  originKeyOf,
   recordAttempt,
   raise,
   liveSessions,
@@ -828,6 +952,8 @@ module.exports = {
   checkFailedStreak,
   touchSession,
   closeSession,
+  closeSessions,
   forgetSeenCache,
   expireStaleSessions,
+  dedupeLiveSessions,
 };

@@ -8,9 +8,15 @@
  * qiladi; xarajat esa bir martalik hodisa. Shakli `paymentAccount.service.js` dagi
  * katalog bilan bir xil.
  *
- * ⚠️ Kategoriya HECH QACHON O'CHIRILMAYDI — arxivlanadi. O'tgan xarajatlar unga
- * ishora qiladi va hisobotlar shu kesim bo'yicha quriladi; o'chirilsa tarix
- * yo'qolardi. FK ham `Restrict`.
+ * ⚠️ ISHLATILGAN kategoriya HECH QACHON O'CHIRILMAYDI — arxivlanadi. O'tgan
+ * xarajatlar unga ishora qiladi va hisobotlar shu kesim bo'yicha quriladi;
+ * o'chirilsa tarix yo'qolardi. FK ham `Restrict`.
+ *
+ * Bironta xarajatda ishlatilmagan kategoriya esa O'CHIRILADI: u hali hech
+ * qanday tarixning bir qismi emas, xato yozilgan qatorni "arxivlangan" deb
+ * saqlab yurish katalogni keraksiz qatorlar bilan to'ldirardi. Chegara
+ * bitta va u ISHLATILGANLIKDA (`staffSalary` va `studentTariff` bilan bir
+ * xil qoida).
  */
 
 const prisma = require("../config/prisma");
@@ -168,6 +174,35 @@ const archiveCategory = async (id, isArchived) => {
   };
 };
 
+/**
+ * O'chirish — FAQAT bironta xarajatda ishlatilmagan kategoriya.
+ * Aks holda arxivlanadi (oylik qoidasi bilan bir xil qoida).
+ *
+ * @param {string} id
+ */
+const deleteCategory = async (id) => {
+  const category = await prisma.expenseCategory.findUnique({ where: { id } });
+  if (!category) throw new NotFoundError("Kategoriya topilmadi");
+
+  const used = await prisma.expense.count({ where: { categoryId: id } });
+
+  if (used > 0) {
+    throw new BadRequestError(
+      `"${category.name}" ${used} ta xarajatda ishlatilgan — o'chirib bo'lmaydi. ` +
+        "Kategoriyani arxivlang.",
+    );
+  }
+
+  // Byudjet limiti — kategoriyaning o'ziga tegishli sozlama, xarajat emas.
+  // Kategoriya o'chsa limit yetim qolardi, shuning uchun u ham ketadi.
+  await prisma.$transaction([
+    prisma.expenseBudget.deleteMany({ where: { categoryId: id } }),
+    prisma.expenseCategory.delete({ where: { id } }),
+  ]);
+
+  return { message: `"${category.name}" o'chirildi` };
+};
+
 module.exports = {
   serializeCategory,
   getCategories,
@@ -175,4 +210,5 @@ module.exports = {
   createCategory,
   updateCategory,
   archiveCategory,
+  deleteCategory,
 };

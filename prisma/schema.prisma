@@ -2512,8 +2512,8 @@ model IncomeCategory {
   name String @unique
 
   isActive   Boolean @default(true) @map("is_active")
-  // Kategoriya HECH QACHON o'chirilmaydi — arxivlanadi. O'tgan kirimlar
-  // unga ishora qiladi, shuning uchun FK Restrict.
+  // ISHLATILGANI o'chirilmaydi — arxivlanadi: o'tgan kirimlar unga ishora
+  // qiladi, FK ham Restrict. Ishlatilmagani o'chiriladi (service tekshiradi).
   isArchived Boolean @default(false) @map("is_archived")
   sortOrder  Int     @default(0) @map("sort_order")
 
@@ -2786,7 +2786,9 @@ model ExpenseCategory {
   excludeFromEbitda Boolean @default(false) @map("exclude_from_ebitda")
 
   isActive   Boolean @default(true) @map("is_active")
-  // O'CHIRILMAYDI — arxivlanadi. O'tgan xarajatlar unga ishora qiladi.
+  // ISHLATILGANI O'CHIRILMAYDI — arxivlanadi: o'tgan xarajatlar unga ishora
+  // qiladi. Bironta xarajatda ishlatilmagani esa o'chiriladi (service
+  // tekshiradi), chunki u hali tarixning bir qismi emas.
   isArchived Boolean @default(false) @map("is_archived")
   sortOrder  Int     @default(0) @map("sort_order")
 

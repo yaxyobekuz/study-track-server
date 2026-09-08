@@ -24,4 +24,15 @@ const archiveCategory = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message: data.message });
 });
 
-module.exports = { getCategories, createCategory, updateCategory, archiveCategory };
+const deleteCategory = asyncHandler(async (req, res) => {
+  const data = await incomeCategoryService.deleteCategory(req.params.id);
+  res.json({ success: true, message: data.message });
+});
+
+module.exports = {
+  getCategories,
+  createCategory,
+  updateCategory,
+  archiveCategory,
+  deleteCategory,
+};

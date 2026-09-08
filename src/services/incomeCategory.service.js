@@ -5,9 +5,12 @@
  * pul qaysi yo'l bilan kelayotgani. Shakli `paymentAccount.service.js` dagi
  * katalog bilan bir xil.
  *
- * ⚠️ Kategoriya HECH QACHON O'CHIRILMAYDI — arxivlanadi. O'tgan kirimlar unga
- * ishora qiladi va hisobotlar shu kesim bo'yicha quriladi; o'chirilsa tarix
- * yo'qolardi. FK ham `Restrict`.
+ * ⚠️ ISHLATILGAN kategoriya HECH QACHON O'CHIRILMAYDI — arxivlanadi. O'tgan
+ * kirimlar unga ishora qiladi va hisobotlar shu kesim bo'yicha quriladi;
+ * o'chirilsa tarix yo'qolardi. FK ham `Restrict`.
+ *
+ * Bironta kirimda ishlatilmagan kategoriya esa O'CHIRILADI — `ExpenseCategory`
+ * bilan AYNI qoida (ikki katalog bir-birining ko'zgusi).
  */
 
 const prisma = require("../config/prisma");
@@ -132,9 +135,8 @@ const updateCategory = async (id, data) => {
 /**
  * Arxivlash / arxivdan qaytarish.
  *
- * O'chirish YO'Q: ishlatilgan kategoriyani o'chirish o'tgan hisobotni buzardi,
- * ishlatilmaganini o'chirishga esa alohida yo'l ochishning ma'nosi yo'q —
- * arxivlangani ro'yxatlarda ko'rinmaydi.
+ * ISHLATILGAN kategoriya uchun yagona yo'l shu: o'chirish o'tgan hisobotni
+ * buzardi. Ishlatilmagani `deleteCategory` bilan o'chiriladi.
  *
  * @param {string} id
  * @param {boolean} isArchived
@@ -156,6 +158,35 @@ const archiveCategory = async (id, isArchived) => {
   };
 };
 
+/**
+ * O'chirish — FAQAT bironta kirimda ishlatilmagan kategoriya.
+ * Aks holda arxivlanadi (`expenseCategory.service.js` bilan bir xil).
+ *
+ * @param {string} id
+ */
+const deleteCategory = async (id) => {
+  const category = await prisma.incomeCategory.findUnique({ where: { id } });
+  if (!category) throw new NotFoundError("Kategoriya topilmadi");
+
+  const used = await prisma.externalIncome.count({ where: { categoryId: id } });
+
+  if (used > 0) {
+    throw new BadRequestError(
+      `"${category.name}" ${used} ta kirimda ishlatilgan — o'chirib bo'lmaydi. ` +
+        "Kategoriyani arxivlang.",
+    );
+  }
+
+  // Yig'im rejasi — kategoriyaning o'ziga tegishli sozlama, kirim emas:
+  // kategoriya o'chsa u yetim qolardi.
+  await prisma.$transaction([
+    prisma.incomePlan.deleteMany({ where: { categoryId: id } }),
+    prisma.incomeCategory.delete({ where: { id } }),
+  ]);
+
+  return { message: `"${category.name}" o'chirildi` };
+};
+
 module.exports = {
   serializeCategory,
   getCategories,
@@ -163,4 +194,5 @@ module.exports = {
   createCategory,
   updateCategory,
   archiveCategory,
+  deleteCategory,
 };

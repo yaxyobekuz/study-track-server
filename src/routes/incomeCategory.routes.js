@@ -13,6 +13,7 @@ const {
   createCategory,
   updateCategory,
   archiveCategory,
+  deleteCategory,
 } = require("../controllers/incomeCategory.controller");
 
 // Ro'yxatni kirim qo'shadigan har kim ko'radi (oynadagi tanlagich uchun),
@@ -21,5 +22,7 @@ router.get("/", protect, authorizePermission(PERMISSIONS.INCOME_VIEW), getCatego
 router.post("/", protect, authorizePermission(PERMISSIONS.INCOME_CATEGORIES), createCategory);
 router.put("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.INCOME_CATEGORIES), updateCategory);
 router.patch("/:id/archive", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.INCOME_CATEGORIES), archiveCategory);
+// O'chirish — faqat hech qayerda ishlatilmagan kategoriya (service tekshiradi).
+router.delete("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.INCOME_CATEGORIES), deleteCategory);
 
 module.exports = router;

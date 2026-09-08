@@ -29,6 +29,15 @@ const {
   summarizeWeek,
 } = require("./scheduleWorkTime.service");
 
+/**
+ * Arxivlash o'qish davrini qanday sabab bilan yopadi.
+ *
+ * ⚠️ "Chetlatildi" EMAS: arxivlash ma'muriy amal va ketish sababi haqida
+ * hech narsa demaydi. Aniq sabab kerak bo'lsa, davr "O'qish davrlari"
+ * ekranidan qo'lda yopiladi — u yerda toifa tanlanadi (`education.md` §3).
+ */
+const ARCHIVE_END_REASON = "left";
+
 // Junction M2M larni eski tekis shaklga qaytaradi:
 //   classes  → [{ id, name }]   (UserClass)
 //   subjects → [{ id, name }]   (UserSubject)
@@ -1063,6 +1072,8 @@ async function archiveUser(id, options = {}) {
     throw new BadRequestError("Foydalanuvchi allaqachon arxivlangan");
   }
 
+  const today = currentDayDate();
+
   const update = {
     // 0lashtirishdan oldingi asl qiymatlarni saqlab qo'yamiz
     archiveSnapshot: {
@@ -1077,10 +1088,41 @@ async function archiveUser(id, options = {}) {
 
   // Arxivlangan o'quvchi barcha sinflardan avtomatik chiqariladi
   // (xodimda sinf biriktirmasi yo'q — u yerda bu amal bo'sh o'tadi)
-  await prisma.$transaction([
-    prisma.user.update({ where: { id }, data: update }),
-    prisma.userClass.deleteMany({ where: { userId: id } }),
-  ]);
+  //
+  // ⚠️ VA UNING O'QISH DAVRI YOPILADI. "O'quvchi o'qiyaptimi" degan savolga
+  // faqat davr javob beradi (`education.md` §4), shuning uchun ochiq qolgan
+  // davr arxivlangan o'quvchini dashboardda "o'qiyapti" deb sanab turardi,
+  // holbuki hisob-faktura generatori uni `isArchived` bo'yicha chiqarib
+  // tashlaydi — bitta ekranda 523, ikkinchisida 507 chiqishining sababi shu.
+  // `enrollment:backfill` bir vaqtlar aynan shu invariantni o'rnatgan
+  // (arxivlangan → davri arxivlangan sanada yopilgan); bu yerda u har
+  // arxivlashda saqlanadi.
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({ where: { id }, data: update });
+    await tx.userClass.deleteMany({ where: { userId: id } });
+
+    if (user.role !== ROLES.STUDENT) return;
+
+    const open = await tx.studentEnrollment.findMany({
+      where: { studentId: id, endDate: null },
+      select: { id: true, startDate: true },
+    });
+
+    for (const period of open) {
+      // Davr boshlangan kundan oldin yopib bo'lmaydi (bugun ochilib bugun
+      // arxivlangan o'quvchida `endDate = startDate` — bir kunlik davr)
+      const endDate = period.startDate > today ? period.startDate : today;
+
+      await tx.studentEnrollment.update({
+        where: { id: period.id },
+        data: {
+          endDate,
+          endReason: ARCHIVE_END_REASON,
+          reason: "O'quvchi arxivlanganda avtomatik yopildi",
+        },
+      });
+    }
+  });
 
   // `isArchived` — LOGIN bayrog'i, ya'ni odamga tegishli: arxivlangan xodim
   // HECH BIR filialga kira olmasligi kerak. Bitta filialdan chiqarish uchun
@@ -1109,9 +1151,55 @@ async function restoreUser(id) {
     throw new BadRequestError("Foydalanuvchi arxivlanmagan");
   }
 
-  await prisma.user.update({
-    where: { id },
-    data: { isArchived: false, archivedAt: null },
+  const today = currentDayDate();
+
+  // ⚠️ O'QISH DAVRI HAM QAYTARILADI. Davr yo'q = o'qimaydi, ya'ni davrsiz
+  // qaytarilgan o'quvchiga hisob-faktura yozilmasdi va u dashboardda ham
+  // ko'rinmasdi — "arxivdan chiqardim, lekin hech qayerda yo'q" degan jim
+  // buzilish. Sinf biriktirmasi esa qaytarilmaydi (qo'lda belgilanadi):
+  // sinf narxga ta'sir qilmaydi, davr esa qiladi.
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id },
+      data: { isArchived: false, archivedAt: null },
+    });
+
+    if (user.role !== ROLES.STUDENT) return;
+
+    const openCount = await tx.studentEnrollment.count({
+      where: { studentId: id, endDate: null },
+    });
+    if (openCount > 0) return;
+
+    const last = await tx.studentEnrollment.findFirst({
+      where: { studentId: id },
+      orderBy: { startDate: "desc" },
+      select: { id: true, endDate: true },
+    });
+
+    // Bugun (yoki keyinroq) yopilgan davr — o'sha kuni arxivlanib o'sha kuni
+    // qaytarilgan holat. Yangi davr ochilsa u eskisi bilan KESISHARDI,
+    // shuning uchun eskisi qaytadan ochiladi.
+    if (last?.endDate && last.endDate >= today) {
+      await tx.studentEnrollment.update({
+        where: { id: last.id },
+        data: {
+          endDate: null,
+          endReason: null,
+          reason: "Arxivdan qaytarilganda davr qayta ochildi",
+        },
+      });
+      return;
+    }
+
+    await tx.studentEnrollment.create({
+      data: {
+        studentId: id,
+        startDate: today,
+        createdBy: id,
+        reason: "Arxivdan qaytarilganda avtomatik ochildi",
+      },
+    });
   });
 
   await propagateIdentity(id, { isArchived: false });

@@ -273,11 +273,22 @@ const loadAttendanceFacts = async (month) => {
  * ⚠️ Davr oy bilan KESISHSA yetarli: 20-sentabrda kelgan o'quvchi ham,
  * 3-sentabrda ketgani ham sentabrda o'qigan. `startDate <= oy oxiri` va
  * `endDate` yo'q yoki `>= oy boshi`.
+ *
+ * ⚠️ ARXIVLANGANLAR CHIQARIB TASHLANADI — hisob-faktura generatori bilan
+ * BIR XIL qoida (`education.md` §4). Bu shart bo'lmasligi kerak edi:
+ * arxivlashda davr yopiladi, ya'ni arxivlangan o'quvchi baribir davri
+ * orqali tushib qolardi. Lekin davr OYNI QAMRAB turadi — 20-sentabrda
+ * arxivlangan bolaning davri sentabrni qamragan holda yopiladi va u
+ * shu oy oxirigacha "o'qiyapti" bo'lib sanalaverardi. Natijada bosh
+ * sahifada 508, bu yerda 524 chiqardi.
+ *
+ * ⚠️ `isActive` esa ATAYLAB filtrlanmaydi: u login bayrog'i, o'chirilgan
+ * login o'quvchini maktabdan chiqarmaydi.
  */
 const loadEnrollmentFacts = async (month) => {
   const range = monthDayRange(month);
 
-  const [studying, admissions] = await Promise.all([
+  const [studying, admissions, activeStudents] = await Promise.all([
     prisma.studentEnrollment.findMany({
       where: {
         startDate: { lte: range.lte },
@@ -287,9 +298,18 @@ const loadEnrollmentFacts = async (month) => {
       distinct: ["studentId"],
     }),
     prisma.studentEnrollment.count({ where: { startDate: range } }),
+    prisma.user.findMany({
+      where: { role: "student", isArchived: false },
+      select: { id: true },
+    }),
   ]);
 
-  return { studentIds: studying.map((row) => row.studentId), admissions };
+  const allowed = new Set(activeStudents.map((row) => row.id));
+
+  return {
+    studentIds: studying.map((row) => row.studentId).filter((id) => allowed.has(id)),
+    admissions,
+  };
 };
 
 /**

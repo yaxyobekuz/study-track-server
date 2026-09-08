@@ -4,6 +4,11 @@ const {
   getTodayAllRecords,
 } = require("./attendance.service");
 const { buildExpectedResolver } = require("./studentAttendance.service");
+// ⚠️ Sana MATNI serverda yig'ilmaydi — yagona formatlovchidan olinadi
+// (`.claude/rules/dates.md`). Davomat kuni `@db.Date` kabi UTC yarim
+// tunida yotadi, shuning uchun `{ utc: true }` MAJBURIY.
+const { formatDateUz } = require("../helpers/date.helpers");
+const { formatMonthKey } = require("../helpers/month.helpers");
 
 // Xavfli guruh chegaralari: 3+ kun ketma-ket yoki oyda 5+ kun qoldirish
 const RISK_CONSECUTIVE_DAYS = 3;
@@ -116,33 +121,140 @@ function monthRange(month, year) {
 }
 
 /**
+ * Bir KUNNING davomati — taqqoslash kartalari uchun.
+ *
+ * ⚠️ Kutilgan = jadval bo'yicha kutilganlar ∪ o'sha kuni belgilanganlar.
+ * Yozuvi yo'q kun (yakshanba, bayram) uchun ham chaqirilishi mumkin —
+ * u paytda `expected = 0` va foiz `null` ("ma'lumot yo'q", 0% emas).
+ *
+ * @param {Date} date - UTC yarim tunidagi kun
+ * @param {object} resolver - `buildExpectedResolver()` natijasi
+ */
+async function dayCounts(date, resolver) {
+  const records = await prisma.studentAttendance.findMany({
+    where: { date },
+    select: { studentId: true, status: true },
+  });
+
+  const counts = countStatuses(records);
+  counts.expected = unionSize(
+    resolver.forWeekday(date.getUTCDay()).ids,
+    new Set(records.map((r) => r.studentId)),
+  );
+  finalizeCounts(counts);
+
+  counts.date = dayKey(date);
+  counts.dateLabel = formatDateUz(date, { utc: true });
+
+  return counts;
+}
+
+/**
+ * Bir OYNING davomati — taqqoslash kartasi uchun.
+ *
+ * ⚠️ Yig'indi KUNLAR bo'yicha yig'iladi, xom yozuvlardan emas: kutilgan
+ * o'quvchi-kunlar faqat kun kesimida ma'noli (`aggregateByDay`).
+ */
+async function monthCounts(month, year, resolver) {
+  const { m, y, start, end } = monthRange(month, year);
+
+  const records = await prisma.studentAttendance.findMany({
+    where: { date: { gte: start, lt: end } },
+    select: { studentId: true, status: true, date: true },
+    orderBy: { date: "asc" },
+  });
+
+  const counts = emptyCounts();
+  for (const day of aggregateByDay(records, resolver).values()) {
+    addCounts(counts, day);
+  }
+  finalizeCounts(counts);
+
+  counts.month = m;
+  counts.year = y;
+  counts.monthLabel = formatMonthKey(y * 100 + m);
+
+  return counts;
+}
+
+/** Ikki foiz farqi — PUNKTDA (foizning foizi rahbarni chalg'itardi). */
+const pointDiff = (value, previous) =>
+  value == null || previous == null
+    ? null
+    : Math.round((value - previous) * 10) / 10;
+
+/**
+ * "YYYY-MM-DD" → UTC yarim tunidagi kun. Yaroqsiz qiymatda `null`.
+ *
+ * ⚠️ `new Date("2026-09-06")` allaqachon UTC yarim tunini beradi, lekin
+ * qiymat "2026-9-6" kabi kelsa jimgina siljib ketardi — shuning uchun
+ * shakl qat'iy tekshiriladi.
+ */
+function parseDayParam(value) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const date = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
  * O'quvchilar davomati bo'yicha to'liq hisobot.
- * Kunlik/haftalik ko'rsatkichlar joriy kunga, qolganlari tanlangan oyga tegishli.
- * Barcha foizlar KUTILGAN o'quvchi-kunlarga nisbatan (`buildExpectedResolver`).
+ *
+ * Kunlik ko'rsatkich TANLANGAN kunga (odatda bugun), qolganlari tanlangan
+ * oyga tegishli. Barcha foizlar KUTILGAN o'quvchi-kunlarga nisbatan
+ * (`buildExpectedResolver`).
+ *
+ * ⚠️ HAFTALIK KO'RSATKICH OLIB TASHLANDI. U doim JORIY haftaga tegishli
+ * edi va tanlangan oyga bo'ysunmasdi: avgust tanlansa ham yonida sentabr
+ * haftasining foizi turardi. Uning o'rnini TAQQOSLASH egalladi — kunni
+ * kunga, oyni oyga solishtirish o'sha savolga ("yaxshilandimi?") to'g'ri
+ * javob beradi.
+ *
  * @param {number|string} month - 1-12
  * @param {number|string} year
+ * @param {{day?: string, compareDay?: string, compareMonth?: number|string,
+ *          compareYear?: number|string}} [options]
+ *   `day`          — kunlik karta qaysi kunni ko'rsatadi (default: bugun)
+ *   `compareDay`   — shu kun bilan taqqoslanadigan kun
+ *   `compareMonth` / `compareYear` — oylik karta bilan taqqoslanadigan oy
  */
-async function getStudentReport(month, year) {
+async function getStudentReport(month, year, options = {}) {
   const { m, y, start, end } = monthRange(month, year);
 
   const today = getTodayNormalized();
-  // Hafta boshi (dushanba, Toshkent) - haftalik ko'rsatkich uchun
-  const mondayOffset = (today.getUTCDay() + 6) % 7;
-  const weekStart = new Date(today.getTime() - mondayOffset * 86400000);
 
   // Kutilgan o'quvchilar resolveri (faol o'quvchilar + jadval, bir marta)
   const resolver = await buildExpectedResolver();
   const totalStudents = resolver.allStudentIds.size;
 
-  const [todayRecords, weekRecords, monthRecords] = await Promise.all([
-    prisma.studentAttendance.findMany({
-      where: { date: today },
-      select: { studentId: true, classId: true, status: true, date: true },
-    }),
-    prisma.studentAttendance.findMany({
-      where: { date: { gte: weekStart, lte: today } },
-      select: { studentId: true, classId: true, status: true, date: true },
-    }),
+  // ⚠️ Tanlangan kun oyga TEGISHLI bo'lishi shart emas: karta "bugun"
+  // deb ochiladi, foydalanuvchi esa istagan kunni tanlaydi. Yaroqsiz
+  // qiymat jimgina bugunga tushadi — xato qaytarish butun sahifani
+  // bo'sh qoldirardi.
+  const selectedDay = parseDayParam(options.day) ?? today;
+  const compareDay = parseDayParam(options.compareDay);
+
+  const compareMonthNumber = Number(options.compareMonth);
+  const compareYearNumber = Number(options.compareYear);
+  const hasCompareMonth =
+    Number.isInteger(compareMonthNumber) &&
+    compareMonthNumber >= 1 &&
+    compareMonthNumber <= 12 &&
+    Number.isInteger(compareYearNumber) &&
+    compareYearNumber > 2000 &&
+    // Oyni o'zi bilan taqqoslash ma'nosiz — karta "0 p.p." bo'lib turardi
+    !(compareMonthNumber === m && compareYearNumber === y);
+
+  const [dailyCounts, dailyCompare, monthlyCompare, monthRecords] = await Promise.all([
+    dayCounts(selectedDay, resolver),
+    compareDay ? dayCounts(compareDay, resolver) : Promise.resolve(null),
+    hasCompareMonth
+      ? monthCounts(compareMonthNumber, compareYearNumber, resolver)
+      : Promise.resolve(null),
     // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
     prisma.studentAttendance.findMany({
       where: { date: { gte: start, lt: end } },
@@ -157,22 +269,6 @@ async function getStudentReport(month, year) {
     }),
   ]);
 
-  // ── Kunlik (bugun): kutilgan = bugungi kutilganlar, yozuv bo'lmasa ham ──
-  // "Hali belgilanmagan" holati bugun ma'noli. Yakshanba/jadvalsiz kun → 0 → null.
-  const dailyCounts = countStatuses(todayRecords);
-  dailyCounts.expected = unionSize(
-    resolver.forWeekday(today.getUTCDay()).ids,
-    new Set(todayRecords.map((r) => r.studentId)),
-  );
-  finalizeCounts(dailyCounts);
-
-  // ── Haftalik: o'quv kunlari bo'yicha yig'indi ──────────────────────
-  const weeklyCounts = emptyCounts();
-  for (const day of aggregateByDay(weekRecords, resolver).values()) {
-    addCounts(weeklyCounts, day);
-  }
-  finalizeCounts(weeklyCounts);
-
   // ── Kun bo'yicha hisob (oy) ───────────────────────────────────────
   const monthDayMap = aggregateByDay(monthRecords, resolver);
   const monthDays = [...monthDayMap.values()].sort((a, b) =>
@@ -184,6 +280,9 @@ async function getStudentReport(month, year) {
   const monthlyCounts = emptyCounts();
   for (const d of monthDays) addCounts(monthlyCounts, d);
   finalizeCounts(monthlyCounts);
+  monthlyCounts.month = m;
+  monthlyCounts.year = y;
+  monthlyCounts.monthLabel = formatMonthKey(y * 100 + m);
 
   // ── Hafta kunlari bo'yicha qoldirish trendi ───────────────────────
   // missed = kutilgan − kelgan (belgilanmagan ham qoldirgan hisoblanadi)
@@ -391,10 +490,20 @@ async function getStudentReport(month, year) {
     month: m,
     year: y,
     totalStudents,
+    // ⚠️ `weekly` YO'Q (yuqoridagi izohga qarang). O'rniga taqqoslash:
+    // `dailyCompare` / `monthlyCompare` tanlanmagan bo'lsa `null` bo'ladi
+    // va frontend faqat ikkita kartani chizadi.
     overall: {
       daily: dailyCounts,
-      weekly: weeklyCounts,
+      dailyCompare,
+      dailyChange: dailyCompare
+        ? pointDiff(dailyCounts.percent, dailyCompare.percent)
+        : null,
       monthly: monthlyCounts,
+      monthlyCompare,
+      monthlyChange: monthlyCompare
+        ? pointDiff(monthlyCounts.percent, monthlyCompare.percent)
+        : null,
     },
     byDay,
     byClass,

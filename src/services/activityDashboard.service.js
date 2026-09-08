@@ -246,21 +246,35 @@ function resolvePeriod({ days, granularity, count, inherited = false } = {}) {
  * ⚠️ `education.md` §3: davr yo'q = o'qimaydi. Ochiq davr (`endDate:
  * null`) yoki bugunni qamragan davr — ikkalasi ham "o'qiyapti".
  *
+ * ⚠️ ARXIVLANGANLAR CHIQARIB TASHLANADI — bosh sahifadagi "O'quvchilar"
+ * kartasi va hisob-faktura generatori bilan BIR XIL qoida. Aks holda
+ * bugun arxivlangan o'quvchi (davri bugungi kun bilan yopilgani uchun)
+ * shu kuni hamon maxrajda turardi va "32 / 524" kabi ikki xil jami
+ * paydo bo'lardi.
+ *
  * @returns {Promise<string[]>}
  */
 async function studyingStudentIds() {
   const today = currentDayDate();
 
-  const rows = await prisma.studentEnrollment.findMany({
-    where: {
-      startDate: { lte: today },
-      OR: [{ endDate: null }, { endDate: { gte: today } }],
-    },
-    select: { studentId: true },
-    distinct: ["studentId"],
-  });
+  const [rows, activeStudents] = await Promise.all([
+    prisma.studentEnrollment.findMany({
+      where: {
+        startDate: { lte: today },
+        OR: [{ endDate: null }, { endDate: { gte: today } }],
+      },
+      select: { studentId: true },
+      distinct: ["studentId"],
+    }),
+    prisma.user.findMany({
+      where: { role: "student", isArchived: false },
+      select: { id: true },
+    }),
+  ]);
 
-  return rows.map((row) => row.studentId);
+  const allowed = new Set(activeStudents.map((row) => row.id));
+
+  return rows.map((row) => row.studentId).filter((id) => allowed.has(id));
 }
 
 /**

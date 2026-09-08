@@ -1,4 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
+const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 const financeReportService = require("../services/financeReport.service");
 const financeDashboardService = require("../services/financeDashboard.service");
 const financeTargetService = require("../services/financeTarget.service");
@@ -40,7 +42,20 @@ const getExpenseReport = asyncHandler(async (req, res) => {
 // ─────────────────────────────────────────────
 
 const getDashboard = asyncHandler(async (req, res) => {
-  const data = await financeDashboardService.getDashboard(req.query);
+  // ⚠️ KIM QANCHA OYLIK OLAYOTGANI ALOHIDA RUXSAT ostida. Dashboard
+  // `reports.view` bilan ochiladi, lekin xodimlarning ism-familiyasi
+  // yonidagi summa — bu `payroll.view` registrining o'zi. Moliya
+  // ruxsatlari ataylab mayda (`.claude/rules/finance.md` §11): hisobotni
+  // ko'rish huquqi butun oylik vedomostini ochib bermasligi kerak.
+  // JAMI summa esa qoladi — u xarajat tarkibida allaqachon ko'rinadi.
+  const canSeePayrollStaff =
+    hasRole(req.user, ROLES.OWNER) ||
+    hasPermission(req.user?.permissions ?? [], PERMISSIONS.PAYROLL_VIEW);
+
+  const data = await financeDashboardService.getDashboard(req.query, {
+    includePayrollStaff: canSeePayrollStaff,
+  });
+
   res.json({ success: true, data });
 });
 

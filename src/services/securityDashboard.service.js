@@ -361,6 +361,12 @@ async function getOverview({ days, actor, branch, withDetails = false } = {}) {
   // ⚠️ QURILMA BO'YICHA, seans soni bo'yicha EMAS. Bir odam bitta
   // kompyuterda ikki marta login qilsa ham ikkita seans bo'ladi — u
   // ogohlantirish emas, shovqin.
+  //
+  // ⚠️ QURILMA KIMLIGI `security.service.js` DAN OLINADI va bu yerda
+  // qayta yig'ilmaydi. Ilgari kalit shu yerda `ip|device` deb yozilgan
+  // edi: Cloudflare orqasida IP har so'rovda almashgani uchun bitta
+  // telefon "7 qurilma" bo'lib ko'ringan. Ikkita nusxa — ikkita
+  // buzilish nuqtasi, shuning uchun kalit BITTA joyda.
   const byUser = new Map();
   for (const session of liveSessions) {
     if (!byUser.has(session.userId)) byUser.set(session.userId, []);
@@ -369,7 +375,7 @@ async function getOverview({ days, actor, branch, withDetails = false } = {}) {
 
   const multiSession = [];
   for (const [userId, sessions] of byUser) {
-    const origins = new Set(sessions.map((s) => `${s.ip}|${s.device}`));
+    const origins = new Set(sessions.map((s) => securityService.originKeyOf(s)));
     if (origins.size < 2) continue;
 
     multiSession.push({

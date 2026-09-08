@@ -7,10 +7,13 @@
  * mustaqil "IP ni qanday olamiz" mantiqiy bo'lsa, xavfsizlik ro'yxatidagi
  * IP bilan seansdagi IP asta-sekin bir-biridan uzoqlashardi.
  *
- * ⚠️ `app.set("trust proxy", 1)` `index.js` da yoqilgan, shuning uchun
- * `req.ip` allaqachon `X-Forwarded-For` ning birinchi qiymatini beradi.
- * Uni qo'lda ajratib olmaymiz — proxy sozlamasi bilan ikkita haqiqat
- * manbai bo'lib qolardi.
+ * ⚠️ `app.set("trust proxy", 1)` `index.js` da yoqilgan, ya'ni `req.ip`
+ * BITTA proxy'ga ishonadi. Tizim Cloudflare ORQASIDA turgani uchun bu
+ * yetarli emas: zanjir `mijoz → Cloudflare → nginx → node` va `req.ip`
+ * Cloudflare chekka tugunining manzilini beradi (172.64.*, 172.69.*,
+ * 162.158.*). Ular HAR SO'ROVDA almashadi — natijada bitta telefondan
+ * kirgan odam ro'yxatda har safar "yangi manzil" bo'lib ko'rinardi.
+ * Shu sababli haqiqiy manzil `CF-Connecting-IP` dan olinadi (pastga qarang).
  */
 
 const { ACTIVITY_CHANNELS } = require("../utils/constants");
@@ -19,13 +22,36 @@ const { ACTIVITY_CHANNELS } = require("../utils/constants");
 const V4_IN_V6 = /^::ffff:/i;
 
 /**
+ * PROXY QO'YGAN HAQIQIY MIJOZ MANZILI.
+ *
+ * ⚠️ FAQAT SHU IKKI SARLAVHA o'qiladi va `X-Forwarded-For` NING BIRINCHI
+ * QIYMATI EMAS: XFF ning chap tomonini mijozning O'ZI yozib yuborishi
+ * mumkin, ya'ni u soxtalashtiriladi. `CF-Connecting-IP` ni esa Cloudflare
+ * har so'rovda QAYTA YOZADI — mijoz yuborgan qiymat u yerga yetib
+ * kelmaydi. Ilova faqat Cloudflare orqali ochiq bo'lgani uchun bu manba
+ * ishonchli.
+ *
+ * Sarlavha bo'lmasa (lokal ish, to'g'ridan-to'g'ri so'rov) `null` qaytadi
+ * va chaqiruvchi `req.ip` ga tushadi.
+ *
+ * @param {import("express").Request} req
+ * @returns {string|null}
+ */
+function trustedProxyIp(req) {
+  const headers = req?.headers ?? {};
+  const raw = headers["cf-connecting-ip"] || headers["true-client-ip"] || "";
+  const value = String(Array.isArray(raw) ? raw[0] : raw).trim();
+  return value || null;
+}
+
+/**
  * Mijoz IP manzili.
  *
  * @param {import("express").Request} req
  * @returns {string|null} - 45 belgidan uzun bo'lmagan manzil yoki `null`
  */
 function clientIp(req) {
-  const raw = req?.ip || req?.socket?.remoteAddress || "";
+  const raw = trustedProxyIp(req) || req?.ip || req?.socket?.remoteAddress || "";
   if (!raw) return null;
   const clean = String(raw).replace(V4_IN_V6, "");
   // "::1" — localhost, ko'rsatishga yaroqli
@@ -132,6 +158,7 @@ function clientInfo(req) {
 }
 
 module.exports = {
+  trustedProxyIp,
   clientIp,
   userAgent,
   deviceLabel,

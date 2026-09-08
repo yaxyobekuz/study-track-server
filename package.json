@@ -17,6 +17,7 @@
     "branch:migrate": "node src/scripts/branch-migrate/index.js",
     "branch:bootstrap": "node src/scripts/branch-bootstrap/index.js",
     "enrollment:backfill": "node src/scripts/backfill-enrollments.js",
+    "students:diagnose": "node src/scripts/diagnose-student-count.js",
     "finance:demo": "node src/scripts/seed-finance-demo/index.js",
     "activity:demo": "node src/scripts/seed-activity-demo/index.js",
     "seed:academic": "node src/scripts/seedAcademicDemo.js"

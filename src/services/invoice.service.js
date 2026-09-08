@@ -31,9 +31,10 @@ const {
   formatMonthKey,
   monthKeyOfDate,
   nextMonth,
+  prevMonth,
   coveringMonthWhere,
 } = require("../helpers/month.helpers");
-const { Decimal, formatAmount } = require("../helpers/money.helpers");
+const { Decimal, formatAmount, percentChange } = require("../helpers/money.helpers");
 
 const { deriveStatus } = require("../helpers/allocation.helpers");
 const { getFinanceSettings } = require("./settings.service");
@@ -1109,22 +1110,65 @@ const getStudentRegistry = async (req) => {
 };
 
 /**
+ * Oy yig'masining XOM raqamlari — bir oyning majburiyat kesimi.
+ *
+ * `getSummary` uni IKKI marta chaqiradi: tanlangan oy va o'tgan oy uchun.
+ * Ikkita mustaqil hisoblash bo'lsa, kartadagi "joriy" bilan "o'tgan oy"
+ * boshqa-boshqa qoidadan chiqib qolardi (masalan biri bekor qilinganni
+ * hisobga olib, ikkinchisi olmay).
+ *
+ * @param {number} month
+ * @returns {Promise<{counts: object, invoicedCount: number, amount: Decimal, paid: Decimal, debt: Decimal}>}
+ */
+const monthTotals = async (month) => {
+  const grouped = await prisma.monthlyInvoice.groupBy({
+    by: ["status"],
+    where: { month },
+    _count: { _all: true },
+    _sum: { amount: true, paidAmount: true },
+  });
+
+  const counts = { unpaid: 0, partial: 0, paid: 0, cancelled: 0 };
+  let amount = new Decimal(0);
+  let paid = new Decimal(0);
+
+  for (const row of grouped) {
+    counts[row.status] = row._count._all;
+    // Bekor qilingan summalar jami qarzga kirmaydi
+    if (row.status === "cancelled") continue;
+    amount = amount.plus(row._sum.amount ?? 0);
+    paid = paid.plus(row._sum.paidAmount ?? 0);
+  }
+
+  return {
+    counts,
+    invoicedCount: counts.unpaid + counts.partial + counts.paid,
+    amount,
+    paid,
+    debt: amount.minus(paid),
+  };
+};
+
+/**
  * Oylik yig'ma ma'lumot — admin ekranidagi kartalar va "shakllantirish
  * mumkinmi?" savoli uchun.
+ *
+ * ⚠️ TAQQOSLASH O'TGAN OY BILAN, kun yoki hafta bilan EMAS. Hisob-faktura
+ * OY birligida yoziladi (`finance.md` §0) va unda kun koordinatasi umuman
+ * yo'q — "bugungi hisoblangan summa" degan raqamning manbasi ham yo'q.
+ * Kun aniqligidagi kesim kassa tomonida ("To'lovlar" va Dashboard'dagi
+ * cash flow), majburiyat tomonida esa eng kichik birlik — oy.
  *
  * @param {number|string} monthInput
  * @returns {Promise<object>}
  */
 const getSummary = async (monthInput) => {
   const month = monthInput ? parseMonthKey(monthInput, "Oy") : currentMonthKey();
+  const compareMonth = prevMonth(month);
 
-  const [grouped, vacationSet, deposits, discountAgg] = await Promise.all([
-    prisma.monthlyInvoice.groupBy({
-      by: ["status"],
-      where: { month },
-      _count: { _all: true },
-      _sum: { amount: true, paidAmount: true },
-    }),
+  const [current, previous, vacationSet, deposits, discountAgg] = await Promise.all([
+    monthTotals(month),
+    monthTotals(compareMonth),
     getVacationSet(),
     prisma.studentAccount.aggregate({ _sum: { balance: true } }),
     prisma.monthlyInvoice.aggregate({
@@ -1133,24 +1177,16 @@ const getSummary = async (monthInput) => {
     }),
   ]);
 
-  const counts = { unpaid: 0, partial: 0, paid: 0, cancelled: 0 };
-  let totalAmount = new Decimal(0);
-  let totalPaid = new Decimal(0);
-
-  for (const row of grouped) {
-    counts[row.status] = row._count._all;
-    // Bekor qilingan summalar jami qarzga kirmaydi
-    if (row.status === "cancelled") continue;
-    totalAmount = totalAmount.plus(row._sum.amount ?? 0);
-    totalPaid = totalPaid.plus(row._sum.paidAmount ?? 0);
-  }
-
-  const invoicedCount = counts.unpaid + counts.partial + counts.paid;
+  const { counts, invoicedCount } = current;
+  const totalAmount = current.amount;
+  const totalPaid = current.paid;
   const isVacation = vacationSet.has(month);
 
   return {
     month,
     monthLabel: formatMonthKey(month),
+    compareMonth,
+    compareMonthLabel: formatMonthKey(compareMonth),
     isVacation,
     // Ta'til oyida "Shakllantirish" tugmasi o'chadi va sabab ko'rsatiladi
     canGenerate: !isVacation && month <= currentMonthKey(),
@@ -1176,6 +1212,28 @@ const getSummary = async (monthInput) => {
       // Butun maktabdagi oldindan to'langan pul — oyga bog'liq emas,
       // lekin admin ekranida shu yerda ko'rinishi mantiqiy
       deposits: formatAmount(new Decimal(deposits._sum.balance ?? 0)),
+    },
+
+    // ── O'TGAN OY BILAN TAQQOSLASH ──────────────────────────────────
+    // ⚠️ DEPOZIT BU YERDA YO'Q va bo'lmasligi kerak: u oyning emas,
+    // BUGUNGI KUNNING qoldig'i (butun maktabdagi oldindan to'langan
+    // pul). "O'tgan oydagi depozit" ni ko'rsatish uchun har oy oxirida
+    // qoldiqni muhrlab boradigan jadval kerak bo'lardi — hozir bunday
+    // jadval yo'q, ayirmani esa "taxmin qilish" soxta raqam bo'lardi.
+    previous: {
+      amount: formatAmount(previous.amount),
+      paid: formatAmount(previous.paid),
+      debt: formatAmount(previous.debt),
+      invoicedCount: previous.invoicedCount,
+      unpaidCount: previous.counts.unpaid + previous.counts.partial,
+      paidCount: previous.counts.paid,
+    },
+    // Foiz — o'tgan oy noldan iborat bo'lsa `null` (ekranda strelka
+    // chizilmaydi), 100% emas
+    change: {
+      amount: percentChange(totalAmount, previous.amount),
+      paid: percentChange(totalPaid, previous.paid),
+      debt: percentChange(totalAmount.minus(totalPaid), previous.debt),
     },
   };
 };

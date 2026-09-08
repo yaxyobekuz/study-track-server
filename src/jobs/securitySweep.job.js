@@ -4,6 +4,12 @@
  * Uch ish qiladi va uchalasi ham FAQAT TARTIBGA SOLADI, hech kimni
  * bloklamaydi (`security.service.js` doktrinasi: qayd etadi, to'xtatmaydi):
  *
+ *   0. BITTA QURILMANING ORTIQCHA SEANSLARINI YOPADI. Bitta telefondan
+ *      qayta-qayta kirilganda har kirish alohida qator yaratadi; yangi
+ *      kirish o'z qurilmasining eskisini darhol yopadi, lekin bu qoidadan
+ *      OLDIN yig'ilgan qatorlar qolgan. Ular yopilmasa "ochiq seanslar"
+ *      raqami ham, "bir nechta seans" ro'yxati ham haqiqatdan uzoq bo'lardi.
+ *
  *   1. MUDDATI O'TGAN SEANSLARNI YOPADI. Token 30 kun amal qiladi va
  *      hech kim uni "yopmaydi" — qator `active` bo'lib qolaveradi. Bu
  *      raqamni buzardi: "hozir 400 ta ochiq seans" degan yozuv aslida
@@ -43,10 +49,13 @@ const ATTEMPT_RETENTION_DAYS = 180;
 /**
  * Bitta supurish passi.
  *
- * @returns {Promise<{expired: number, staleAlerts: number, purged: number}>}
+ * @returns {Promise<{deduped: number, expired: number, staleAlerts: number, purged: number}>}
  */
 async function runSecuritySweep() {
   const now = Date.now();
+
+  // ── 0. Bitta qurilmaning ortiqcha seanslari ───────────────────────
+  const deduped = await securityService.dedupeLiveSessions();
 
   // ── 1. Muddati o'tgan seanslar ────────────────────────────────────
   const expired = await securityService.expireStaleSessions();
@@ -64,15 +73,16 @@ async function runSecuritySweep() {
     where: { createdAt: { lt: purgeBefore } },
   });
 
-  if (expired || staleAlerts || purged) {
+  if (deduped || expired || staleAlerts || purged) {
     logger.info(
-      `[SecuritySweep] ${expired} ta seans yopildi, ` +
+      `[SecuritySweep] ${deduped} ta ortiqcha seans birlashtirildi, ` +
+        `${expired} ta seans yopildi, ` +
         `${staleAlerts} ta ogohlantirish avtomatik belgilandi, ` +
         `${purged} ta eski urinish tozalandi`,
     );
   }
 
-  return { expired, staleAlerts, purged };
+  return { deduped, expired, staleAlerts, purged };
 }
 
 /** Cron jobni belgilaydi. Har kuni 03:40 (Asia/Tashkent). */

@@ -31,14 +31,18 @@ const {
   formatMonthKey,
   formatMonthShort,
   prevMonth,
+  diffMonths,
   monthStartDate,
   monthEndDate,
   monthInstantRange,
 } = require("../helpers/month.helpers");
-const { Decimal, formatAmount } = require("../helpers/money.helpers");
+const { Decimal, formatAmount, percentChange } = require("../helpers/money.helpers");
 const { sumIncome, sumExpense, AGING_BUCKETS } = require("./financeReport.service");
 const { ENTRY_TYPE_LABELS } = require("./paymentAccount.service");
 const { getDebtors } = require("./invoice.service");
+// Oylik rejimi yorlig'i — yagona katalogdan (ikki ekranda ikki xil nom
+// bo'lmasligi uchun)
+const { TYPE_LABELS: SALARY_TYPE_LABELS } = require("./staffSalary.service");
 const { loadTargetMap, loadCustomTargets } = require("./financeTarget.service");
 const { loadBudgetSummary } = require("./expenseBudget.service");
 const { loadPlanSummary } = require("./incomePlan.service");
@@ -85,17 +89,10 @@ const shareOf = (part, whole) => {
 };
 
 /**
- * O'sish foizi: (joriy − oldingi) / |oldingi|.
- *
- * ⚠️ Maxrajda MODUL turadi. Oldingi qiymat manfiy bo'lsa (zarar chiqqan oy)
- * oddiy bo'lish ishorani ag'darib, yaxshilanishni "pasayish" deb ko'rsatardi.
- * Oldingi qiymat nol bo'lsa foiz YO'Q (`null`), 100% emas.
+ * O'sish foizi — `money.helpers.js` dagi yagona nuqtaning taxallusi.
+ * Bu yerdagi chaqiruvlar qisqa nom bilan o'qiladi.
  */
-const changeOf = (current, previous) => {
-  const prev = new Decimal(previous);
-  if (prev.isZero()) return null;
-  return Number(new Decimal(current).minus(prev).div(prev.abs()).times(100).toFixed(1));
-};
+const changeOf = percentChange;
 
 /** Reja bajarilishi: amalda / reja. Reja yo'q bo'lsa `null`. */
 const planRateOf = (actual, plan) => {
@@ -564,17 +561,34 @@ const buildAccounts = async (at, compareAt) => {
  *
  * @param {number} asOfMonth
  */
-const buildDebt = async (asOfMonth) => {
-  const [debtRow, totalRow, agingRows, debtorsPage] = await Promise.all([
-    prisma.$queryRawUnsafe(
-      `SELECT COALESCE(SUM(amount - paid_amount), 0)::text                                      AS debt,
-              COUNT(DISTINCT student_id)::int                                                   AS debtors,
-              COALESCE(SUM(CASE WHEN month < $1 THEN amount - paid_amount ELSE 0 END), 0)::text AS overdue,
-              MIN(month)::int                                                                   AS oldest_month
-         FROM monthly_invoices
-        WHERE status IN ('unpaid', 'partial') AND month <= $1`,
-      asOfMonth,
-    ),
+const debtTotalsAt = async (asOfMonth) => {
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT COALESCE(SUM(amount - paid_amount), 0)::text                                      AS debt,
+            COUNT(DISTINCT student_id)::int                                                   AS debtors,
+            COALESCE(SUM(CASE WHEN month < $1 THEN amount - paid_amount ELSE 0 END), 0)::text AS overdue,
+            MIN(month)::int                                                                   AS oldest_month
+       FROM monthly_invoices
+      WHERE status IN ('unpaid', 'partial') AND month <= $1`,
+    asOfMonth,
+  );
+
+  const row = rows[0] ?? {};
+
+  return {
+    debt: new Decimal(row.debt ?? 0),
+    overdue: new Decimal(row.overdue ?? 0),
+    debtorCount: row.debtors ?? 0,
+    oldestMonth: row.oldest_month ?? null,
+  };
+};
+
+const buildDebt = async (asOfMonth, compareMonth) => {
+  const [totals, previousTotals, totalRow, agingRows, debtorsPage] = await Promise.all([
+    debtTotalsAt(asOfMonth),
+    // ⚠️ Taqqoslash oyi HOLATIGA qarab olinadi, o'sha oyning o'z qarzi
+    // emas: "o'tgan oy oxirida qancha qarz turgan edi" degan savolga
+    // yuqoridagi karta bilan BIR XIL usulda javob beradi (kümülativ).
+    debtTotalsAt(compareMonth),
     prisma.$queryRawUnsafe(
       `SELECT COUNT(DISTINCT student_id)::int AS total
          FROM monthly_invoices
@@ -612,11 +626,10 @@ const buildDebt = async (asOfMonth) => {
     getDebtors({ query: { limit: String(TOP_DEBTORS_LIMIT) } }),
   ]);
 
-  const row = debtRow[0] ?? {};
-  const debt = new Decimal(row.debt ?? 0);
-  const debtorCount = row.debtors ?? 0;
+  const debt = totals.debt;
+  const debtorCount = totals.debtorCount;
   const studentCount = totalRow[0]?.total ?? 0;
-  const oldestMonth = row.oldest_month ?? null;
+  const oldestMonth = totals.oldestMonth;
 
   const agingByKey = new Map(agingRows.map((r) => [r.bucket, r]));
 
@@ -624,9 +637,23 @@ const buildDebt = async (asOfMonth) => {
     asOfMonth,
     asOfMonthLabel: formatMonthKey(asOfMonth),
     debt: formatAmount(debt),
-    overdue: formatAmount(new Decimal(row.overdue ?? 0)),
+    overdue: formatAmount(totals.overdue),
     debtorCount,
     studentCount,
+    // Yuqori qatordagi kartalar uchun — qolgan KPI kartalari kabi
+    // "o'tgan oy" satri bo'lishi uchun
+    previousDebt: formatAmount(previousTotals.debt),
+    previousDebtorCount: previousTotals.debtorCount,
+    debtChange: changeOf(debt, previousTotals.debt),
+    debtorChange:
+      previousTotals.debtorCount > 0
+        ? Number(
+            (
+              ((debtorCount - previousTotals.debtorCount) / previousTotals.debtorCount) *
+              100
+            ).toFixed(1),
+          )
+        : null,
     // "Qarzsiz" ulushi — diagrammaning ikkinchi bo'lagi
     clearCount: Math.max(studentCount - debtorCount, 0),
     debtorShare: studentCount > 0 ? shareOf(debtorCount, studentCount) : 0,
@@ -653,6 +680,120 @@ const buildDebt = async (asOfMonth) => {
       debt: d.debt,
       unpaidCount: d.unpaidCount,
       oldestMonthLabel: d.oldestMonthLabel,
+    })),
+  };
+};
+
+/**
+ * XODIMLAR OYLIGI — jami summa va kim qancha olayotgani.
+ *
+ * ⚠️ IKKI RAQAM ATAYLAB YONMA-YON: HISOBLANGAN (majburiyat) va TO'LANGAN
+ * (kassadan chiqqan pul). Yuqoridagi "Jami xarajat" kartasi FAQAT
+ * to'langanini ko'rsatadi (`finance.md` §10, "Hisobot"), shuning uchun
+ * faqat o'sha karta bo'lsa "oylik hisoblangan-u to'lanmagan" holat
+ * ekranda umuman ko'rinmasdi — aynan "kimga qancha qarzdormiz" degan
+ * savol javobsiz qolardi.
+ *
+ * ⚠️ Bekor qilingan majburiyat CHIQARIB TASHLANADI: u qarz ham emas,
+ * xarajat ham emas.
+ *
+ * ⚠️ Ism `staffSnapshot` dan olinadi, agar xodim qatori topilmasa —
+ * arxivlangan yoki o'chirilgan xodimning oyligi ham registrda qoladi
+ * (`payroll.service.js` dagi bilan bir xil qoida).
+ *
+ * @param {number} month
+ * @param {number} compareMonth
+ */
+const buildPayroll = async (month, compareMonth) => {
+  const [entries, previousAgg] = await Promise.all([
+    prisma.payrollEntry.findMany({
+      where: { month, status: { not: "cancelled" } },
+      select: {
+        staffId: true,
+        amount: true,
+        paidAmount: true,
+        salaryType: true,
+        hoursWorked: true,
+        status: true,
+        staffSnapshot: true,
+      },
+    }),
+    prisma.payrollEntry.aggregate({
+      where: { month: compareMonth, status: { not: "cancelled" } },
+      _sum: { amount: true, paidAmount: true },
+    }),
+  ]);
+
+  const staffRows = entries.length
+    ? await prisma.user.findMany({
+        where: { id: { in: [...new Set(entries.map((e) => e.staffId))] } },
+        select: { id: true, firstName: true, lastName: true, role: true, isArchived: true },
+      })
+    : [];
+  const staffById = new Map(staffRows.map((s) => [s.id, s]));
+
+  let accrued = new Decimal(0);
+  let paid = new Decimal(0);
+
+  const items = entries.map((entry) => {
+    const amount = new Decimal(entry.amount);
+    const paidAmount = new Decimal(entry.paidAmount);
+
+    accrued = accrued.plus(amount);
+    paid = paid.plus(paidAmount);
+
+    const staff = staffById.get(entry.staffId);
+    const snapshot = entry.staffSnapshot ?? {};
+    const debt = amount.minus(paidAmount);
+
+    return {
+      staffId: entry.staffId,
+      fullName:
+        (staff
+          ? `${staff.firstName ?? ""} ${staff.lastName ?? ""}`.trim()
+          : `${snapshot.firstName ?? ""} ${snapshot.lastName ?? ""}`.trim()) || "Noma'lum",
+      role: staff?.role ?? snapshot.role ?? null,
+      isArchived: staff?.isArchived ?? false,
+      amount,
+      paidAmount,
+      debt: debt.isNegative() ? new Decimal(0) : debt,
+      status: entry.status,
+      salaryType: entry.salaryType,
+      salaryTypeLabel: SALARY_TYPE_LABELS[entry.salaryType] ?? entry.salaryType,
+      // Soat faqat soatga bog'liq rejimlarda ma'noli — `fixed` da u 0
+      // bo'lib turib "hech soat o'tmagan" degan yolg'on taassurot berardi
+      hoursWorked:
+        entry.salaryType === "fixed" ? null : entry.hoursWorked,
+    };
+  });
+
+  items.sort((a, b) => b.amount.comparedTo(a.amount));
+
+  const debtTotal = accrued.minus(paid);
+  const previousAccrued = new Decimal(previousAgg._sum.amount ?? 0);
+  const previousPaid = new Decimal(previousAgg._sum.paidAmount ?? 0);
+
+  return {
+    month,
+    monthLabel: formatMonthKey(month),
+    accrued: formatAmount(accrued),
+    paid: formatAmount(paid),
+    debt: formatAmount(debtTotal.isNegative() ? new Decimal(0) : debtTotal),
+    staffCount: items.length,
+    unpaidCount: items.filter((row) => row.status !== "paid").length,
+    previousAccrued: formatAmount(previousAccrued),
+    previousPaid: formatAmount(previousPaid),
+    accruedChange: changeOf(accrued, previousAccrued),
+    paidChange: changeOf(paid, previousPaid),
+    // ⚠️ TO'LIQ ro'yxat qaytariladi, kesilmaydi: "kim qancha olyapti"
+    // degan savolga to'liq javob kerak, ekranda esa qancha ko'rsatish
+    // frontendning qarori (u yerda "hammasi" tugmasi bor).
+    items: items.map((row) => ({
+      ...row,
+      amount: formatAmount(row.amount),
+      paidAmount: formatAmount(row.paidAmount),
+      debt: formatAmount(row.debt),
+      share: shareOf(row.amount, accrued),
     })),
   };
 };
@@ -883,7 +1024,12 @@ const buildRecent = async () => {
 /**
  * @param {{month?: string|number, compareMonth?: string|number, trendMonths?: string|number}} query
  */
-const getDashboard = async (query = {}) => {
+const getDashboard = async (query = {}, options = {}) => {
+  // Kim qancha oylik olayotgani `payroll.view` ostida — controller hal
+  // qiladi (`finance.md` §11). Bayroq berilmasa ro'yxat CHIQMAYDI:
+  // xavfsiz standart "ko'rsatma" bo'lishi kerak.
+  const { includePayrollStaff = false } = options;
+
   const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
   const compareMonth =
     parseOptionalMonthKey(query.compareMonth, "Taqqoslash oyi") ?? prevMonth(month);
@@ -918,6 +1064,7 @@ const getDashboard = async (query = {}) => {
     revenue,
     accounts,
     debt,
+    payroll,
     accrual,
     pricing,
     expenseBudget,
@@ -935,7 +1082,8 @@ const getDashboard = async (query = {}) => {
     buildExpenseStructure(previous, previous.salary),
     buildRevenueStructure(current, current.expense),
     buildAccounts(current.to, previous.to),
-    buildDebt(month),
+    buildDebt(month, compareMonth),
+    buildPayroll(month, compareMonth),
     buildAccrual(months, month),
     buildPricing(month),
     loadBudgetSummary(month),
@@ -993,13 +1141,76 @@ const getDashboard = async (query = {}) => {
     compareMonth,
     compareMonthLabel: formatMonthKey(compareMonth),
 
-    // ── Yuqori qator: beshta karta ──────────────────────────────────
+    // ── Yuqori qator: kassa kartalari + qarz va oylik ───────────────
+    //
+    // ⚠️ Birinchi beshtasi KASSA o'lchovida ("pul kirdi/chiqdi"), keyingi
+    // to'rttasi MAJBURIYAT o'lchovida ("qancha olishimiz / to'lashimiz
+    // kerak"). Ular bir qatorda turadi, chunki rahbar ekranni shu
+    // tartibda o'qiydi — lekin REJA (`plan`) faqat birinchi beshtasida
+    // bo'ladi: qarz va oylik uchun reja belgilanmaydi.
     kpi: {
       income: kpi("income", current.income),
       expense: kpi("expense", current.expense),
       profit: kpi("profit", current.profit),
       margin: kpi("margin", current.margin, { unit: "percent" }),
       cashBalance: kpi("cashBalance", cashBalance),
+
+      // "Qarzdorlar" sahifasidagi uchta karta — asosiy ekranga ko'chirildi.
+      // Manba AYNI `buildDebt`: ikki ekran bir xil raqamni ko'rsatishi
+      // uchun ikkinchi so'rov yozilmaydi.
+      debt: {
+        key: "debt",
+        unit: "money",
+        value: debt.debt,
+        plan: null,
+        planRate: null,
+        previous: debt.previousDebt,
+        change: debt.debtChange,
+        changeUnit: "percent",
+      },
+      debtors: {
+        key: "debtors",
+        unit: "count",
+        value: debt.debtorCount,
+        plan: null,
+        planRate: null,
+        previous: debt.previousDebtorCount,
+        change: debt.debtorChange,
+        changeUnit: "percent",
+        sub: `${debt.studentCount} ta o'quvchidan`,
+      },
+      oldestDebt: {
+        key: "oldestDebt",
+        // ⚠️ `text` — bu oy YORLIG'I, son emas. Foiz yoki "ta" qo'shib
+        // yuborilmasligi uchun turi alohida.
+        unit: "text",
+        value: debt.oldestMonthLabel,
+        plan: null,
+        planRate: null,
+        previous: null,
+        change: null,
+        changeUnit: "percent",
+        sub:
+          debt.oldestMonth == null
+            ? "Qarz yo'q"
+            : debt.oldestMonth === month
+              ? "Shu oy"
+              : `${diffMonths(debt.oldestMonth, month)} oy oldingi qarz`,
+      },
+      // ⚠️ HISOBLANGAN oylik, to'langani emas: "Jami xarajat" kartasi
+      // allaqachon to'langanini ko'rsatadi. Ikkalasi bir xil bo'lsa,
+      // to'lanmagan oylik ekranda umuman ko'rinmasdi.
+      payroll: {
+        key: "payroll",
+        unit: "money",
+        value: payroll.accrued,
+        plan: null,
+        planRate: null,
+        previous: payroll.previousAccrued,
+        change: payroll.accruedChange,
+        changeUnit: "percent",
+        sub: `${payroll.staffCount} ta xodim`,
+      },
     },
 
     // ── P&L (foyda va zarar) hisoboti ───────────────────────────────
@@ -1094,6 +1305,14 @@ const getDashboard = async (query = {}) => {
     },
     accounts,
     debt,
+    payroll: {
+      ...payroll,
+      // Ruxsat yo'q bo'lsa YIG'MA qoladi, ismlar ketmaydi. Bo'sh ro'yxat
+      // frontendda "bu oyda oylik shakllanmagan" bo'lib ko'rinmasligi
+      // uchun bayroq ham yuboriladi.
+      items: includePayrollStaff ? payroll.items : [],
+      staffVisible: includePayrollStaff,
+    },
     accrual,
     pricing,
     expenseBudget,

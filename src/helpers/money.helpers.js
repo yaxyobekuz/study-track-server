@@ -245,6 +245,31 @@ function assertSignMatchesType(type, amount) {
   }
 }
 
+/**
+ * O'SISH FOIZI: (joriy − oldingi) / |oldingi|, 1 xonali.
+ *
+ * ⚠️ MAXRAJDA MODUL turadi. Oldingi qiymat manfiy bo'lsa (zarar chiqqan
+ * oy) oddiy bo'lish ishorani ag'darib, yaxshilanishni "pasayish" deb
+ * ko'rsatardi.
+ *
+ * ⚠️ OLDINGI QIYMAT NOL BO'LSA `null`, 100% EMAS. "Noldan 800 mln ga"
+ * degan o'sishning foizi yo'q va uni 100% deb ko'rsatish yolg'on bo'lardi
+ * — ekranda bunday holatda strelka umuman chizilmaydi.
+ *
+ * ⚠️ YAGONA NUQTA: dashboard KPI kartalari ham, "Umumiy" tabidagi
+ * kartalar ham shu funksiyani chaqiradi. Ikkita nusxa bo'lsa, bir ekranda
+ * "+12%", boshqasida "+12.4%" turib qolardi.
+ *
+ * @param {Decimal|string|number} current
+ * @param {Decimal|string|number} previous
+ * @returns {number|null}
+ */
+function percentChange(current, previous) {
+  const prev = toDecimal(previous);
+  if (prev.isZero()) return null;
+  return Number(toDecimal(current).minus(prev).div(prev.abs()).times(100).toFixed(1));
+}
+
 module.exports = {
   Decimal,
   toDecimal,
@@ -256,6 +281,7 @@ module.exports = {
   formatAmount,
   sumAmounts,
   applyPercent,
+  percentChange,
   floorToUnit,
   assertSignMatchesType,
 };
