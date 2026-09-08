@@ -13,7 +13,6 @@ const {
 // Middlewares
 const {
   protect,
-  authorize,
   authorizePermission,
   authorizeSection,
 } = require("../middleware/auth.middleware");

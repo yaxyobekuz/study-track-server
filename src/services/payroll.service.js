@@ -286,9 +286,23 @@ const generateForMonth = async (monthInput, options = {}) => {
   summary.dryRun = dryRun;
 
   if (!dryRun && rows.length > 0) {
-    await prisma.payrollEntry.createMany({ data: rows, skipDuplicates: true });
+    // ⚠️ Sanoq `createMany` NATIJASIDAN olinadi, `rows.length` dan emas.
+    // `skipDuplicates` bilan ikkita instans (PM2 cluster) bir vaqtda
+    // ishlaganda ikkalasi ham "N ta yaratdim" deb hisobot berardi, holbuki
+    // qatorlarni faqat bittasi yozgan. Hisob-faktura passi allaqachon
+    // shu shaklda ishlaydi — oylik passi undan orqada qolgan edi.
+    const result = await prisma.payrollEntry.createMany({
+      data: rows,
+      skipDuplicates: true,
+    });
+
+    summary.created = result.count;
+    // Poyga tufayli tushib qolgani "allaqachon bor" ga qo'shiladi, jim
+    // yo'qolmaydi.
+    summary.skipped.alreadyExists += rows.length - result.count;
+
     logger.info(
-      `[payroll] ${formatMonthKey(month)}: ${rows.length} ta oylik majburiyati, ` +
+      `[payroll] ${formatMonthKey(month)}: ${result.count} ta oylik majburiyati, ` +
         `jami ${formatAmount(total)} (soatdan ${formatAmount(hoursTotalAmount)}, ` +
         `${hoursTotal} soat)`,
     );
@@ -449,12 +463,6 @@ const cancelEntry = async (id, reason, userId) => {
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Bekor qilish sababi majburiy");
 
-  logger.warn(
-    `[payroll] Majburiyat bekor qilindi: entry=${id} ` +
-      `staff=${entry.staffId} oy=${entry.month} summa=${formatAmount(entry.amount)} ` +
-      `actor=${userId} sabab="${trimmed}"`,
-  );
-
   const updated = await prisma.payrollEntry.update({
     where: { id },
     data: {
@@ -464,6 +472,15 @@ const cancelEntry = async (id, reason, userId) => {
       cancelledBy: userId,
     },
   });
+
+  // ⚠️ AUDIT YOZUVI YOZUVDAN KEYIN — modul bo'ylab bitta tartib
+  // (`payment.voidPayment` dagi izohga qarang): yiqilgan urinish logda
+  // BAJARILGAN bekor qilish bo'lib qolmasligi kerak.
+  logger.warn(
+    `[payroll] Majburiyat bekor qilindi: entry=${id} ` +
+      `staff=${entry.staffId} oy=${entry.month} summa=${formatAmount(entry.amount)} ` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
 
   return serializeEntry(updated);
 };
@@ -556,13 +573,6 @@ const regenerateEntry = async (id, reason, userId) => {
   const money = computeSalary(salary, hours);
   const amount = money.amount;
 
-  logger.warn(
-    `[payroll] Majburiyat qayta shakllantirildi: entry=${id} ` +
-      `staff=${entry.staffId} oy=${entry.month} ` +
-      `eski=${formatAmount(entry.amount)} yangi=${formatAmount(amount)} ` +
-      `soat=${hours} eskiHolat=${entry.status} actor=${userId} sabab="${trimmed}"`,
-  );
-
   const updated = await prisma.payrollEntry.update({
     where: { id },
     data: {
@@ -603,6 +613,14 @@ const regenerateEntry = async (id, reason, userId) => {
       note: entry.note,
     },
   });
+
+  // AUDIT YOZUVI YOZUVDAN KEYIN (yuqoridagi izohga qarang)
+  logger.warn(
+    `[payroll] Majburiyat qayta shakllantirildi: entry=${id} ` +
+      `staff=${entry.staffId} oy=${entry.month} ` +
+      `eski=${formatAmount(entry.amount)} yangi=${formatAmount(amount)} ` +
+      `soat=${hours} eskiHolat=${entry.status} actor=${userId} sabab="${trimmed}"`,
+  );
 
   return serializeEntry(updated, { staff });
 };

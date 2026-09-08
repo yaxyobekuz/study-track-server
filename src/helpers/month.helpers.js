@@ -423,6 +423,201 @@ function findGaps(periods) {
   return gaps;
 }
 
+
+// ─────────────────────────────────────────────
+// KUN ORALIG'I (hisobot filtrlari uchun)
+// ─────────────────────────────────────────────
+
+/**
+ * Filtrdagi "YYYY-MM-DD" ni TOSHKENT kunining chegarasiga aylantiradi.
+ *
+ * ⚠️ `new Date(iso)` + `setHours()` NAQSHI XATO va u modulda uch joyda
+ * qolib ketgan edi: `setHours` HOST taymzonasida ishlaydi, ya'ni UTC'da
+ * turgan serverda "8-sentabr" oralig'i aslida 8-sentabr 05:00 dan
+ * 9-sentabr 04:59 gacha bo'lib chiqardi. Natijada kassirning kunlik
+ * tushum ro'yxati ertalabki to'lovlarni tashlab, kechqurungi to'lovlarni
+ * qo'shib olardi — hisobot sahifasi esa (`financeReport.service.js`) aynan
+ * shu kun uchun BOSHQA raqam ko'rsatardi.
+ *
+ * Kun bo'lmagan (to'liq instant) qiymat o'zgarishsiz o'tadi: frontend
+ * ba'zi joylarda ISO vaqt yuboradi va u allaqachon aniq moment.
+ *
+ * @param {string|Date} value
+ * @param {string} label - xato xabaridagi maydon nomi
+ * @param {"start"|"end"} edge
+ * @returns {Date}
+ * @throws {BadRequestError}
+ */
+function parseRangeBound(value, label, edge) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) throw new BadRequestError(`${label} noto'g'ri`);
+    return value;
+  }
+
+  const raw = String(value ?? "").trim();
+  const match = DAY_RE.exec(raw);
+
+  if (match) {
+    // Kun berilgan — chegara TOSHKENT devor-soati bo'yicha quriladi.
+    // `parseDayDate` mavjud bo'lmagan sanani ("2026-02-30") ushlaydi.
+    parseDayDate(raw, label);
+    const iso =
+      edge === "end" ? `${raw}T23:59:59.999+05:00` : `${raw}T00:00:00.000+05:00`;
+    return new Date(iso);
+  }
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) throw new BadRequestError(`${label} noto'g'ri`);
+  return date;
+}
+
+/**
+ * `{ from, to }` query bo'lagidan Prisma sana filtri.
+ *
+ * Ikkalasi ham bo'lmasa `null` qaytadi (filtr qo'yilmaydi) — chaqiruvchilar
+ * aynan shu shaklda ishlatadi.
+ *
+ * @param {object} query
+ * @param {{fromKey?: string, toKey?: string}} [options]
+ * @returns {{gte?: Date, lte?: Date}|null}
+ */
+function parseDayRangeFilter(query = {}, options = {}) {
+  const { fromKey = "from", toKey = "to" } = options;
+  const range = {};
+
+  if (query[fromKey]) {
+    range.gte = parseRangeBound(query[fromKey], "Boshlanish sanasi", "start");
+  }
+  if (query[toKey]) {
+    range.lte = parseRangeBound(query[toKey], "Tugash sanasi", "end");
+  }
+
+  if (range.gte && range.lte && range.gte > range.lte) {
+    throw new BadRequestError(
+      "Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas",
+    );
+  }
+
+  return Object.keys(range).length ? range : null;
+}
+
+/**
+ * To'liq oraliq — hisobotlar uchun (ikkala chegara ham MAJBURIY).
+ *
+ * @param {string} fromIso - "YYYY-MM-DD"
+ * @param {string} toIso - "YYYY-MM-DD"
+ * @returns {{from: Date, to: Date}}
+ */
+function dayRangeBounds(fromIso, toIso) {
+  const from = parseRangeBound(fromIso, "Boshlanish sanasi", "start");
+  const to = parseRangeBound(toIso, "Tugash sanasi", "end");
+
+  if (from > to) {
+    throw new BadRequestError(
+      "Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas",
+    );
+  }
+
+  return { from, to };
+}
+
+/** Bugungi kun Toshkent kalendari bo'yicha, "YYYY-MM-DD". */
+function todayIsoTashkent() {
+  return currentDayDate().toISOString().slice(0, 10);
+}
+
+/**
+ * "YYYY-MM-DD" ga kun qo'shadi/ayiradi (taymzonasiz, sof kalendar).
+ * @param {string} iso
+ * @param {number} days
+ * @returns {string}
+ */
+function shiftIsoDays(iso, days) {
+  return new Date(new Date(`${iso}T00:00:00Z`).getTime() + days * 86400000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Oyning birinchi kuni — TOSHKENT yarim tunidagi INSTANT.
+ *
+ * `monthStartDate` dan farqi: u `@db.Date` ustuni uchun UTC yarim tunini
+ * beradi, bu esa `paidAt`/`occurredAt` kabi haqiqiy instantlarni filtrlash
+ * uchun. Ikkalasi 5 soatga farq qiladi va ularni almashtirib yuborish oy
+ * chegarasidagi to'lovlarni qo'shni oyga o'tkazib yuborardi.
+ *
+ * @param {number} monthKey - YYYYMM
+ * @returns {Date}
+ */
+function monthStartInstant(monthKey) {
+  const year = Math.trunc(monthKey / 100);
+  const month = String(monthKey % 100).padStart(2, "0");
+  return new Date(`${year}-${month}-01T00:00:00.000+05:00`);
+}
+
+
+/**
+ * Oyning TOSHKENT bo'yicha INSTANT chegaralari — `[from, to]`, `to`
+ * inklyuziv (keyingi oy boshidan 1 ms oldin).
+ *
+ * ⚠️ `oy + 1` bilan hisoblab bo'lmaydi: dekabrda 13-oy chiqadi. `nextMonth`
+ * yil chegarasini o'zi hal qiladi.
+ *
+ * Bu shakl `financeReport`, `financeDashboard`, `expenseBudget` va
+ * `incomePlan` da bir xil ko'chirilgan holda turardi — to'rt nusxa demak
+ * to'rtta buzilish nuqtasi.
+ *
+ * @param {number} monthKey - YYYYMM
+ * @returns {{from: Date, to: Date}}
+ */
+function monthInstantRange(monthKey) {
+  return {
+    from: monthStartInstant(monthKey),
+    to: new Date(monthStartInstant(nextMonth(monthKey)).getTime() - 1),
+  };
+}
+
+
+/**
+ * Mijoz soati bilan server soati orasidagi yo'l qo'yiladigan farq.
+ *
+ * Nolga teng bo'lsa, brauzeri bir necha soniyaga oldinda ketgan kassirning
+ * "hozir" deb yuborgan to'lovi "kelajakdagi sana" deb rad etilardi.
+ */
+const CLOCK_SKEW_MS = 60_000;
+
+/**
+ * Pul harakati QAYD ETILGAN paytni o'qiydi: bo'sh bo'lsa — hozir,
+ * kelajakda bo'lsa — rad etiladi.
+ *
+ * ⚠️ MODUL BO'YLAB BITTA QOIDA. Ilgari bu tekshiruv to'rtta faylda
+ * mustaqil yozilgan edi va faqat bittasida soat farqiga yo'l qo'yilardi:
+ * bir xil "hozir" bosilgan tugma to'lovda o'tib, xarajatda rad etilardi.
+ *
+ * @param {string|Date|null|undefined} value
+ * @param {{label?: string, subject?: string}} [options]
+ *   `subject` — xato xabaridagi hodisa nomi ("to'lov", "xarajat", "kirim")
+ * @returns {Date}
+ * @throws {BadRequestError}
+ */
+function parseRecordedAt(value, options = {}) {
+  const { label = "Sana", subject = "yozuv" } = options;
+
+  if (value == null || value === "") return new Date();
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestError(`${label} noto'g'ri`);
+  }
+  if (date.getTime() > Date.now() + CLOCK_SKEW_MS) {
+    throw new BadRequestError(
+      `Kelajakdagi sana bilan ${subject} qayd etib bo'lmaydi`,
+    );
+  }
+
+  return date;
+}
+
 module.exports = {
   MIN_MONTH_KEY,
   MAX_MONTH_KEY,
@@ -451,4 +646,13 @@ module.exports = {
   coveringMonthWhere,
   overlappingPeriodWhere,
   findGaps,
+  parseRangeBound,
+  parseDayRangeFilter,
+  dayRangeBounds,
+  todayIsoTashkent,
+  shiftIsoDays,
+  monthStartInstant,
+  monthInstantRange,
+  CLOCK_SKEW_MS,
+  parseRecordedAt,
 };

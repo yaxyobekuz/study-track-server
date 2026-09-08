@@ -1,4 +1,5 @@
 const asyncHandler = require("../middleware/async.middleware");
+const logger = require("../utils/logger");
 const enrollmentService = require("../services/studentEnrollment.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
@@ -48,9 +49,15 @@ const generateForNewPeriod = async (req, enrollment) => {
       source: "manual",
       studentIds: [enrollment.studentId],
     });
-  } catch {
+  } catch (error) {
     // Hisob-faktura shakllanmasligi davr ochilishini bekor qilmaydi —
-    // admin ogohlantirishlarda ko'radi va qo'lda shakllantira oladi
+    // admin ogohlantirishlarda ko'radi va qo'lda shakllantira oladi.
+    // ⚠️ Lekin JIM qolmaydi: sabab logga yoziladi, aks holda "davr
+    // ochildi, hisob-faktura yo'q" holatini tekshirishning yo'li qolmasdi.
+    logger.warn(
+      `[enrollment] Davr ochilgach hisob-faktura shakllantirilmadi: ` +
+        `student=${enrollment.studentId} oy=${month} — ${error.message}`,
+    );
     return null;
   }
 };

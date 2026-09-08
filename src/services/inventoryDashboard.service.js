@@ -43,9 +43,9 @@ const {
   formatMonthKey,
   formatMonthShort,
   prevMonth,
-  nextMonth,
   monthStartDate,
   monthEndDate,
+  monthInstantRange,
   currentDayDate,
   daysInMonth,
 } = require("../helpers/month.helpers");
@@ -87,23 +87,11 @@ const LIVE_DAMAGE = { status: { not: "cancelled" } };
 // Yordamchilar
 // ─────────────────────────────────────────────
 
-/**
- * Oyning TOSHKENT bo'yicha boshi va oxiri — INSTANT maydonlar uchun
- * (`occurredAt`, `paidAt`). `monthStartDate/monthEndDate` UTC yarim tuni
- * qaytaradi va u `@db.Date` uchun (`financeDashboard.service.js` dagi
- * aynan shu izoh).
- */
-const monthInstantRange = (monthKey) => {
-  const iso = (key) =>
-    `${Math.trunc(key / 100)}-${String(key % 100).padStart(2, "0")}-01T00:00:00+05:00`;
-
-  return {
-    from: new Date(iso(monthKey)),
-    // Keyingi oy boshidan 1 ms oldin — dekabrda "13-oy" chiqmasligi uchun
-    // `nextMonth` yil chegarasini o'zi hal qiladi
-    to: new Date(new Date(iso(nextMonth(monthKey))).getTime() - 1),
-  };
-};
+// Oyning TOSHKENT bo'yicha boshi va oxiri — INSTANT maydonlar uchun
+// (`occurredAt`, `paidAt`) — `month.helpers.js` dagi `monthInstantRange`.
+// ⚠️ `monthStartDate`/`monthEndDate` bilan chalkashtirmang: ular UTC yarim
+// tunini qaytaradi va faqat `@db.Date` ustunlari uchun (pastdagi
+// `monthDayRange`). Ikkalasi 5 soatga farq qiladi.
 
 /** `@db.Date` ustuni uchun oy oralig'i (UTC yarim tuni). */
 const monthDayRange = (monthKey) => ({

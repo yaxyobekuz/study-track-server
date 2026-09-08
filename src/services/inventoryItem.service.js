@@ -23,7 +23,7 @@ const {
 } = require("../utils/pagination");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const logger = require("../utils/logger");
-const { parseAmount, formatAmount, Decimal } = require("../helpers/money.helpers");
+const { parseAmount, formatAmount } = require("../helpers/money.helpers");
 
 const serializeItem = (row, { stockCount, totalQuantity } = {}) => {
   const { category, ...rest } = row;

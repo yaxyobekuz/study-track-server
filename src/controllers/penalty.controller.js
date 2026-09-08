@@ -1,5 +1,5 @@
 const asyncHandler = require("../middleware/async.middleware");
-const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { BadRequestError } = require("../utils/errors");
 const penaltyService = require("../services/penalty.service");
 // Rollar katalogi PLATFORMADA (barcha filiallarga umumiy)
 const platformPrisma = require("../config/platformPrisma");

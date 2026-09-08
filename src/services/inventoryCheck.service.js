@@ -52,7 +52,6 @@ const { formatDateUz } = require("../helpers/date.helpers");
 const {
   parseOptionalQuantity,
   parseDamageReason,
-  damageAmountOf,
   locationSnapshotOf,
   DAMAGE_REASON_LABELS,
 } = require("../helpers/inventory.helpers");

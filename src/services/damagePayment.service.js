@@ -39,6 +39,7 @@ const {
   formatAmount,
   sumAmounts,
 } = require("../helpers/money.helpers");
+const { parseDayRangeFilter } = require("../helpers/month.helpers");
 const { allocateFifo, deriveStatus } = require("../helpers/allocation.helpers");
 const {
   personSnapshotOf,
@@ -361,11 +362,10 @@ const getPayments = async (req) => {
   if (query.accountId) where.accountId = query.accountId;
   if (query.includeVoided !== "true") where.isVoided = false;
 
-  if (query.from || query.to) {
-    where.paidAt = {};
-    if (query.from) where.paidAt.gte = new Date(`${query.from}T00:00:00+05:00`);
-    if (query.to) where.paidAt.lte = new Date(`${query.to}T23:59:59.999+05:00`);
-  }
+  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
+  // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
+  const range = parseDayRangeFilter(query);
+  if (range) where.paidAt = range;
 
   const [rows, total, agg] = await Promise.all([
     prisma.damagePayment.findMany({

@@ -29,6 +29,10 @@ const {
   formatAmount,
   assertSignMatchesType,
 } = require("../helpers/money.helpers");
+const {
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 
 const ENTRY_TYPE_LABELS = {
   payment: "To'lov",
@@ -322,15 +326,9 @@ const adjustBalance = async (id, data, userId) => {
   const reason = data.reason?.trim();
   if (!reason) throw new BadRequestError("To'g'rilash sababi majburiy");
 
-  const occurredAt = data.occurredAt ? new Date(data.occurredAt) : new Date();
-  if (Number.isNaN(occurredAt.getTime())) {
-    throw new BadRequestError("Sana noto'g'ri");
-  }
-
-  logger.warn(
-    `[accounts] Qo'lda to'g'rilash: account=${id} (${account.name}) ` +
-      `summa=${amount.toFixed(2)} actor=${userId} sabab="${reason}"`,
-  );
+  // Daftar BO'LIB O'TGAN pul harakatini yozadi: kelajakdagi sana running
+  // balance ustunini ham, kunlik hisobotni ham yolg'onlashtirardi.
+  const occurredAt = parseRecordedAt(data.occurredAt, { subject: "to'g'rilash" });
 
   const entry = await prisma.$transaction(async (tx) =>
     postEntry(tx, {
@@ -345,6 +343,16 @@ const adjustBalance = async (id, data, userId) => {
 
   const updated = await prisma.paymentAccount.findUnique({ where: { id } });
 
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN: `assertSignMatchesType` yoki
+  // arxivlangan tur sababli yiqilgan urinish logda BAJARILGAN to'g'rilash
+  // bo'lib qolmasligi kerak. Yangi qoldiq ham yoziladi — bu amal pulni
+  // sababsiz yaratadigan/yo'q qiladigan yagona joy.
+  logger.warn(
+    `[accounts] Qo'lda to'g'rilash: account=${id} (${account.name}) ` +
+      `summa=${amount.toFixed(2)} yangi qoldiq=${formatAmount(updated.balance)} ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
   return { entry: serializeEntry(entry), account: serializeAccount(updated) };
 };
 
@@ -352,23 +360,12 @@ const adjustBalance = async (id, data, userId) => {
 // Daftar va hisobot
 // ─────────────────────────────────────────────
 
-const parseDateRange = (query) => {
-  const range = {};
-
-  if (query.from) {
-    const from = new Date(query.from);
-    if (Number.isNaN(from.getTime())) throw new BadRequestError("Boshlanish sanasi noto'g'ri");
-    range.gte = from;
-  }
-  if (query.to) {
-    const to = new Date(query.to);
-    if (Number.isNaN(to.getTime())) throw new BadRequestError("Tugash sanasi noto'g'ri");
-    to.setHours(23, 59, 59, 999);
-    range.lte = to;
-  }
-
-  return Object.keys(range).length ? range : null;
-};
+// ⚠️ Kun chegarasi TOSHKENT bo'yicha. Ilgari bu yerda `setHours()` turardi
+// va u HOST taymzonasida ishlagani uchun UTC serverda smena yopish hisoboti
+// ("bugun kassaga qancha tushdi") ertalabki yozuvlarni tashlab, kechqurungi
+// yozuvlarni qo'shib olardi — `financeReport.service.js` esa o'sha kun
+// uchun BOSHQA raqam ko'rsatardi.
+const parseDateRange = (query) => parseDayRangeFilter(query);
 
 /**
  * Bitta to'lov turining daftari.

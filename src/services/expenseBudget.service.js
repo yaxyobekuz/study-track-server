@@ -23,28 +23,13 @@ const {
   parseOptionalMonthKey,
   currentMonthKey,
   formatMonthKey,
-  nextMonth,
+  monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
 
 /** Limitning "sog'lomligi" — chegaralar biznes qarori. */
 const HEALTHY_RATE = 90; // shu foizgacha — yashil
 const WARNING_RATE = 100; // 100% gacha — sariq, undan yuqorisi qizil
-
-/**
- * Oyning TOSHKENT bo'yicha chegaralari.
- * `financeDashboard.service.js` dagi bilan bir xil mulohaza: `occurredAt`
- * — INSTANT, shuning uchun chegara aniq +05:00 ofseti bilan quriladi.
- */
-const monthRange = (monthKey) => {
-  const iso = (key) =>
-    `${Math.trunc(key / 100)}-${String(key % 100).padStart(2, "0")}-01T00:00:00+05:00`;
-
-  return {
-    from: new Date(iso(monthKey)),
-    to: new Date(new Date(iso(nextMonth(monthKey))).getTime() - 1),
-  };
-};
 
 /** Foiz — 1 xonali. Limit nol bo'lsa `null` (0% BILAN BIR XIL EMAS). */
 const rateOf = (part, whole) => {
@@ -76,7 +61,7 @@ const statusOf = (rate) => {
  */
 const getBudgets = async (query = {}) => {
   const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
-  const { from, to } = monthRange(month);
+  const { from, to } = monthInstantRange(month);
 
   const [categories, budgets, spentRows] = await Promise.all([
     prisma.expenseCategory.findMany({

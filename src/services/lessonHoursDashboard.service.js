@@ -20,7 +20,6 @@
  */
 
 const prisma = require("../config/prisma");
-const { NotFoundError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
 const {
   currentMonthKey,

@@ -20,7 +20,7 @@ const {
   parseOptionalMonthKey,
   currentMonthKey,
   formatMonthKey,
-  nextMonth,
+  monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
 
@@ -32,17 +32,6 @@ const WARNING_RATE = 80;
 /** Mas'uli belgilanmagan kirimlar shu nom ostida yig'iladi. */
 const NO_RESPONSIBLE_LABEL = "Mas'ul belgilanmagan";
 const NO_RESPONSIBLE_KEY = "none";
-
-/** Oyning TOSHKENT chegaralari — `occurredAt` INSTANT, +05:00 bilan. */
-const monthRange = (monthKey) => {
-  const iso = (key) =>
-    `${Math.trunc(key / 100)}-${String(key % 100).padStart(2, "0")}-01T00:00:00+05:00`;
-
-  return {
-    from: new Date(iso(monthKey)),
-    to: new Date(new Date(iso(nextMonth(monthKey))).getTime() - 1),
-  };
-};
 
 /** Foiz — 1 xonali. Reja nol bo'lsa `null`. */
 const rateOf = (part, whole) => {
@@ -73,7 +62,7 @@ const statusOf = (rate) => {
  */
 const getPlans = async (query = {}) => {
   const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
-  const { from, to } = monthRange(month);
+  const { from, to } = monthInstantRange(month);
 
   const [plans, collectedRows, categories] = await Promise.all([
     prisma.incomePlan.findMany({

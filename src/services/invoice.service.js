@@ -17,7 +17,11 @@ const {
   getPaginationParams,
   formatPaginationResponse,
 } = require("../utils/pagination");
-const { BadRequestError, NotFoundError } = require("../utils/errors");
+const {
+  BadRequestError,
+  NotFoundError,
+  ConflictError,
+} = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const {
@@ -27,11 +31,11 @@ const {
   formatMonthKey,
   monthKeyOfDate,
   nextMonth,
+  coveringMonthWhere,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 
 const { deriveStatus } = require("../helpers/allocation.helpers");
-const { applyDiscounts } = require("../helpers/discount.helpers");
 const { getFinanceSettings } = require("./settings.service");
 const {
   resolveStatusForStudent,
@@ -352,7 +356,6 @@ const loadPaidByAccount = async (invoiceIds) => {
 
 const getInvoices = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
-  const settings = await getFinanceSettings();
   const filter = await buildInvoiceFilter(req.query);
 
   // `studentId: { in: [] }` — hech kim topilmadi, bo'sh sahifa
@@ -446,10 +449,17 @@ const getStudentInvoices = async (studentId, options = {}) => {
     ...(options.includeCancelled ? {} : { status: { not: "cancelled" } }),
   };
 
+  // ⚠️ YIG'INDI HAR DOIM bekor qilinganlarsiz hisoblanadi, `where` bilan
+  // EMAS. Ilgari ikkalasi bitta filtrdan olinardi va "bekor qilinganlarni
+  // ko'rsatish" tugmasi o'quvchining QARZINI oshirib yuborardi: bekor
+  // qilingan qatorning `paidAmount` i nolga qaytariladi (pul depozitga
+  // ketadi), summasi esa qolaveradi — ya'ni butun summa qarzga qo'shilardi.
+  const liveWhere = { studentId, status: { not: "cancelled" } };
+
   const [rows, agg, statusInfo, vacationSet, balance, periods] = await Promise.all([
     prisma.monthlyInvoice.findMany({ where, orderBy: { month: "desc" } }),
     prisma.monthlyInvoice.aggregate({
-      where,
+      where: liveWhere,
       _sum: {
         amount: true,
         paidAmount: true,
@@ -588,7 +598,11 @@ const getStudentInvoices = async (studentId, options = {}) => {
       invoiced: formatAmount(invoiced),
       paid: formatAmount(paid),
       debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
-      unpaidCount: rows.filter((r) => r.status !== "paid").length,
+      // Bekor qilingani "to'lanmagan" emas — u QAROR (yuqoridagi
+      // `liveWhere` izohiga qarang)
+      unpaidCount: rows.filter(
+        (r) => r.status !== "paid" && r.status !== "cancelled",
+      ).length,
       paidMonths,
       // O'quvchi maktabda bo'lgan oylar (ta'til chegirilgan)
       enrolledMonths: enrolledMonthCount,
@@ -841,6 +855,77 @@ const getDebtors = async (req) => {
     },
   };
 };
+
+/** Registrning bo'sh javobi — bitta shakl, uchta chiqish nuqtasi uchun. */
+const emptyRegistry = (month, page, limit, total = 0) => ({
+  ...formatPaginationResponse([], total, page, limit),
+  month,
+  monthLabel: formatMonthKey(month),
+  totals: { totalDebt: "0.00", totalBalance: "0.00", debtorCount: 0 },
+});
+
+/**
+ * Registr filtrini SAHIFALASHDAN OLDIN o'quvchi id'lariga aylantiradi.
+ *
+ * ⚠️ NIMA UCHUN SQL'DA, XOTIRADA EMAS. Ilgari filtr sahifa yuklangandan
+ * KEYIN `items.filter(...)` bilan qo'llanardi va natija buzuq edi: 24 talik
+ * sahifadan 2 tasi qarzdor bo'lsa, ekranda 2 qator ko'rinib, sahifalagichda
+ * "300 ta" turardi; ikkinchi sahifa esa butunlay bo'sh chiqishi mumkin edi.
+ * Bu aynan `getDebtors` sarlavhasida ogohlantirilgan xato — registrda
+ * tuzatilmay qolgan edi.
+ *
+ * Qaytadigan ro'yxat qarzdorlar/depoziti borlar soni bilan chegaralangan,
+ * ya'ni butun maktab emas.
+ *
+ * @param {string|undefined} filter - "debtors" | "deposit" | "noTariff"
+ * @param {number} month - YYYYMM (faqat `noTariff` uchun)
+ * @returns {Promise<{mode: "in"|"notIn", ids: string[]}|null>}
+ */
+const resolveRegistryFilter = async (filter, month) => {
+  if (filter === "debtors") {
+    const rows = await prisma.monthlyInvoice.groupBy({
+      by: ["studentId"],
+      where: { status: { in: ["unpaid", "partial"] } },
+      _sum: { amount: true, paidAmount: true },
+    });
+
+    // Qarzi nolga teng qatorlar chiqarib tashlanadi (`getDebtors` bilan
+    // bir xil qoida): to'liq to'langani `paid` bo'lib yopiladi, lekin
+    // to'g'rilangan holatlarda ayirma nolga tushib qolishi mumkin.
+    return {
+      mode: "in",
+      ids: rows
+        .filter((row) =>
+          new Decimal(row._sum.amount ?? 0)
+            .minus(row._sum.paidAmount ?? 0)
+            .greaterThan(0),
+        )
+        .map((row) => row.studentId),
+    };
+  }
+
+  if (filter === "deposit") {
+    const rows = await prisma.studentAccount.findMany({
+      where: { balance: { gt: 0 } },
+      select: { studentId: true },
+    });
+    return { mode: "in", ids: rows.map((row) => row.studentId) };
+  }
+
+  if (filter === "noTariff") {
+    // "Tarifi yo'q" — INKORNI so'rash: shu oyni qamragan biriktirishi
+    // BORlar chiqarib tashlanadi.
+    const rows = await prisma.studentTariff.findMany({
+      where: coveringMonthWhere(month),
+      select: { studentId: true },
+      distinct: ["studentId"],
+    });
+    return { mode: "notIn", ids: rows.map((row) => row.studentId) };
+  }
+
+  return null;
+};
+
 /**
  * O'QUVCHILAR REGISTRI — kassirning asosiy ekrani.
  *
@@ -878,7 +963,23 @@ const getStudentRegistry = async (req) => {
       : {}),
   };
 
-  const [students, total] = await Promise.all([
+  // Filtr SQL'ga tushadi — sahifalashdan OLDIN (yuqoridagi izohga qarang)
+  const restriction = await resolveRegistryFilter(query.filter, month);
+  if (restriction) {
+    if (restriction.mode === "in") {
+      if (restriction.ids.length === 0) return emptyRegistry(month, page, limit);
+      where.id = { in: restriction.ids };
+    } else if (restriction.ids.length > 0) {
+      where.id = { notIn: restriction.ids };
+    }
+  }
+
+  // ⚠️ `count` O'RNIGA id ro'yxati. Jami qarz va jami depozit BUTUN FILTR
+  // bo'yicha hisoblanishi kerak, sahifa bo'yicha emas — aks holda birinchi
+  // sahifada bir summa, ikkinchisida boshqa summa ko'rinardi (`getInvoices`
+  // va `getExpenses` da bu qoida allaqachon bor). Ro'yxat arxivlanmagan
+  // o'quvchilar soni bilan chegaralangan.
+  const [students, allRows] = await Promise.all([
     prisma.user.findMany({
       where,
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
@@ -889,16 +990,14 @@ const getStudentRegistry = async (req) => {
         classes: { select: { class: { select: { id: true, name: true } } } },
       },
     }),
-    prisma.user.count({ where }),
+    prisma.user.findMany({ where, select: { id: true } }),
   ]);
 
+  const allIds = allRows.map((row) => row.id);
+  const total = allIds.length;
+
   if (students.length === 0) {
-    return {
-      ...formatPaginationResponse([], 0, page, limit),
-      month,
-      monthLabel: formatMonthKey(month),
-      totals: { totalDebt: "0.00", totalBalance: "0.00", debtorCount: 0 },
-    };
+    return emptyRegistry(month, page, limit, total);
   }
 
   const ids = students.map((s) => s.id);
@@ -908,10 +1007,12 @@ const getStudentRegistry = async (req) => {
       resolveManyForMonth(month, { studentIds: ids }),
       resolveDiscountsForMonth(month, { studentIds: ids }),
       resolveEnrollmentsForStudents(ids),
-      getBalances(ids),
+      // Qoldiq va qarz — BUTUN FILTR bo'yicha: qatorlar sahifadagilardan,
+      // `totals` esa hammasidan olinadi (ikkinchi so'rov to'plami emas)
+      getBalances(allIds),
       prisma.monthlyInvoice.groupBy({
         by: ["studentId"],
-        where: { studentId: { in: ids }, status: { in: ["unpaid", "partial"] } },
+        where: { studentId: { in: allIds }, status: { in: ["unpaid", "partial"] } },
         _sum: { amount: true, paidAmount: true },
       }),
       resolveStatusesForMonth(month, { studentIds: ids }),
@@ -924,9 +1025,17 @@ const getStudentRegistry = async (req) => {
     ]),
   );
 
+  // JAMI — butun filtr bo'yicha, sahifadan mustaqil
   let totalDebt = new Decimal(0);
   let totalBalance = new Decimal(0);
   let debtorCount = 0;
+
+  for (const studentId of allIds) {
+    const debt = debtByStudent.get(studentId) ?? new Decimal(0);
+    totalDebt = totalDebt.plus(debt);
+    totalBalance = totalBalance.plus(balances.get(studentId) ?? new Decimal(0));
+    if (debt.greaterThan(0)) debtorCount += 1;
+  }
 
   const items = students.map((student) => {
     const resolved = byStudent.get(student.id);
@@ -952,10 +1061,6 @@ const getStudentRegistry = async (req) => {
             settings,
           })
         : null;
-
-    totalDebt = totalDebt.plus(debt);
-    totalBalance = totalBalance.plus(balance);
-    if (debt.greaterThan(0)) debtorCount += 1;
 
     return {
       id: student.id,
@@ -991,19 +1096,8 @@ const getStudentRegistry = async (req) => {
     };
   });
 
-  // Filtr xotirada: qarz/depozit hisoblangandan keyin ma'lum bo'ladi va
-  // uni SQL'ga ko'chirish bir nechta jadval bo'ylab join talab qilardi.
-  const filtered =
-    query.filter === "debtors"
-      ? items.filter((i) => i.hasDebt)
-      : query.filter === "deposit"
-        ? items.filter((i) => Number(i.balance) > 0)
-        : query.filter === "noTariff"
-          ? items.filter((i) => !i.tariff)
-          : items;
-
   return {
-    ...formatPaginationResponse(filtered, total, page, limit),
+    ...formatPaginationResponse(items, total, page, limit),
     month,
     monthLabel: formatMonthKey(month),
     totals: {
@@ -1130,13 +1224,6 @@ const cancelInvoice = async (id, reason, userId) => {
     throw new BadRequestError("Hisob-faktura allaqachon bekor qilingan");
   }
 
-  if (invoice.month < currentMonthKey()) {
-    logger.warn(
-      `[invoices] O'tgan oy hisob-fakturasi bekor qilindi: invoice=${id} ` +
-        `student=${invoice.studentId} month=${invoice.month} actor=${userId} sabab="${trimmed}"`,
-    );
-  }
-
   // To'langan majburiyatni bekor qilish ODATIY hol: "o'quvchi martda ketdi,
   // mayga qadar to'lab qo'ygan edi". To'lovni bekor qilish noto'g'ri javob
   // bo'lardi — pul haqiqatan ham olingan. Shuning uchun taqsimotlar
@@ -1168,6 +1255,18 @@ const cancelInvoice = async (id, reason, userId) => {
 
     return amount;
   }, TX_OPTIONS);
+
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN: poyga tufayli rad etilgan urinish
+  // ("allaqachon bekor qilingan", taqsimot CAS'i) logda BAJARILGAN bekor
+  // qilish bo'lib qolmasligi kerak. O'tgan oy — tarixni qayta yozish,
+  // shuning uchun aynan shu holat qayd etiladi.
+  if (invoice.month < currentMonthKey()) {
+    logger.warn(
+      `[invoices] O'tgan oy hisob-fakturasi bekor qilindi: invoice=${id} ` +
+        `student=${invoice.studentId} month=${invoice.month} ` +
+        `depozitga=${formatAmount(released)} actor=${userId} sabab="${trimmed}"`,
+    );
+  }
 
   const result = await getInvoiceById(id);
 
@@ -1249,16 +1348,24 @@ const regenerateInvoice = async (id, reason, userId) => {
     );
   }
 
-  logger.warn(
-    `[invoices] Hisob-faktura qayta shakllantirildi: invoice=${id} ` +
-      `student=${invoice.studentId} month=${invoice.month} ` +
-      `eski=${invoice.amount.toFixed(2)} yangi=${computed.amount.toFixed(2)} ` +
-      `${computed.isProrated ? `(${row.billableDays}/${row.monthDays} kun) ` : ""}` +
-      `actor=${userId} sabab="${trimmed}"`,
-  );
-
   const created = await prisma.$transaction(async (tx) => {
-    await tx.monthlyInvoice.delete({ where: { id } });
+    // ⚠️ COMPARE-AND-SWAP O'CHIRISH. `paidAmount` tekshiruvi tranzaksiyadan
+    // TASHQARIDA bo'lgani uchun, tekshiruv bilan o'chirish orasida kassir
+    // to'lov kiritib ulgursa, `delete` uning taqsimotlarini ham kaskad
+    // bilan olib ketardi (`PaymentAllocation.invoice → onDelete: Cascade`):
+    // chek `allocatedAmount` bilan turaveradi, hisob-faktura esa yo'q —
+    // pul jimgina bug'lanardi. Endi bunday holatda o'chirish bajarilmaydi
+    // va foydalanuvchi qayta urinishga chaqiriladi.
+    const removed = await tx.monthlyInvoice.deleteMany({
+      where: { id, paidAmount: 0 },
+    });
+
+    if (removed.count !== 1) {
+      throw new ConflictError(
+        "Hisob-fakturaga shu orada to'lov tushdi — qayta shakllantirib " +
+          "bo'lmaydi. Avval to'lovni bekor qiling.",
+      );
+    }
 
     return tx.monthlyInvoice.create({
       data: {
@@ -1268,6 +1375,18 @@ const regenerateInvoice = async (id, reason, userId) => {
       },
     });
   }, TX_OPTIONS);
+
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN: yuqoridagi CAS o'chirish rad
+  // etilganda ("shu orada to'lov tushdi") logda BAJARILGAN qayta
+  // shakllantirish bo'lib qolmasligi kerak. Yangi qator id'si ham
+  // yoziladi — eskisi o'chirilgani uchun izni faqat shu bog'laydi.
+  logger.warn(
+    `[invoices] Hisob-faktura qayta shakllantirildi: invoice=${id} ` +
+      `→ ${created.id} student=${invoice.studentId} month=${invoice.month} ` +
+      `eski=${invoice.amount.toFixed(2)} yangi=${computed.amount.toFixed(2)} ` +
+      `${computed.isProrated ? `(${row.billableDays}/${row.monthDays} kun) ` : ""}` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
 
   return getInvoiceById(created.id);
 };
@@ -1293,14 +1412,16 @@ const restoreInvoice = async (id, userId) => {
     new Decimal(invoice.paidAmount),
   );
 
-  logger.warn(
-    `[invoices] Bekor qilingan hisob-faktura qaytarildi: invoice=${id} actor=${userId}`,
-  );
-
   await prisma.monthlyInvoice.update({
     where: { id },
     data: { status, cancelReason: "", cancelledAt: null, cancelledBy: null },
   });
+
+  // AUDIT YOZUVI YOZUVDAN KEYIN (modul bo'ylab bitta tartib)
+  logger.warn(
+    `[invoices] Bekor qilingan hisob-faktura qaytarildi: invoice=${id} ` +
+      `month=${invoice.month} holat=${status} actor=${userId}`,
+  );
 
   return getInvoiceById(id);
 };

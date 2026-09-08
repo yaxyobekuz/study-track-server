@@ -22,6 +22,10 @@ const {
 const { BadRequestError, NotFoundError, ConflictError } = require("../utils/errors");
 const logger = require("../utils/logger");
 const { Decimal, parseAmount, formatAmount } = require("../helpers/money.helpers");
+const {
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
 const { assertActiveCategory } = require("./expenseCategory.service");
 
@@ -35,15 +39,8 @@ const serializeExpense = (row, { category, account } = {}) => ({
   accountName: account?.name ?? null,
 });
 
-/** Sana kelajakda bo'la olmaydi. */
-const parseOccurredAt = (value) => {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) throw new BadRequestError("Sana noto'g'ri");
-  if (date.getTime() > Date.now()) {
-    throw new BadRequestError("Kelajakdagi sana bilan xarajat qayd etib bo'lmaydi");
-  }
-  return date;
-};
+/** Sana kelajakda bo'la olmaydi — modul bo'ylab bitta qoida. */
+const parseOccurredAt = (value) => parseRecordedAt(value, { subject: "xarajat" });
 
 /**
  * Xarajat qayd etadi: hujjat + daftar qatori BITTA tranzaksiyada.
@@ -115,12 +112,6 @@ const voidExpense = async (id, reason, userId) => {
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Bekor qilish sababi majburiy");
 
-  logger.warn(
-    `[expense] Xarajat bekor qilindi: expense=${id} ` +
-      `summa=${formatAmount(expense.amount)} kategoriya="${expense.categoryName}" ` +
-      `actor=${userId} sabab="${trimmed}"`,
-  );
-
   const result = await prisma.$transaction(async (tx) => {
     const voided = await tx.expense.updateMany({
       where: { id, isVoided: false },
@@ -150,6 +141,15 @@ const voidExpense = async (id, reason, userId) => {
     return tx.expense.findUnique({ where: { id } });
   });
 
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — modul bo'ylab bitta tartib
+  // (`payment.voidPayment` dagi izohga qarang). `createExpense` allaqachon
+  // shunday ishlaydi: yozuv muvaffaqiyatli bo'lgandan keyin logga tushadi.
+  logger.warn(
+    `[expense] Xarajat bekor qilindi: expense=${id} ` +
+      `summa=${formatAmount(expense.amount)} kategoriya="${expense.categoryName}" ` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
+
   return serializeExpense(result);
 };
 
@@ -163,11 +163,10 @@ const getExpenses = async (req) => {
   if (query.accountId) where.accountId = query.accountId;
   if (query.includeVoided !== "true") where.isVoided = false;
 
-  if (query.from || query.to) {
-    where.occurredAt = {};
-    if (query.from) where.occurredAt.gte = new Date(`${query.from}T00:00:00+05:00`);
-    if (query.to) where.occurredAt.lte = new Date(`${query.to}T23:59:59.999+05:00`);
-  }
+  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
+  // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
+  const range = parseDayRangeFilter(query);
+  if (range) where.occurredAt = range;
 
   const [rows, total, agg] = await Promise.all([
     prisma.expense.findMany({

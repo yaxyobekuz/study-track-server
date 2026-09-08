@@ -29,7 +29,10 @@ const {
   sumAmounts,
 } = require("../helpers/money.helpers");
 const { allocateFifo } = require("../helpers/allocation.helpers");
-const { formatMonthKey } = require("../helpers/month.helpers");
+const {
+  formatMonthKey,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
 const { TX_OPTIONS, ensureStudentAccount } = require("./payment.service");
 
@@ -137,6 +140,15 @@ const applyDepositsForStudent = async (studentId) => {
       while (need.greaterThan(0)) {
         while (paymentLeft.lessThanOrEqualTo(0)) {
           paymentIndex += 1;
+          // 3-qadamdagi `available >= allocated` tekshiruvi bu holatni
+          // imkonsiz qiladi — lekin bu yerda ro'yxatdan chiqib ketish
+          // `undefined.depositAmount` bo'lib TypeError bilan yiqilardi.
+          // Pul mantig'idagi xato tushunarli xabar bilan chiqsin.
+          if (paymentIndex >= payments.length) {
+            throw new ConflictError(
+              "Depozit qoldig'i to'lovlar bilan mos kelmadi. Moliya bo'limiga murojaat qiling.",
+            );
+          }
           paymentLeft = new Decimal(payments[paymentIndex].depositAmount);
         }
 
@@ -341,15 +353,10 @@ const refundDeposit = async (studentId, data, userId) => {
   if (!reason) throw new BadRequestError("Qaytarish sababi majburiy");
 
   const account = await assertActiveAccount(data.accountId);
-  const refundedAt = data.refundedAt ? new Date(data.refundedAt) : new Date();
-  if (Number.isNaN(refundedAt.getTime())) throw new BadRequestError("Sana noto'g'ri");
+  // Kelajakdagi sana bilan qaytarish qayd etilmaydi (modul bo'ylab bitta qoida)
+  const refundedAt = parseRecordedAt(data.refundedAt, { subject: "qaytarish" });
 
   await ensureStudentAccount(studentId);
-
-  logger.warn(
-    `[deposit] Depozit qaytarildi: student=${studentId} summa=${amount.toFixed(2)} ` +
-      `tur=${account.name} actor=${userId} sabab="${reason}"`,
-  );
 
   const refund = await prisma.$transaction(async (tx) => {
     // 1 ── LOCK
@@ -413,10 +420,21 @@ const refundDeposit = async (studentId, data, userId) => {
     return created;
   }, TX_OPTIONS);
 
+  const newBalance = await getBalance(studentId);
+
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — `payment.voidPayment` dagi bir
+  // xil mulohaza: rad etilgan qaytarish ("depozitda bunchalik pul yo'q")
+  // logda BAJARILGAN bo'lib qolmasligi kerak.
+  logger.warn(
+    `[deposit] Depozit qaytarildi: student=${studentId} summa=${amount.toFixed(2)} ` +
+      `tur=${account.name} qoldiq=${formatAmount(newBalance)} ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
   return {
     ...refund,
     amount: formatAmount(refund.amount),
-    balance: formatAmount(await getBalance(studentId)),
+    balance: formatAmount(newBalance),
   };
 };
 
@@ -441,11 +459,6 @@ const adjustBalance = async (studentId, data, userId) => {
   if (!reason) throw new BadRequestError("To'g'rilash sababi majburiy");
 
   await ensureStudentAccount(studentId);
-
-  logger.warn(
-    `[deposit] Qoldiq qo'lda to'g'rilandi: student=${studentId} ` +
-      `summa=${amount.toFixed(2)} actor=${userId} sabab="${reason}"`,
-  );
 
   const row = await prisma.$transaction(async (tx) => {
     const account = await tx.studentAccount.update({
@@ -472,10 +485,21 @@ const adjustBalance = async (studentId, data, userId) => {
     return created;
   }, TX_OPTIONS);
 
+  const newBalance = await getBalance(studentId);
+
+  // AUDIT YOZUVI TRANZAKSIYADAN KEYIN (yuqoridagi izohga qarang):
+  // "qoldiq manfiy bo'lib qoladi" deb rad etilgan urinish logda
+  // bajarilgan to'g'rilash bo'lib ko'rinmasligi kerak.
+  logger.warn(
+    `[deposit] Qoldiq qo'lda to'g'rilandi: student=${studentId} ` +
+      `summa=${amount.toFixed(2)} yangi qoldiq=${formatAmount(newBalance)} ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
   return {
     ...row,
     amount: formatAmount(row.amount),
-    balance: formatAmount(await getBalance(studentId)),
+    balance: formatAmount(newBalance),
   };
 };
 

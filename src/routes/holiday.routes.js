@@ -3,10 +3,9 @@ const express = require("express");
 const router = express.Router();
 
 // Middleware
-const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { protect, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
-const { ROLES } = require("../utils/constants");
 
 // Controller
 const {

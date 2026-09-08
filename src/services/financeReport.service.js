@@ -29,10 +29,13 @@ const {
   nextMonth,
   prevMonth,
   diffMonths,
+  dayRangeBounds,
+  todayIsoTashkent,
+  shiftIsoDays,
+  monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { getDebtors } = require("./invoice.service");
-const { getAccountsReport } = require("./paymentAccount.service");
 
 /** Hisob-faktura hisobga olinadigan holatlar. */
 const LIVE_INVOICE = { status: { not: "cancelled" } };
@@ -88,18 +91,6 @@ const parseMonthRange = (query = {}) => {
 
   return { fromMonth, toMonth, months };
 };
-
-/** Bugungi kun Toshkent kalendari bo'yicha, "YYYY-MM-DD". */
-const todayIsoTashkent = () => {
-  const now = new Date();
-  return new Date(now.getTime() + 5 * 3600000).toISOString().slice(0, 10);
-};
-
-/** "YYYY-MM-DD" ga kun qo'shadi/ayiradi (taymzonasiz, sof kalendar). */
-const shiftIsoDays = (iso, days) =>
-  new Date(new Date(`${iso}T00:00:00Z`).getTime() + days * 86400000)
-    .toISOString()
-    .slice(0, 10);
 
 /** Foiz — 1 xonali, bo'luvchi nol bo'lsa 0. */
 const percentOf = (part, whole) => {
@@ -187,14 +178,11 @@ const getOverview = async (query = {}) => {
 
   // Sof natija SANA oralig'ida hisoblanadi (pul qachon harakatlandi),
   // majburiyat esa OY bo'yicha. Ikkalasi boshqa savol, shuning uchun
-  // oyning birinchi kunidan oxirgi kunigacha oraliq quriladi.
-  // ⚠️ Oy oxirini `oy + 1` bilan hisoblab bo'lmaydi: dekabrda 13-oy chiqadi.
-  // Mavjud `nextMonth` helperi yil chegarasini o'zi hal qiladi.
-  const monthStartIso = (monthKey) =>
-    `${Math.trunc(monthKey / 100)}-${String(monthKey % 100).padStart(2, "0")}-01T00:00:00+05:00`;
-
-  const cashFrom = new Date(monthStartIso(fromMonth));
-  const cashTo = new Date(new Date(monthStartIso(nextMonth(toMonth))).getTime() - 1);
+  // oyning birinchi kunidan oxirgi kunigacha oraliq quriladi
+  // (`monthInstantRange` — yil chegarasini ham, +05:00 ofsetini ham
+  // o'zi hal qiladi).
+  const cashFrom = monthInstantRange(fromMonth).from;
+  const cashTo = monthInstantRange(toMonth).to;
 
   const [byMonth, totals, previous, deposits, studentAgg, income, expense] =
     await Promise.all([
@@ -307,15 +295,7 @@ const getCashflow = async (query = {}) => {
   const toIso = query.to || todayIsoTashkent();
   const fromIso = query.from || shiftIsoDays(toIso, -29);
 
-  const from = new Date(`${fromIso}T00:00:00+05:00`);
-  const to = new Date(`${toIso}T23:59:59.999+05:00`);
-
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    throw new BadRequestError("Sana noto'g'ri");
-  }
-  if (from > to) {
-    throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
-  }
+  const { from, to } = dayRangeBounds(fromIso, toIso);
 
   const paymentWhere = { isVoided: false, paidAt: { gte: from, lte: to } };
   const incomeWhere = { isVoided: false, occurredAt: { gte: from, lte: to } };
@@ -717,15 +697,7 @@ const getExternalIncome = async (query = {}) => {
   const toIso = query.to || todayIsoTashkent();
   const fromIso = query.from || shiftIsoDays(toIso, -364);
 
-  const from = new Date(`${fromIso}T00:00:00+05:00`);
-  const to = new Date(`${toIso}T23:59:59.999+05:00`);
-
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    throw new BadRequestError("Sana noto'g'ri");
-  }
-  if (from > to) {
-    throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
-  }
+  const { from, to } = dayRangeBounds(fromIso, toIso);
 
   const where = { isVoided: false, occurredAt: { gte: from, lte: to } };
 
@@ -871,15 +843,7 @@ const getExpenseReport = async (query = {}) => {
   const toIso = query.to || todayIsoTashkent();
   const fromIso = query.from || shiftIsoDays(toIso, -364);
 
-  const from = new Date(`${fromIso}T00:00:00+05:00`);
-  const to = new Date(`${toIso}T23:59:59.999+05:00`);
-
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
-    throw new BadRequestError("Sana noto'g'ri");
-  }
-  if (from > to) {
-    throw new BadRequestError("Boshlanish sanasi tugash sanasidan keyin bo'lishi mumkin emas");
-  }
+  const { from, to } = dayRangeBounds(fromIso, toIso);
 
   const expenseWhere = { isVoided: false, occurredAt: { gte: from, lte: to } };
   const salaryWhere = { isVoided: false, paidAt: { gte: from, lte: to } };

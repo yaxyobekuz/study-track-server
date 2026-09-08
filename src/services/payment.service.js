@@ -40,7 +40,11 @@ const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const { Decimal, parseAmount, formatAmount, sumAmounts } = require("../helpers/money.helpers");
 const { allocateFifo, deriveStatus } = require("../helpers/allocation.helpers");
-const { formatMonthKey } = require("../helpers/month.helpers");
+const {
+  formatMonthKey,
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const {
   postEntry,
   assertActiveAccount,
@@ -131,15 +135,10 @@ const snapshotOf = (student) => {
   };
 };
 
-const parsePaidAt = (value) => {
-  if (value == null || value === "") return new Date();
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new BadRequestError("To'lov sanasi noto'g'ri");
-  if (date.getTime() > Date.now() + 60_000) {
-    throw new BadRequestError("Kelajakdagi sana bilan to'lov qayd etib bo'lmaydi");
-  }
-  return date;
-};
+// Sana qoidasi modul bo'ylab BITTA joyda (`month.helpers.js`): bo'sh —
+// hozir, kelajakda — rad, mijoz soatiga bir daqiqa yo'l qo'yiladi.
+const parsePaidAt = (value) =>
+  parseRecordedAt(value, { label: "To'lov sanasi", subject: "to'lov" });
 
 /**
  * Lock qatori BO'LISHI SHART — yo'q qatorni lock qilib bo'lmaydi.
@@ -377,12 +376,6 @@ const voidPayment = async (id, reason, userId) => {
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Bekor qilish sababi majburiy");
 
-  logger.warn(
-    `[payments] To'lov bekor qilindi: payment=${id} chek=#${payment.receiptNo} ` +
-      `student=${payment.studentId} summa=${payment.amount.toFixed(2)} ` +
-      `actor=${userId} sabab="${trimmed}"`,
-  );
-
   const result = await prisma.$transaction(async (tx) => {
     // 1 ── O'QUVCHI LOCK'I (createPayment bilan bir xil tartibda)
     const account = await tx.studentAccount.update({
@@ -485,6 +478,19 @@ const voidPayment = async (id, reason, userId) => {
     return { reopened, depositReversed: depositHeld };
   }, TX_OPTIONS);
 
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN. Ilgari u oldinda turardi va
+  // tranzaksiya yiqilganda ham (poyga, yetarli bo'lmagan depozit) logda
+  // "To'lov bekor qilindi" bo'lib qolaverardi — tergovda mavjud bo'lmagan
+  // amal ko'rinardi. Yozuvchi funksiyalar (`createPayment`, `createExpense`)
+  // allaqachon shu tartibda ishlaydi.
+  logger.warn(
+    `[payments] To'lov bekor qilindi: payment=${id} chek=#${payment.receiptNo} ` +
+      `student=${payment.studentId} summa=${payment.amount.toFixed(2)} ` +
+      `depozitdan=${formatAmount(result.depositReversed)} ` +
+      `qayta ochildi=${result.reopened.length} ta ` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
+
   return {
     message: "To'lov bekor qilindi",
     reopened: result.reopened.map((r) => ({ ...r, monthLabel: formatMonthKey(r.month) })),
@@ -541,20 +547,12 @@ const getPayments = async (req) => {
   if (query.accountId) filter.accountId = query.accountId;
   if (query.includeVoided !== "true") filter.isVoided = false;
 
-  if (query.from || query.to) {
-    filter.paidAt = {};
-    if (query.from) {
-      const from = new Date(query.from);
-      if (Number.isNaN(from.getTime())) throw new BadRequestError("Boshlanish sanasi noto'g'ri");
-      filter.paidAt.gte = from;
-    }
-    if (query.to) {
-      const to = new Date(query.to);
-      if (Number.isNaN(to.getTime())) throw new BadRequestError("Tugash sanasi noto'g'ri");
-      to.setHours(23, 59, 59, 999);
-      filter.paidAt.lte = to;
-    }
-  }
+  // ⚠️ Kun chegarasi TOSHKENT bo'yicha — `parseDayRangeFilter` orqali.
+  // Ilgari bu yerda `new Date(iso)` + `setHours()` turardi va u HOST
+  // taymzonasida ishlagani uchun UTC serverda kunlik tushum ro'yxati
+  // hisobot sahifasidagi o'sha kun raqamiga to'g'ri kelmasdi.
+  const range = parseDayRangeFilter(query);
+  if (range) filter.paidAt = range;
 
   const search = query.search?.trim();
   if (search) {

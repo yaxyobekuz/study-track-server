@@ -36,7 +36,11 @@ const {
   formatAmount,
   sumAmounts,
 } = require("../helpers/money.helpers");
-const { formatMonthKey } = require("../helpers/month.helpers");
+const {
+  formatMonthKey,
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const { allocateFifo, deriveStatus } = require("../helpers/allocation.helpers");
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
 const { assertStaff, STAFF_SELECT } = require("./staffSalary.service");
@@ -72,15 +76,8 @@ const serializePayment = (row, { staff, account, allocations } = {}) => ({
     : {}),
 });
 
-/** Sana kelajakda bo'la olmaydi (`payment.service.js` bilan bir xil qoida). */
-const parsePaidAt = (value) => {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) throw new BadRequestError("Sana noto'g'ri");
-  if (date.getTime() > Date.now()) {
-    throw new BadRequestError("Kelajakdagi sana bilan to'lov qayd etib bo'lmaydi");
-  }
-  return date;
-};
+/** Sana kelajakda bo'la olmaydi — `payment.service.js` bilan BIR XIL qoida. */
+const parsePaidAt = (value) => parseRecordedAt(value, { subject: "to'lov" });
 
 /**
  * Taqsimotni OLDINDAN ko'rsatadi — kassir "bu pul qaysi oylarga ketadi"
@@ -267,11 +264,6 @@ const voidPayment = async (id, reason, userId) => {
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Bekor qilish sababi majburiy");
 
-  logger.warn(
-    `[salary] To'lov bekor qilindi: payment=${id} staff=${payment.staffId} ` +
-      `summa=${formatAmount(payment.amount)} actor=${userId} sabab="${trimmed}"`,
-  );
-
   await prisma.$transaction(async (tx) => {
     // 1 ── Chekni bekor qilish — CAS (ikki marta bekor qilish poygasi)
     const voided = await tx.salaryPayment.updateMany({
@@ -339,6 +331,14 @@ const voidPayment = async (id, reason, userId) => {
     });
   }, TX_OPTIONS);
 
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — `payment.voidPayment` dagi bir
+  // xil qoida: CAS yoki majburiyat poygasi tufayli rad etilgan urinish
+  // logda BAJARILGAN bekor qilish bo'lib qolmasligi kerak.
+  logger.warn(
+    `[salary] To'lov bekor qilindi: payment=${id} staff=${payment.staffId} ` +
+      `summa=${formatAmount(payment.amount)} actor=${userId} sabab="${trimmed}"`,
+  );
+
   const fresh = await prisma.salaryPayment.findUnique({ where: { id } });
   return serializePayment(fresh);
 };
@@ -353,11 +353,10 @@ const getPayments = async (req) => {
   if (query.accountId) where.accountId = query.accountId;
   if (query.includeVoided !== "true") where.isVoided = false;
 
-  if (query.from || query.to) {
-    where.paidAt = {};
-    if (query.from) where.paidAt.gte = new Date(`${query.from}T00:00:00+05:00`);
-    if (query.to) where.paidAt.lte = new Date(`${query.to}T23:59:59.999+05:00`);
-  }
+  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
+  // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
+  const range = parseDayRangeFilter(query);
+  if (range) where.paidAt = range;
 
   const [rows, total, agg] = await Promise.all([
     prisma.salaryPayment.findMany({

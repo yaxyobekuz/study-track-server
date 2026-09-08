@@ -30,10 +30,10 @@ const {
   parseOptionalMonthKey,
   formatMonthKey,
   formatMonthShort,
-  nextMonth,
   prevMonth,
   monthStartDate,
   monthEndDate,
+  monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { sumIncome, sumExpense, AGING_BUCKETS } = require("./financeReport.service");
@@ -69,30 +69,6 @@ const NON_TARIFF_SOURCES = {
 // ─────────────────────────────────────────────
 // Yordamchilar
 // ─────────────────────────────────────────────
-
-/**
- * Oyning TOSHKENT bo'yicha boshi va oxiri (instant maydonlar uchun).
- *
- * ⚠️ `month.helpers.js` dagi `monthStartDate/monthEndDate` UTC YARIM TUNI
- * qaytaradi — ular `@db.Date` ustunlari uchun. To'lov va xarajat esa
- * INSTANT (`paid_at`, `occurred_at`), shuning uchun chegara aniq +05:00
- * ofseti bilan quriladi: aks holda UTC serverda oy chegarasi 5 soatga
- * siljib, oyning birinchi kunidagi to'lovlar o'tgan oyga tushib ketardi.
- *
- * @param {number} monthKey
- * @returns {{from: Date, to: Date}}
- */
-const monthInstantRange = (monthKey) => {
-  const iso = (key) =>
-    `${Math.trunc(key / 100)}-${String(key % 100).padStart(2, "0")}-01T00:00:00+05:00`;
-
-  return {
-    from: new Date(iso(monthKey)),
-    // Keyingi oy boshidan 1 ms oldin. `oy + 1` bilan hisoblab bo'lmaydi:
-    // dekabrda 13-oy chiqardi — `nextMonth` yil chegarasini o'zi hal qiladi.
-    to: new Date(new Date(iso(nextMonth(monthKey))).getTime() - 1),
-  };
-};
 
 /** Foiz — 1 xonali. Bo'luvchi nol bo'lsa `null` (0% BILAN BIR XIL EMAS). */
 const rateOf = (part, whole) => {

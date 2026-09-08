@@ -11,14 +11,13 @@ const {
   stopTask,
   extendDeadline,
 } = require("../controllers/task.controller");
-const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { protect, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const {
   createMultiFileUpload,
   handleFileUploadError,
 } = require("../middleware/fileUpload.middleware");
-const { ROLES } = require("../utils/constants");
 
 const upload = createMultiFileUpload({
   fieldName: "files",

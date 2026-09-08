@@ -10,11 +10,10 @@ const {
 } = require("../controllers/topic.controller");
 
 // Middleware
-const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { protect, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
-const { ROLES } = require("../utils/constants");
 
 // Routes
 router.post(

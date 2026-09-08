@@ -5,10 +5,19 @@
  * tezlik uchun saqlanadi, lekin to'g'riligi kodning to'g'riligiga bog'liq:
  *
  *   1. PaymentAccount.balance     = openingBalance + Σ AccountEntry.amount
- *   2. StudentAccount.balance     = Σ Payment.depositAmount
+ *   2. StudentAccount.balance     = Σ Payment.depositAmount + Σ to'g'rilash
  *   3. MonthlyInvoice.paidAmount  = Σ (isVoided=false) PaymentAllocation.amount
  *   4. MonthlyInvoice.amount      = proratedAmount − discountAmount
  *                                   (va proratedAmount <= baseAmount)
+ *
+ * CHIQIM tomoni ham AYNAN shu ikki shaklga ega (`finance.md` §10 — har bir
+ * tushunchaning ko'zgusi bor), lekin tekshiruvsiz qolgan edi:
+ *
+ *   5. PayrollEntry.paidAmount    = Σ (isVoided=false) SalaryAllocation.amount
+ *   6. PayrollEntry.amount        = baseAmount + hoursAmount
+ *
+ * Kirim tomonida yo'qolgan yangilanish ertasi kuni topilar, chiqim tomonida
+ * esa oylik qayta to'lanib ketishi mumkin edi va buni hech kim aytmasdi.
  *
  * ARZON REKONSILER HAR QANDAY DIZAYN ISHONCHIDAN QIMMATROQ. Bu job hech
  * narsani TUZATMAYDI — u faqat baqiradi. Avtomatik tuzatish haqiqiy sababni
@@ -63,39 +72,52 @@ async function runFinanceReconcilePass() {
   }
 
   // ── 2. O'quvchi depoziti ──────────────────
-  // balance = to'lovlarning taqsimlanmagan qoldig'i. Qaytarishlar va
-  // to'g'rilashlar allaqachon `depositAmount` ga singdirilgan.
-  const studentAccounts = await prisma.studentAccount.findMany();
-  const depositSums = await prisma.payment.groupBy({
-    by: ["studentId"],
-    where: { isVoided: false },
-    _sum: { depositAmount: true },
-  });
+  // balance = to'lovlarning taqsimlanmagan qoldig'i + qo'lda to'g'rilashlar.
+  // Qaytarish (`refundDeposit`) `depositAmount` ni kamaytiradi, ya'ni u
+  // birinchi qo'shiluvchiga singdirilgan; to'g'rilash esa unga tegmaydi
+  // va alohida qo'shiladi.
+  const [studentAccounts, depositSums, adjustmentSums] = await Promise.all([
+    prisma.studentAccount.findMany(),
+    prisma.payment.groupBy({
+      by: ["studentId"],
+      where: { isVoided: false },
+      _sum: { depositAmount: true },
+    }),
+    // Qo'lda to'g'rilashlar `depositAmount` ga tegmaydi — ular alohida
+    // qo'shiladi.
+    //
+    // ⚠️ HAR DOIM qo'shiladi. Ilgari to'g'rilashlar faqat birinchi
+    // taqqoslash MOS KELMAGANDA o'qilardi: to'g'rilashlar yig'indisi +100
+    // bo'lgan o'quvchida depozit −100 ga adashsa, ikkita xato bir-birini
+    // yopib, tekshiruv jimgina o'tib ketardi. Bundan tashqari, o'sha
+    // shakl har bir mos kelmagan o'quvchi uchun alohida so'rov yuborardi.
+    prisma.studentBalanceAdjustment.groupBy({
+      by: ["studentId"],
+      _sum: { amount: true },
+    }),
+  ]);
+
   const depositByStudent = new Map(
     depositSums.map((row) => [row.studentId, new Decimal(row._sum.depositAmount ?? 0)]),
   );
+  const adjustmentByStudent = new Map(
+    adjustmentSums.map((row) => [row.studentId, new Decimal(row._sum.amount ?? 0)]),
+  );
 
   for (const account of studentAccounts) {
-    const expected = depositByStudent.get(account.studentId) ?? new Decimal(0);
+    const expected = (depositByStudent.get(account.studentId) ?? new Decimal(0)).plus(
+      adjustmentByStudent.get(account.studentId) ?? new Decimal(0),
+    );
     const stored = new Decimal(account.balance);
 
-    // Qo'lda to'g'rilashlar `depositAmount` ga tegmaydi — ularni qo'shamiz
     if (!expected.equals(stored)) {
-      const adjustments = await prisma.studentBalanceAdjustment.aggregate({
-        where: { studentId: account.studentId },
-        _sum: { amount: true },
+      problems.push({
+        kind: "student_balance",
+        id: account.studentId,
+        label: `student=${account.studentId}`,
+        stored: formatAmount(stored),
+        expected: formatAmount(expected),
       });
-      const withAdjustments = expected.plus(adjustments._sum.amount ?? 0);
-
-      if (!withAdjustments.equals(stored)) {
-        problems.push({
-          kind: "student_balance",
-          id: account.studentId,
-          label: `student=${account.studentId}`,
-          stored: formatAmount(stored),
-          expected: formatAmount(withAdjustments),
-        });
-      }
     }
   }
 
@@ -190,17 +212,83 @@ async function runFinanceReconcilePass() {
 
   }
 
+  // ── 5 va 6. CHIQIM: oylik majburiyatlari ──
+  // Kirim tomonidagi 3 va 4-invariantlarning ko'zgusi.
+  const entries = await prisma.payrollEntry.findMany({
+    select: {
+      id: true,
+      month: true,
+      staffId: true,
+      amount: true,
+      paidAmount: true,
+      baseAmount: true,
+      hoursAmount: true,
+    },
+  });
+
+  if (entries.length > 0) {
+    const salarySums = await prisma.salaryAllocation.groupBy({
+      by: ["payrollEntryId"],
+      where: { isVoided: false },
+      _sum: { amount: true },
+    });
+    const paidByEntry = new Map(
+      salarySums.map((row) => [row.payrollEntryId, new Decimal(row._sum.amount ?? 0)]),
+    );
+
+    for (const entry of entries) {
+      const label = `${entry.month} / staff=${entry.staffId}`;
+
+      const expectedPaid = paidByEntry.get(entry.id) ?? new Decimal(0);
+      if (!expectedPaid.equals(entry.paidAmount)) {
+        problems.push({
+          kind: "payroll_paid",
+          id: entry.id,
+          label,
+          stored: formatAmount(entry.paidAmount),
+          expected: formatAmount(expectedPaid),
+        });
+      }
+
+      // `computeSalary()` uchala rejimda ham shu tenglikni beradi
+      // (fixed → hoursAmount 0, hourly → baseAmount 0).
+      const expectedAmount = new Decimal(entry.baseAmount).plus(entry.hoursAmount);
+      if (!expectedAmount.equals(entry.amount)) {
+        problems.push({
+          kind: "payroll_amount",
+          id: entry.id,
+          label,
+          stored: formatAmount(entry.amount),
+          expected: formatAmount(expectedAmount),
+        });
+      }
+
+      // Ortiqcha to'lov RAD ETILADI (avans yo'q) — qarz manfiy bo'lolmaydi
+      if (new Decimal(entry.paidAmount).greaterThan(entry.amount)) {
+        problems.push({
+          kind: "payroll_overpaid",
+          id: entry.id,
+          label,
+          stored: formatAmount(entry.paidAmount),
+          expected: `<= ${formatAmount(entry.amount)}`,
+        });
+      }
+    }
+  }
+
   const checked = {
     accounts: accounts.length,
     studentAccounts: studentAccounts.length,
     invoices: invoices.length,
     sealed: sealed.length,
+    payrollEntries: entries.length,
   };
 
   if (problems.length === 0) {
     logger.info(
       `${tag} Invariantlar joyida — ${checked.accounts} to'lov turi, ` +
-        `${checked.studentAccounts} depozit, ${checked.sealed} hisob-faktura`,
+        `${checked.studentAccounts} depozit, ${checked.sealed} hisob-faktura, ` +
+        `${checked.payrollEntries} oylik majburiyati`,
     );
   } else {
     logger.error(

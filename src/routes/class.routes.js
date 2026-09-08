@@ -12,10 +12,9 @@ const {
   exportClassStudents,
   exportClasses,
 } = require("../controllers/class.controller");
-const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
+const { protect, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
-const { ROLES } = require("../utils/constants");
 
 // All routes are protected
 router.use(protect);

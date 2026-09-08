@@ -27,6 +27,10 @@ const {
 const { BadRequestError, NotFoundError, ConflictError } = require("../utils/errors");
 const logger = require("../utils/logger");
 const { Decimal, parseAmount, formatAmount } = require("../helpers/money.helpers");
+const {
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
 const { assertActiveCategory } = require("./incomeCategory.service");
 
@@ -41,17 +45,8 @@ const serializeIncome = (row, { category, account } = {}) => ({
   accountName: account?.name ?? null,
 });
 
-/** Sana — kelajakda bo'la olmaydi (`payment.service.js` bilan bir xil qoida). */
-const parseOccurredAt = (value) => {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) throw new BadRequestError("Sana noto'g'ri");
-
-  if (date.getTime() > Date.now()) {
-    throw new BadRequestError("Kelajakdagi sana bilan kirim qayd etib bo'lmaydi");
-  }
-
-  return date;
-};
+/** Sana — kelajakda bo'la olmaydi (`payment.service.js` bilan BIR XIL qoida). */
+const parseOccurredAt = (value) => parseRecordedAt(value, { subject: "kirim" });
 
 /**
  * Kirim qayd etadi: hujjat + daftar qatori BITTA tranzaksiyada.
@@ -163,12 +158,6 @@ const voidIncome = async (id, reason, userId) => {
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Bekor qilish sababi majburiy");
 
-  logger.warn(
-    `[income] Tashqi kirim bekor qilindi: income=${id} ` +
-      `summa=${formatAmount(income.amount)} kategoriya="${income.categoryName}" ` +
-      `actor=${userId} sabab="${trimmed}"`,
-  );
-
   const result = await prisma.$transaction(async (tx) => {
     // Ikki marta bekor qilish poygasi — compare-and-swap
     const voided = await tx.externalIncome.updateMany({
@@ -199,6 +188,14 @@ const voidIncome = async (id, reason, userId) => {
     return tx.externalIncome.findUnique({ where: { id } });
   });
 
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — `createIncome` bilan bir xil
+  // tartib: rad etilgan urinish logda bajarilgan bo'lib qolmasin.
+  logger.warn(
+    `[income] Tashqi kirim bekor qilindi: income=${id} ` +
+      `summa=${formatAmount(income.amount)} kategoriya="${income.categoryName}" ` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
+
   return serializeIncome(result);
 };
 
@@ -220,11 +217,10 @@ const getIncomes = async (req) => {
   else if (query.responsibleId) where.responsibleId = query.responsibleId;
   if (query.includeVoided !== "true") where.isVoided = false;
 
-  if (query.from || query.to) {
-    where.occurredAt = {};
-    if (query.from) where.occurredAt.gte = new Date(`${query.from}T00:00:00+05:00`);
-    if (query.to) where.occurredAt.lte = new Date(`${query.to}T23:59:59.999+05:00`);
-  }
+  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
+  // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
+  const range = parseDayRangeFilter(query);
+  if (range) where.occurredAt = range;
 
   const [rows, total, agg] = await Promise.all([
     prisma.externalIncome.findMany({

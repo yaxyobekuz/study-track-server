@@ -96,11 +96,17 @@ const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings 
     snapshot: discounted.snapshot,
     isProrated: prorated.isProrated,
     roundingUnit: prorated.roundingUnit,
-    // Proratsiya qilingan oy chegirma bilan butunlay nolga tushdimi
+    // Oy chegirma bilan butunlay NOLGA tushdimi.
+    //
+    // ⚠️ `isProrated` SHARTI OLIB TASHLANDI. Ilgari faqat proratsiya
+    // qilingan oy sanalardi, `financeReport.getTariffBreakdown` esa
+    // AYNAN SHU NOM bilan "amount = 0 va discountAmount > 0" bo'lgan
+    // hamma qatorni sanardi. Ikki ekran bitta yorliq ostida ikki xil
+    // raqam ko'rsatardi — 100% ga yig'ilgan foizlar ("Aka-uka 50%" +
+    // "A'lochi 50%") esa generatsiya hisobotida umuman ko'rinmasdi:
+    // o'quvchi jimgina bepul o'qib ketardi.
     wipedByDiscount:
-      prorated.isProrated &&
-      discounted.finalAmount.isZero() &&
-      prorated.proratedAmount.greaterThan(0),
+      discounted.finalAmount.isZero() && prorated.proratedAmount.greaterThan(0),
   };
 };
 

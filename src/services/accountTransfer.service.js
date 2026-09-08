@@ -22,9 +22,17 @@ const {
   getPaginationParams,
   formatPaginationResponse,
 } = require("../utils/pagination");
-const { BadRequestError, NotFoundError } = require("../utils/errors");
+const {
+  BadRequestError,
+  NotFoundError,
+  ConflictError,
+} = require("../utils/errors");
 const logger = require("../utils/logger");
 const { Decimal, parseAmount, formatAmount } = require("../helpers/money.helpers");
+const {
+  parseDayRangeFilter,
+  parseRecordedAt,
+} = require("../helpers/month.helpers");
 const { postEntry, serializeAccount } = require("./paymentAccount.service");
 
 const serializeTransfer = (row) => ({
@@ -74,20 +82,9 @@ const getTransfers = async (req) => {
     filter.OR = [{ fromAccountId: query.accountId }, { toAccountId: query.accountId }];
   }
 
-  if (query.from || query.to) {
-    filter.occurredAt = {};
-    if (query.from) {
-      const from = new Date(query.from);
-      if (Number.isNaN(from.getTime())) throw new BadRequestError("Boshlanish sanasi noto'g'ri");
-      filter.occurredAt.gte = from;
-    }
-    if (query.to) {
-      const to = new Date(query.to);
-      if (Number.isNaN(to.getTime())) throw new BadRequestError("Tugash sanasi noto'g'ri");
-      to.setHours(23, 59, 59, 999);
-      filter.occurredAt.lte = to;
-    }
-  }
+  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
+  const range = parseDayRangeFilter(query);
+  if (range) filter.occurredAt = range;
 
   const [rows, total, agg] = await Promise.all([
     prisma.accountTransfer.findMany({
@@ -138,8 +135,9 @@ const createTransfer = async (data, userId) => {
     assertAccount(data.toAccountId, "Manzil to'lov turi"),
   ]);
 
-  const occurredAt = data.occurredAt ? new Date(data.occurredAt) : new Date();
-  if (Number.isNaN(occurredAt.getTime())) throw new BadRequestError("Sana noto'g'ri");
+  // Kelajakdagi sana bilan o'tkazma qayd etilmaydi — daftar bo'lib o'tgan
+  // harakatni yozadi (`payment` / `expense` bilan bir xil qoida).
+  const occurredAt = parseRecordedAt(data.occurredAt, { subject: "o'tkazma" });
 
   const received = amount.minus(fee);
 
@@ -234,15 +232,14 @@ const voidTransfer = async (id, reason, userId) => {
   const received = amount.minus(transfer.fee);
   const occurredAt = new Date();
 
-  logger.warn(
-    `[accounts] O'tkazma bekor qilindi: transfer=${id} ` +
-      `${transfer.fromAccount.name} → ${transfer.toAccount.name} ` +
-      `summa=${amount.toFixed(2)} actor=${userId} sabab="${trimmed}"`,
-  );
-
   await prisma.$transaction(async (tx) => {
-    await tx.accountTransfer.update({
-      where: { id },
+    // ⚠️ COMPARE-AND-SWAP: ikki marta bekor qilish poygasi. Shartsiz
+    // `update` bo'lsa, ikkita parallel so'rov IKKI JUFT kompensatsiya
+    // qatori yozib, kassa qoldig'ini o'tkazma summasiga teng miqdorda
+    // buzardi (`payment`, `expense` va `external_income` da bu himoya
+    // allaqachon bor edi — o'tkazmada tushib qolgan).
+    const voided = await tx.accountTransfer.updateMany({
+      where: { id, isVoided: false },
       data: {
         isVoided: true,
         voidedAt: occurredAt,
@@ -250,6 +247,10 @@ const voidTransfer = async (id, reason, userId) => {
         voidReason: trimmed,
       },
     });
+
+    if (voided.count !== 1) {
+      throw new ConflictError("O'tkazma allaqachon bekor qilingan");
+    }
 
     await inLockOrder([
       {
@@ -291,6 +292,16 @@ const voidTransfer = async (id, reason, userId) => {
       },
     ]);
   });
+
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — modul bo'ylab bitta tartib.
+  // Bu yerda bu ayniqsa muhim: bekor qilish manzil turida pul yetarli
+  // bo'lmasa RAD ETILADI, ya'ni oldinda turgan log eng ko'p uchraydigan
+  // muvaffaqiyatsiz holatni "bajarildi" deb yozib qo'yardi.
+  logger.warn(
+    `[accounts] O'tkazma bekor qilindi: transfer=${id} ` +
+      `${transfer.fromAccount.name} → ${transfer.toAccount.name} ` +
+      `summa=${amount.toFixed(2)} actor=${userId} sabab="${trimmed}"`,
+  );
 
   return { message: "O'tkazma bekor qilindi" };
 };

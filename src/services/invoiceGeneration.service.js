@@ -77,7 +77,9 @@ const emptySummary = (month, reason) => ({
   // `baseAmount − amount` farqi yorliqsiz g'oyib bo'lmasligi uchun
   prorationTotal: "0.00",
   prorated: 0,
-  // Qat'iy chegirma proratsiya qilingan oyni nolga tushirgan hollar
+  // Chegirma oyni butunlay nolga tushirgan hollar (proratsiya bilan ham,
+  // proratsiyasiz ham). `financeReport.getTariffBreakdown` dagi shu nomli
+  // sanoqchi bilan AYNI ma'noda.
   wipedByDiscount: 0,
   depositApplied: "0.00",
   skipped: {
@@ -159,7 +161,12 @@ const generateForMonth = async (monthInput, options = {}) => {
     },
   });
 
-  const summary = emptySummary(month, settings, null);
+  // ⚠️ `emptySummary(month, reason)` — IKKI argument. Ilgari bu yerda
+  // uchinchi argument bilan `settings` uzatilgan edi va u `reason` bo'lib
+  // qolardi: javobda butun FinanceSettings obyekti chiqar, cron logi esa
+  // "reason bor" deb hisoblab har passda haqiqiy hisobot satrini bosmasdan
+  // `[object Object]` yozardi.
+  const summary = emptySummary(month, null);
   summary.dryRun = dryRun;
   summary.eligible = students.length;
 
@@ -275,8 +282,9 @@ const generateForMonth = async (monthInput, options = {}) => {
     prorationGaps.push(prorationGap(computed.baseAmount, computed.proratedAmount));
 
     if (computed.isProrated) summary.prorated += 1;
-    // Qat'iy chegirma proratsiya qilingan oyni butunlay yeb qo'ydi — bu
-    // ongli qabul qilingan qoida, lekin JIM qolmasligi kerak.
+    // Chegirma oyni butunlay yeb qo'ydi — bu ongli qabul qilingan qoida,
+    // lekin JIM qolmasligi kerak: 0 so'mlik qator darhol "to'langan"
+    // bo'lib yopiladi va qarzdorlar registrida umuman ko'rinmaydi.
     if (computed.wipedByDiscount) summary.wipedByDiscount += 1;
 
     rows.push(row);
