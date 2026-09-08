@@ -87,6 +87,10 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
       } else {
         logger.info(
           `[InvoiceCron] ${summary.monthLabel}: ${summary.created} ta yaratildi, ` +
+            // Bekordan qaytarilgani ALOHIDA: u yangi qator emas, lekin
+            // registrda paydo bo'ladi — logda jim qolsa, "qayerdan chiqdi"
+            // degan savolga javob bo'lmasdi.
+            `bekordan qaytarilgan ${summary.restored}, ` +
             `mavjud ${summary.skipped.alreadyExists}, muzlatilgan ${summary.skipped.frozen}, ` +
             `o'qimaydi ${summary.skipped.notEnrolled}, tarifsiz ${summary.skipped.noTariff}, ` +
             `narxsiz ${summary.skipped.noPrice}, summa ${summary.totalAmount}, ` +

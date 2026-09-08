@@ -25,7 +25,7 @@ const {
   formatMonthKey,
   nextMonth,
 } = require("../helpers/month.helpers");
-const { formatAmount, sumAmounts } = require("../helpers/money.helpers");
+const { Decimal, formatAmount, sumAmounts } = require("../helpers/money.helpers");
 
 const { getFinanceSettings } = require("./settings.service");
 const { resolveManyForMonth } = require("./tariffResolution.service");
@@ -71,6 +71,9 @@ const emptySummary = (month, reason) => ({
   dryRun: false,
   eligible: 0,
   created: 0,
+  // Bekor qilingandan qaytarilganlari — YARATILGANDAN alohida sanaladi:
+  // "3 ta yangi" bilan "3 tasi bekordan qaytarildi" boshqa xabar.
+  restored: 0,
   totalAmount: "0.00",
   discountTotal: "0.00",
   // Kirish proratsiyasi tufayli hisoblanmagan summa — admin kartasida
@@ -97,6 +100,7 @@ const emptySummary = (month, reason) => ({
     noTariffNewlyEnrolled: [],
     noPrice: [],
     wouldCreate: [],
+    wouldRestore: [],
     truncated: false,
   },
 });
@@ -223,18 +227,44 @@ const generateForMonth = async (monthInput, options = {}) => {
       resolveEnrollmentsForStudents(billableIds),
       prisma.monthlyInvoice.findMany({
         where: { month, studentId: { in: billableIds } },
-        select: { studentId: true },
+        select: { id: true, studentId: true, status: true, paidAmount: true, note: true },
       }),
     ]);
 
-  // Bekor qilingan hisob-faktura ham "mavjud" hisoblanadi: u qaror, bo'shliq emas.
-  const existingIds = new Set(existing.map((e) => e.studentId));
+  // ⚠️ IKKI XIL "mavjud" bor va ular BOSHQACHA ishlanadi:
+  //   amaldagi (unpaid/partial/paid) → TEGILMAYDI, summa muhrlangan;
+  //   bekor qilingani                → TIKLANADI (`restorable`).
+  //
+  // Ilgari bekor qilingani ham "qaror, bo'shliq emas" deb o'tkazib
+  // yuborilardi va oqibati og'ir edi: bir marta bekor qilingan oy
+  // "Shakllantirish" necha marta bosilsa ham QAYTMASDI. Ekranda esa
+  // "yangi majburiyat yo'q" deb chiqar va foydalanuvchi tugma buzuq deb
+  // o'ylardi — yagona yo'l har bir qatorni qo'lda qaytarish edi.
+  //
+  // ⚠️ Bekor qilingan qatorda `paidAmount` HAR DOIM 0 bo'ladi
+  // (`releaseInvoiceAllocations` uni nolga tushiradi va pulni depozitga
+  // qaytaradi), lekin tiklashdan oldin yana tekshiriladi — pul tushgan
+  // qatorning summasini qayta yozish taqsimotni yolg'onga aylantirardi.
+  const restorable = new Map();
+  const existingIds = new Set();
+
+  for (const row of existing) {
+    if (row.status === "cancelled" && !new Decimal(row.paidAmount).greaterThan(0)) {
+      restorable.set(row.studentId, row);
+    } else {
+      existingIds.add(row.studentId);
+    }
+  }
 
   // ── 5. Qatorlarni yig'ish ─────────────────
   // Summa mantig'i `invoiceBuilder.service.js` da — qayta shakllantirish
   // ham AYNAN shuni chaqiradi. Ikkita mustaqil quruvchi bo'lsa, proratsiya
   // faqat bittasiga qo'shilib qolardi.
   const rows = [];
+  // Bekordan qaytariladiganlar — JOYIDA yangilanadi, yangi qator
+  // yaratilmaydi: bekor qilish izi tarixda bitta qatorda qolishi kerak
+  // (`restoreInvoice` bilan bir xil mulohaza).
+  const restores = [];
   const amounts = [];
   const discountAmounts = [];
   const prorationGaps = [];
@@ -287,10 +317,29 @@ const generateForMonth = async (monthInput, options = {}) => {
     // bo'lib yopiladi va qarzdorlar registrida umuman ko'rinmaydi.
     if (computed.wipedByDiscount) summary.wipedByDiscount += 1;
 
-    rows.push(row);
+    const cancelled = restorable.get(student.id);
+
+    if (cancelled) {
+      // ⚠️ `studentId`/`month` yangilanmaydi — ular o'zgarmas kalit.
+      // Bekor qilish izi esa TOZALANADI: qator endi amaldagi majburiyat.
+      const { studentId: _s, month: _m, createdBy: _c, ...facts } = row;
+
+      restores.push({
+        id: cancelled.id,
+        data: {
+          ...facts,
+          note: cancelled.note,
+          cancelReason: "",
+          cancelledAt: null,
+          cancelledBy: null,
+        },
+      });
+    } else {
+      rows.push(row);
+    }
 
     if (dryRun) {
-      pushDetail("wouldCreate", {
+      pushDetail(cancelled ? "wouldRestore" : "wouldCreate", {
         studentId: student.id,
         fullName: fullNameOf(student),
         baseAmount: formatAmount(computed.baseAmount),
@@ -321,6 +370,32 @@ const generateForMonth = async (monthInput, options = {}) => {
     }
   } else if (dryRun) {
     summary.created = rows.length;
+  }
+
+  // ── 6b. Bekordan qaytarish ────────────────
+  //
+  // ⚠️ COMPARE-AND-SWAP: shart ichida `status: "cancelled"` va
+  // `paidAmount: 0` turadi. Tekshiruv bilan yozuv orasida kassir to'lov
+  // kiritib ulgursa yoki ikkinchi pass o'tib ketsa, bu yerda HECH NARSA
+  // yozilmaydi — `count` 0 qaytadi va sanoq "allaqachon bor" ga o'tadi.
+  // Modul bo'ylab bitta shakl (`finance.md` §8).
+  if (!dryRun && restores.length > 0) {
+    for (const part of chunk(restores, CHUNK_SIZE)) {
+      const results = await prisma.$transaction(
+        part.map((item) =>
+          prisma.monthlyInvoice.updateMany({
+            where: { id: item.id, status: "cancelled", paidAmount: 0 },
+            data: item.data,
+          }),
+        ),
+      );
+
+      const done = results.reduce((sum, r) => sum + r.count, 0);
+      summary.restored += done;
+      summary.skipped.alreadyExists += part.length - done;
+    }
+  } else if (dryRun) {
+    summary.restored = restores.length;
   }
 
   // ── 7. Depozitni qo'llash ─────────────────
