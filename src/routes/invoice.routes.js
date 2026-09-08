@@ -25,7 +25,9 @@ const {
   generateInvoices,
   updateInvoice,
   cancelInvoice,
+  cancelInvoiceMonth,
   regenerateInvoice,
+  regenerateInvoiceMonth,
   restoreInvoice,
   getInvoicePayments,
 } = require("../controllers/invoice.controller");
@@ -51,6 +53,12 @@ router.get("/debtors", protect, authorizePermission(PERMISSIONS.DEBTORS_VIEW), g
 // xabar yuborish esa maktabdan TASHQARIGA chiqadigan amal.
 router.post("/debtors/remind", protect, authorizePermission(PERMISSIONS.DEBTORS_REMIND), remindDebtors);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.FINANCE_GENERATE), generateInvoices);
+// ── OMMAVIY AMALLAR (bitta oy bo'yicha) ──
+// Ruxsatlar bittalik yo'l bilan AYNI: bekor qilish — `finance.cancel`,
+// qayta shakllantirish — `finance.adjust`. Ommaviy bo'lgani uchun
+// yumshoqroq shart qo'yilsa, tugma orqali huquq oshirib olinardi.
+router.post("/cancel-month", protect, authorizePermission(PERMISSIONS.FINANCE_CANCEL), cancelInvoiceMonth);
+router.post("/regenerate-month", protect, authorizePermission(PERMISSIONS.FINANCE_ADJUST), regenerateInvoiceMonth);
 router.get("/student/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentInvoices);
 
 router.get("/", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getInvoices);

@@ -132,6 +132,36 @@ const cancelInvoice = asyncHandler(async (req, res) => {
   res.json({ success: true, data: updated });
 });
 
+/**
+ * BIR OYNI BUTUNLAY BEKOR QILISH — ommaviy amal.
+ *
+ * ⚠️ O'TGAN OY uchun `finance.adjust` ham talab qilinadi: bittalik
+ * bekor qilishdagi bilan AYNI shart (`cancelInvoice` ga qarang). Ommaviy
+ * yo'lda tekshiruv tushib qolsa, bittalab qilib bo'lmaydigan ish bitta
+ * tugma bilan bajarilib ketardi.
+ */
+const cancelInvoiceMonth = asyncHandler(async (req, res) => {
+  const month = parseMonthKey(req.body.month, "Oy");
+
+  if (month < currentMonthKey() && !canAdjust(req)) {
+    throw new ForbiddenError(
+      "O'tgan oy hisob-fakturalarini bekor qilish uchun ruxsatingiz yo'q",
+    );
+  }
+
+  const summary = await invoiceService.cancelMonth(
+    { month, reason: req.body.reason },
+    req.user.id,
+  );
+  res.json({ success: true, data: summary });
+});
+
+/** Bir oyning hamma hisob-fakturasini qayta shakllantirish — ommaviy amal. */
+const regenerateInvoiceMonth = asyncHandler(async (req, res) => {
+  const summary = await invoiceService.regenerateMonth(req.body, req.user.id);
+  res.json({ success: true, data: summary });
+});
+
 const restoreInvoice = asyncHandler(async (req, res) => {
   const invoice = await invoiceService.restoreInvoice(req.params.id, req.user.id);
   res.json({ success: true, data: invoice });
@@ -175,7 +205,9 @@ module.exports = {
   generateInvoices,
   updateInvoice,
   cancelInvoice,
+  cancelInvoiceMonth,
   regenerateInvoice,
+  regenerateInvoiceMonth,
   restoreInvoice,
   getInvoicePayments,
 };

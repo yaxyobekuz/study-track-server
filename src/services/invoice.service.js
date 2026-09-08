@@ -1449,6 +1449,198 @@ const regenerateInvoice = async (id, reason, userId) => {
   return getInvoiceById(created.id);
 };
 
+// ─────────────────────────────────────────────
+// OMMAVIY AMALLAR (bitta oy bo'yicha)
+// ─────────────────────────────────────────────
+//
+// ⚠️ IKKALASI HAM BITTALIK FUNKSIYALARNI CHAQIRADI, mustaqil SQL yozmaydi.
+// Nusxa yozilsa, bittalik yo'lda bor tekshiruvlar (to'lov tushganmi,
+// taqsimotlar bo'shatildimi, depozitga qaytdimi) ommaviy yo'lda tushib
+// qolardi va farqi faqat pul yo'qolgandan keyin bilinardi.
+//
+// ⚠️ HAR QATOR ALOHIDA TRANZAKSIYADA. Bitta katta tranzaksiya bo'lsa,
+// bitta buzuq qator butun oyni orqaga qaytarardi; bu yerda esa qolganlari
+// baribir bajariladi va yiqilgani sababi bilan ro'yxatda qaytadi.
+
+/** Ommaviy amallar uchun umumiy hisobot shakli. */
+const emptyBulkSummary = (month) => ({
+  month,
+  monthLabel: formatMonthKey(month),
+  total: 0,
+  done: 0,
+  skipped: [],
+  failed: [],
+});
+
+const bulkRowLabel = (invoice) => {
+  const snap = invoice.studentSnapshot ?? {};
+  return (
+    `${snap.firstName ?? ""} ${snap.lastName ?? ""}`.trim() || "Noma'lum o'quvchi"
+  );
+};
+
+/**
+ * BIR OYNING BARCHA HISOB-FAKTURASINI BEKOR QILADI.
+ *
+ * Kerak bo'ladigan holat: oy noto'g'ri ma'lumot bilan shakllantirilgan
+ * (tarif hali biriktirilmagan, narx xato) va uni butunlay qaytadan
+ * boshlash kerak. Bittalab bekor qilish 100+ o'quvchida amalda
+ * bajarib bo'lmaydigan ish edi.
+ *
+ * ⚠️ TO'LOV TUSHGANI HAM BEKOR QILINADI va bu ATAYLAB: `cancelInvoice`
+ * doktrinasi bo'yicha pul o'quvchi DEPOZITIGA qaytadi ("o'quvchi martda
+ * ketdi, mayga qadar to'lab qo'ygan edi"). Ya'ni pul yo'qolmaydi —
+ * qancha qaytgani hisobotda ko'rsatiladi.
+ *
+ * ⚠️ ALLAQACHON BEKOR QILINGANLARI TEGILMAYDI (`skipped`).
+ *
+ * @param {object} data - { month, reason }
+ * @param {string} userId
+ */
+const cancelMonth = async (data, userId) => {
+  const month = parseMonthKey(data.month, "Oy");
+  const reason = data.reason?.trim();
+
+  if (!reason) throw new BadRequestError("Bekor qilish sababi majburiy");
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: { month, status: { not: "cancelled" } },
+    select: { id: true, studentId: true, studentSnapshot: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const summary = emptyBulkSummary(month);
+  summary.total = invoices.length;
+  summary.releasedToDeposit = "0.00";
+
+  let released = new Decimal(0);
+
+  for (const invoice of invoices) {
+    try {
+      const result = await cancelInvoice(invoice.id, reason, userId);
+      released = released.plus(result.releasedToDeposit ?? 0);
+      summary.done += 1;
+    } catch (error) {
+      summary.failed.push({
+        invoiceId: invoice.id,
+        studentId: invoice.studentId,
+        studentName: bulkRowLabel(invoice),
+        reason: error.message,
+      });
+    }
+  }
+
+  summary.releasedToDeposit = formatAmount(released);
+
+  if (released.greaterThan(0)) {
+    summary.warnings = [
+      `${formatAmount(released)} so'm o'quvchilarning depozitiga qaytarildi — ` +
+        "u keyingi oyga o'tadi yoki ota-onaga qaytariladi",
+    ];
+  }
+
+  logger.warn(
+    `[invoices] OMMAVIY BEKOR QILISH: ${formatMonthKey(month)} — ` +
+      `${summary.done}/${summary.total} ta, depozitga ${formatAmount(released)}, ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
+  return summary;
+};
+
+/**
+ * BIR OYNING BARCHA HISOB-FAKTURASINI QAYTA SHAKLLANTIRADI.
+ *
+ * Bu — "tarifni to'g'riladim, endi oy yangilansin" tugmasi. Oddiy
+ * "Shakllantirish" faqat YO'Q qatorlarni yozadi (mavjudi muhrlangan),
+ * shuning uchun tarif o'zgargandan keyin u hech narsani yangilamasdi va
+ * foydalanuvchi har bir qatorni qo'lda bosib chiqishga majbur edi.
+ *
+ * ⚠️ TO'LOV TUSHGANLARI TEGILMAYDI (`skipped`): summani o'zgartirish
+ * to'lov taqsimotini yolg'onga aylantirardi. Ularni to'g'rilash uchun
+ * avval to'lov bekor qilinadi — bu ongli, alohida qaror.
+ *
+ * ⚠️ BEKOR QILINGANLARI ham tegilmaydi: ular qaror, bo'shliq emas.
+ * Ularni qaytarish uchun "Qaytarish" yoki "Shakllantirish" ishlatiladi.
+ *
+ * @param {object} data - { month, reason }
+ * @param {string} userId
+ */
+const regenerateMonth = async (data, userId) => {
+  const month = parseMonthKey(data.month, "Oy");
+  const reason = data.reason?.trim();
+
+  if (!reason) throw new BadRequestError("Qayta shakllantirish sababi majburiy");
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: { month, status: { not: "cancelled" } },
+    select: {
+      id: true,
+      studentId: true,
+      studentSnapshot: true,
+      paidAmount: true,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const summary = emptyBulkSummary(month);
+  summary.total = invoices.length;
+  summary.unchanged = 0;
+
+  let before = new Decimal(0);
+  let after = new Decimal(0);
+
+  for (const invoice of invoices) {
+    // To'lov tushganini bittalik funksiya ham rad etadi — bu yerda
+    // OLDINDAN ajratiladi, chunki u XATO emas, kutilgan hol va uni
+    // `failed` ro'yxatiga tushirish ekranni qizil xatolarga to'ldirardi.
+    if (new Decimal(invoice.paidAmount).greaterThan(0)) {
+      summary.skipped.push({
+        invoiceId: invoice.id,
+        studentId: invoice.studentId,
+        studentName: bulkRowLabel(invoice),
+        reason: "To'lov tushgan — avval to'lovni bekor qiling",
+      });
+      continue;
+    }
+
+    try {
+      const fresh = await prisma.monthlyInvoice.findUnique({
+        where: { id: invoice.id },
+        select: { amount: true },
+      });
+
+      const result = await regenerateInvoice(invoice.id, reason, userId);
+
+      before = before.plus(fresh?.amount ?? 0);
+      after = after.plus(result.amount ?? 0);
+      summary.done += 1;
+    } catch (error) {
+      summary.failed.push({
+        invoiceId: invoice.id,
+        studentId: invoice.studentId,
+        studentName: bulkRowLabel(invoice),
+        reason: error.message,
+      });
+    }
+  }
+
+  // "Nima o'zgardi" — bitta qatorda. Bu bo'lmasa foydalanuvchi tugmani
+  // bosgan-u, natijani ko'rish uchun jadvalni varaqlashga majbur bo'lardi.
+  summary.amountBefore = formatAmount(before);
+  summary.amountAfter = formatAmount(after);
+  summary.amountChange = formatAmount(after.minus(before));
+
+  logger.warn(
+    `[invoices] OMMAVIY QAYTA SHAKLLANTIRISH: ${formatMonthKey(month)} — ` +
+      `${summary.done}/${summary.total} ta, ${formatAmount(before)} → ` +
+      `${formatAmount(after)}, o'tkazib yuborilgan ${summary.skipped.length}, ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
+  return summary;
+};
+
 /**
  * Bekor qilingan hisob-fakturani qaytaradi. Butun tarix bitta qatorda qoladi —
  * o'chirib qayta yaratish o'rniga.
@@ -1486,6 +1678,8 @@ const restoreInvoice = async (id, userId) => {
 
 module.exports = {
   STATUS_LABELS,
+  cancelMonth,
+  regenerateMonth,
   serializeInvoice,
   getInvoices,
   getInvoiceById,
