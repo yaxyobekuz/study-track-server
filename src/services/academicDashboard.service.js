@@ -27,11 +27,12 @@ const {
   currentMonthKey,
   parseOptionalMonthKey,
   formatMonthKey,
-  formatMonthShort,
   prevMonth,
+  daysInMonth,
   monthStartDate,
   monthEndDate,
 } = require("../helpers/month.helpers");
+const { formatDateUz } = require("../helpers/date.helpers");
 const { BadRequestError } = require("../utils/errors");
 const { buildInsights } = require("../helpers/academicInsights");
 const { loadTargetMap } = require("./academicTarget.service");
@@ -39,10 +40,6 @@ const {
   ACHIEVEMENT_LEVEL_LABELS,
   ACHIEVEMENT_PLACE_LABELS,
 } = require("./achievement.service");
-
-/** Davomat dinamikasi diagrammasidagi oylar soni (dizayndagi "12 oylik"). */
-const DEFAULT_TREND_MONTHS = 12;
-const MAX_TREND_MONTHS = 36;
 
 /** Fanlar diagrammasidagi ustunlar soni — undan ortig'i o'qi sig'maydi. */
 const SUBJECT_LIMIT = 8;
@@ -656,50 +653,68 @@ const buildDistribution = (grades) => {
 };
 
 /**
- * 12 oylik davomat dinamikasi.
+ * Tanlangan OYNING KUNLIK davomat dinamikasi.
  *
- * ⚠️ BITTA SO'ROV: `date` va `status` bo'yicha guruhlanadi, oylarga JS'da
- * bo'linadi. Har oy uchun alohida so'rov yuborilsa, bitta diagramma
- * uchun 12 marta bazaga borilardi.
+ * ⚠️ OYLIK EMAS, KUNLIK va bu ATAYLAB. Oylik o'rtacha davomat butun yil
+ * bo'yi 92-95% oralig'ida tekis yotadi — ya'ni diagramma hech qachon hech
+ * narsa ko'rsatmasdi. Direktorga kerak bo'ladigan savol esa "qaysi KUNI
+ * sinf ko'tarilib qolmadi" — javob faqat kun kesimida ko'rinadi.
+ * Dashboardning qolgan bloklari ham tanlangan OY ichida turadi, shuning
+ * uchun oyna ham o'sha oy: rolling "oxirgi 30 kun" bo'lsa, foydalanuvchi
+ * mayni tanlaganda bitta karta sentabrni ko'rsatib turardi.
+ *
+ * ⚠️ BITTA SO'ROV: `date` va `status` bo'yicha guruhlanadi, kunlarga
+ * JS'da bo'linadi. Har kun uchun alohida so'rov yuborilsa, bitta
+ * diagramma uchun 30 marta bazaga borilardi.
+ *
+ * ⚠️ OYNING HAMMA KUNI qaytariladi, davomat belgilanmagani ham
+ * (`rate: null`, `total: 0`). Yakshanba va bayramni SERVER tashlab
+ * yubormaydi: "belgilanmagan kun" va "0% davomat" ni farqlash mumkin
+ * bo'lishi kerak, tashlab yuborilsa ikkalasi ham yo'q bo'lib ko'rinardi.
+ * Chizishga yaroqli kunlarni frontend `total > 0` bilan ajratadi.
+ *
+ * ⚠️ Kun MATNI serverda tayyorlanadi (`dayLabel`) — frontendda oy nomlari
+ * massivini nusxalash taqiqlangan (`.claude/rules/dates.md`). O'q uchun
+ * esa faqat kun RAQAMI (`dayShort`) beriladi: oy sarlavhada turgani
+ * uchun o'qda takrorlanishi ortiqcha, 31 ta to'liq sana esa sig'masdi.
  */
-const buildAttendanceTrend = async (month, trendMonths) => {
-  const months = [];
-  let cursor = month;
-  for (let i = 0; i < trendMonths; i += 1) {
-    months.unshift(cursor);
-    cursor = prevMonth(cursor);
-  }
-
+const buildAttendanceTrend = async (month) => {
   const rows = await prisma.studentAttendance.groupBy({
     by: ["date", "status"],
-    where: {
-      date: {
-        gte: monthStartDate(months[0]),
-        lte: new Date(monthEndDate(month).getTime() + 86400000 - 1),
-      },
-    },
+    where: { date: monthDayRange(month) },
     _count: { _all: true },
   });
 
-  const buckets = new Map(months.map((key) => [key, { present: 0, total: 0 }]));
+  const buckets = new Map();
 
   for (const row of rows) {
-    // Kun UTC yarim tunida yotadi — oy raqami `getUTC*` bilan olinadi
-    const key = row.date.getUTCFullYear() * 100 + row.date.getUTCMonth() + 1;
-    const bucket = buckets.get(key);
-    if (!bucket) continue;
+    // Kun UTC yarim tunida yotadi — kun raqami `getUTC*` bilan olinadi
+    const day = row.date.getUTCDate();
+    let bucket = buckets.get(day);
+    if (!bucket) {
+      bucket = { present: 0, total: 0 };
+      buckets.set(day, bucket);
+    }
 
     bucket.total += row._count._all;
     if (PRESENT_STATUSES.has(row.status)) bucket.present += row._count._all;
   }
 
-  return months.map((key) => {
-    const bucket = buckets.get(key);
+  const year = Math.trunc(month / 100);
+  const monthIndex = (month % 100) - 1;
+
+  return Array.from({ length: daysInMonth(month) }, (_, index) => {
+    const day = index + 1;
+    const bucket = buckets.get(day) ?? { present: 0, total: 0 };
+    const date = new Date(Date.UTC(year, monthIndex, day));
 
     return {
-      month: key,
-      monthLabel: formatMonthKey(key),
-      monthShort: formatMonthShort(key),
+      // ISO — mashina o'qiydigan kalit (saralash, `queryKey`), ekranga
+      // chiqmaydi (`.claude/rules/dates.md` §3).
+      date: date.toISOString().slice(0, 10),
+      day,
+      dayShort: String(day),
+      dayLabel: formatDateUz(date, { utc: true }),
       rate: rate(bucket.present, bucket.total),
       present: bucket.present,
       total: bucket.total,
@@ -1065,7 +1080,7 @@ const buildClubs = async ({
 /**
  * Bir oyning butun akademik manzarasi.
  *
- * @param {{month?: *, compareMonth?: *, trendMonths?: *}} query
+ * @param {{month?: *, compareMonth?: *}} query
  */
 const getOverview = async (query = {}) => {
   const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
@@ -1074,12 +1089,6 @@ const getOverview = async (query = {}) => {
   if (compareMonth >= month) {
     throw new BadRequestError("Taqqoslash oyi tanlangan oydan oldin bo'lishi kerak");
   }
-
-  const rawTrend = Number.parseInt(query.trendMonths, 10);
-  const trendMonths =
-    Number.isFinite(rawTrend) && rawTrend > 0
-      ? Math.min(rawTrend, MAX_TREND_MONTHS)
-      : DEFAULT_TREND_MONTHS;
 
   // ── Bir oyning barcha faktlari ────────────────────────────────────
   const [
@@ -1190,7 +1199,7 @@ const getOverview = async (query = {}) => {
 
   // ── Og'irroq bloklar — yuqoridagi natijalarga tayanadi ────────────
   const [attendanceTrend, topStudents, teachers, achievements, clubs] = await Promise.all([
-    buildAttendanceTrend(month, trendMonths),
+    buildAttendanceTrend(month),
     buildTopStudents({
       month,
       subjects,
