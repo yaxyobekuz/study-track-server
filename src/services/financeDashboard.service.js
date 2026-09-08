@@ -43,6 +43,7 @@ const { getDebtors } = require("./invoice.service");
 // Oylik rejimi yorlig'i — yagona katalogdan (ikki ekranda ikki xil nom
 // bo'lmasligi uchun)
 const { TYPE_LABELS: SALARY_TYPE_LABELS } = require("./staffSalary.service");
+const { computeAssignedPayroll } = require("./payroll.service");
 const { loadTargetMap, loadCustomTargets } = require("./financeTarget.service");
 const { loadBudgetSummary } = require("./expenseBudget.service");
 const { loadPlanSummary } = require("./incomePlan.service");
@@ -687,6 +688,12 @@ const buildDebt = async (asOfMonth, compareMonth) => {
 /**
  * XODIMLAR OYLIGI — jami summa va kim qancha olayotgani.
  *
+ * ⚠️ UCHINCHI RAQAM — BELGILANGAN oylik (`assigned`): qoidalardan
+ * chiqadigan jami, majburiyat shakllantirilgan-shakllantirilmaganidan
+ * QAT'IY NAZAR. Yuqoridagi KPI kartasi aynan shuni ko'rsatadi, chunki
+ * "bu oy xodimlarga qancha to'laymiz" degan savol tugma bosilishiga
+ * bog'liq bo'lmasligi kerak edi.
+ *
  * ⚠️ IKKI RAQAM ATAYLAB YONMA-YON: HISOBLANGAN (majburiyat) va TO'LANGAN
  * (kassadan chiqqan pul). Yuqoridagi "Jami xarajat" kartasi FAQAT
  * to'langanini ko'rsatadi (`finance.md` §10, "Hisobot"), shuning uchun
@@ -705,7 +712,7 @@ const buildDebt = async (asOfMonth, compareMonth) => {
  * @param {number} compareMonth
  */
 const buildPayroll = async (month, compareMonth) => {
-  const [entries, previousAgg] = await Promise.all([
+  const [entries, previousAgg, assignedRow, previousAssignedRow] = await Promise.all([
     prisma.payrollEntry.findMany({
       where: { month, status: { not: "cancelled" } },
       select: {
@@ -722,6 +729,9 @@ const buildPayroll = async (month, compareMonth) => {
       where: { month: compareMonth, status: { not: "cancelled" } },
       _sum: { amount: true, paidAmount: true },
     }),
+    // Formula `payroll.service` da — YAGONA nuqta (`finance.md` §10)
+    computeAssignedPayroll(month),
+    computeAssignedPayroll(compareMonth),
   ]);
 
   const staffRows = entries.length
@@ -779,6 +789,11 @@ const buildPayroll = async (month, compareMonth) => {
     accrued: formatAmount(accrued),
     paid: formatAmount(paid),
     debt: formatAmount(debtTotal.isNegative() ? new Decimal(0) : debtTotal),
+    // ── BELGILANGAN (qoidalardan) ─────────────
+    assigned: formatAmount(assignedRow.amount),
+    previousAssigned: formatAmount(previousAssignedRow.amount),
+    assignedChange: changeOf(assignedRow.amount, previousAssignedRow.amount),
+    assignedStaffCount: assignedRow.staffCount,
     staffCount: items.length,
     unpaidCount: items.filter((row) => row.status !== "paid").length,
     previousAccrued: formatAmount(previousAccrued),
@@ -1197,19 +1212,24 @@ const getDashboard = async (query = {}, options = {}) => {
               ? "Shu oy"
               : `${diffMonths(debt.oldestMonth, month)} oy oldingi qarz`,
       },
-      // ⚠️ HISOBLANGAN oylik, to'langani emas: "Jami xarajat" kartasi
-      // allaqachon to'langanini ko'rsatadi. Ikkalasi bir xil bo'lsa,
-      // to'lanmagan oylik ekranda umuman ko'rinmasdi.
+      // ⚠️ BELGILANGAN oylik — na to'langani, na shakllantirilgani.
+      //
+      // "Jami xarajat" kartasi allaqachon TO'LANGAN oylikni ichiga oladi,
+      // pastdagi "Xodimlar oyligi" jadvali esa SHAKLLANTIRILGANINI
+      // (hisoblangan / to'langan / qarzimiz) ko'rsatadi. Bu kartaning
+      // vazifasi uchinchi savol: xodimlarga BELGILAB QO'YILGAN oylik
+      // bo'yicha bu oy qancha to'lashimiz kerak. U "Shakllantirish"
+      // bosilishiga bog'liq emas — aks holda oy boshida karta nol turib,
+      // "hech kimga oylik belgilanmagan" degan yolg'on xulosa berardi.
       payroll: {
         key: "payroll",
         unit: "money",
-        value: payroll.accrued,
+        value: payroll.assigned,
         plan: null,
         planRate: null,
-        previous: payroll.previousAccrued,
-        change: payroll.accruedChange,
+        previous: payroll.previousAssigned,
+        change: payroll.assignedChange,
         changeUnit: "percent",
-        sub: `${payroll.staffCount} ta xodim`,
       },
     },
 

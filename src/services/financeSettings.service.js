@@ -8,13 +8,16 @@
  */
 
 const prisma = require("../config/prisma");
+const platformPrisma = require("../config/platformPrisma");
 const { getFinanceSettings } = require("./settings.service");
-const { BadRequestError } = require("../utils/errors");
+const { BadRequestError, NotFoundError } = require("../utils/errors");
 const {
   currentMonthKey,
   parseOptionalMonthKey,
   formatMonthKey,
+  coveringMonthWhere,
 } = require("../helpers/month.helpers");
+const { formatAmount } = require("../helpers/money.helpers");
 
 
 // Cron ifodasi emas, handler o'qiydigan kun. 28 dan oshmasligi kerak —
@@ -29,15 +32,55 @@ const serializeSettings = (settings) => ({
 });
 
 /**
+ * STANDART TARIFNING ekranga chiqadigan ko'rinishi: nomi va JORIY OY narxi.
+ *
+ * ⚠️ Narx sozlamada SAQLANMAYDI, har safar `TariffVersion` dan o'qiladi
+ * (`finance.md` §1: katalogda narx maydoni yo'q). Aks holda tarif narxi
+ * oshganda sozlamalar sahifasi eski raqamni ko'rsatib turardi.
+ *
+ * ⚠️ Tarif ARXIVLANGAN yoki O'CHIRILGAN bo'lishi mumkin — ko'rsatkich
+ * jimgina "yo'q" bo'lib qolmasligi uchun bayroq bilan qaytariladi:
+ * ekranda "tarif topilmadi" deb ochiq turadi.
+ */
+const loadDefaultTariff = async (tariffId) => {
+  if (!tariffId) return null;
+
+  const month = currentMonthKey();
+
+  const tariff = await platformPrisma.tariff.findUnique({
+    where: { id: tariffId },
+    select: { id: true, name: true, isActive: true, isArchived: true },
+  });
+
+  if (!tariff) {
+    return { id: tariffId, name: "Topilmadi", missing: true, amount: null };
+  }
+
+  const version = await platformPrisma.tariffVersion.findFirst({
+    where: { tariffId, ...coveringMonthWhere(month) },
+    orderBy: { startMonth: "desc" },
+  });
+
+  return {
+    ...tariff,
+    missing: false,
+    amount: version ? formatAmount(version.monthlyAmount) : null,
+    monthLabel: formatMonthKey(month),
+  };
+};
+
+/**
  * Sozlamalar + joriy oyning akademik tavsifi.
  * @returns {Promise<object>}
  */
 const getSettings = async () => {
   const settings = await getFinanceSettings();
   const month = currentMonthKey();
+  const defaultTariff = await loadDefaultTariff(settings.defaultTariffId);
 
   return {
     ...serializeSettings(settings),
+    defaultTariff,
     current: {
       month,
       monthLabel: formatMonthKey(month),
@@ -122,6 +165,46 @@ const updateSettings = async (data, userId) => {
     payload.depositAutoApply = Boolean(data.depositAutoApply);
   }
 
+  // ── STANDART TARIF ──────────────────────────
+  //
+  // Bo'sh qiymat (null / "") — ATAYLAB ruxsat etilgan: avtomat biriktirishni
+  // butunlay o'chirish yo'li shu.
+  if (data.defaultTariffId !== undefined) {
+    const tariffId = data.defaultTariffId || null;
+
+    if (tariffId) {
+      const tariff = await platformPrisma.tariff.findUnique({
+        where: { id: tariffId },
+        select: { id: true, isArchived: true },
+      });
+
+      if (!tariff) throw new NotFoundError("Tarif topilmadi");
+
+      // ⚠️ Arxivlangan tarif RAD ETILADI: uni biriktirish `studentTariff`
+      // tomonida ham taqiqlangan, ya'ni sozlamada turaversa har bir yangi
+      // o'quvchi jimgina tarifsiz qolib ketardi.
+      if (tariff.isArchived) {
+        throw new BadRequestError("Arxivlangan tarifni standart qilib bo'lmaydi");
+      }
+
+      // Narx yo'qligi BLOKLAMAYDI — narxdan oldin biriktirish qonuniy
+      // tartib (`studentTariff.service.js` dagi bilan bir xil qoida),
+      // lekin jim qolmaymiz.
+      const version = await platformPrisma.tariffVersion.findFirst({
+        where: { tariffId, ...coveringMonthWhere(currentMonthKey()) },
+      });
+
+      if (!version) {
+        warnings.push(
+          `Tanlangan tarifda ${formatMonthKey(currentMonthKey())} oyi uchun ` +
+            "narx belgilanmagan — biriktirish bo'ladi, lekin hisob-faktura yozilmaydi",
+        );
+      }
+    }
+
+    payload.defaultTariffId = tariffId;
+  }
+
   if (Object.keys(payload).length === 0) {
     return { settings: await getSettings(), warnings };
   }
@@ -136,6 +219,7 @@ const updateSettings = async (data, userId) => {
   return {
     settings: {
       ...serializeSettings(updated),
+      defaultTariff: await loadDefaultTariff(updated.defaultTariffId),
       current: {
         month: currentMonthKey(),
         monthLabel: formatMonthKey(currentMonthKey()),
@@ -147,6 +231,7 @@ const updateSettings = async (data, userId) => {
 
 module.exports = {
   MAX_INVOICE_DAY,
+  loadDefaultTariff,
   MAX_CATCH_UP_MONTHS,
   serializeSettings,
   getSettings,

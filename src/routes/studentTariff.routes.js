@@ -14,6 +14,7 @@ const {
   getAssignment,
   createAssignment,
   bulkAssign,
+  applyDefaultTariff,
   updateAssignment,
   closeAssignment,
   changeTariff,
@@ -22,6 +23,9 @@ const {
 
 // Aniq yo'llar `/:id` dan OLDIN
 router.post("/bulk", protect, authorizePermission(PERMISSIONS.TARIFFS_ASSIGN), bulkAssign);
+// Standart tarifni hammaga qo'llash — biriktirish amali, shuning uchun
+// alohida ruxsat emas, o'sha `tariffs.assign`.
+router.post("/apply-default", protect, authorizePermission(PERMISSIONS.TARIFFS_ASSIGN), applyDefaultTariff);
 router.get("/student/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.TARIFFS_VIEW), getStudentHistory);
 
 router.get("/", protect, authorizePermission(PERMISSIONS.TARIFFS_VIEW), getAssignments);

@@ -114,6 +114,10 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
         logger.info(
           `[PayrollCron] ${payrollSummary.monthLabel}: ` +
             `${payrollSummary.created} ta oylik majburiyati, ` +
+            // Bekordan qaytarilgani ALOHIDA: u yangi qator emas, lekin
+            // registrda paydo bo'ladi — logda jim qolsa, "qayerdan
+            // chiqdi" degan savolga javob bo'lmasdi.
+            `bekordan qaytarilgan ${payrollSummary.restored}, ` +
             `mavjud ${payrollSummary.skipped.alreadyExists}, ` +
             `arxivlangan ${payrollSummary.skipped.archived}, ` +
             // ⚠️ Soatbay uchun ikkita YANGI sabab ham logga chiqadi: oy

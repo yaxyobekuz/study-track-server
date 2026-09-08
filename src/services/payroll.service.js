@@ -9,6 +9,14 @@
  * yo'li — `cancelled` holati, sababi bilan; to'lov tushgan majburiyat esa
  * umuman bekor qilinmaydi.
  *
+ * ⚠️ BEKOR QILINGAN MAJBURIYAT SHAKLLANTIRISHNI TO'SMAYDI. U bo'sh o'rin
+ * hisoblanadi: shakllantirish uni O'SHA QATORNING O'ZIDA qayta hisoblab
+ * tiklaydi (`restored`). Ilgari u "qaror" deb o'tkazib yuborilardi va
+ * natijada bir marta bekor qilingan oy tugma necha marta bosilsa ham
+ * qaytmasdi — foydalanuvchiga esa "shakllantirish ishlamayapti" bo'lib
+ * ko'rinardi. To'lov tushgani (`paidAmount > 0`) baribir tegilmaydi:
+ * u yerda avval to'lov bekor qilinishi kerak.
+ *
  * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida.
  *
  * ── SOATBAY VA ARALASH REJIM ─────────────────
@@ -104,9 +112,11 @@ const emptySummary = (month, reason) => ({
   // vedomostni ochmasdan javob beradi.
   hoursAmount: "0.00",
   hoursTotal: 0,
+  // Bekor qilingandan qaytarilganlari — YARATILGANDAN alohida sanaladi:
+  // "3 ta yangi" bilan "3 tasi bekordan qaytarildi" boshqa xabar.
+  restored: 0,
   skipped: {
     alreadyExists: 0,
-    cancelled: 0,
     noSalary: 0,
     archived: 0,
     // ⚠️ Yangi sabab qo'shilsa SHU YERGA ham yoziladi, aks holda cron
@@ -121,10 +131,12 @@ const emptySummary = (month, reason) => ({
  * Bir oy uchun oylik majburiyatlarini shakllantiradi.
  *
  * IDEMPOTENT: `@@unique([staffId, month])` va oldindan tekshiruv tufayli
- * ikki marta chaqirish ikkinchi qator yaratmaydi.
+ * ikki marta chaqirish ikkinchi qator yaratmaydi. AMALDAGI majburiyatga
+ * (`unpaid`/`partial`/`paid`) umuman tegilmaydi — summa MUHRLANGAN.
  *
- * ⚠️ Bekor qilingan majburiyat ham "mavjud" hisoblanadi — u QAROR, bo'shliq
- * emas. Aks holda cron ertasiga uni qaytadan yozib qo'yardi.
+ * ⚠️ BEKOR QILINGANI esa TIKLANADI: qator o'chirilmaydi, JOYIDA qayta
+ * hisoblanadi (`regenerateEntry` bilan bir xil mulohaza — bekor qilish izi
+ * tarixda qolishi uchun yangi qator yaratilmaydi).
  *
  * @param {number|string} monthInput
  * @param {object} options - { dryRun, staffIds, actorId }
@@ -169,18 +181,29 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   // 3 ── Allaqachon shakllantirilganlari
   //
-  // ⚠️ BEKOR QILINGANI ham "mavjud" hisoblanadi (yuqoridagi izohga qarang),
-  // lekin ALOHIDA sanaladi: "hammasi bor" bilan "uchtasi bekor qilingan"
-  // butunlay boshqa xabar. Bekor qilinganini qaytarish uchun qatordagi
-  // "Qayta shakllantirish" ishlatiladi.
+  // ⚠️ IKKI XIL "mavjud" bor va ular BOSHQACHA ishlanadi:
+  //   amaldagi (unpaid/partial/paid) → TEGILMAYDI, summa muhrlangan;
+  //   bekor qilingani                → TIKLANADI (`restorable`).
+  // `paidAmount` ham o'qiladi: bekor qilingan qatorda u nolga teng bo'lishi
+  // kerak (`cancelEntry` boshqasiga yo'l qo'ymaydi), lekin tiklashdan oldin
+  // himoya qavati sifatida yana bir marta tekshiriladi — pul tushgan
+  // qatorning summasini qayta yozish taqsimotni yolg'onga aylantirardi.
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
-    select: { staffId: true, status: true },
+    select: { id: true, staffId: true, status: true, paidAmount: true },
   });
-  const existingIds = new Set(existing.map((e) => e.staffId));
-  const cancelledIds = new Set(
-    existing.filter((e) => e.status === "cancelled").map((e) => e.staffId),
-  );
+
+  // staffId → tiklanadigan qator; qolganlari shunchaki "band" hisoblanadi
+  const restorable = new Map();
+  const lockedIds = new Set();
+
+  for (const row of existing) {
+    if (row.status === "cancelled" && !new Decimal(row.paidAmount).greaterThan(0)) {
+      restorable.set(row.staffId, row);
+    } else {
+      lockedIds.add(row.staffId);
+    }
+  }
 
   // 4 ── DARS SOATI — faqat kerak bo'lganlar uchun, BITTA o'tishda.
   //
@@ -189,8 +212,12 @@ const generateForMonth = async (monthInput, options = {}) => {
   // ma'nosiz ish bo'lardi.
   const monthIsOpen = month >= currentMonthKey();
 
+  //
+  // ⚠️ AMALDAGI majburiyati bor xodim ro'yxatdan CHIQARILADI: unga baribir
+  // tegilmaydi, soatini hisoblash esa bekorga qilingan ish bo'lardi.
   const hourStaffIds = staff
     .filter((person) => {
+      if (lockedIds.has(person.id)) return false;
       const salary = salaries.get(person.id);
       return salary && (salary.type === "hourly" || salary.type === "mixed");
     })
@@ -202,17 +229,23 @@ const generateForMonth = async (monthInput, options = {}) => {
       : new Map();
 
   // 5 ── Qatorlarni yig'ish
+  //
+  // Ikki savat: YANGI qatorlar (`createMany`) va TIKLANADIGANLARI
+  // (mavjud qatorni JOYIDA yangilash). Summa hisobi ikkalasi uchun ham
+  // bir xil — pastdagi `buildFacts()` yagona nuqta.
   const rows = [];
+  const restores = [];
   let total = new Decimal(0);
   let hoursTotalAmount = new Decimal(0);
   let hoursTotal = 0;
 
   for (const person of staff) {
-    if (existingIds.has(person.id)) {
-      if (cancelledIds.has(person.id)) summary.skipped.cancelled += 1;
-      else summary.skipped.alreadyExists += 1;
+    if (lockedIds.has(person.id)) {
+      summary.skipped.alreadyExists += 1;
       continue;
     }
+
+    const cancelled = restorable.get(person.id) ?? null;
 
     const salary = salaries.get(person.id);
     if (!salary) {
@@ -244,9 +277,10 @@ const generateForMonth = async (monthInput, options = {}) => {
     hoursTotalAmount = hoursTotalAmount.plus(money.hoursAmount);
     hoursTotal += usesHours ? hours : 0;
 
-    rows.push({
-      staffId: person.id,
-      month,
+    // ── SUMMA VA DALILLAR — yangi qator uchun ham, tiklanadigani uchun
+    // ham AYNI shakl. Ikkita nusxa bo'lsa, tiklangan qatorda soat
+    // dalili tushib qolishi mumkin edi.
+    const facts = {
       amount: money.amount,
       baseAmount: money.baseAmount,
       hoursAmount: money.hoursAmount,
@@ -275,11 +309,31 @@ const generateForMonth = async (monthInput, options = {}) => {
         username: person.username,
         role: person.role,
       },
-      createdBy: actorId,
-    });
+    };
+
+    if (cancelled) {
+      // ⚠️ TIKLASH — bekor qilish izi TOZALANADI: qator endi amaldagi
+      // majburiyat. `createdBy` tegilmaydi, u qatorni birinchi kim
+      // shakllantirgani haqidagi fakt.
+      restores.push({
+        id: cancelled.id,
+        data: {
+          ...facts,
+          status: "unpaid",
+          paidAmount: 0,
+          paidAt: null,
+          cancelReason: "",
+          cancelledAt: null,
+          cancelledBy: null,
+        },
+      });
+    } else {
+      rows.push({ staffId: person.id, month, ...facts, createdBy: actorId });
+    }
   }
 
   summary.created = rows.length;
+  summary.restored = restores.length;
   summary.totalAmount = formatAmount(total);
   summary.hoursAmount = formatAmount(hoursTotalAmount);
   summary.hoursTotal = hoursTotal;
@@ -300,16 +354,104 @@ const generateForMonth = async (monthInput, options = {}) => {
     // Poyga tufayli tushib qolgani "allaqachon bor" ga qo'shiladi, jim
     // yo'qolmaydi.
     summary.skipped.alreadyExists += rows.length - result.count;
+  }
 
+  if (!dryRun && restores.length > 0) {
+    // ⚠️ COMPARE-AND-SWAP: shart ichida `status: "cancelled"` va
+    // `paidAmount: 0` turadi. Ikki jarayon (cron + qo'l bilan bosilgan
+    // tugma) bir vaqtda ishlaganda yoki oradan to'lov o'tib ketganda
+    // ikkinchisi HECH NARSA yozmaydi — `count` 0 qaytadi va sanoq
+    // "allaqachon bor" ga o'tadi. Modul bo'ylab bitta shakl
+    // (`finance.md` §8).
+    const results = await prisma.$transaction(
+      restores.map((row) =>
+        prisma.payrollEntry.updateMany({
+          where: { id: row.id, status: "cancelled", paidAmount: 0 },
+          data: row.data,
+        }),
+      ),
+    );
+
+    const restored = results.reduce((sum, r) => sum + r.count, 0);
+    summary.restored = restored;
+    summary.skipped.alreadyExists += restores.length - restored;
+  }
+
+  if (!dryRun && (summary.created > 0 || summary.restored > 0)) {
     logger.info(
-      `[payroll] ${formatMonthKey(month)}: ${result.count} ta oylik majburiyati, ` +
-        `jami ${formatAmount(total)} (soatdan ${formatAmount(hoursTotalAmount)}, ` +
+      `[payroll] ${formatMonthKey(month)}: ${summary.created} ta yangi oylik majburiyati` +
+        (summary.restored > 0 ? `, ${summary.restored} tasi bekordan qaytarildi` : "") +
+        `, jami ${formatAmount(total)} (soatdan ${formatAmount(hoursTotalAmount)}, ` +
         `${hoursTotal} soat)`,
     );
   }
 
   summary.durationMs = Date.now() - startedAt;
   return summary;
+};
+
+/**
+ * BELGILANGAN OYLIK — bir oy uchun qoidalardan chiqadigan JAMI summa.
+ *
+ * ⚠️ MUHRLANGAN MAJBURIYATDAN (`PayrollEntry`) FARQ QILADI va ataylab:
+ * majburiyat "Shakllantirish" bosilgandan keyin paydo bo'ladi, bu esa
+ * shundoq ham ma'lum — xodimga oylik BELGILANGANIDAN. Rahbar dashboardda
+ * "bu oy xodimlarga qancha to'laymiz" degan savolga tugma bosilishini
+ * kutmasdan javob olishi kerak; ilgari u karta shakllantirilmagan oyda
+ * NOL ko'rsatib turardi va "hech kimga oylik yo'q" degan yolg'on
+ * taassurot berardi.
+ *
+ * ⚠️ FORMULA O'SHA `computeSalary()` — shakllantirish nimani yozsa, bu
+ * karta ham shuni ko'rsatadi. Ikkinchi nusxa bo'lsa, dashboarddagi raqam
+ * vedomostdagi raqamdan farq qilardi.
+ *
+ * ⚠️ SOATBAY uchun soat BUTUN OY bo'yicha (jadval proyeksiyasi), ya'ni
+ * oy o'rtasida ham oy oxirida chiqadigan summa ko'rinadi — "bugungacha
+ * yig'ilgani" emas. Byudjet savoliga aynan shu javob kerak.
+ *
+ * @param {number} month - YYYYMM
+ * @returns {Promise<{ amount: Decimal, staffCount: number }>}
+ */
+const computeAssignedPayroll = async (month) => {
+  const empty = { amount: new Decimal(0), staffCount: 0 };
+
+  const salaries = await resolveSalariesForMonth(month);
+  if (salaries.size === 0) return empty;
+
+  // Arxivlanganga oylik belgilanmaydi (`generateForMonth` bilan bir xil
+  // filtr) — aks holda ketgan odam byudjetda turib qolardi.
+  const staff = await prisma.user.findMany({
+    where: {
+      id: { in: [...salaries.keys()] },
+      isArchived: false,
+      role: { not: ROLES.STUDENT },
+    },
+    select: { id: true },
+  });
+  if (staff.length === 0) return empty;
+
+  const hourStaffIds = staff
+    .filter((person) => {
+      const salary = salaries.get(person.id);
+      return salary.type === "hourly" || salary.type === "mixed";
+    })
+    .map((person) => person.id);
+
+  const hoursMap = hourStaffIds.length
+    ? await getTeachersHours(hourStaffIds, month)
+    : new Map();
+
+  let amount = new Decimal(0);
+
+  for (const person of staff) {
+    const salary = salaries.get(person.id);
+    const usesHours = salary.type === "hourly" || salary.type === "mixed";
+    const hours = usesHours ? (hoursMap.get(person.id)?.hours ?? 0) : 0;
+
+    amount = amount.plus(computeSalary(salary, hours).amount);
+  }
+
+  return { amount, staffCount: staff.length };
 };
 
 // ─────────────────────────────────────────────
@@ -630,6 +772,7 @@ module.exports = {
   regenerateEntry,
   serializeEntry,
   generateForMonth,
+  computeAssignedPayroll,
   getEntries,
   getStaffEntries,
   cancelEntry,

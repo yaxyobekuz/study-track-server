@@ -439,29 +439,29 @@ const closeSalary = async (id, endMonthInput) => {
 };
 
 /**
- * O'chirish — FAQAT hech qanday oylik majburiyat shakllanmagan bo'lsa.
- * Aks holda yopiladi (tarif biriktirmasi bilan bir xil qoida).
+ * QOIDANI O'CHIRISH — SHARTSIZ.
+ *
+ * ⚠️ SHAKLLANTIRILGAN MAJBURIYATGA QARALMAYDI va bu XAVFSIZ, chunki
+ * `PayrollEntry` bu qatorga ISHORA QILMAYDI: `staffSalary_id` degan
+ * ustun yo'q, summa ham, stavka ham, norma ham, formula ham majburiyat
+ * ichiga MUHRLANGAN (`amount`, `hourlyRate`, `hourNorm`, `salaryType`,
+ * `hoursSnapshot`). Ya'ni qoida o'chsa ham vedomost, to'lov taqsimoti va
+ * hisobot avvalgidek o'qiladi — hech qayerda "otasiz" summa qolmaydi.
+ *
+ * Ilgari bu yerda "majburiyat bor — o'chirib bo'lmaydi, yoping" degan
+ * to'siq turardi. U hech qanday ma'lumotni himoya qilmasdi, faqat XATO
+ * KIRITILGAN qoidani (noto'g'ri xodim, noto'g'ri summa, noto'g'ri oy)
+ * abadiy ro'yxatda qoldirardi. Xato yozuvni tozalash — foydalanuvchining
+ * qarori.
+ *
+ * ⚠️ O'CHIRISH KELAJAKKA TA'SIR QILADI: qoida yo'q bo'lsa, keyingi
+ * shakllantirishda bu xodimga majburiyat YOZILMAYDI (`skipped.noSalary`).
+ * Oylik shunchaki o'zgargan bo'lsa, o'chirish emas — qoidani YOPIB, yangi
+ * davr ochish kerak (`closeSalary`).
  */
 const deleteSalary = async (id) => {
   const row = await prisma.staffSalary.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Oylik qoidasi topilmadi");
-
-  const used = await prisma.payrollEntry.count({
-    where: {
-      staffId: row.staffId,
-      month: {
-        gte: row.startMonth,
-        ...(row.endMonth != null ? { lte: row.endMonth } : {}),
-      },
-    },
-  });
-
-  if (used > 0) {
-    throw new BadRequestError(
-      `Bu davr uchun ${used} ta oylik majburiyati shakllantirilgan — ` +
-        "o'chirib bo'lmaydi. Qoidani yoping.",
-    );
-  }
 
   await prisma.staffSalary.delete({ where: { id } });
   return { message: "Oylik qoidasi o'chirildi" };

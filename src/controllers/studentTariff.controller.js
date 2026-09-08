@@ -31,6 +31,15 @@ const bulkAssign = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: result });
 });
 
+/**
+ * Standart tarifni BARCHA o'quvchilarga qo'llash — massaviy amal, shuning
+ * uchun 201 emas, 200: yangi resurs emas, holat o'zgarishi qaytadi.
+ */
+const applyDefaultTariff = asyncHandler(async (req, res) => {
+  const result = await studentTariffService.applyDefaultToAll(req.body, req.user.id);
+  res.json({ success: true, data: result });
+});
+
 const updateAssignment = asyncHandler(async (req, res) => {
   const assignment = await studentTariffService.updateAssignment(
     req.params.id,
@@ -67,6 +76,7 @@ module.exports = {
   getAssignment,
   createAssignment,
   bulkAssign,
+  applyDefaultTariff,
   updateAssignment,
   closeAssignment,
   changeTariff,

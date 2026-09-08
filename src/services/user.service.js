@@ -12,6 +12,10 @@ const logger = require("../utils/logger");
 const { hashPassword, matchPassword } = require("../utils/password");
 const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
+// Yangi o'quvchiga standart tarifni biriktirish uchun — biriktirish
+// mantig'i YAGONA nuqtada (`studentTariff.service.js`).
+const { applyDefaultForStudent } = require("./studentTariff.service");
+const { getFinanceSettings } = require("./settings.service");
 const { ROLES, WORK_TIME_SOURCE } = require("../utils/constants");
 const {
   allRoles,
@@ -21,7 +25,7 @@ const {
   hasPermission,
   PERMISSIONS,
 } = require("../utils/permissions");
-const { currentDayDate } = require("../helpers/month.helpers");
+const { currentDayDate, currentMonthKey } = require("../helpers/month.helpers");
 const { normalizePhone, formatPhoneUz } = require("../helpers/phone.helpers");
 const {
   getScheduleWorkTimes,
@@ -738,6 +742,12 @@ async function createUser(data, actorId, actor = null) {
     lastName,
   });
 
+  // ⚠️ TRANZAKSIYADAN OLDIN o'qiladi: `getFinanceSettings()` singletonni
+  // upsert qiladi va uni tranzaksiya ichida chaqirish boshqa ulanishda
+  // yozish demakdir. O'quvchi bo'lmasa so'rov umuman qilinmaydi.
+  const defaultTariffId =
+    role === "student" ? (await getFinanceSettings()).defaultTariffId : null;
+
   let created;
   try {
     created = await prisma.$transaction(async (tx) => {
@@ -788,6 +798,26 @@ async function createUser(data, actorId, actor = null) {
             reason: "O'quvchi yaratilganda avtomatik ochildi",
           },
         });
+
+        // ⚠️ STANDART TARIF — o'qish davri bilan BITTA tranzaksiyada.
+        //
+        // Davr ochilishi bilan o'quvchi "o'qiyapti" bo'lib qoladi, lekin
+        // tarifi bo'lmasa unga hisob-faktura YOZILMAYDI va u qarzdorlar
+        // registrida umuman ko'rinmaydi. Ikkalasi bir vaqtda yozilmasa,
+        // aynan shu jim bo'shliq paydo bo'lardi.
+        //
+        // Sozlamada standart tarif belgilanmagan bo'lsa — tegilmaydi
+        // (tizimning avvalgi xatti-harakati saqlanadi, tarif qo'lda
+        // biriktiriladi).
+        if (defaultTariffId) {
+          await applyDefaultForStudent(
+            tx,
+            user.id,
+            defaultTariffId,
+            currentMonthKey(),
+            actorId ?? user.id,
+          );
+        }
       }
 
       return user;

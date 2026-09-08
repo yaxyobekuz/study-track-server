@@ -2164,6 +2164,22 @@ model FinanceSettings {
   // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
   firstInvoiceMonth Int? @map("first_invoice_month")
 
+  // STANDART TARIF — yangi o'quvchi yaratilganda unga AVTOMAT biriktiriladi.
+  //
+  // ⚠️ soft ref → platform.Tariff. FK YO'Q va bo'lishi ham mumkin emas:
+  // tarif katalogi PLATFORMA schema'sida, bu jadval esa FILIAL schema'sida
+  // (`StudentTariff.tariffId` bilan bir xil uslub).
+  //
+  // ⚠️ Bu NARX EMAS, KO'RSATKICH. Narx avvalgidek `TariffVersion` da davr
+  // bilan yotadi — standart tarif narxi o'zgarsa, bu maydonga tegilmaydi.
+  //
+  // null → avtomat biriktirish yo'q (tizimning avvalgi xatti-harakati:
+  // yangi o'quvchi tarifsiz qolar va unga hisob-faktura yozilmasdi).
+  //
+  // ⚠️ HAR FILIALDA O'ZINIKI: katalog umumiy bo'lsa ham, qaysi tarif
+  // "standart" ekani filialning qarori (Bog'chada boshqa, maktabda boshqa).
+  defaultTariffId String? @map("default_tariff_id") @db.Char(24)
+
   // Yangi hisob-faktura chiqqanda o'quvchining oldindan to'langan qoldig'i
   // avtomatik yechilsinmi. O'chirilsa — depozit qo'lda qo'llanadi.
   depositAutoApply Boolean @default(true) @map("deposit_auto_apply")
