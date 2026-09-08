@@ -25,6 +25,7 @@ const SECTIONS = {
   CLUBS: "clubs",
   SCHEDULES: "schedules",
   PLANNER: "planner",
+  SUBSTITUTIONS: "substitutions",
   TOPICS: "topics",
   CLASSES: "classes",
   SUBJECTS: "subjects",
@@ -431,6 +432,29 @@ const PERMISSION_SECTIONS = [
     ],
   },
   {
+    // DARS O'RINBOSARLIGI — "kim kimning o'rniga dars o'tadi".
+    //
+    // ⚠️ ATAMA: "almashtirish" EMAS. Bu so'z tizimda FILIAL almashtirishni
+    // bildiradi (yuqoridagi `branches` izohiga qarang), shuning uchun bu
+    // yerdagi yorliqlarda "o'rinbosar" ishlatiladi.
+    //
+    // Amallar ATAYLAB mayda: o'rinbosarlik BIR VAQTDA uch narsani
+    // harakatlantiradi — jurnal huquqini, jarima mas'uliyatini va OYLIKNI.
+    // Shuning uchun uni yaratish "jadvalni tahrirlash" bilan bir xil
+    // og'irlikdagi amal emas, alohida qaror.
+    //
+    // ⚠️ Bekor qilish ALOHIDA: u o'tgan davr uchun soatni egasiga
+    // qaytaradi, ya'ni pulga tegadi.
+    key: SECTIONS.SUBSTITUTIONS,
+    label: "Dars o'rinbosarligi",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "create", label: "O'rinbosar biriktirish" },
+      { key: "cancel", label: "Bekor qilish" },
+    ],
+  },
+  {
     // XODIMLAR OYLIGI — chiqim tomonining o'quvchi registriga o'xshashi.
     // Amallar ATAYLAB mayda: qoida biriktirish (kimga qancha oylik) va
     // to'lash (pulni kassadan chiqarish) — ikki xil mas'uliyat. Buxgalter
@@ -441,6 +465,10 @@ const PERMISSION_SECTIONS = [
     actions: [
       A.view,
       { key: "assign", label: "Oylik belgilash" },
+      // DARS SOATI HISOBOTI — `view` DAN ALOHIDA. `payroll.view` qarzdorlik
+      // registri: "kimga qancha qarzdormiz". Bu esa BUTUN SHTATNING dars
+      // yuklamasi va jonli maosh prognozi — boshqa savol, boshqa qaror.
+      { key: "hours", label: "Dars soatlari hisoboti" },
       { key: "generate", label: "Oylik shakllantirish" },
       { key: "pay", label: "To'lash" },
       { key: "void", label: "To'lovni bekor qilish" },

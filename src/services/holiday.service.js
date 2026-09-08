@@ -90,6 +90,127 @@ async function isHoliday(date) {
   return { isHoliday: false, holiday: null };
 }
 
+/**
+ * BAYRAM KUNLARI TO'PLAMI — oraliq uchun, BITTA so'rov bilan.
+ *
+ * ⚠️ NIMA UCHUN `isHoliday()` YETMAYDI: u har chaqiruvda butun `holidays`
+ * jadvalini o'qiydi. Oylik dars soatini hisoblash bir oyda 31 kunni, 40 ta
+ * o'qituvchi uchun esa mingdan ortiq chaqiruvni bildirardi. Bu yerda jadval
+ * BIR MARTA o'qiladi va oraliq kunlari bo'ylab yopiladi.
+ *
+ * ⚠️ TAYMZONA: bu funksiya `@db.Date` uslubida — kun UTC yarim tunida deb
+ * qaraladi va faqat `getUTC*` bilan o'qiladi (`month.helpers.js` qoidasi).
+ * `isHoliday()` esa server-lokal `setHours(0,0,0,0)` ishlatadi. Ikkalasi
+ * UTC+5 hostda bir xil javob beradi; bu funksiya esa host taymzonasidan
+ * QAT'I NAZAR bir xil javob beradi — oylik summasi muhitga qarab
+ * o'zgarmasligi uchun aynan shu kerak.
+ *
+ * ⚠️ Takrorlanuvchi bayramda oy raqami 0 DAN BOSHLANADI (`getMonth()` bilan
+ * solishtirilgani uchun) — `isHoliday()` dagi bilan bir xil, shuning uchun
+ * shu yerda ham `getUTCMonth()` bilan solishtiriladi. 1 dan boshlanuvchi
+ * `YYYYMM` kaliti bilan aralashtirilsa har bir takrorlanuvchi bayram bir
+ * oyga siljib ketardi.
+ *
+ * @param {Date} from - oraliq boshlanishi (UTC yarim tun, INKLYUZIV)
+ * @param {Date} to - oraliq tugashi (UTC yarim tun, INKLYUZIV)
+ * @returns {Promise<Set<string>>} "YYYY-MM-DD" kalitlari
+ */
+async function buildHolidaySet(from, to) {
+  const set = new Set();
+  if (!(from instanceof Date) || !(to instanceof Date) || from > to) return set;
+
+  const holidays = await prisma.holiday.findMany({ where: { isActive: true } });
+  if (holidays.length === 0) return set;
+
+  // Sana → kun kaliti; `lessonHours.js` dagi `dayKey` bilan AYNAN bir xil
+  // shakl (u sof helper, bu service — bog'lanish bir tomonlama bo'lishi
+  // uchun nusxa emas, mustaqil ifoda).
+  const keyOf = (date) =>
+    `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-` +
+    `${String(date.getUTCDate()).padStart(2, "0")}`;
+
+  // Saqlangan qiymatni KUNGA keltiradi: `single`/`range` sanalari vaqt
+  // komponenti bilan yozilgan bo'lishi mumkin (`new Date(input)`).
+  const dayOf = (value) => {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  };
+
+  const inRecurringWindow = (date, start, end) => {
+    const month = date.getUTCMonth();
+    const day = date.getUTCDate();
+
+    // Yil oshib ketadigan oyna (dekabr → yanvar)
+    if (start.month > end.month) {
+      return (
+        month > start.month ||
+        month < end.month ||
+        (month === start.month && day >= start.day) ||
+        (month === end.month && day <= end.day)
+      );
+    }
+
+    const afterStart = month > start.month || (month === start.month && day >= start.day);
+    const beforeEnd = month < end.month || (month === end.month && day <= end.day);
+    return afterStart && beforeEnd;
+  };
+
+  const cursor = new Date(
+    Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()),
+  );
+  const last = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate());
+
+  while (cursor.getTime() <= last) {
+    const stamp = cursor.getTime();
+
+    for (const holiday of holidays) {
+      if (holiday.type === "single" && holiday.date) {
+        if (dayOf(holiday.date) === stamp) {
+          set.add(keyOf(cursor));
+          break;
+        }
+      }
+
+      if (holiday.type === "range" && holiday.startDate && holiday.endDate) {
+        const start = dayOf(holiday.startDate);
+        const end = dayOf(holiday.endDate);
+        if (start != null && end != null && stamp >= start && stamp <= end) {
+          set.add(keyOf(cursor));
+          break;
+        }
+      }
+
+      if (holiday.type === "recurring") {
+        const single = holiday.recurringDate;
+        if (
+          single?.month !== undefined &&
+          single.month === cursor.getUTCMonth() &&
+          single.day === cursor.getUTCDate()
+        ) {
+          set.add(keyOf(cursor));
+          break;
+        }
+
+        const start = holiday.recurringStartDate;
+        const end = holiday.recurringEndDate;
+        if (
+          start?.month !== undefined &&
+          end?.month !== undefined &&
+          inRecurringWindow(cursor, start, end)
+        ) {
+          set.add(keyOf(cursor));
+          break;
+        }
+      }
+    }
+
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return set;
+}
+
 // createdBy — soft ref (FK emas), qo'lda yuklaymiz
 async function attachCreators(holidays) {
   const creatorIds = [
@@ -272,6 +393,7 @@ async function checkDate(date) {
 }
 
 module.exports = {
+  buildHolidaySet,
   getHolidays,
   createHoliday,
   updateHoliday,

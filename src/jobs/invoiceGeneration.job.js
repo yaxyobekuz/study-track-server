@@ -116,7 +116,14 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
             `${payrollSummary.created} ta oylik majburiyati, ` +
             `mavjud ${payrollSummary.skipped.alreadyExists}, ` +
             `arxivlangan ${payrollSummary.skipped.archived}, ` +
-            `summa ${payrollSummary.totalAmount}`,
+            // ⚠️ Soatbay uchun ikkita YANGI sabab ham logga chiqadi: oy
+            // yopilmagani (`monthOpen`) va soat yo'qligi (`noHours`).
+            // Jim qolsa, "nega bu odamga oylik yozilmadi" degan savolga
+            // javob faqat kodni o'qib topilardi.
+            `oy ochiq ${payrollSummary.skipped.monthOpen}, ` +
+            `soatsiz ${payrollSummary.skipped.noHours}, ` +
+            `summa ${payrollSummary.totalAmount} ` +
+            `(soatdan ${payrollSummary.hoursAmount}, ${payrollSummary.hoursTotal} soat)`,
         );
       }
     } catch (error) {

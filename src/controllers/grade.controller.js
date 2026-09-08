@@ -9,6 +9,17 @@ const prisma = require("../config/prisma");
 
 // Services
 const { isHoliday } = require("../services/holiday.service");
+const {
+  resolveLessonAccess,
+  getSubstitutionCells,
+  effectiveTeacherOf,
+} = require("../helpers/teacherAccess");
+// ⚠️ TOSHKENT KUNI. `new Date()` ni to'g'ridan-to'g'ri berib bo'lmaydi:
+// `teacherAccess` sanani FAQAT `getUTC*` bilan o'qiydi, jadval esa
+// `getCurrentDayUz()` (Toshkent devor-soati) bilan olinadi. Toshkentda
+// 00:00–05:00 orasida UTC hali KECHAGI kun bo'ladi va ikkalasi boshqa-boshqa
+// hafta kunini ko'rsatib qolardi.
+const { currentDayDate } = require("../helpers/month.helpers");
 const ExcelService = require("../services/excel.service");
 
 const {
@@ -99,6 +110,18 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
     ),
   ];
 
+  // ⚠️ O'RINBOSARLIK — hisobot amalda darsga chiqqan odamni ko'rsatishi
+  // kerak. Kataklar BITTA so'rov bilan olinadi va o'rinbosarlarning ismi
+  // ham quyidagi `teachers` so'roviga qo'shiladi: aks holda `teacherMap`
+  // da topilmay, qator jimgina tushib qolardi.
+  const missingSubstitutionCells = await getSubstitutionCells(currentDayDate());
+
+  for (const cell of missingSubstitutionCells.values()) {
+    if (!lessonTeacherIds.includes(cell.substituteTeacherId)) {
+      lessonTeacherIds.push(cell.substituteTeacherId);
+    }
+  }
+
   const [classes, subjects, teachers] = await Promise.all([
     scheduleClassIds.length
       ? prisma.class.findMany({
@@ -184,7 +207,21 @@ const getMissingGradesToday = asyncHandler(async (req, res) => {
       // Agar baho olmagan o'quvchilar bo'lsa
       if (missingStudents.length > 0) {
         const lessonSubject = subjectMap.get(lesson.subjectId);
-        const lessonTeacher = teacherMap.get(lesson.teacherId);
+
+        // ⚠️ Hisobot AMALDA darsga chiqqan odamni ko'rsatadi. Aks holda
+        // boshliq kasal bo'lib darsini bergan o'qituvchini "baho qo'ymadi"
+        // deb qidirib yurardi — jarima joblari bilan bir xil qoida.
+        const effective = effectiveTeacherOf(
+          {
+            classId: schedule.classId,
+            day: schedule.day,
+            order: lesson.order,
+            teacherId: lesson.teacherId,
+          },
+          missingSubstitutionCells,
+        );
+
+        const lessonTeacher = teacherMap.get(effective.teacherId);
         if (!lessonTeacher) continue;
 
         const teacherId = lessonTeacher.id;
@@ -522,16 +559,28 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  // Check if teacher has this subject in today's schedule and validate lessonOrder
-  const teacherLessons = todaySchedule.lessons.filter(
-    (s) => s.subjectId === subjectId && s.teacherId === req.user.id,
-  );
+  // DARSGA HUQUQ — o'z darsi YOKI o'rinbosarlik.
+  //
+  // ⚠️ Qoida `helpers/teacherAccess.js` da, bu yerda EMAS. U ikki tomonga
+  // ishlaydi: o'rinbosarga huquq ochadi va dars egasidan AYNAN o'sha dars
+  // uchun huquqni oladi (u ko'rish rejimida qoladi). Ilgari bu yerda oddiy
+  // `teacherId === req.user.id` filtri turardi — u o'rinbosarni bilmasdi.
+  const access = await resolveLessonAccess({
+    actor: req.user,
+    classId,
+    subjectId,
+    date: currentDayDate(),
+    lessons: todaySchedule.lessons,
+  });
 
-  if (teacherLessons.length === 0) {
+  if (!access.allowed) {
     throw new ForbiddenError(
-      `Bugun (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
+      access.message ||
+        `Bugun (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
     );
   }
+
+  const teacherLessons = access.lessons;
 
   // Validate lessonOrder if provided
   const parsedLessonOrder = lessonOrder ? Number(lessonOrder) : null;
@@ -541,6 +590,16 @@ const createGrade = asyncHandler(async (req, res) => {
   );
 
   if (!lessonExists) {
+    // ⚠️ AYNAN SHU DARS O'RINBOSARGA BERILGAN bo'lsa, sabab BOSHQA va
+    // xabar ham boshqa bo'lishi kerak. "Dars tartibi noto'g'ri" degan
+    // umumiy xabar o'qituvchini "jadval buzilibdi" deb o'ylashga majbur
+    // qilardi — aslida esa u ataylab ko'rish rejimiga o'tkazilgan.
+    const handedOver = access.blocked.find((l) => l.order === finalLessonOrder);
+
+    if (handedOver) {
+      throw new ForbiddenError(access.blockedMessage);
+    }
+
     throw new BadRequestError(
       `Dars tartibi noto'g'ri. Sizning darslaringiz: ${teacherLessons.map((l) => l.order).join(", ")}`,
     );
@@ -932,10 +991,24 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   const teacherSubjects = [];
   const subjectCountMap = {}; // Track how many times each subject appears
 
+  // ⚠️ O'RINBOSARLIK SHU RO'YXATGA HAM TA'SIR QILADI. Yozish huquqi
+  // `createGrade` da ochilib, ro'yxat esa eski filtrda qolsa, o'rinbosar
+  // "baho qo'yish" ekranini BO'SH ko'rardi — huquqi bor, lekin fanni
+  // tanlay olmaydi. Shu sababli ikkala joyda ham bir xil hal qiluvchi.
+  const access = await resolveLessonAccess({
+    actor: req.user,
+    classId,
+    date: currentDayDate(),
+    lessons: todaySchedule.lessons,
+  });
+
+  // Ruxsat etilgan dars tartiblari — pastdagi ikkala siklda ishlatiladi
+  const allowedOrders = new Set(access.lessons.map((l) => l.order));
+
   // Get unique subject IDs for progress lookup
   const teacherSubjectIds = new Set();
   todaySchedule.lessons.forEach((item) => {
-    if (item.teacherId === req.user.id) {
+    if (allowedOrders.has(item.order)) {
       teacherSubjectIds.add(item.subjectId);
     }
   });
@@ -965,7 +1038,7 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   }
 
   todaySchedule.lessons.forEach((item) => {
-    if (item.teacherId === req.user.id) {
+    if (allowedOrders.has(item.order)) {
       const subjectId = item.subjectId;
 
       // Increment count for this subject

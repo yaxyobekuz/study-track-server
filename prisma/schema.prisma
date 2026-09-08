@@ -299,10 +299,42 @@ enum AccountEntryType {
   damage_payment_void // − undiruv bekor qilindi
 }
 
-// Oylik qanday hisoblanadi. Hozircha faqat `fixed` — soatbay, darsbay va
-// guruh tushumidan foiz kelajakda qo'shiladi (baza shunga tayyor).
+// Oylik qanday hisoblanadi.
+//
+// ⚠️ TUR — QOIDANING SHAKLI, majburiyatning summasi EMAS. Summa har oy
+// `PayrollEntry` da muhrlanadi; bu yerda faqat "qanday hisoblanadi" turadi.
+//
+//   fixed  — oyiga qat'iy summa. Dars soati hisobga OLINMAYDI.
+//   hourly — faqat o'tilgan akademik soat × stavka. Bazaviy summa yo'q.
+//   mixed  — bazaviy oylik + normadan ORTIQCHA soat × stavka.
+//
+// `hourly`/`mixed` uchun soat DARS JADVALIDAN hisoblanadi
+// (`lessonHours.service.js`), guruh tushumidan foiz esa hali yo'q.
 enum SalaryType {
   fixed
+  hourly
+  mixed
+}
+
+// DARS O'RINBOSARLIGI holati.
+//
+// ⚠️ "Almashtirish" so'zi bu domenda BAND — u FILIAL almashtirishni
+// bildiradi (`auth.service.js`, `security.service.js`). Shuning uchun bu
+// yerda va butun modulda atama "o'rinbosar" / "dars o'rniga chiqish".
+enum SubstitutionStatus {
+  active // amalda: huquq ochiq, soat o'rinbosarga yoziladi
+  cancelled // bekor qilingan: huquq yopiq, soat egasiga qaytadi
+}
+
+// O'qituvchi nima uchun darsga chiqa olmadi — TOIFA, erkin izoh emas.
+// Toifasiz "bu oyda necha soat kasallik sababli ko'chirildi" degan savolga
+// javob bo'lmasdi (o'qish davridagi `leaveReason` bilan bir xil mulohaza).
+enum SubstitutionReason {
+  illness // kasallik
+  business_trip // xizmat safari
+  personal // shaxsiy sabab
+  training // malaka oshirish / seminar
+  other // boshqa (izoh majburiy bo'ladi)
 }
 
 // Oylik majburiyatining holati — `InvoiceStatus` bilan bir xil.
@@ -339,13 +371,13 @@ enum AllocationSource {
 // "username → qaysi filial" degan yagona global indeks.
 
 model User {
-  id               String    @id @db.Char(24)
-  username         String    @unique
+  id               String         @id @db.Char(24)
+  username         String         @unique
   password         String
-  plainPassword    String?   @map("plain_password")
-  firstName        String    @map("first_name")
-  lastName         String?   @map("last_name")
-  telegramIds      String[]  @map("telegram_ids")
+  plainPassword    String?        @map("plain_password")
+  firstName        String         @map("first_name")
+  lastName         String?        @map("last_name")
+  telegramIds      String[]       @map("telegram_ids")
   role             String // Role.value ga ishora (FK emas, service validatsiya)
   // QO'SHIMCHA ROLLAR — bitta odam bir nechta rolda bo'lishi mumkin
   // (o'qituvchi + ma'muriyat). `role` ASOSIY bo'lib qoladi va uning
@@ -362,32 +394,32 @@ model User {
   // bo'lishi mumkin. Shu sababli `IDENTITY_FIELDS` ga KIRMAYDI.
   //
   // ⚠️ Faqat OWNER tahrirlaydi (`user.routes.js`).
-  extraRoles       String[]  @default([]) @map("extra_roles")
+  extraRoles       String[]       @default([]) @map("extra_roles")
   // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
-  permissions      String[]  @default([]) @map("permissions")
-  isActive         Boolean   @default(true) @map("is_active")
+  permissions      String[]       @default([]) @map("permissions")
+  isActive         Boolean        @default(true) @map("is_active")
   gender           Gender?
-  coinBalance      Int       @default(0) @map("coin_balance")
-  penaltyPoints    Int       @default(0) @map("penalty_points")
-  isArchived       Boolean   @default(false) @map("is_archived")
-  archivedAt       DateTime? @map("archived_at")
+  coinBalance      Int            @default(0) @map("coin_balance")
+  penaltyPoints    Int            @default(0) @map("penalty_points")
+  isArchived       Boolean        @default(false) @map("is_archived")
+  archivedAt       DateTime?      @map("archived_at")
   // { coinBalance, penaltyPoints } — arxivlashdan oldingi zaxira
-  archiveSnapshot  Json?     @map("archive_snapshot")
+  archiveSnapshot  Json?          @map("archive_snapshot")
   // Ish vaqti QAYERDAN olinadi — `WorkTimeSource` izohiga qarang.
   // `schedule` bo'lganda quyidagi uch maydon va `weeklySchedule` DAVOMATDA
   // ishlatilmaydi (o'chirilmaydi ham: manbani qaytarganda qo'lda kiritilgan
   // vaqt joyida turishi kerak).
   workTimeSource   WorkTimeSource @default(manual) @map("work_time_source")
-  workStartTime    String?   @map("work_start_time")
-  workEndTime      String?   @map("work_end_time")
-  workDays         Int[]     @map("work_days")
+  workStartTime    String?        @map("work_start_time")
+  workEndTime      String?        @map("work_end_time")
+  workDays         Int[]          @map("work_days")
   // Map<hafta_kuni, { startTime, endTime }>
-  weeklySchedule   Json      @default("{}") @map("weekly_schedule")
-  premiumIsActive  Boolean   @default(false) @map("premium_is_active")
-  premiumExpiresAt DateTime? @map("premium_expires_at")
-  profilePicture   String?   @map("profile_picture") @db.Char(24)
-  emojiBadgeId     String?   @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
-  displayName      String?   @map("display_name")
+  weeklySchedule   Json           @default("{}") @map("weekly_schedule")
+  premiumIsActive  Boolean        @default(false) @map("premium_is_active")
+  premiumExpiresAt DateTime?      @map("premium_expires_at")
+  profilePicture   String?        @map("profile_picture") @db.Char(24)
+  emojiBadgeId     String?        @map("emoji_badge_id") // soft ref EmojiConfig (FK emas)
+  displayName      String?        @map("display_name")
   // TELEFON RAQAMLARI — o'quvchi va ota-ona. Ikkalasi ixtiyoriy:
   // eski qatorlarda bo'sh turadi va profildan qo'lda to'ldiriladi.
   // ⚠️ Tahrirlash ALOHIDA ruxsat (`users.phone`), `users.update` EMAS:
@@ -395,16 +427,16 @@ model User {
   // owner uni kimga berishni o'zi hal qiladi. O'quvchi o'z raqamini
   // O'ZGARTIRA OLMAYDI (`updateSelfProfile` bu maydonlarni qabul qilmaydi).
   // Identifikatsiya maydoni — barcha filiallarga tarqaladi (IDENTITY_FIELDS).
-  phone            String?   @map("phone")
-  parentPhone      String?   @map("parent_phone")
+  phone            String?        @map("phone")
+  parentPhone      String?        @map("parent_phone")
   // Kim qo'shgan. ⚠️ Bu AUDIT maydoni emas, RUXSAT maydoni: o'qituvchi
   // faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
   // (`assertCanManage`, user.service.js). Eski qatorlarda `null` —
   // ular "hech kim qo'shmagan", ya'ni o'qituvchiga tegishli emas.
-  createdBy        String?   @map("created_by") @db.Char(24)
-  nameColor        String?   @map("name_color")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  createdBy        String?        @map("created_by") @db.Char(24)
+  nameColor        String?        @map("name_color")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
 
   profileImage    Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
   classes         UserClass[]
@@ -591,6 +623,97 @@ model ScheduleSettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("schedule_settings")
+}
+
+// ─────────────────────────────────────────────
+// DARS O'RINBOSARLIGI (dars o'rniga chiqish)
+// ─────────────────────────────────────────────
+//
+// O'qituvchi kasal bo'lib qoldi — uning darslarini boshqa o'qituvchi o'tadi.
+// Bu bitta yozuvda UCH narsani hal qiladi:
+//
+//   1. JADVAL     — kim kimning o'rniga, qaysi kunlar, qaysi darslar;
+//   2. HUQUQ      — o'rinbosarga AYNAN o'sha dars uchun jurnal ochiladi,
+//                   egasiga esa o'sha dars uchun yozish yopiladi;
+//   3. PUL        — soat egasidan AYIRILADI, o'rinbosarga QO'SHILADI.
+//
+// ⚠️ NIMA UCHUN ALOHIDA JADVAL, `ScheduleLesson.teacherId` NI O'ZGARTIRISH
+// EMAS: jadval — E'LON QILINGAN FAKT, butun maktab ko'radi va u kelasi
+// haftaga ham tegishli. Bir haftalik kasallik uchun uni tahrirlash
+// "kim aslida bu darsning o'qituvchisi" degan savolni yo'q qilardi va
+// o'rinbosarlik tugaganda kim qaytarishini hech kim bilmasdi.
+//
+// ⚠️ DARSGA `scheduleLessonId` BILAN ISHORA QILINMAYDI. `saveClassSchedule`
+// sinf jadvalini saqlaganda ScheduleLesson qatorlarini O'CHIRIB QAYTA
+// YARATADI — id'lar barqaror emas. Shuning uchun kalit
+// (classId, day, lessonOrder), ya'ni darsning JADVALDAGI O'RNI.
+model LessonSubstitution {
+  id String @id @db.Char(24)
+
+  // soft ref → User (role = teacher). FK YO'Q: xodim arxivlansa ham tarix
+  // va oylik dalili qolishi kerak (`StaffSalary` uslubi).
+  originalTeacherId   String @map("original_teacher_id") @db.Char(24)
+  substituteTeacherId String @map("substitute_teacher_id") @db.Char(24)
+
+  // KUN ANIQLIGIDA, INKLYUZIV: `toDate` — oxirgi o'rinbosarlik kuni.
+  // `StudentEnrollment` bilan bir xil qoida — `@db.Date`, faqat `getUTC*`.
+  fromDate DateTime @map("from_date") @db.Date
+  toDate   DateTime @map("to_date") @db.Date
+
+  reason SubstitutionReason @default(other)
+  note   String             @default("")
+
+  status       SubstitutionStatus @default(active)
+  cancelReason String             @default("") @map("cancel_reason")
+  cancelledAt  DateTime?          @map("cancelled_at")
+  cancelledBy  String?            @map("cancelled_by") @db.Char(24)
+
+  // Ikkala tomonning ismi — xodim o'chirilsa ham jurnal o'qilishi uchun.
+  teacherSnapshot Json @map("teacher_snapshot")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  items LessonSubstitutionItem[]
+
+  // Huquq tekshiruvi HAR BIR baho yozishda ishlaydi — sana bo'yicha indeks
+  // majburiy.
+  @@index([substituteTeacherId, status, fromDate])
+  @@index([originalTeacherId, status, fromDate])
+  @@index([status, fromDate, toDate])
+  @@map("lesson_substitutions")
+}
+
+// KO'CHIRILGAN AYNAN QAYSI DARS.
+//
+// Bir o'rinbosarlikda bir nechta sinf va bir nechta dars bo'lishi mumkin
+// ("3 ta sinfdagi 4 soatlik dars") — shuning uchun ro'yxat alohida jadvalda.
+//
+// Bitta qator = HAFTALIK jadvaldagi bitta katak. U davr ichidagi HAR BIR
+// mos hafta kuniga tarqaladi: `fromDate..toDate` oralig'idagi har bir
+// `day` kuni bitta o'tilgan dars beradi (bayram va yakshanba tashqarida).
+model LessonSubstitutionItem {
+  id             String @id @db.Char(24)
+  substitutionId String @map("substitution_id") @db.Char(24)
+
+  classId     String      @map("class_id") @db.Char(24)
+  subjectId   String      @map("subject_id") @db.Char(24)
+  day         ScheduleDay
+  lessonOrder Int         @map("lesson_order")
+
+  // { className, subjectName, startTime, endTime } — jadval qayta
+  // saqlansa ham jurnal o'qilishi uchun (`staffSnapshot` doktrinasi).
+  snapshot Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  substitution LessonSubstitution @relation(fields: [substitutionId], references: [id], onDelete: Cascade)
+
+  // Bitta o'rinbosarlikda bitta katak IKKI MARTA turolmaydi.
+  @@unique([substitutionId, classId, day, lessonOrder])
+  @@index([classId, day, lessonOrder])
+  @@map("lesson_substitution_items")
 }
 
 model TeacherAssignment {
@@ -2484,8 +2607,26 @@ model StaffSalary {
   // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
   staffId String @map("staff_id") @db.Char(24)
 
-  type   SalaryType @default(fixed)
-  amount Decimal    @db.Decimal(14, 2)
+  type SalaryType @default(fixed)
+
+  // BAZAVIY summa. Turga qarab ma'nosi o'zgaradi va service shuni tekshiradi:
+  //   fixed  → oylik summaning O'ZI
+  //   hourly → HAR DOIM 0 (soatbayda bazaviy qism yo'q)
+  //   mixed  → normagacha to'lanadigan qat'iy qism
+  amount Decimal @db.Decimal(14, 2)
+
+  // 1 AKADEMIK SOAT (= 1 dars) narxi. `hourly` va `mixed` uchun MAJBURIY,
+  // `fixed` uchun har doim null.
+  //
+  // ⚠️ Narx SHU YERDA, katalogda emas — `StaffSalary` ning butun mohiyati
+  // shu (tarifdan farqi: har xodimda o'z kelishuvi). Stavka o'zgarsa yangi
+  // DAVR ochiladi, mavjud qator tahrirlanmaydi.
+  hourlyRate Decimal? @map("hourly_rate") @db.Decimal(14, 2)
+
+  // OYLIK SOAT NORMASI — `mixed` uchun MAJBURIY, qolganlarida null.
+  // Shu normadan ortiq o'tilgan har bir soat `hourlyRate` bo'yicha
+  // qo'shimcha haq sifatida qo'shiladi.
+  monthlyHourNorm Int? @map("monthly_hour_norm")
 
   startMonth Int  @map("start_month")
   endMonth   Int? @map("end_month")
@@ -2514,8 +2655,37 @@ model PayrollEntry {
   staffId String @map("staff_id") @db.Char(24)
   month   Int // YYYYMM
 
+  // JAMI majburiyat — MUHRLANGAN. `baseAmount + hoursAmount` ga teng.
   amount     Decimal @db.Decimal(14, 2)
   paidAmount Decimal @default(0) @map("paid_amount") @db.Decimal(14, 2)
+
+  // ── SUMMA QANDAY CHIQQANI ────────────────
+  //
+  // ⚠️ Bu maydonlar TUSHUNTIRISH, ikkinchi haqiqat manbai EMAS: to'lov va
+  // hisobot faqat `amount` bilan ishlaydi. Lekin ularsiz "nega bu oy
+  // 4 800 000 chiqdi" degan savolga javob bo'lmasdi va o'qituvchi bilan
+  // har oy og'zaki kelishishga to'g'ri kelardi.
+  //
+  //   baseAmount  — qat'iy qism (fixed → to'liq oylik, mixed → bazaviy,
+  //                 hourly → 0)
+  //   hoursAmount — soatdan chiqqan pul (fixed → 0)
+  baseAmount  Decimal @default(0) @map("base_amount") @db.Decimal(14, 2)
+  hoursAmount Decimal @default(0) @map("hours_amount") @db.Decimal(14, 2)
+
+  // O'TILGAN AKADEMIK SOAT — o'rinbosarlik hisobga olingan holda:
+  // ko'chirib berilgani AYIRILADI, o'rniga chiqilgani QO'SHILADI.
+  hoursWorked Int @default(0) @map("hours_worked")
+  // Normadan ortiqchasi (`mixed`); `hourly` da 0, chunki u yerda norma yo'q.
+  extraHours  Int @default(0) @map("extra_hours")
+
+  // Qoidadan MUHRLANGAN nusxa — qoida keyin o'zgarsa ham bu qator o'qiladi.
+  hourlyRate Decimal? @map("hourly_rate") @db.Decimal(14, 2)
+  hourNorm   Int?     @map("hour_norm")
+
+  // Soat qayerdan chiqqani: { scheduledHours, substitutedOut, substitutedIn,
+  // teachingDays, byClass: [...], bySubject: [...] }. `staffSnapshot` bilan
+  // bir xil mulohaza — jadval keyin o'zgarsa ham dalil qoladi.
+  hoursSnapshot Json? @map("hours_snapshot")
 
   status     PayrollStatus @default(unpaid)
   salaryType SalaryType    @default(fixed) @map("salary_type")

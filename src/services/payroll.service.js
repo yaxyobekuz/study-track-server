@@ -10,6 +10,23 @@
  * umuman bekor qilinmaydi.
  *
  * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida.
+ *
+ * ── SOATBAY VA ARALASH REJIM ─────────────────
+ *
+ * `hourly`/`mixed` da summa DARS SOATIDAN chiqadi va soat oy davomida
+ * o'zgarib turadi (jadval tahrirlanadi, o'rinbosarlik qo'shiladi).
+ *
+ * ⚠️ SHUNING UCHUN ULAR FAQAT OY YOPILGANDAN KEYIN SHAKLLANTIRILADI.
+ * Cron har kuni 06:00 da ishlaydi va joriy oyni ham ko'radi; agar soatbay
+ * majburiyat oyning 3-kunida muhrlansa, u 3 kunlik soatni butun oy deb
+ * yozib qo'yardi — `amount` esa MUHRLANGAN, uni tahrirlaydigan endpoint
+ * yo'q. Cron `catchUpMonths` tufayli o'tgan oylarni ham ko'radi, ya'ni
+ * yopilgan oy ertasi kuni avtomatik shakllanadi.
+ *
+ * ⚠️ SOATI NOL bo'lgan SOATBAY xodimga majburiyat YOZILMAYDI. 0 so'mlik
+ * qator "to'langan" bo'lib turadi va registrni ifloslantiradi; ta'til oyi
+ * yoki hali dars biriktirilmagan o'qituvchi aynan shu holatga tushadi.
+ * Aralash rejimda esa bazaviy qism baribir to'lanadi — qator yoziladi.
  */
 
 const prisma = require("../config/prisma");
@@ -27,7 +44,14 @@ const {
   formatMonthKey,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
-const { resolveSalariesForMonth, STAFF_SELECT } = require("./staffSalary.service");
+const {
+  resolveSalariesForMonth,
+  STAFF_SELECT,
+  TYPE_LABELS,
+  formulaOf,
+} = require("./staffSalary.service");
+const { getTeachersHours } = require("./lessonHours.service");
+const { computeSalary } = require("../helpers/lessonHours");
 
 const STATUS_LABELS = {
   unpaid: "To'lanmagan",
@@ -46,8 +70,14 @@ const serializeEntry = (row, { staff } = {}) => {
     // Ortiqcha to'lov RAD ETILADI, shuning uchun manfiy bo'lmasligi kerak —
     // lekin himoya qavati qoladi
     debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
+    // ── SUMMA QANDAY CHIQQANI ──────────────
+    baseAmount: formatAmount(row.baseAmount),
+    hoursAmount: formatAmount(row.hoursAmount),
+    hourlyRate: formatAmount(row.hourlyRate),
     monthLabel: formatMonthKey(row.month),
     statusLabel: STATUS_LABELS[row.status] ?? row.status,
+    salaryTypeLabel: TYPE_LABELS[row.salaryType] ?? row.salaryType,
+    usesHours: row.salaryType === "hourly" || row.salaryType === "mixed",
     // Xodim arxivlangan/o'chirilgan bo'lishi mumkin — snapshot qutqaradi
     staff: staff ?? null,
     staffName: staff
@@ -70,7 +100,20 @@ const emptySummary = (month, reason) => ({
   eligible: 0,
   created: 0,
   totalAmount: "0.00",
-  skipped: { alreadyExists: 0, cancelled: 0, noSalary: 0, archived: 0 },
+  // Soatdan chiqqan pul — "qancha qismi dars soati uchun" degan savolga
+  // vedomostni ochmasdan javob beradi.
+  hoursAmount: "0.00",
+  hoursTotal: 0,
+  skipped: {
+    alreadyExists: 0,
+    cancelled: 0,
+    noSalary: 0,
+    archived: 0,
+    // ⚠️ Yangi sabab qo'shilsa SHU YERGA ham yoziladi, aks holda cron
+    // logi jimgina kam hisobot berardi.
+    monthOpen: 0,
+    noHours: 0,
+  },
   durationMs: 0,
 });
 
@@ -139,9 +182,30 @@ const generateForMonth = async (monthInput, options = {}) => {
     existing.filter((e) => e.status === "cancelled").map((e) => e.staffId),
   );
 
-  // 4 ── Qatorlarni yig'ish
+  // 4 ── DARS SOATI — faqat kerak bo'lganlar uchun, BITTA o'tishda.
+  //
+  // ⚠️ Fiksa xodimlar uchun so'rov umuman qilinmaydi: buxgalter va
+  // farroshning dars jadvali yo'q, ularni hisobga qo'shish har oy
+  // ma'nosiz ish bo'lardi.
+  const monthIsOpen = month >= currentMonthKey();
+
+  const hourStaffIds = staff
+    .filter((person) => {
+      const salary = salaries.get(person.id);
+      return salary && (salary.type === "hourly" || salary.type === "mixed");
+    })
+    .map((person) => person.id);
+
+  const hoursMap =
+    hourStaffIds.length > 0 && !monthIsOpen
+      ? await getTeachersHours(hourStaffIds, month)
+      : new Map();
+
+  // 5 ── Qatorlarni yig'ish
   const rows = [];
   let total = new Decimal(0);
+  let hoursTotalAmount = new Decimal(0);
+  let hoursTotal = 0;
 
   for (const person of staff) {
     if (existingIds.has(person.id)) {
@@ -156,13 +220,54 @@ const generateForMonth = async (monthInput, options = {}) => {
       continue;
     }
 
-    const amount = new Decimal(salary.amount);
-    total = total.plus(amount);
+    const usesHours = salary.type === "hourly" || salary.type === "mixed";
+
+    // ⚠️ OY YOPILMAGUNCHA SOATBAY MUHRLANMAYDI (fayl sarlavhasiga qarang).
+    if (usesHours && monthIsOpen) {
+      summary.skipped.monthOpen += 1;
+      continue;
+    }
+
+    const hoursRow = usesHours ? hoursMap.get(person.id) : null;
+    const hours = hoursRow?.hours ?? 0;
+
+    // ⚠️ SOATI YO'Q SOATBAYGA 0 SO'MLIK MAJBURIYAT YOZILMAYDI.
+    if (salary.type === "hourly" && hours <= 0) {
+      summary.skipped.noHours += 1;
+      continue;
+    }
+
+    // Formula YAGONA nuqtada — panel ham shuni chaqiradi
+    const money = computeSalary(salary, hours);
+
+    total = total.plus(money.amount);
+    hoursTotalAmount = hoursTotalAmount.plus(money.hoursAmount);
+    hoursTotal += usesHours ? hours : 0;
 
     rows.push({
       staffId: person.id,
       month,
-      amount,
+      amount: money.amount,
+      baseAmount: money.baseAmount,
+      hoursAmount: money.hoursAmount,
+      hoursWorked: usesHours ? hours : 0,
+      extraHours: money.extraHours,
+      hourlyRate: salary.hourlyRate ?? null,
+      hourNorm: salary.monthlyHourNorm ?? null,
+      // Dalil: summa qaysi jadvaldan chiqqani. Jadval keyin o'zgarsa ham
+      // qator o'qiladi (`staffSnapshot` doktrinasi).
+      hoursSnapshot: hoursRow
+        ? {
+            formula: formulaOf(salary),
+            scheduledHours: hoursRow.scheduledHours,
+            substitutedOutHours: hoursRow.substitutedOutHours,
+            substitutedInHours: hoursRow.substitutedInHours,
+            teachingDays: hoursRow.teachingDays,
+            weeklyHours: hoursRow.weeklyHours,
+            byClass: hoursRow.byClass,
+            bySubject: hoursRow.bySubject,
+          }
+        : null,
       salaryType: salary.type,
       staffSnapshot: {
         firstName: person.firstName,
@@ -176,13 +281,16 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   summary.created = rows.length;
   summary.totalAmount = formatAmount(total);
+  summary.hoursAmount = formatAmount(hoursTotalAmount);
+  summary.hoursTotal = hoursTotal;
   summary.dryRun = dryRun;
 
   if (!dryRun && rows.length > 0) {
     await prisma.payrollEntry.createMany({ data: rows, skipDuplicates: true });
     logger.info(
       `[payroll] ${formatMonthKey(month)}: ${rows.length} ta oylik majburiyati, ` +
-        `jami ${formatAmount(total)}`,
+        `jami ${formatAmount(total)} (soatdan ${formatAmount(hoursTotalAmount)}, ` +
+        `${hoursTotal} soat)`,
     );
   }
 
@@ -418,19 +526,65 @@ const regenerateEntry = async (id, reason, userId) => {
     );
   }
 
-  const amount = new Decimal(salary.amount);
+  // ⚠️ SOAT QAYTA HISOBLANADI, muhrlangan qiymat ko'chirilmaydi. Qayta
+  // shakllantirishning butun mohiyati shu: o'rinbosarlik kech kiritilgan
+  // yoki jadval to'g'rilangan bo'lsa, yangi qator YANGI haqiqatni yozishi
+  // kerak. Eskisini ko'chirsak, tugma bosilgani bilan hech narsa
+  // o'zgarmasdi va odam sababini tushunmasdi.
+  const usesHours = salary.type === "hourly" || salary.type === "mixed";
+
+  if (usesHours && entry.month >= currentMonthKey()) {
+    throw new BadRequestError(
+      "Soatbay majburiyat oy yakunlanmaguncha qayta shakllantirilmaydi — " +
+        "soat hali o'zgarishi mumkin",
+    );
+  }
+
+  const hoursRow = usesHours
+    ? (await getTeachersHours([entry.staffId], entry.month)).get(entry.staffId)
+    : null;
+
+  const hours = hoursRow?.hours ?? 0;
+
+  if (salary.type === "hourly" && hours <= 0) {
+    throw new BadRequestError(
+      `${formatMonthKey(entry.month)} da bu o'qituvchida dars soati yo'q — ` +
+        "majburiyatni qayta shakllantirmang, bekor qiling",
+    );
+  }
+
+  const money = computeSalary(salary, hours);
+  const amount = money.amount;
 
   logger.warn(
     `[payroll] Majburiyat qayta shakllantirildi: entry=${id} ` +
       `staff=${entry.staffId} oy=${entry.month} ` +
       `eski=${formatAmount(entry.amount)} yangi=${formatAmount(amount)} ` +
-      `eskiHolat=${entry.status} actor=${userId} sabab="${trimmed}"`,
+      `soat=${hours} eskiHolat=${entry.status} actor=${userId} sabab="${trimmed}"`,
   );
 
   const updated = await prisma.payrollEntry.update({
     where: { id },
     data: {
       amount,
+      baseAmount: money.baseAmount,
+      hoursAmount: money.hoursAmount,
+      hoursWorked: usesHours ? hours : 0,
+      extraHours: money.extraHours,
+      hourlyRate: salary.hourlyRate ?? null,
+      hourNorm: salary.monthlyHourNorm ?? null,
+      hoursSnapshot: hoursRow
+        ? {
+            formula: formulaOf(salary),
+            scheduledHours: hoursRow.scheduledHours,
+            substitutedOutHours: hoursRow.substitutedOutHours,
+            substitutedInHours: hoursRow.substitutedInHours,
+            teachingDays: hoursRow.teachingDays,
+            weeklyHours: hoursRow.weeklyHours,
+            byClass: hoursRow.byClass,
+            bySubject: hoursRow.bySubject,
+          }
+        : null,
       salaryType: salary.type,
       // To'lov yo'q (yuqorida tekshirildi) — holat har doim "unpaid"
       status: "unpaid",
