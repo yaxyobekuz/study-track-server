@@ -1098,11 +1098,15 @@ const getStudentRegistry = async (req) => {
         id: d.id,
         name: d.name,
         type: d.type,
+        isExclusive: d.isExclusive ?? false,
         valueLabel:
           d.type === "percent"
             ? `${Number(d.value)}%`
             : `${formatAmount(d.value)} so'm`,
       })),
+      // GRANT = isExclusive (grant/homiylik) chegirmasi bor o'quvchi —
+      // dashboard "grant vs to'lovchi" sanog'i shu bilan ajratiladi.
+      isGrant: discounts.some((d) => d.isExclusive),
       baseAmount: base != null ? formatAmount(base) : null,
       discountAmount: priced ? formatAmount(priced.discountAmount) : null,
       monthlyAmount: priced ? formatAmount(priced.amount) : null,
@@ -1126,6 +1130,182 @@ const getStudentRegistry = async (req) => {
       totalBalance: formatAmount(totalBalance),
       debtorCount,
     },
+  };
+};
+
+/**
+ * MOLIYA BOSH SAHIFASI (dashboard) — bir oy uchun butun maktabning moliyaviy
+ * manzarasi: o'quvchi sanog'i (jami / grant / to'lovchi), pul (kutilgan /
+ * yig'ilgan / qarz / depozit), sinf va yo'nalish kesimi.
+ *
+ * ⚠️ SANOQ JONLI o'quvchidan, PUL esa hisob-fakturadan olinadi. Ikkalasi
+ * boshqa-boshqa manba: oy hali shakllantirilmagan bo'lsa ham "500 o'quvchi,
+ * 50 grant" ko'rinishi kerak (pul 0 bo'ladi). Invoice snapshot'iga tayansak,
+ * shakllantirmagan oyda ro'yxat bo'sh qolib, o'quvchilar "yo'q" bo'lib
+ * ko'rinardi.
+ *
+ * GRANT = isExclusive (grant/homiylik) chegirmasi shu oyda amal qiladigan
+ * o'quvchi. Sinf — o'quvchining JONLI birlamchi sinfi (`classes[0]`), invoice
+ * snapshot'i emas: shunda sinfni bosganda ochiladigan ro'yxat (registr,
+ * `classId` bo'yicha) aynan shu sanoq bilan mos keladi.
+ *
+ * @param {number|string} monthInput
+ * @returns {Promise<object>}
+ */
+const getOverviewDashboard = async (monthInput) => {
+  const month = monthInput ? parseMonthKey(monthInput, "Oy") : currentMonthKey();
+
+  const students = await prisma.user.findMany({
+    where: { role: ROLES.STUDENT, isArchived: false },
+    select: {
+      id: true,
+      classes: { select: { class: { select: { id: true, name: true } } } },
+    },
+  });
+  const ids = students.map((s) => s.id);
+
+  const emptyMoney = {
+    expected: formatAmount(0),
+    collected: formatAmount(0),
+    debt: formatAmount(0),
+    deposits: formatAmount(0),
+  };
+
+  if (ids.length === 0) {
+    return {
+      month,
+      monthLabel: formatMonthKey(month),
+      counts: { totalStudents: 0, grantStudents: 0, payingStudents: 0 },
+      money: emptyMoney,
+      byClass: [],
+      byDirection: [],
+    };
+  }
+
+  const [invoices, discountsByStudent, depositAgg] = await Promise.all([
+    prisma.monthlyInvoice.findMany({
+      where: { month, studentId: { in: ids }, status: { not: "cancelled" } },
+      select: {
+        studentId: true,
+        amount: true,
+        paidAmount: true,
+        directionName: true,
+      },
+    }),
+    resolveDiscountsForMonth(month, { studentIds: ids }),
+    prisma.studentAccount.aggregate({
+      where: { studentId: { in: ids } },
+      _sum: { balance: true },
+    }),
+  ]);
+
+  // Bir o'quvchi — bir oy — bitta invoice (@@unique), lekin himoya uchun yig'amiz
+  const invByStudent = new Map();
+  for (const inv of invoices) {
+    const prev =
+      invByStudent.get(inv.studentId) ??
+      { amount: new Decimal(0), paid: new Decimal(0), directionName: inv.directionName };
+    prev.amount = prev.amount.plus(inv.amount);
+    prev.paid = prev.paid.plus(inv.paidAmount);
+    invByStudent.set(inv.studentId, prev);
+  }
+
+  const grantSet = new Set();
+  for (const [sid, list] of discountsByStudent) {
+    if (list.some((d) => d.isExclusive)) grantSet.add(sid);
+  }
+
+  const NO_CLASS = "Sinfsiz";
+  const NO_DIRECTION = "Yo'nalishsiz";
+  const classMap = new Map();
+  const dirMap = new Map();
+  let expected = new Decimal(0);
+  let collected = new Decimal(0);
+  let grantCount = 0;
+
+  for (const s of students) {
+    const inv = invByStudent.get(s.id);
+    const sExpected = inv?.amount ?? new Decimal(0);
+    const sCollected = inv?.paid ?? new Decimal(0);
+    const isGrant = grantSet.has(s.id);
+    if (isGrant) grantCount += 1;
+
+    expected = expected.plus(sExpected);
+    collected = collected.plus(sCollected);
+
+    const cls = s.classes[0]?.class ?? null;
+    const classKey = cls?.id ?? "__none__";
+    const crow =
+      classMap.get(classKey) ??
+      {
+        classId: cls?.id ?? null,
+        className: cls?.name ?? NO_CLASS,
+        studentCount: 0,
+        grantCount: 0,
+        expected: new Decimal(0),
+        collected: new Decimal(0),
+      };
+    crow.studentCount += 1;
+    if (isGrant) crow.grantCount += 1;
+    crow.expected = crow.expected.plus(sExpected);
+    crow.collected = crow.collected.plus(sCollected);
+    classMap.set(classKey, crow);
+
+    // Yo'nalish faqat invoice bo'lsa ma'lum (snapshot). Grant/invoice yo'q
+    // o'quvchi yo'nalish kesimiga tushmaydi — u pulsiz.
+    if (inv) {
+      const dirName = inv.directionName || NO_DIRECTION;
+      const drow =
+        dirMap.get(dirName) ??
+        { directionName: dirName, expected: new Decimal(0), collected: new Decimal(0) };
+      drow.expected = drow.expected.plus(sExpected);
+      drow.collected = drow.collected.plus(sCollected);
+      dirMap.set(dirName, drow);
+    }
+  }
+
+  const clampDebt = (v) => (v.isNegative() ? new Decimal(0) : v);
+  const serializeClass = (r) => ({
+    classId: r.classId,
+    className: r.className,
+    studentCount: r.studentCount,
+    grantCount: r.grantCount,
+    payingCount: r.studentCount - r.grantCount,
+    expected: formatAmount(r.expected),
+    collected: formatAmount(r.collected),
+    debt: formatAmount(clampDebt(r.expected.minus(r.collected))),
+  });
+  const serializeDir = (r) => ({
+    directionName: r.directionName,
+    expected: formatAmount(r.expected),
+    collected: formatAmount(r.collected),
+    debt: formatAmount(clampDebt(r.expected.minus(r.collected))),
+  });
+
+  const byClass = [...classMap.values()]
+    .map(serializeClass)
+    // Eng ko'p kutilgan summali sinf tepada — e'tibor o'sha yerda kerak
+    .sort((a, b) => Number(b.expected) - Number(a.expected));
+  const byDirection = [...dirMap.values()]
+    .map(serializeDir)
+    .sort((a, b) => Number(b.collected) - Number(a.collected));
+
+  return {
+    month,
+    monthLabel: formatMonthKey(month),
+    counts: {
+      totalStudents: students.length,
+      grantStudents: grantCount,
+      payingStudents: students.length - grantCount,
+    },
+    money: {
+      expected: formatAmount(expected),
+      collected: formatAmount(collected),
+      debt: formatAmount(clampDebt(expected.minus(collected))),
+      deposits: formatAmount(depositAgg._sum.balance ?? 0),
+    },
+    byClass,
+    byDirection,
   };
 };
 
@@ -1707,6 +1887,7 @@ module.exports = {
   getInvoiceById,
   getStudentInvoices,
   getStudentRegistry,
+  getOverviewDashboard,
   getDebtors,
   getMyFinance,
   getSummary,

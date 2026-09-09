@@ -18,6 +18,7 @@ const {
   getInvoices,
   getSummary,
   getStudentRegistry,
+  getOverviewDashboard,
   getDebtors,
   remindDebtors,
   getStudentInvoices,
@@ -42,6 +43,8 @@ router.get("/my", protect, authorize(ROLES.STUDENT), getMyFinance);
 
 // Aniq yo'llar `/:id` dan OLDIN
 router.get("/summary", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getSummary);
+// Moliya bosh sahifasi — sanoq + pul + sinf/yo'nalish kesimi (bir oy).
+router.get("/overview", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getOverviewDashboard);
 // Kassirning asosiy ekrani — `/student/:studentId` dan oldin bo'lishi shart emas,
 // lekin `/:id` dan OLDIN
 router.get("/students", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentRegistry);

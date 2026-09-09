@@ -41,6 +41,12 @@ const getStudentRegistry = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+/** Moliya bosh sahifasi — sanoq, pul, sinf va yo'nalish kesimi (bir oy). */
+const getOverviewDashboard = asyncHandler(async (req, res) => {
+  const data = await invoiceService.getOverviewDashboard(req.query.month);
+  res.json({ success: true, data });
+});
+
 /** Qarzdorlar registri — "kim qancha qarzdor va qachondan beri". */
 const getDebtors = asyncHandler(async (req, res) => {
   const result = await invoiceService.getDebtors(req);
@@ -198,6 +204,7 @@ module.exports = {
   getInvoices,
   getSummary,
   getStudentRegistry,
+  getOverviewDashboard,
   getDebtors,
   remindDebtors,
   getStudentInvoices,
