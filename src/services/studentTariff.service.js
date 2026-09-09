@@ -686,24 +686,80 @@ const bulkAssign = async (data, userId) => {
   }
 
   const created = [];
+  const changed = [];
+  const unchanged = [];
   const skipped = [];
+  const now = currentMonthKey();
 
+  const buildData = (extra) => ({
+    studentId: extra.studentId,
+    tariffId: data.tariffId,
+    ...extra.period,
+    customAmount: parseCustomAmount(data.customAmount),
+    note: data.note?.trim() || "",
+    createdBy: userId,
+  });
+
+  // ⚠️ "Biriktirish" bu yerda UPSERT ma'nosida: o'quvchida o'sha davrni qamragan
+  // BOSHQA tarif bo'lsa — u ALMASHTIRILADI (changeTariff mantig'i), aks holda
+  // yangi yoziladi. Ilgari faqat `create` bo'lgani uchun mavjud biriktirmali
+  // o'quvchi "kesishuv" bilan o'tkazib yuborilardi va tarif o'zgarmasdi.
   for (const studentId of studentIds) {
     try {
-      const assignment = await prisma.$transaction(async (tx) => {
-        await assertNoAssignmentOverlap(tx, studentId, period);
-        return tx.studentTariff.create({
-          data: {
-            studentId,
-            tariffId: data.tariffId,
-            ...period,
-            customAmount: parseCustomAmount(data.customAmount),
-            note: data.note?.trim() || "",
-            createdBy: userId,
-          },
+      const outcome = await prisma.$transaction(async (tx) => {
+        const existing = await tx.studentTariff.findFirst({
+          where: { studentId, ...coveringMonthWhere(period.startMonth) },
+          orderBy: { startMonth: "desc" },
         });
+
+        // Allaqachon shu tarifda — tegmaymiz
+        if (existing && existing.tariffId === data.tariffId) {
+          return { action: "unchanged", assignment: existing };
+        }
+
+        // Boshqa tarif bor — ALMASHTIRAMIZ (eskisini yopib/o'chirib, yangisini)
+        if (existing) {
+          // O'tgan oyni almashtirib bo'lmaydi: hisob-fakturalar muhrlangan
+          if (period.startMonth < now) {
+            throw new BadRequestError(
+              `O'tgan oy (${formatMonthKey(period.startMonth)}) tarifini almashtirib bo'lmaydi`,
+            );
+          }
+
+          // Boshlangan oyning O'ZIDAN almashtirilsa eskisiga oy qolmaydi →
+          // yopilmaydi, o'chiriladi (buzuq [start > end] davr yasamaslik uchun).
+          if (period.startMonth === existing.startMonth) {
+            await tx.studentTariff.delete({ where: { id: existing.id } });
+          } else {
+            await tx.studentTariff.update({
+              where: { id: existing.id },
+              data: { endMonth: prevMonth(period.startMonth) },
+            });
+          }
+
+          // Yangi davr: shu startMonth dan; endMonth — formadan (bo'lmasa eski)
+          const newPeriod = {
+            startMonth: period.startMonth,
+            endMonth: period.endMonth ?? existing.endMonth,
+          };
+          await assertNoAssignmentOverlap(tx, studentId, newPeriod, existing.id);
+          const assignment = await tx.studentTariff.create({
+            data: buildData({ studentId, period: newPeriod }),
+          });
+          return { action: "changed", assignment };
+        }
+
+        // Mavjud biriktirma yo'q — oddiy yaratish
+        await assertNoAssignmentOverlap(tx, studentId, period);
+        const assignment = await tx.studentTariff.create({
+          data: buildData({ studentId, period }),
+        });
+        return { action: "created", assignment };
       });
-      created.push(assignment);
+
+      if (outcome.action === "created") created.push(outcome.assignment);
+      else if (outcome.action === "changed") changed.push(outcome.assignment);
+      else unchanged.push(outcome.assignment);
     } catch (error) {
       skipped.push({
         studentId,
@@ -716,10 +772,19 @@ const bulkAssign = async (data, userId) => {
   }
 
   const warnings = await collectWarnings(data.tariffId, period.startMonth);
+  // Joriy oy hisob-fakturasi almashgan tarifni AVTOMAT olmaydi (muhrlangan) —
+  // admin uni "Qayta shakllantirish" bilan yangilashi kerak.
+  if (changed.length > 0 && period.startMonth <= now) {
+    warnings.push(
+      `${changed.length} ta o'quvchi tarifi almashtirildi — ${formatMonthKey(period.startMonth)} hisob-fakturasini "Qayta shakllantirish" bilan yangilang.`,
+    );
+  }
 
   return {
     tariff,
     created: created.map((a) => serializeAssignment(a, { tariff })),
+    changed: changed.map((a) => serializeAssignment(a, { tariff })),
+    unchanged: unchanged.map((a) => serializeAssignment(a, { tariff })),
     skipped,
     warnings,
   };
