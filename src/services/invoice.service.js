@@ -1182,7 +1182,7 @@ const getOverviewDashboard = async (monthInput) => {
     };
   }
 
-  const [invoices, discountsByStudent, depositAgg] = await Promise.all([
+  const [invoices, discountsByStudent, resolved, depositAgg] = await Promise.all([
     prisma.monthlyInvoice.findMany({
       where: { month, studentId: { in: ids }, status: { not: "cancelled" } },
       select: {
@@ -1193,11 +1193,22 @@ const getOverviewDashboard = async (monthInput) => {
       },
     }),
     resolveDiscountsForMonth(month, { studentIds: ids }),
+    // Yo'nalish JONLI tarifdan olinadi (snapshot'dan emas): tarifga yo'nalish
+    // keyin biriktirilsa yoki to'lov tushgan invoice qayta shakllanmasa ham
+    // o'quvchi to'g'ri yo'nalishga tushadi — "Yo'nalishsiz" bo'lagi qolmaydi.
+    resolveManyForMonth(month, { studentIds: ids }),
     prisma.studentAccount.aggregate({
       where: { studentId: { in: ids } },
       _sum: { balance: true },
     }),
   ]);
+
+  // Har o'quvchining JORIY tarif yo'nalishi (nomi)
+  const directionByStudent = new Map();
+  for (const [sid, res] of resolved.byStudent) {
+    const name = res.items?.[0]?.tariff?.direction?.name;
+    if (name) directionByStudent.set(sid, name);
+  }
 
   // Bir o'quvchi — bir oy — bitta invoice (@@unique), lekin himoya uchun yig'amiz
   const invByStudent = new Map();
@@ -1251,10 +1262,11 @@ const getOverviewDashboard = async (monthInput) => {
     crow.collected = crow.collected.plus(sCollected);
     classMap.set(classKey, crow);
 
-    // Yo'nalish faqat invoice bo'lsa ma'lum (snapshot). Grant/invoice yo'q
-    // o'quvchi yo'nalish kesimiga tushmaydi — u pulsiz.
+    // Yo'nalish — JONLI tarifdan (undan bo'lmasa invoice snapshot'i, u ham
+    // bo'lmasa "Yo'nalishsiz"). Pulsiz (invoice yo'q) o'quvchi kesimga kirmaydi.
     if (inv) {
-      const dirName = inv.directionName || NO_DIRECTION;
+      const dirName =
+        directionByStudent.get(s.id) || inv.directionName || NO_DIRECTION;
       const drow =
         dirMap.get(dirName) ??
         { directionName: dirName, expected: new Decimal(0), collected: new Decimal(0) };
