@@ -31,12 +31,66 @@ const {
   getPayments,
 } = require("../controllers/payroll.controller");
 
+// ── Oylik STRUKTURASI (bo'lim / lavozim / toifa) — tashkiliy qatlam ──
+const {
+  getDepartments,
+  createDepartment,
+  updateDepartment,
+  deleteDepartment,
+  getPositions,
+  createPosition,
+  updatePosition,
+  deletePosition,
+  assignStaff,
+} = require("../controllers/department.controller");
+
+const {
+  getCategories,
+  getActiveCategories,
+  createCategory,
+  updateCategory,
+  archiveCategory,
+  deleteCategory,
+} = require("../controllers/salaryCategory.controller");
+
+const {
+  getStaffPayroll,
+  getTeacherPayroll,
+} = require("../controllers/payrollView.controller");
+
 // ── O'zimniki (xodim panelidagi profil) ──────
 // Ruxsat kaliti YO'Q: identifikator tokendan olinadi, o'quvchi controller'da
 // rad etiladi. `/salaries/staff/:staffId` va `/staff/:staffId` dan OLDIN —
 // "my" so'zi id deb o'qilmasligi uchun.
 router.get("/salaries/my", protect, getMySalary);
 router.get("/my", protect, getMyEntries);
+
+// ── Oylik STRUKTURASI: hisoblangan ko'rinishlar (Yo'nalish × Bo'lim) ──
+router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);
+router.get("/view/teachers", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getTeacherPayroll);
+
+// ── Bo'limlar (staff/teaching) ──
+router.get("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getDepartments);
+router.post("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createDepartment);
+router.put("/departments/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateDepartment);
+router.delete("/departments/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteDepartment);
+
+// ── Lavozimlar (staff bo'lim ichida) ──
+router.get("/positions", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getPositions);
+router.post("/positions", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createPosition);
+router.put("/positions/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updatePosition);
+router.delete("/positions/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deletePosition);
+
+// ── Malaka toifalari (teaching, soatbay stavka) ──
+router.get("/categories", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getCategories);
+router.get("/categories/active", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getActiveCategories);
+router.post("/categories", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createCategory);
+router.put("/categories/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateCategory);
+router.patch("/categories/:id/archive", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), archiveCategory);
+router.delete("/categories/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteCategory);
+
+// ── Xodimni lavozim/toifaga biriktirish ──
+router.patch("/staff/:staffId/assign", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), assignStaff);
 
 // ── Oylik qoidalari (kimga qancha) ───────────
 // `assign` ALOHIDA huquq: to'laydigan xodim oylik miqdorini o'zi

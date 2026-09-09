@@ -397,6 +397,13 @@ model User {
   extraRoles       String[]       @default([]) @map("extra_roles")
   // Bo'lim darajasidagi ruxsat kalitlari (utils/permissions.js). Owner uchun ishlatilmaydi — u doim hammaga ega.
   permissions      String[]       @default([]) @map("permissions")
+  // Oylik STRUKTURASI (soft ref, FK yo'q — arxiv tarixi saqlanadi):
+  //   positionId       — staff bo'lim xodimi uchun LAVOZIM
+  //   salaryCategoryId — teaching o'qituvchi uchun joriy TOIFA
+  // Ikkisidan faqat bittasi bo'ladi. Bu — TASHKILIY struktura; haqiqiy oylik
+  // hisobi StaffSalary qoidasidan chiqadi (ikkisi yonma-yon — coexist).
+  positionId       String?        @map("position_id") @db.Char(24)
+  salaryCategoryId String?        @map("salary_category_id") @db.Char(24)
   isActive         Boolean        @default(true) @map("is_active")
   gender           Gender?
   coinBalance      Int            @default(0) @map("coin_balance")
@@ -2612,6 +2619,80 @@ model ExternalIncome {
 // `PaymentAccount` HAR IKKALA yo'lda ham OXIRGI. O'quvchi to'lovi va xodim
 // oyligi bir vaqtda kelganda deadlock shu sababli bo'lmaydi. Kassa avval
 // lock qilinsa, ikki jarayon bir-birini kutib qolardi.
+
+// ─────────────────────────────────────────────
+// OYLIK STRUKTURASI (bo'lim / lavozim / toifa) — TASHKILIY qatlam.
+//
+// ⚠️ Bu qatlam StaffSalary oylik-hisobidan ALOHIDA ishlaydi (coexist): bu
+// yerda xodimlar bo'lim va lavozim/toifa bo'yicha tashkil etiladi va
+// hisoblangan oylik KO'RSATILADI; haqiqiy majburiyat esa StaffSalary
+// qoidasidan (PayrollEntry) chiqadi.
+//   staff bo'lim    → maosh LAVOZIMga (Position.baseSalary)
+//   teaching bo'lim → maosh TOIFAga (SalaryCategory.perHourRate × dars soati)
+// ─────────────────────────────────────────────
+enum DepartmentKind {
+  staff // Texnik, Boshqaruv — maosh LAVOZIMga biriktiriladi
+  teaching // MTB, Boshlang'ich, Yuqori — maosh TOIFAga (soatbay) biriktiriladi
+}
+
+model Department {
+  id        String         @id @db.Char(24)
+  name      String         @unique
+  kind      DepartmentKind
+  sortOrder Int            @default(0) @map("sort_order")
+  isActive  Boolean        @default(true) @map("is_active")
+  createdBy String         @map("created_by") @db.Char(24)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt @map("updated_at")
+
+  positions  Position[]
+  categories SalaryCategory[]
+
+  @@index([kind, isActive, sortOrder])
+  @@map("departments")
+}
+
+model Position {
+  id           String   @id @db.Char(24)
+  departmentId String   @map("department_id") @db.Char(24)
+  name         String
+  baseSalary   Decimal  @default(0) @map("base_salary") @db.Decimal(14, 2)
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdBy    String   @map("created_by") @db.Char(24)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+
+  @@unique([departmentId, name])
+  @@index([departmentId, isActive])
+  @@map("positions")
+}
+
+model SalaryCategory {
+  id             String    @id @db.Char(24)
+  departmentId   String?   @map("department_id") @db.Char(24) // teaching bo'lim
+  name           String
+  perHourRate    Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  monthlyPerHour Decimal   @default(0) @map("monthly_per_hour") @db.Decimal(14, 2)
+  hoursPerStavka Int       @default(0) @map("hours_per_stavka")
+  baseSalary     Decimal   @default(0) @map("base_salary") @db.Decimal(14, 2)
+  description    String    @default("")
+  sortOrder      Int       @default(0) @map("sort_order")
+  isActive       Boolean   @default(true) @map("is_active")
+  isArchived     Boolean   @default(false) @map("is_archived")
+  archivedAt     DateTime? @map("archived_at")
+  createdBy      String    @map("created_by") @db.Char(24)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@unique([departmentId, name])
+  @@index([departmentId, isArchived, isActive, sortOrder])
+  @@map("salary_categories")
+}
 
 // OYLIK QOIDASI — `StudentTariff` bilan bir xil shakl: davr bilan biriktirish.
 //
