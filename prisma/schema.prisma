@@ -2659,6 +2659,51 @@ model StaffSalary {
   @@map("staff_salaries")
 }
 
+// OYLIK SO'ROVI — o'qituvchi/xodim o'z oyligini ko'rib chiqishni so'raydi.
+//
+// Request→review naqshi ExcuseRequest bilan bir xil (ReviewStatus +
+// reviewedBy + rejectionReason + attachments). Xodim hujjat (sertifikat,
+// diplom, buyruq) biriktirib, izoh va IXTIYORIY taklif (summa/stavka)
+// yuboradi; admin ko'rib chiqadi.
+//
+// ⚠️ Tasdiq oylikni AVTOMAT o'zgartirmaydi: `StaffSalary` doktrinasi bo'yicha
+// oylikni admin qo'lda belgilaydi (yangi davr ochib). Bu jadval faqat
+// SO'ROV va uning ko'rib chiqilishini qayd etadi — salary yaxlitligiga
+// tegmaydi (sof additive).
+enum SalaryRequestType {
+  raise // oylik / stavka oshirish so'rovi
+  bonus // qo'shimcha ustama so'rovi
+  other // boshqa (erkin)
+}
+
+model SalaryRequest {
+  id      String            @id @db.Char(24)
+  staffId String            @map("staff_id") @db.Char(24) // so'rovchi
+  type    SalaryRequestType @default(raise)
+  status  ReviewStatus      @default(pending)
+
+  reason String? // asoslash / izoh
+
+  // Ixtiyoriy taklif — admin qaror qabul qilishda ko'radi, AVTOMAT qo'llanmaydi
+  proposedAmount     Decimal? @map("proposed_amount") @db.Decimal(14, 2)
+  proposedHourlyRate Decimal? @map("proposed_hourly_rate") @db.Decimal(14, 2)
+  proposedStartMonth Int?     @map("proposed_start_month")
+
+  // attachments[] — { key, url, type, originalName, sizeBytes }
+  attachments Json @default("[]")
+
+  reviewedBy      String?   @map("reviewed_by") @db.Char(24)
+  reviewedAt      DateTime? @map("reviewed_at")
+  rejectionReason String?   @map("rejection_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([staffId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("salary_requests")
+}
+
 // OYLIK MAJBURIYAT — `MonthlyInvoice` ning ko'zgusi.
 //
 // ⚠️ `amount` MUHRLANADI: uni o'zgartiradigan endpoint YO'Q. Xato bo'lsa

@@ -46,6 +46,7 @@ const academicDashboardRoutes = require("./academicDashboard.routes");
 const incomeCategoryRoutes = require("./incomeCategory.routes");
 const externalIncomeRoutes = require("./externalIncome.routes");
 const payrollRoutes = require("./payroll.routes");
+const salaryRequestRoutes = require("./salaryRequest.routes");
 const lessonHoursRoutes = require("./lessonHours.routes");
 const expenseCategoryRoutes = require("./expenseCategory.routes");
 const expenseRoutes = require("./expense.routes");
@@ -110,6 +111,7 @@ router.use("/education", academicDashboardRoutes);
 router.use("/income-categories", incomeCategoryRoutes);
 router.use("/external-incomes", externalIncomeRoutes);
 router.use("/payroll", payrollRoutes);
+router.use("/salary-requests", salaryRequestRoutes);
 // Dars soatlari va o'rinbosarlik — oylikning soatbay tomoni
 router.use("/lesson-hours", lessonHoursRoutes);
 router.use("/expense-categories", expenseCategoryRoutes);

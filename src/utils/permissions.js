@@ -42,6 +42,7 @@ const SECTIONS = {
   REPORTS: "reports",
   INCOME: "income",
   PAYROLL: "payroll",
+  SALARY_REQUESTS: "salaryRequests",
   EXPENSES: "expenses",
   INVENTORY: "inventory",
   MONITORING: "monitoring",
@@ -480,6 +481,20 @@ const PERMISSION_SECTIONS = [
       { key: "pay", label: "To'lash" },
       { key: "void", label: "To'lovni bekor qilish" },
       { key: "cancel", label: "Majburiyatni bekor qilish" },
+    ],
+  },
+  {
+    // OYLIK SO'ROVLARI — o'qituvchi/xodim o'z oyligini ko'rib chiqishni
+    // so'raydi (hujjat + izoh). Ko'rib chiqish (`review`) — tasdiqlash/rad
+    // etish; alohida bo'lim, chunki so'rovlarni ko'radigan xodim butun oylik
+    // registrini boshqarish huquqini olmasligi kerak. Tasdiq oylikni avtomat
+    // o'zgartirmaydi — admin StaffSalary'ni o'zi belgilaydi.
+    key: SECTIONS.SALARY_REQUESTS,
+    label: "Oylik so'rovlari",
+    group: "Moliya",
+    actions: [
+      A.view,
+      { key: "review", label: "Ko'rib chiqish (tasdiqlash / rad etish)" },
     ],
   },
   {
