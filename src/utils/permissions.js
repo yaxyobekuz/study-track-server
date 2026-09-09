@@ -42,6 +42,7 @@ const SECTIONS = {
   REPORTS: "reports",
   INCOME: "income",
   PAYROLL: "payroll",
+  PAYROLL_REQUESTS: "payrollRequests",
   EXPENSES: "expenses",
   INVENTORY: "inventory",
   MONITORING: "monitoring",
@@ -480,6 +481,21 @@ const PERMISSION_SECTIONS = [
       { key: "pay", label: "To'lash" },
       { key: "void", label: "To'lovni bekor qilish" },
       { key: "cancel", label: "Majburiyatni bekor qilish" },
+    ],
+  },
+  {
+    // OYLIK ZAYAVKALARI — o'qituvchi/xodim o'zi uchun TOIFA o'zgartirish yoki
+    // USTAMA haq so'raydi (hujjat biriktirib). Ko'rib chiqish oylik miqdoriga
+    // TA'SIR QILADI (toifani biriktiradi yoki ustama yaratadi), shuning uchun
+    // `review` amali PAYROLL_ASSIGN darajasidagi mas'uliyat — lekin alohida
+    // bo'lim: zayavkalarni ko'radigan xodim butun oylik registrini boshqarish
+    // huquqini olmasligi kerak.
+    key: SECTIONS.PAYROLL_REQUESTS,
+    label: "Oylik zayavkalari",
+    group: "Moliya",
+    actions: [
+      A.view,
+      { key: "review", label: "Ko'rib chiqish (tasdiqlash / rad etish)" },
     ],
   },
   {

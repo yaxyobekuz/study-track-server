@@ -720,7 +720,7 @@ const buildPayroll = async (month, compareMonth) => {
         amount: true,
         paidAmount: true,
         salaryType: true,
-        hoursWorked: true,
+        lessonHours: true,
         status: true,
         staffSnapshot: true,
       },
@@ -773,7 +773,7 @@ const buildPayroll = async (month, compareMonth) => {
       // Soat faqat soatga bog'liq rejimlarda ma'noli — `fixed` da u 0
       // bo'lib turib "hech soat o'tmagan" degan yolg'on taassurot berardi
       hoursWorked:
-        entry.salaryType === "fixed" ? null : entry.hoursWorked,
+        entry.salaryType === "fixed" ? null : entry.lessonHours,
     };
   });
 

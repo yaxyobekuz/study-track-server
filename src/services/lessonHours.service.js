@@ -501,6 +501,42 @@ async function assertTeacher(teacherId) {
   return teacher;
 }
 
+/**
+ * PAYROLL-V2 ADAPTERI — KPI oyligi uchun o'qituvchi dars soati.
+ *
+ * Payroll dvigateli (`payrollEngine`, `staffSalary`) shu ikki funksiyani
+ * kutadi. Manba — yuqoridagi `getTeachersHours` (o'rinbosarlikni hisobga oladi,
+ * manual jadvalidan o'qiydi). payroll-kpi'ning versiyalangan-jadval variantini
+ * shu adapter almashtiradi: bu tizimda jadval versiyasiz, oy to'liq hisoblanadi.
+ *
+ * @returns {Promise<Map<string,{hours,weeklyHours,weeklyLessons,monthlyLessons}>>}
+ */
+const computeLessonHoursForMonth = async (month, teacherIds) => {
+  const src = await getTeachersHours(teacherIds, month);
+  const out = new Map();
+  for (const [teacherId, info] of src) {
+    out.set(String(teacherId), {
+      hours: info.hours ?? 0,
+      weeklyHours: info.weeklyHours ?? 0,
+      weeklyLessons: info.weeklyHours ?? 0,
+      monthlyLessons: info.teachingDays ?? 0,
+    });
+  }
+  return out;
+};
+
+const computeLessonHoursForStaff = async (staffId, month) => {
+  const map = await computeLessonHoursForMonth(month, [staffId]);
+  return (
+    map.get(String(staffId)) ?? {
+      hours: 0,
+      weeklyHours: 0,
+      weeklyLessons: 0,
+      monthlyLessons: 0,
+    }
+  );
+};
+
 module.exports = {
   TEACHER_SELECT,
   dayLabel,
@@ -511,4 +547,7 @@ module.exports = {
   getTeachersHours,
   loadSubstitutionWindows,
   parseHoursMonth: (value) => (value ? parseMonthKey(value, "Oy") : currentMonthKey()),
+  // payroll-v2 adapteri (KPI soatlari)
+  computeLessonHoursForMonth,
+  computeLessonHoursForStaff,
 };
