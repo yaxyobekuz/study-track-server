@@ -19,8 +19,13 @@
  * KO'P INSTANS (PM2 cluster): ikkalasi bir vaqtda ishlasa ham dublikat
  * bo'lmaydi — `@@unique([studentId, month])` + `skipDuplicates`.
  *
- * Startup'da pass ISHLATILMAYDI: kechqurungi deploy butun oyning
- * majburiyatlarini nojo'ya yaratib yubormasligi kerak.
+ * STARTUP PASS: deploy/restartdan keyin 06:00 ni KUTMASDAN bir marta ishlaydi
+ * (`runStartupCatchUp`). Kun tekshiruvi (`today >= invoiceDayOfMonth`) SHU
+ * YERDA HAM kuchda, ya'ni belgilangan kundan oldin hech narsa yozilmaydi —
+ * "kechqurungi deploy butun oyni yaratib yubormasin" xavfi shu bilan yopiladi.
+ * Idempotent bo'lgani uchun qaysi kuni ishlashi (1 yoki 9) ahamiyatsiz: bir
+ * oyga bitta majburiyat. Bu — qarzdorlar ro'yxati deploydan so'ng darhol
+ * to'lishini kafolatlaydi (aks holda u keyingi 06:00 gacha bo'sh qolardi).
  */
 
 const cron = require("node-cron");
@@ -174,6 +179,25 @@ function startInvoiceGenerationCron() {
   logger.info(
     "Hisob-faktura cron job belgilandi: Har kuni 06:00 (Asia/Tashkent)",
   );
+
+  // ── STARTUP CATCH-UP ────────────────────────
+  // Serverni ishga tushirgach (yoki deploydan keyin) bir marta tekshiradi:
+  // invoiceDayOfMonth kelgan bo'lsa, joriy + catch-up oylar majburiyatlarini
+  // darhol shakllantiradi. Barcha guardlar (`runInvoiceGenerationPass`) o'z
+  // kuchida — kun kelmasa yoki avtomatik o'chirilgan bo'lsa hech narsa yozmaydi.
+  //
+  // Kechikish — DB ulanishi, filiallar registri va boshqa startup ishlari
+  // tugashini kutish uchun (bloklamaydigan, `unref` bilan process'ni ushlab
+  // turmaydi).
+  const startupTimer = setTimeout(() => {
+    branchCron("[InvoiceCron:startup]", async (branch) => {
+      logger.info(`[InvoiceCron] ${branch.name}: startup tekshiruvi...`);
+      await runInvoiceGenerationPass();
+    })().catch((error) =>
+      logger.error(`[InvoiceCron] Startup pass xatosi: ${error.message}`),
+    );
+  }, 20000);
+  if (typeof startupTimer.unref === "function") startupTimer.unref();
 }
 
 module.exports = { startInvoiceGenerationCron, runInvoiceGenerationPass };
