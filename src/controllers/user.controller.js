@@ -3,8 +3,51 @@ const { NotFoundError, BadRequestError } = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 const staffReportService = require("../services/staffReport.service");
+const invoiceGenerationService = require("../services/invoiceGeneration.service");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
+const {
+  monthKeyOfDate,
+  parseDayDate,
+  currentMonthKey,
+} = require("../helpers/month.helpers");
+const logger = require("../utils/logger");
+
+/**
+ * Yangi o'quvchining KIRISH OYI hisob-fakturasini darhol shakllantiradi —
+ * qarz (qo'lda kiritilgan birinchi oy summasi) darhol ko'rinsin.
+ *
+ * ⚠️ Xatolik o'quvchi yaratishni bekor QILMAYDI: idempotent generatsiya jim
+ * qolmasligi uchun logga yoziladi (davr ochilgach shakllantirish naqshi).
+ * Kelajak oy / ta'til oyi bo'lsa faktura chiqmaydi — bu normal.
+ */
+const generateFirstMonthInvoice = async (req, user, enrollmentDate) => {
+  if (user?.role !== ROLES.STUDENT) return null;
+
+  let month;
+  try {
+    month = enrollmentDate
+      ? monthKeyOfDate(parseDayDate(enrollmentDate))
+      : currentMonthKey();
+  } catch {
+    return null;
+  }
+  if (month > currentMonthKey()) return null;
+
+  try {
+    return await invoiceGenerationService.generateForMonth(month, {
+      actorId: req.user?.id,
+      source: "manual",
+      studentIds: [user.id],
+    });
+  } catch (error) {
+    logger.warn(
+      `[user] Yangi o'quvchiga hisob-faktura shakllantirilmadi: ` +
+        `student=${user.id} oy=${month} — ${error.message}`,
+    );
+    return null;
+  }
+};
 
 // Get user statistics (Owner only)
 const getStats = asyncHandler(async (req, res) => {
@@ -51,10 +94,15 @@ const createUser = asyncHandler(async (req, res) => {
   // "o'qituvchi faqat o'quvchi qo'shadi" cheklovi uchun esa `role` kerak.
   const user = await userService.createUser(req.body, req.user?.id, req.user);
 
+  // O'quvchi bo'lsa — kirish oyi hisob-fakturasini darhol shakllantiramiz
+  // (qo'lda kiritilgan birinchi oy summasi qarz sifatida darhol ko'rinsin).
+  const generated = await generateFirstMonthInvoice(req, user, req.body.enrollmentDate);
+
   res.status(201).json({
     success: true,
     message: "Foydalanuvchi muvaffaqiyatli yaratildi",
     data: user,
+    ...(generated ? { generated } : {}),
   });
 });
 

@@ -2065,6 +2065,13 @@ model StudentEnrollment {
   startDate DateTime  @map("start_date") @db.Date
   endDate   DateTime? @map("end_date") @db.Date // null = hozir o'qiyapti
 
+  // BIRINCHI OY summasi — qo'lda belgilanadi. Davrning BOSHLANGAN oyi uchun
+  // hisob-faktura summasini OVERRIDE qiladi: kun-proratsiyasiz, chegirmasiz
+  // (baseAmount = proratedAmount = amount = firstMonthAmount). null bo'lsa —
+  // odatiy hisob (to'liq tarif). ⚠️ Shu tufayli hisobotlarda o'sha qatorda
+  // `baseAmount` "olingan summa" ma'nosini oladi (katalog narxi emas).
+  firstMonthAmount Decimal? @map("first_month_amount") @db.Decimal(14, 2)
+
   endReason StudentEnrollmentEndReason? @map("end_reason")
   reason    String                      @default("")
   note      String                      @default("")
@@ -2185,7 +2192,10 @@ model FinanceSettings {
   depositAutoApply Boolean @default(true) @map("deposit_auto_apply")
 
   // Kirish proratsiyasi yoqilganmi (autoGenerateEnabled uslubidagi kill switch).
-  prorationEnabled Boolean @default(true) @map("proration_enabled")
+  // ⚠️ Default FALSE: qarz kun bo'yicha hisoblanmaydi. Birinchi oy summasi
+  // qo'lda belgilanadi (StudentEnrollment.firstMonthAmount), keyingi oylar —
+  // to'liq tarif. Yoqilsa eski kun-proratsiyasi qaytadi.
+  prorationEnabled Boolean @default(false) @map("proration_enabled")
   // Proratsiya natijasi shu birlikka PASTGA yaxlitlanadi — ATAYLAB maktab
   // zarariga (367 712 → 367 000). 0 yoki 1 = yaxlitlash yo'q. Faqat tarif
   // narxi birlikdan katta bo'lganda qo'llanadi, aks holda kichik tarif

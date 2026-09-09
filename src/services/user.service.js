@@ -14,7 +14,7 @@ const { generateId } = require("../utils/idGenerator");
 const userDirectory = require("./userDirectory.service");
 // Yangi o'quvchiga standart tarifni biriktirish uchun — biriktirish
 // mantig'i YAGONA nuqtada (`studentTariff.service.js`).
-const { applyDefaultForStudent } = require("./studentTariff.service");
+const { applyDefaultForStudent, assertTariff } = require("./studentTariff.service");
 const { getFinanceSettings } = require("./settings.service");
 const { ROLES, WORK_TIME_SOURCE } = require("../utils/constants");
 const {
@@ -25,7 +25,13 @@ const {
   hasPermission,
   PERMISSIONS,
 } = require("../utils/permissions");
-const { currentDayDate, currentMonthKey } = require("../helpers/month.helpers");
+const {
+  currentDayDate,
+  currentMonthKey,
+  monthKeyOfDate,
+  parseOptionalDayDate,
+} = require("../helpers/month.helpers");
+const { parseAmount } = require("../helpers/money.helpers");
 const { normalizePhone, formatPhoneUz } = require("../helpers/phone.helpers");
 const {
   getScheduleWorkTimes,
@@ -667,6 +673,10 @@ async function createUser(data, actorId, actor = null) {
     workEndTime,
     workDays,
     weeklySchedule,
+    // O'quvchi moliyasi (ixtiyoriy) — kirgan sana, birinchi oy summasi, tarif
+    enrollmentDate,
+    firstMonthAmount,
+    tariffId,
   } = data;
 
   if (!username || !password || !firstName || !lastName || !role) {
@@ -718,6 +728,22 @@ async function createUser(data, actorId, actor = null) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
     }
+  }
+
+  // ── O'quvchi moliyasi — TRANZAKSIYA/CLAIM dan OLDIN tekshiriladi ──
+  // Aks holda noto'g'ri sana/summa/tarif `userDirectory.claim` dan keyin
+  // otilsa, platformadagi band qilingan username jimgina qolib ketardi.
+  let enrollmentStartDate = null;
+  let firstMonthAmountParsed = null;
+  if (role === "student") {
+    enrollmentStartDate =
+      parseOptionalDayDate(enrollmentDate, "Kirgan sana") ?? currentDayDate();
+    if (firstMonthAmount != null && String(firstMonthAmount).trim() !== "") {
+      firstMonthAmountParsed = parseAmount(firstMonthAmount, "Birinchi oy summasi");
+    }
+    // Client bergan tarifni tekshiramiz (arxivlangan/yo'q tarif rad etiladi).
+    // Standart tarif sozlamada allaqachon tekshirilgan — uni qayta tekshirmaymiz.
+    if (tariffId) await assertTariff(tariffId, { forAssignment: true });
   }
 
   const hashed = await hashPassword(password);
@@ -787,34 +813,36 @@ async function createUser(data, actorId, actor = null) {
         },
       });
 
-      // Davr yo'q = o'qimaydi. Yangi o'quvchi darhol o'qiy boshlaydi,
-      // shuning uchun davr bugundan ochiladi va yopilmaydi.
+      // Davr yo'q = o'qimaydi. Kirgan sana QO'LDA kiritiladi (bo'lmasa bugun).
+      // Birinchi oy summasi ham qo'lda — kirish oyi fakturasini override qiladi.
       if (role === "student") {
         await tx.studentEnrollment.create({
           data: {
             studentId: user.id,
-            startDate: currentDayDate(),
+            startDate: enrollmentStartDate,
+            firstMonthAmount: firstMonthAmountParsed,
             createdBy: actorId ?? user.id,
             reason: "O'quvchi yaratilganda avtomatik ochildi",
           },
         });
 
-        // ⚠️ STANDART TARIF — o'qish davri bilan BITTA tranzaksiyada.
+        // ⚠️ TARIF — o'qish davri bilan BITTA tranzaksiyada.
         //
         // Davr ochilishi bilan o'quvchi "o'qiyapti" bo'lib qoladi, lekin
         // tarifi bo'lmasa unga hisob-faktura YOZILMAYDI va u qarzdorlar
         // registrida umuman ko'rinmaydi. Ikkalasi bir vaqtda yozilmasa,
         // aynan shu jim bo'shliq paydo bo'lardi.
         //
-        // Sozlamada standart tarif belgilanmagan bo'lsa — tegilmaydi
-        // (tizimning avvalgi xatti-harakati saqlanadi, tarif qo'lda
-        // biriktiriladi).
-        if (defaultTariffId) {
+        // Qo'lda tanlangan tarif (tariffId) ustun; bo'lmasa sozlamadagi
+        // standart tarif. Ikkalasi ham bo'lmasa — tarif qo'lda biriktiriladi.
+        // Tarif KIRGAN sana oyidan boshlanadi (bugungi oydan emas).
+        const effectiveTariffId = tariffId ?? defaultTariffId;
+        if (effectiveTariffId) {
           await applyDefaultForStudent(
             tx,
             user.id,
-            defaultTariffId,
-            currentMonthKey(),
+            effectiveTariffId,
+            monthKeyOfDate(enrollmentStartDate),
             actorId ?? user.id,
           );
         }

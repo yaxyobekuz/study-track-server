@@ -30,7 +30,7 @@ const {
   parseOptionalDayDate,
   formatMonthKey,
 } = require("../helpers/month.helpers");
-const { formatAmount } = require("../helpers/money.helpers");
+const { formatAmount, parseAmount } = require("../helpers/money.helpers");
 const {
   parseEnrollmentPeriod,
   overlappingDateRangeWhere,
@@ -156,7 +156,12 @@ const resolveEnrollmentsForStudents = async (studentIds = []) => {
 
   const rows = await prisma.studentEnrollment.findMany({
     where: { studentId: { in: studentIds } },
-    select: { studentId: true, startDate: true, endDate: true },
+    select: {
+      studentId: true,
+      startDate: true,
+      endDate: true,
+      firstMonthAmount: true,
+    },
     orderBy: { startDate: "asc" },
   });
 
@@ -165,6 +170,7 @@ const resolveEnrollmentsForStudents = async (studentIds = []) => {
     byStudent.get(row.studentId).push({
       startDate: row.startDate,
       endDate: row.endDate,
+      firstMonthAmount: row.firstMonthAmount,
     });
   }
 
@@ -395,6 +401,13 @@ const createEnrollment = async (data, userId, { allowPast = false } = {}) => {
   const endReason = parseEndReason(data.endReason);
   const student = await assertStudent(data.studentId);
 
+  // Birinchi oy summasi — qo'lda (ixtiyoriy). Kirish oyi hisob-fakturasini
+  // override qiladi (invoiceBuilder). null bo'lsa — odatiy hisob.
+  const firstMonthAmount =
+    data.firstMonthAmount != null && String(data.firstMonthAmount).trim() !== ""
+      ? parseAmount(data.firstMonthAmount, "Birinchi oy summasi")
+      : null;
+
   if (period.endDate != null && endReason == null) {
     throw new BadRequestError("Tugash sanasi bilan birga ketish sababi ham tanlanishi kerak");
   }
@@ -414,6 +427,7 @@ const createEnrollment = async (data, userId, { allowPast = false } = {}) => {
         data: {
           studentId: data.studentId,
           ...period,
+          firstMonthAmount,
           endReason,
           reason: data.reason?.trim() || "",
           note: data.note?.trim() || "",

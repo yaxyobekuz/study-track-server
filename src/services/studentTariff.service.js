@@ -919,6 +919,7 @@ const deleteAssignment = async (id) => {
 };
 
 module.exports = {
+  assertTariff,
   getAssignments,
   getStudentHistory,
   getAssignmentById,

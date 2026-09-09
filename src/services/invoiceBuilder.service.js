@@ -78,6 +78,28 @@ const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings 
     };
   }
 
+  // ── BIRINCHI OY OVERRIDE ──────────────────────
+  // Kirish oyi uchun qo'lda kiritilgan summa (StudentEnrollment.firstMonthAmount):
+  // kun-proratsiyasiz, chegirmasiz — qarz AYNAN shu summa.
+  //   base = prorated = amount = firstMonthAmount, discount = 0
+  // Reconcile invariantlari (amount = prorated − discount, prorated <= base)
+  // tenglik bilan bajariladi. Bu — YAGONA joy, shuning uchun kassir registri va
+  // o'quvchi paneli ham shu summani ko'radi (ular ham shu funksiyani chaqiradi).
+  if (enrollment.isStartMonth && enrollment.firstMonthAmount != null) {
+    const manual = parseAmount(enrollment.firstMonthAmount, "Birinchi oy summasi");
+    return {
+      enrollment,
+      baseAmount: manual,
+      proratedAmount: manual,
+      discountAmount: new Decimal(0),
+      amount: manual,
+      snapshot: [],
+      isProrated: false,
+      roundingUnit: 0,
+      wipedByDiscount: false,
+    };
+  }
+
   const prorated = settings.prorationEnabled
     ? prorateAmount(base, enrollment.billableDays, enrollment.monthDays, {
         roundingUnit: settings.roundingUnit,
