@@ -9,26 +9,30 @@ const { ROLES } = require("../utils/constants");
 const {
   monthKeyOfDate,
   parseDayDate,
+  parseOptionalMonthKey,
   currentMonthKey,
 } = require("../helpers/month.helpers");
 const logger = require("../utils/logger");
 
 /**
- * Yangi o'quvchining KIRISH OYI hisob-fakturasini darhol shakllantiradi —
- * qarz (qo'lda kiritilgan birinchi oy summasi) darhol ko'rinsin.
+ * Yangi o'quvchining BIRINCHI TO'LOV OYI hisob-fakturasini darhol
+ * shakllantiradi — qarz (qo'lda kiritilgan birinchi oy summasi) darhol
+ * ko'rinsin. To'lov oyi = firstMonthKey (bo'lmasa kirgan sana oyi).
  *
  * ⚠️ Xatolik o'quvchi yaratishni bekor QILMAYDI: idempotent generatsiya jim
  * qolmasligi uchun logga yoziladi (davr ochilgach shakllantirish naqshi).
  * Kelajak oy / ta'til oyi bo'lsa faktura chiqmaydi — bu normal.
  */
-const generateFirstMonthInvoice = async (req, user, enrollmentDate) => {
+const generateFirstMonthInvoice = async (req, user, body = {}) => {
   if (user?.role !== ROLES.STUDENT) return null;
 
   let month;
   try {
-    month = enrollmentDate
-      ? monthKeyOfDate(parseDayDate(enrollmentDate))
-      : currentMonthKey();
+    month =
+      parseOptionalMonthKey(body.firstMonthKey, "To'lov oyi") ??
+      (body.enrollmentDate
+        ? monthKeyOfDate(parseDayDate(body.enrollmentDate))
+        : currentMonthKey());
   } catch {
     return null;
   }
@@ -94,9 +98,9 @@ const createUser = asyncHandler(async (req, res) => {
   // "o'qituvchi faqat o'quvchi qo'shadi" cheklovi uchun esa `role` kerak.
   const user = await userService.createUser(req.body, req.user?.id, req.user);
 
-  // O'quvchi bo'lsa — kirish oyi hisob-fakturasini darhol shakllantiramiz
-  // (qo'lda kiritilgan birinchi oy summasi qarz sifatida darhol ko'rinsin).
-  const generated = await generateFirstMonthInvoice(req, user, req.body.enrollmentDate);
+  // O'quvchi bo'lsa — birinchi to'lov oyi hisob-fakturasini darhol
+  // shakllantiramiz (qo'lda kiritilgan birinchi oy summasi darhol ko'rinsin).
+  const generated = await generateFirstMonthInvoice(req, user, req.body);
 
   res.status(201).json({
     success: true,

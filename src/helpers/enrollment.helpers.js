@@ -78,7 +78,7 @@ const REASONS = {
  *   billableDays: number,
  *   monthDays: number,
  *   entryDay: number|null,
- *   isStartMonth: boolean,
+ *   isFirstAmountMonth: boolean,
  *   firstMonthAmount: any|null,
  *   reason: string
  * }}
@@ -86,15 +86,21 @@ const REASONS = {
 function resolveEnrollmentForMonth(periods, monthKey) {
   const monthDays = daysInMonth(monthKey);
 
-  const full = (reason, { isStartMonth = false, firstMonthAmount = null } = {}) => ({
+  // Qo'lda kiritilgan birinchi oy summasi QAYSI oyga tegishli:
+  //   firstMonthKey (to'lov oyi) bo'lsa — o'sha oy; bo'lmasa kirgan sana oyi.
+  const amountMonthOf = (period) =>
+    period?.firstMonthKey ?? (period ? monthKeyOfDate(period.startDate) : null);
+
+  const enrolled = (extra, winner) => ({
     enrolled: true,
     isProrated: false,
     billableDays: monthDays,
     monthDays,
     entryDay: null,
-    isStartMonth,
-    firstMonthAmount,
-    reason,
+    firstMonthAmount: winner?.firstMonthAmount ?? null,
+    isFirstAmountMonth:
+      winner?.firstMonthAmount != null && amountMonthOf(winner) === monthKey,
+    ...extra,
   });
 
   const none = (reason) => ({
@@ -103,7 +109,7 @@ function resolveEnrollmentForMonth(periods, monthKey) {
     billableDays: 0,
     monthDays,
     entryDay: null,
-    isStartMonth: false,
+    isFirstAmountMonth: false,
     firstMonthAmount: null,
     reason,
   });
@@ -111,6 +117,7 @@ function resolveEnrollmentForMonth(periods, monthKey) {
   // Qator yo'q → o'qimaydi (hisob-faktura yozilmaydi)
   if (!periods || periods.length === 0) return none(REASONS.NO_PERIODS);
 
+  let coveringPeriod = null; // oldingi oyda boshlangan, shu oyni qamraydi
   let earliestEntryDay = null;
   let earliestEntryPeriod = null;
 
@@ -123,8 +130,12 @@ function resolveEnrollmentForMonth(periods, monthKey) {
     if (endKey != null && endKey < monthKey) continue;
 
     // Davr oyning 1-kunini qamragan (oldingi oyda boshlangan) → to'liq oy.
-    // Bu KIRISH oyi EMAS — override tegmaydi (isStartMonth=false).
-    if (startKey < monthKey) return full(REASONS.COVERS_MONTH_START);
+    // Birinchi mos keluvchini olamiz (eski xatti-harakat), lekin firstMonthKey
+    // ni o'qish uchun uni SAQLAYMIZ (override o'sha oyga tegishi mumkin).
+    if (startKey < monthKey) {
+      if (!coveringPeriod) coveringPeriod = period;
+      continue;
+    }
 
     // Davr AYNAN shu oyda boshlangan — eng ertasini olamiz
     const day = dayOfMonthOfDate(period.startDate);
@@ -134,25 +145,27 @@ function resolveEnrollmentForMonth(periods, monthKey) {
     }
   }
 
-  if (earliestEntryDay == null) return none(REASONS.NOT_ENROLLED);
-
-  const firstMonthAmount = earliestEntryPeriod?.firstMonthAmount ?? null;
-
-  // 1-kunda kelgan bo'lsa proratsiya yo'q — to'liq oy, lekin KIRISH oyi
-  if (earliestEntryDay <= 1) {
-    return full(REASONS.COVERS_MONTH_START, { isStartMonth: true, firstMonthAmount });
+  // Qamragan davr (oldingi oy) g'olib — eski qoida shunday edi
+  if (coveringPeriod) {
+    return enrolled({ reason: REASONS.COVERS_MONTH_START }, coveringPeriod);
   }
 
-  return {
-    enrolled: true,
-    isProrated: true,
-    billableDays: monthDays - earliestEntryDay + 1,
-    monthDays,
-    entryDay: earliestEntryDay,
-    isStartMonth: true,
-    firstMonthAmount,
-    reason: REASONS.ENTERED_MID_MONTH,
-  };
+  if (earliestEntryDay == null) return none(REASONS.NOT_ENROLLED);
+
+  // 1-kunda kelgan bo'lsa proratsiya yo'q — to'liq oy
+  if (earliestEntryDay <= 1) {
+    return enrolled({ reason: REASONS.COVERS_MONTH_START }, earliestEntryPeriod);
+  }
+
+  return enrolled(
+    {
+      isProrated: true,
+      billableDays: monthDays - earliestEntryDay + 1,
+      entryDay: earliestEntryDay,
+      reason: REASONS.ENTERED_MID_MONTH,
+    },
+    earliestEntryPeriod,
+  );
 }
 
 /**

@@ -2065,12 +2065,19 @@ model StudentEnrollment {
   startDate DateTime  @map("start_date") @db.Date
   endDate   DateTime? @map("end_date") @db.Date // null = hozir o'qiyapti
 
-  // BIRINCHI OY summasi — qo'lda belgilanadi. Davrning BOSHLANGAN oyi uchun
+  // BIRINCHI OY summasi — qo'lda belgilanadi. `firstMonthKey` oyi uchun
   // hisob-faktura summasini OVERRIDE qiladi: kun-proratsiyasiz, chegirmasiz
   // (baseAmount = proratedAmount = amount = firstMonthAmount). null bo'lsa —
   // odatiy hisob (to'liq tarif). ⚠️ Shu tufayli hisobotlarda o'sha qatorda
   // `baseAmount` "olingan summa" ma'nosini oladi (katalog narxi emas).
   firstMonthAmount Decimal? @map("first_month_amount") @db.Decimal(14, 2)
+
+  // TO'LOV BOSHLANADIGAN OY (YYYYMM) — `firstMonthAmount` aynan shu oyga
+  // biriktiriladi. Kirgan sana (startDate) undan oldin bo'lishi mumkin
+  // (masalan avgustda kelib, sentyabrdan to'laydi): tarif ham shu oydan
+  // boshlanadi, shuning uchun undan oldingi oylar hisob-fakturaga tushmaydi.
+  // null bo'lsa — kirgan sana oyi ishlatiladi.
+  firstMonthKey Int? @map("first_month_key")
 
   endReason StudentEnrollmentEndReason? @map("end_reason")
   reason    String                      @default("")

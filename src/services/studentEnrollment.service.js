@@ -28,6 +28,7 @@ const {
   monthKeyOfDate,
   parseDayDate,
   parseOptionalDayDate,
+  parseOptionalMonthKey,
   formatMonthKey,
 } = require("../helpers/month.helpers");
 const { formatAmount, parseAmount } = require("../helpers/money.helpers");
@@ -161,6 +162,7 @@ const resolveEnrollmentsForStudents = async (studentIds = []) => {
       startDate: true,
       endDate: true,
       firstMonthAmount: true,
+      firstMonthKey: true,
     },
     orderBy: { startDate: "asc" },
   });
@@ -171,6 +173,7 @@ const resolveEnrollmentsForStudents = async (studentIds = []) => {
       startDate: row.startDate,
       endDate: row.endDate,
       firstMonthAmount: row.firstMonthAmount,
+      firstMonthKey: row.firstMonthKey,
     });
   }
 
@@ -401,12 +404,13 @@ const createEnrollment = async (data, userId, { allowPast = false } = {}) => {
   const endReason = parseEndReason(data.endReason);
   const student = await assertStudent(data.studentId);
 
-  // Birinchi oy summasi — qo'lda (ixtiyoriy). Kirish oyi hisob-fakturasini
-  // override qiladi (invoiceBuilder). null bo'lsa — odatiy hisob.
+  // Birinchi oy summasi — qo'lda (ixtiyoriy). `firstMonthKey` (to'lov oyi)
+  // hisob-fakturasini override qiladi (invoiceBuilder). null bo'lsa — odatiy.
   const firstMonthAmount =
     data.firstMonthAmount != null && String(data.firstMonthAmount).trim() !== ""
       ? parseAmount(data.firstMonthAmount, "Birinchi oy summasi")
       : null;
+  const firstMonthKey = parseOptionalMonthKey(data.firstMonthKey, "To'lov oyi");
 
   if (period.endDate != null && endReason == null) {
     throw new BadRequestError("Tugash sanasi bilan birga ketish sababi ham tanlanishi kerak");
@@ -428,6 +432,7 @@ const createEnrollment = async (data, userId, { allowPast = false } = {}) => {
           studentId: data.studentId,
           ...period,
           firstMonthAmount,
+          firstMonthKey,
           endReason,
           reason: data.reason?.trim() || "",
           note: data.note?.trim() || "",
@@ -492,6 +497,18 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
   if (data.endReason !== undefined) payload.endReason = parseEndReason(data.endReason);
   if (data.reason !== undefined) payload.reason = data.reason?.trim() || "";
   if (data.note !== undefined) payload.note = data.note?.trim() || "";
+
+  // Boshlang'ich (birinchi oy) summasi va to'lov oyi — tahrirlash mumkin.
+  // Bo'sh yuborilsa (null/"") tozalanadi → odatiy hisobga qaytadi.
+  if (data.firstMonthAmount !== undefined) {
+    payload.firstMonthAmount =
+      data.firstMonthAmount != null && String(data.firstMonthAmount).trim() !== ""
+        ? parseAmount(data.firstMonthAmount, "Birinchi oy summasi")
+        : null;
+  }
+  if (data.firstMonthKey !== undefined) {
+    payload.firstMonthKey = parseOptionalMonthKey(data.firstMonthKey, "To'lov oyi");
+  }
 
   if (payload.endDate != null && (payload.endReason ?? row.endReason) == null) {
     throw new BadRequestError("Tugash sanasi bilan birga ketish sababi ham tanlanishi kerak");

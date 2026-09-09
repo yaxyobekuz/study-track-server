@@ -30,6 +30,7 @@ const {
   currentMonthKey,
   monthKeyOfDate,
   parseOptionalDayDate,
+  parseOptionalMonthKey,
 } = require("../helpers/month.helpers");
 const { parseAmount } = require("../helpers/money.helpers");
 const { normalizePhone, formatPhoneUz } = require("../helpers/phone.helpers");
@@ -673,8 +674,10 @@ async function createUser(data, actorId, actor = null) {
     workEndTime,
     workDays,
     weeklySchedule,
-    // O'quvchi moliyasi (ixtiyoriy) — kirgan sana, birinchi oy summasi, tarif
+    // O'quvchi moliyasi (ixtiyoriy) — kirgan sana, to'lov oyi, birinchi oy
+    // summasi, tarif
     enrollmentDate,
+    firstMonthKey,
     firstMonthAmount,
     tariffId,
   } = data;
@@ -735,12 +738,18 @@ async function createUser(data, actorId, actor = null) {
   // otilsa, platformadagi band qilingan username jimgina qolib ketardi.
   let enrollmentStartDate = null;
   let firstMonthAmountParsed = null;
+  let firstMonthKeyParsed = null;
+  let billingMonth = null; // to'lov (tarif + birinchi summa) boshlanadigan oy
   if (role === "student") {
     enrollmentStartDate =
       parseOptionalDayDate(enrollmentDate, "Kirgan sana") ?? currentDayDate();
     if (firstMonthAmount != null && String(firstMonthAmount).trim() !== "") {
       firstMonthAmountParsed = parseAmount(firstMonthAmount, "Birinchi oy summasi");
     }
+    // To'lov oyi — bo'lmasa kirgan sana oyi. Tarif AYNAN shu oydan boshlanadi,
+    // shuning uchun undan oldingi oylar hisob-fakturaga tushmaydi.
+    firstMonthKeyParsed = parseOptionalMonthKey(firstMonthKey, "To'lov oyi");
+    billingMonth = firstMonthKeyParsed ?? monthKeyOfDate(enrollmentStartDate);
     // Client bergan tarifni tekshiramiz (arxivlangan/yo'q tarif rad etiladi).
     // Standart tarif sozlamada allaqachon tekshirilgan — uni qayta tekshirmaymiz.
     if (tariffId) await assertTariff(tariffId, { forAssignment: true });
@@ -821,6 +830,7 @@ async function createUser(data, actorId, actor = null) {
             studentId: user.id,
             startDate: enrollmentStartDate,
             firstMonthAmount: firstMonthAmountParsed,
+            firstMonthKey: firstMonthKeyParsed,
             createdBy: actorId ?? user.id,
             reason: "O'quvchi yaratilganda avtomatik ochildi",
           },
@@ -835,14 +845,15 @@ async function createUser(data, actorId, actor = null) {
         //
         // Qo'lda tanlangan tarif (tariffId) ustun; bo'lmasa sozlamadagi
         // standart tarif. Ikkalasi ham bo'lmasa — tarif qo'lda biriktiriladi.
-        // Tarif KIRGAN sana oyidan boshlanadi (bugungi oydan emas).
+        // Tarif TO'LOV OYIDAN boshlanadi (firstMonthKey ?? kirgan sana oyi) —
+        // shuning uchun undan oldingi oylar hisob-fakturaga tushmaydi.
         const effectiveTariffId = tariffId ?? defaultTariffId;
         if (effectiveTariffId) {
           await applyDefaultForStudent(
             tx,
             user.id,
             effectiveTariffId,
-            monthKeyOfDate(enrollmentStartDate),
+            billingMonth,
             actorId ?? user.id,
           );
         }
