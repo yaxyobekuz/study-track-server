@@ -101,7 +101,12 @@ const resolveForStudentMonth = async (studentId, month) => {
     };
   }
 
-  const amount = formatAmount(version.monthlyAmount);
+  // INDIVIDUAL narx: biriktirishda customAmount bo'lsa katalog o'rniga shuni
+  // olamiz (versiya baribir snapshot uchun — tarif nomi/yo'nalishi).
+  const isCustom = assignment.customAmount != null;
+  const amount = isCustom
+    ? formatAmount(assignment.customAmount)
+    : formatAmount(version.monthlyAmount);
 
   return {
     studentId,
@@ -118,9 +123,11 @@ const resolveForStudentMonth = async (studentId, month) => {
           endMonth: version.endMonth,
         },
         amount,
+        isCustom,
       },
     ],
     total: amount,
+    isCustom,
     reason: null,
     assignment,
   };
@@ -214,7 +221,10 @@ const resolveManyForMonth = async (month, { studentIds } = {}) => {
       continue;
     }
 
-    const amount = formatAmount(version.monthlyAmount);
+    const isCustom = assignment.customAmount != null;
+    const amount = isCustom
+      ? formatAmount(assignment.customAmount)
+      : formatAmount(version.monthlyAmount);
 
     byStudent.set(assignment.studentId, {
       studentId: assignment.studentId,
@@ -229,9 +239,11 @@ const resolveManyForMonth = async (month, { studentIds } = {}) => {
             endMonth: version.endMonth,
           },
           amount,
+          isCustom,
         },
       ],
       total: amount,
+      isCustom,
       reason: null,
       assignment,
     });

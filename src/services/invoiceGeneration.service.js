@@ -32,6 +32,7 @@ const { resolveManyForMonth } = require("./tariffResolution.service");
 const { resolveStatusesForMonth, NON_BILLABLE } = require("./studentFinanceStatus.service");
 const { resolveDiscountsForMonth } = require("./studentDiscount.service");
 const { resolveEnrollmentsForStudents } = require("./studentEnrollment.service");
+const { resolveForMonth: resolveOverridesForMonth } = require("./studentMonthOverride.service");
 const { isVacationMonth } = require("./vacationMonth.service");
 const { applyDepositsForStudents } = require("./studentAccount.service");
 const { buildInvoiceRow, prorationGap } = require("./invoiceBuilder.service");
@@ -220,11 +221,12 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   // ── 3. Narx, chegirma, o'qish davri va 4. mavjud hisob-fakturalar ─
   // Hammasi `billableIds` bo'yicha — passga qo'shimcha aylanish qo'shilmaydi.
-  const [{ byStudent }, discountsByStudent, periodsByStudent, existing] =
+  const [{ byStudent }, discountsByStudent, periodsByStudent, overridesByStudent, existing] =
     await Promise.all([
       resolveManyForMonth(month, { studentIds: billableIds }),
       resolveDiscountsForMonth(month, { studentIds: billableIds }),
       resolveEnrollmentsForStudents(billableIds),
+      resolveOverridesForMonth(month, billableIds),
       prisma.monthlyInvoice.findMany({
         where: { month, studentId: { in: billableIds } },
         select: { id: true, studentId: true, status: true, paidAmount: true, note: true },
@@ -284,6 +286,7 @@ const generateForMonth = async (monthInput, options = {}) => {
       resolved: byStudent.get(student.id),
       discounts: discountsByStudent.get(student.id) ?? [],
       periods: periodsByStudent.get(student.id) ?? [],
+      monthOverride: overridesByStudent.get(student.id) ?? null,
       source,
       actorId,
       studentSnapshot: {

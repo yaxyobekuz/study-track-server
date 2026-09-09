@@ -2007,6 +2007,11 @@ model StudentTariff {
   startMonth Int      @map("start_month")
   // null → butun o'qish davri. startMonth === endMonth → faqat o'sha oy.
   endMonth   Int?     @map("end_month")
+  // INDIVIDUAL (maxsus) narx — kategoriya biriktirilgan bo'lsa ham o'quvchi
+  // shu davrda AYNAN shu summani to'laydi (katalog versiya narxi o'rniga).
+  // null → katalog narxi. Chegirmalar ustiga qo'llanaveradi. Doimiy (davr
+  // bo'yicha) — bitta oy uchun bo'lsa StudentMonthOverride ishlatiladi.
+  customAmount Decimal? @map("custom_amount") @db.Decimal(14, 2)
   note       String   @default("")
   createdBy  String   @map("created_by") @db.Char(24)
   createdAt  DateTime @default(now()) @map("created_at")
@@ -2018,6 +2023,34 @@ model StudentTariff {
   @@index([studentId, startMonth(sort: Desc)])
   @@index([tariffId])
   @@map("student_tariffs")
+}
+
+// OY SUMMASI OVERRIDE'I — bitta oy uchun o'quvchining to'lovini SABAB bilan
+// alohida belgilash. Faqat o'sha oyga ta'sir qiladi (keyingi oylar odatdagi
+// tarif). "Reja": invoiceBuilder o'qiydi, regeneratsiyada saqlanadi, invoice
+// hali bo'lmasa ham oldindan qo'yiladi (enrollment.firstMonthAmount uslubi).
+// Ommaviy grant ham shu jadval orqali (ko'p o'quvchiga bir oy bir summa).
+enum MonthOverrideReason {
+  late_join // kech qo'shilgan
+  sickness // kasallik sababli
+  family // oilaviy sabab
+  other // boshqa
+}
+
+model StudentMonthOverride {
+  id         String              @id @db.Char(24)
+  studentId  String              @map("student_id") @db.Char(24)
+  month      Int // YYYYMM
+  amount     Decimal             @db.Decimal(14, 2)
+  reasonCode MonthOverrideReason @map("reason_code")
+  note       String              @default("")
+  createdBy  String              @map("created_by") @db.Char(24)
+  createdAt  DateTime            @default(now()) @map("created_at")
+  updatedAt  DateTime            @updatedAt @map("updated_at")
+
+  @@unique([studentId, month]) // bir o'quvchi, bir oy — bitta override
+  @@index([month])
+  @@map("student_month_overrides")
 }
 
 // ─────────────────────────────────────────────
@@ -2451,6 +2484,13 @@ model MonthlyInvoice {
   // Hech qachon qayta hisoblanmaydi; keyingi to'g'rilash keyingi oydan
   // amal qiladi. Invariantni financeReconcile job har kecha tekshiradi.
   amount     Decimal @db.Decimal(14, 2)
+
+  // OY OVERRIDE'i snapshoti — summa qo'lda o'zgartirilgan bo'lsa NEGA
+  // (StudentMonthOverride.reasonCode/note). Hisobotda "kech qo'shilgan"
+  // singari sabab ko'rinishi uchun. Odatiy hisobda null.
+  overrideReason String? @map("override_reason")
+  overrideNote   String? @map("override_note")
+
   // To'lovlar yig'indisi (denormalizatsiya): ro'yxatni qarz bo'yicha
   // saralash/filtrlash har qator uchun agregatsiyasiz ishlashi kerak.
   // Faqat tranzaksiya ichida increment/decrement bilan yangilanadi.

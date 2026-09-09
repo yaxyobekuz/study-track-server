@@ -57,6 +57,11 @@ const {
   resolveEnrollmentsForStudents,
 } = require("./studentEnrollment.service");
 const {
+  resolveForMonth: resolveOverridesForMonth,
+  resolveOne: resolveOverrideOne,
+  REASON_LABELS: OVERRIDE_REASON_LABELS,
+} = require("./studentMonthOverride.service");
+const {
   buildInvoiceRow,
   computeMonthlyAmount,
   prorationGap,
@@ -166,6 +171,10 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
         : null,
     discountAmount: formatAmount(discount),
     hasDiscount: discount.greaterThan(0),
+    // Oy summasi qo'lda o'zgartirilgan bo'lsa — sabab yorlig'i (hisobot uchun)
+    overrideReasonLabel: invoice.overrideReason
+      ? OVERRIDE_REASON_LABELS[invoice.overrideReason] ?? invoice.overrideReason
+      : null,
     amount: formatAmount(invoice.amount),
     paidAmount: formatAmount(invoice.paidAmount),
     // Ortiqcha to'lov depozitga tushadi, shuning uchun bu yerda manfiy
@@ -642,11 +651,12 @@ const getMyFinance = async (studentId, options = {}) => {
 
   // Joriy oydagi tarif, chegirma va narx — hisob-faktura hali shakllanmagan
   // bo'lsa ham o'quvchi nimaga qarzdor bo'lishini ko'rishi kerak.
-  const [resolved, discounts, movements, periods] = await Promise.all([
+  const [resolved, discounts, movements, periods, monthOverride] = await Promise.all([
     resolveForStudentMonth(studentId, data.currentMonth),
     resolveDiscountsForStudent(studentId, data.currentMonth),
     getMovements(studentId),
     getPeriodsForStudent(studentId),
+    resolveOverrideOne(studentId, data.currentMonth),
   ]);
 
   const item = resolved.items[0] ?? null;
@@ -661,6 +671,7 @@ const getMyFinance = async (studentId, options = {}) => {
         periods,
         month: data.currentMonth,
         settings,
+        monthOverride,
       })
     : null;
 
@@ -1003,11 +1014,19 @@ const getStudentRegistry = async (req) => {
 
   const ids = students.map((s) => s.id);
 
-  const [{ byStudent }, discountsByStudent, periodsByStudent, balances, debtRows, statuses] =
-    await Promise.all([
+  const [
+    { byStudent },
+    discountsByStudent,
+    periodsByStudent,
+    overridesByStudent,
+    balances,
+    debtRows,
+    statuses,
+  ] = await Promise.all([
       resolveManyForMonth(month, { studentIds: ids }),
       resolveDiscountsForMonth(month, { studentIds: ids }),
       resolveEnrollmentsForStudents(ids),
+      resolveOverridesForMonth(month, ids),
       // Qoldiq va qarz — BUTUN FILTR bo'yicha: qatorlar sahifadagilardan,
       // `totals` esa hammasidan olinadi (ikkinchi so'rov to'plami emas)
       getBalances(allIds),
@@ -1060,6 +1079,7 @@ const getStudentRegistry = async (req) => {
             periods,
             month,
             settings,
+            monthOverride: overridesByStudent.get(student.id) ?? null,
           })
         : null;
 
@@ -1373,10 +1393,11 @@ const regenerateInvoice = async (id, reason, userId) => {
   }
 
   const settings = await getFinanceSettings();
-  const [resolved, discounts, periods] = await Promise.all([
+  const [resolved, discounts, periods, monthOverride] = await Promise.all([
     resolveForStudentMonth(invoice.studentId, invoice.month),
     resolveDiscountsForStudent(invoice.studentId, invoice.month),
     getPeriodsForStudent(invoice.studentId),
+    resolveOverrideOne(invoice.studentId, invoice.month),
   ]);
 
   // ⚠️ Summa AYNAN oylik pass bilan bir xil quruvchi orqali hisoblanadi.
@@ -1390,6 +1411,7 @@ const regenerateInvoice = async (id, reason, userId) => {
     resolved,
     discounts,
     periods,
+    monthOverride,
     source: "manual",
     actorId: userId,
     studentSnapshot: invoice.studentSnapshot,

@@ -29,7 +29,16 @@ const {
   coveringMonthWhere,
   overlappingPeriodWhere,
 } = require("../helpers/month.helpers");
-const { formatAmount } = require("../helpers/money.helpers");
+const { formatAmount, parseAmount } = require("../helpers/money.helpers");
+
+/**
+ * Individual (maxsus) narxni tekshiradi — bo'sh/null bo'lsa null (katalog
+ * narxi), aks holda Decimal string. Bir joyda, chunki 4 ta amal ishlatadi.
+ */
+const parseCustomAmount = (value) =>
+  value != null && String(value).trim() !== ""
+    ? parseAmount(value, "Individual narx")
+    : null;
 const { resolveManyForMonth } = require("./tariffResolution.service");
 // Standart tarif KO'RSATKICHI moliya sozlamalarida (filial singletoni).
 // `financeSettings.service.js` EMAS, `settings.service.js` chaqiriladi:
@@ -176,6 +185,8 @@ const collectSealedInvoiceWarnings = async (studentId, month) => {
 
 const serializeAssignment = (assignment, { student, tariff, resolved } = {}) => ({
   ...assignment,
+  customAmount:
+    assignment.customAmount != null ? formatAmount(assignment.customAmount) : null,
   startMonthLabel: formatMonthKey(assignment.startMonth),
   endMonthLabel: formatMonthKey(assignment.endMonth),
   student: student ?? null,
@@ -409,6 +420,7 @@ const createAssignment = async (data, userId) => {
           studentId: data.studentId,
           tariffId: data.tariffId,
           ...period,
+          customAmount: parseCustomAmount(data.customAmount),
           note: data.note?.trim() || "",
           createdBy: userId,
         },
@@ -444,6 +456,12 @@ const updateAssignment = async (id, data) => {
   const payload = {};
 
   if (data.note !== undefined) payload.note = data.note?.trim() || "";
+
+  // Individual narx — istalgan vaqtda o'zgartirilishi mumkin (kelajakdagi
+  // hisob-fakturalarga ta'sir qiladi; muhrlangan oylar qayta shakllantiriladi).
+  if (data.customAmount !== undefined) {
+    payload.customAmount = parseCustomAmount(data.customAmount);
+  }
 
   if (data.tariffId !== undefined && data.tariffId !== assignment.tariffId) {
     if (isInEffect) {
@@ -604,6 +622,7 @@ const changeTariff = async (id, data, userId) => {
           studentId: assignment.studentId,
           tariffId: data.tariffId,
           ...newPeriod,
+          customAmount: parseCustomAmount(data.customAmount),
           note: data.note?.trim() || "",
           createdBy: userId,
         },
@@ -675,6 +694,7 @@ const bulkAssign = async (data, userId) => {
             studentId,
             tariffId: data.tariffId,
             ...period,
+            customAmount: parseCustomAmount(data.customAmount),
             note: data.note?.trim() || "",
             createdBy: userId,
           },

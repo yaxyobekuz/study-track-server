@@ -40,6 +40,7 @@ const testSettingsRoutes = require("./testSettings.routes");
 const scheduleSettingsRoutes = require("./scheduleSettings.routes");
 const tariffRoutes = require("./tariff.routes");
 const studentTariffRoutes = require("./studentTariff.routes");
+const studentMonthOverrideRoutes = require("./studentMonthOverride.routes");
 const financeSettingsRoutes = require("./financeSettings.routes");
 const financeReportRoutes = require("./financeReport.routes");
 const academicDashboardRoutes = require("./academicDashboard.routes");
@@ -103,6 +104,7 @@ router.use("/test-settings", testSettingsRoutes);
 router.use("/schedule-settings", scheduleSettingsRoutes);
 router.use("/tariffs", tariffRoutes);
 router.use("/student-tariffs", studentTariffRoutes);
+router.use("/student-month-overrides", studentMonthOverrideRoutes);
 router.use("/finance-settings", financeSettingsRoutes);
 router.use("/finance-reports", financeReportRoutes);
 // TA'LIM DASHBOARDI — moliya dashboardining akademik ko'zgusi.

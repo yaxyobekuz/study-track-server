@@ -55,7 +55,14 @@ const { REASONS } = require("./tariffResolution.service");
  *   wipedByDiscount: boolean
  * }}
  */
-const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings }) => {
+const computeMonthlyAmount = ({
+  baseAmount,
+  discounts,
+  periods,
+  month,
+  settings,
+  monthOverride = null,
+}) => {
   const base = parseAmount(baseAmount, "Oylik summa");
   const enrollment = resolveEnrollmentForMonth(periods, month);
 
@@ -75,29 +82,45 @@ const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings 
       isProrated: false,
       roundingUnit: 0,
       wipedByDiscount: false,
+      overrideReason: null,
+      overrideNote: null,
     };
   }
 
-  // ── BIRINCHI OY OVERRIDE ──────────────────────
-  // TO'LOV OYI (firstMonthKey, bo'lmasa kirgan sana oyi) uchun qo'lda kiritilgan
-  // summa: kun-proratsiyasiz, chegirmasiz — qarz AYNAN shu summa.
-  //   base = prorated = amount = firstMonthAmount, discount = 0
-  // Reconcile invariantlari (amount = prorated − discount, prorated <= base)
-  // tenglik bilan bajariladi. Bu — YAGONA joy, shuning uchun kassir registri va
-  // o'quvchi paneli ham shu summani ko'radi (ular ham shu funksiyani chaqiradi).
-  if (enrollment.isFirstAmountMonth && enrollment.firstMonthAmount != null) {
-    const manual = parseAmount(enrollment.firstMonthAmount, "Birinchi oy summasi");
+  // Qo'lda kiritilgan bir oylik summa (fixed override) — proratsiyasiz,
+  // chegirmasiz: base = prorated = amount, discount = 0. Reconcile invariantlari
+  // tenglik bilan bajariladi. YAGONA joy: kassir registri va o'quvchi paneli ham
+  // shu funksiyani chaqirgani uchun bir xil summa ko'radi.
+  const fixed = (amount, { overrideReason = null, overrideNote = null } = {}) => {
+    const a = parseAmount(amount, "Oylik summa");
     return {
       enrollment,
-      baseAmount: manual,
-      proratedAmount: manual,
+      baseAmount: a,
+      proratedAmount: a,
       discountAmount: new Decimal(0),
-      amount: manual,
+      amount: a,
       snapshot: [],
       isProrated: false,
       roundingUnit: 0,
       wipedByDiscount: false,
+      overrideReason,
+      overrideNote,
     };
+  };
+
+  // ── 1) OY OVERRIDE'i (eng ustun) ──────────────
+  // Aniq, sababli: bitta oy uchun admin belgilagan summa (StudentMonthOverride).
+  // Ommaviy grant ham shu yo'l bilan keladi.
+  if (monthOverride && monthOverride.amount != null) {
+    return fixed(monthOverride.amount, {
+      overrideReason: monthOverride.reasonCode ?? null,
+      overrideNote: monthOverride.note ?? null,
+    });
+  }
+
+  // ── 2) BIRINCHI OY summasi (kirish/to'lov oyi) ─
+  if (enrollment.isFirstAmountMonth && enrollment.firstMonthAmount != null) {
+    return fixed(enrollment.firstMonthAmount);
   }
 
   const prorated = settings.prorationEnabled
@@ -129,6 +152,8 @@ const computeMonthlyAmount = ({ baseAmount, discounts, periods, month, settings 
     // o'quvchi jimgina bepul o'qib ketardi.
     wipedByDiscount:
       discounted.finalAmount.isZero() && prorated.proratedAmount.greaterThan(0),
+    overrideReason: null,
+    overrideNote: null,
   };
 };
 
@@ -153,6 +178,7 @@ const buildInvoiceRow = ({
   source = "cron",
   actorId = null,
   studentSnapshot,
+  monthOverride = null,
 }) => {
   const enrollment = resolveEnrollmentForMonth(periods, month);
 
@@ -180,6 +206,7 @@ const buildInvoiceRow = ({
     periods,
     month,
     settings,
+    monthOverride,
   });
 
   // Nol summali hisob-faktura darhol "to'langan" bo'ladi — qamrov to'liq
@@ -208,6 +235,9 @@ const buildInvoiceRow = ({
       discountAmount: computed.discountAmount,
       discountSnapshot: computed.snapshot.length ? computed.snapshot : null,
       amount: computed.amount,
+      // Oy override sababi/izohi — MUHRLANADI (hisobotda "nega o'zgargani")
+      overrideReason: computed.overrideReason,
+      overrideNote: computed.overrideNote,
       paidAmount: 0,
       status: isZero ? "paid" : "unpaid",
       paidAt: isZero ? new Date() : null,
