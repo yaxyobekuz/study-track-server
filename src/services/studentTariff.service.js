@@ -51,6 +51,9 @@ const STUDENT_SELECT = {
   lastName: true,
   username: true,
   isArchived: true,
+  // Sinf — biriktirilgan o'quvchilar jadvalida ko'rsatiladi va sinf bo'yicha
+  // filtrlashda ham kerak. M2M, sanasiz (UserClass): odatda bitta sinf.
+  classes: { select: { class: { select: { id: true, name: true } } } },
 };
 
 const TARIFF_SELECT = {
