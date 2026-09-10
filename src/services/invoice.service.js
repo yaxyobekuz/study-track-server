@@ -50,6 +50,10 @@ const {
   resolveDiscountsForStudent,
   resolveDiscountsForMonth,
 } = require("./studentDiscount.service");
+const {
+  resolveServicesForStudent,
+  resolveServicesForMonth,
+} = require("./service.service");
 const { getVacationSet } = require("./vacationMonth.service");
 const { getInvoiceAllocations, TX_OPTIONS } = require("./payment.service");
 const {
@@ -171,6 +175,11 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
         : null,
     discountAmount: formatAmount(discount),
     hasDiscount: discount.greaterThan(0),
+    // Qo'shimcha xizmatlar ulushi (baseAmount ichida) — "shundan yotoqxona
+    // qancha" degan savolga javob. Eski qatorlarda 0/null.
+    servicesAmount: formatAmount(invoice.servicesAmount ?? 0),
+    servicesSnapshot: invoice.servicesSnapshot ?? null,
+    hasServices: new Decimal(invoice.servicesAmount ?? 0).greaterThan(0),
     // Oy summasi qo'lda o'zgartirilgan bo'lsa — sabab yorlig'i (hisobot uchun)
     overrideReasonLabel: invoice.overrideReason
       ? OVERRIDE_REASON_LABELS[invoice.overrideReason] ?? invoice.overrideReason
@@ -651,13 +660,15 @@ const getMyFinance = async (studentId, options = {}) => {
 
   // Joriy oydagi tarif, chegirma va narx — hisob-faktura hali shakllanmagan
   // bo'lsa ham o'quvchi nimaga qarzdor bo'lishini ko'rishi kerak.
-  const [resolved, discounts, movements, periods, monthOverride] = await Promise.all([
-    resolveForStudentMonth(studentId, data.currentMonth),
-    resolveDiscountsForStudent(studentId, data.currentMonth),
-    getMovements(studentId),
-    getPeriodsForStudent(studentId),
-    resolveOverrideOne(studentId, data.currentMonth),
-  ]);
+  const [resolved, discounts, services, movements, periods, monthOverride] =
+    await Promise.all([
+      resolveForStudentMonth(studentId, data.currentMonth),
+      resolveDiscountsForStudent(studentId, data.currentMonth),
+      resolveServicesForStudent(studentId, data.currentMonth),
+      getMovements(studentId),
+      getPeriodsForStudent(studentId),
+      resolveOverrideOne(studentId, data.currentMonth),
+    ]);
 
   const item = resolved.items[0] ?? null;
   const settings = await getFinanceSettings();
@@ -668,6 +679,7 @@ const getMyFinance = async (studentId, options = {}) => {
     ? computeMonthlyAmount({
         baseAmount: item.amount,
         discounts,
+        services,
         periods,
         month: data.currentMonth,
         settings,
@@ -696,6 +708,14 @@ const getMyFinance = async (studentId, options = {}) => {
               d.type === "percent" ? `${Number(d.value)}%` : `${formatAmount(d.value)} so'm`,
           })),
           discountAmount: formatAmount(effective.discountAmount),
+          // Qo'shimcha xizmatlar (yotoqxona, ovqat) — o'quvchi nimaga pul
+          // to'layotganini ko'rishi kerak
+          services: services.map((s) => ({
+            id: s.id,
+            name: s.name,
+            amount: s.amount,
+          })),
+          servicesAmount: formatAmount(effective.servicesAmount),
           effectiveMonthly: formatAmount(effective.amount),
           isProrated: effective.isProrated,
           billableDays: effective.isProrated ? effective.enrollment.billableDays : null,
@@ -1017,6 +1037,7 @@ const getStudentRegistry = async (req) => {
   const [
     { byStudent },
     discountsByStudent,
+    servicesByStudent,
     periodsByStudent,
     overridesByStudent,
     balances,
@@ -1025,6 +1046,7 @@ const getStudentRegistry = async (req) => {
   ] = await Promise.all([
       resolveManyForMonth(month, { studentIds: ids }),
       resolveDiscountsForMonth(month, { studentIds: ids }),
+      resolveServicesForMonth(month, { studentIds: ids }),
       resolveEnrollmentsForStudents(ids),
       resolveOverridesForMonth(month, ids),
       // Qoldiq va qarz — BUTUN FILTR bo'yicha: qatorlar sahifadagilardan,
@@ -1060,6 +1082,7 @@ const getStudentRegistry = async (req) => {
   const items = students.map((student) => {
     const resolved = byStudent.get(student.id);
     const discounts = discountsByStudent.get(student.id) ?? [];
+    const services = servicesByStudent.get(student.id) ?? [];
     const balance = balances.get(student.id) ?? new Decimal(0);
     const debt = debtByStudent.get(student.id) ?? new Decimal(0);
     const status = statuses.get(student.id)?.status ?? "active";
@@ -1076,6 +1099,7 @@ const getStudentRegistry = async (req) => {
         ? computeMonthlyAmount({
             baseAmount: base,
             discounts,
+            services,
             periods,
             month,
             settings,
@@ -1107,6 +1131,10 @@ const getStudentRegistry = async (req) => {
       // GRANT = isExclusive (grant/homiylik) chegirmasi bor o'quvchi —
       // dashboard "grant vs to'lovchi" sanog'i shu bilan ajratiladi.
       isGrant: discounts.some((d) => d.isExclusive),
+      // Qo'shimcha xizmatlar (yotoqxona, ovqat) — kassir nimadan qancha
+      // yig'ilayotganini ko'rishi kerak
+      services: services.map((s) => ({ id: s.id, name: s.name, amount: s.amount })),
+      servicesAmount: priced ? formatAmount(priced.servicesAmount) : null,
       baseAmount: base != null ? formatAmount(base) : null,
       discountAmount: priced ? formatAmount(priced.discountAmount) : null,
       monthlyAmount: priced ? formatAmount(priced.amount) : null,
@@ -1585,9 +1613,10 @@ const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false }
   }
 
   const settings = await getFinanceSettings();
-  const [resolved, discounts, periods, monthOverride] = await Promise.all([
+  const [resolved, discounts, services, periods, monthOverride] = await Promise.all([
     resolveForStudentMonth(invoice.studentId, invoice.month),
     resolveDiscountsForStudent(invoice.studentId, invoice.month),
+    resolveServicesForStudent(invoice.studentId, invoice.month),
     getPeriodsForStudent(invoice.studentId),
     resolveOverrideOne(invoice.studentId, invoice.month),
   ]);
@@ -1602,6 +1631,7 @@ const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false }
     settings,
     resolved,
     discounts,
+    services,
     periods,
     monthOverride,
     source: "manual",

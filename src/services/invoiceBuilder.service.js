@@ -12,10 +12,15 @@
  *
  * ── HISOB TARTIBI (o'zgartirilmasin) ──────────
  *
- *   1. baseAmount     — tarif narxi (to'liq oy, chegirmasiz)
+ *   1. baseAmount     — tarif narxi + QO'SHIMCHA XIZMATLAR (yotoqxona, ovqat)
  *   2. proratedAmount — floor(base × billableDays / monthDays, roundingUnit)
  *   3. discountAmount — chegirmalar AYNAN proratedAmount ga qo'llanadi
  *   4. amount         — proratedAmount − discountAmount   ← MUHRLANADI
+ *
+ * Xizmatlar 1-QADAMDA qo'shiladi (baseAmount ichida) — shu tufayli reconcile
+ * invariantlari (amount = prorated − discount, prorated <= base) o'zgarmaydi.
+ * Oqibati: kirish proratsiyasi va foizli chegirma xizmatga HAM qo'llanadi —
+ * bitta qoida, bitta summa oqimi.
  *
  * 3-qadamda chegirma to'liq narxga qo'llanib, keyin natija proratsiya
  * qilinsa, `discountSnapshot` dagi ulushlar yig'indisi `discountAmount` ga
@@ -62,8 +67,24 @@ const computeMonthlyAmount = ({
   month,
   settings,
   monthOverride = null,
+  // Qo'shimcha xizmatlar: [{ id, name, amount }] — service.service.js
+  // resolveServicesFor* dan keladi. Yig'indisi baseAmount USTIGA qo'shiladi.
+  services = [],
 }) => {
-  const base = parseAmount(baseAmount, "Oylik summa");
+  const tariffBase = parseAmount(baseAmount, "Oylik summa");
+
+  // Xizmatlar yig'indisi — nominal (proratsiyagacha), snapshot bilan birga
+  const servicesAmount = (services ?? []).reduce(
+    (sum, s) => sum.plus(parseAmount(s.amount, "Xizmat summasi")),
+    new Decimal(0),
+  );
+  const servicesSnapshot = (services ?? []).map((s) => ({
+    serviceId: s.id,
+    name: s.name,
+    amount: parseAmount(s.amount).toFixed(2),
+  }));
+
+  const base = tariffBase.plus(servicesAmount);
   const enrollment = resolveEnrollmentForMonth(periods, month);
 
   // O'quvchi bu oyda o'qimagan bo'lsa hisoblanadigan summa YO'Q.
@@ -84,13 +105,16 @@ const computeMonthlyAmount = ({
       wipedByDiscount: false,
       overrideReason: null,
       overrideNote: null,
+      servicesAmount: zero,
+      servicesSnapshot: [],
     };
   }
 
   // Qo'lda kiritilgan bir oylik summa (fixed override) — proratsiyasiz,
-  // chegirmasiz: base = prorated = amount, discount = 0. Reconcile invariantlari
-  // tenglik bilan bajariladi. YAGONA joy: kassir registri va o'quvchi paneli ham
-  // shu funksiyani chaqirgani uchun bir xil summa ko'radi.
+  // chegirmasiz, XIZMATLARSIZ: admin AYNAN shu summani belgilagan, tizim unga
+  // hech narsa qo'shmaydi. base = prorated = amount, discount = 0. Reconcile
+  // invariantlari tenglik bilan bajariladi. YAGONA joy: kassir registri va
+  // o'quvchi paneli ham shu funksiyani chaqirgani uchun bir xil summa ko'radi.
   const fixed = (amount, { overrideReason = null, overrideNote = null } = {}) => {
     const a = parseAmount(amount, "Oylik summa");
     return {
@@ -105,6 +129,8 @@ const computeMonthlyAmount = ({
       wipedByDiscount: false,
       overrideReason,
       overrideNote,
+      servicesAmount: new Decimal(0),
+      servicesSnapshot: [],
     };
   };
 
@@ -154,6 +180,8 @@ const computeMonthlyAmount = ({
       discounted.finalAmount.isZero() && prorated.proratedAmount.greaterThan(0),
     overrideReason: null,
     overrideNote: null,
+    servicesAmount,
+    servicesSnapshot,
   };
 };
 
@@ -179,6 +207,7 @@ const buildInvoiceRow = ({
   actorId = null,
   studentSnapshot,
   monthOverride = null,
+  services = [],
 }) => {
   const enrollment = resolveEnrollmentForMonth(periods, month);
 
@@ -207,6 +236,7 @@ const buildInvoiceRow = ({
     month,
     settings,
     monthOverride,
+    services,
   });
 
   // Nol summali hisob-faktura darhol "to'langan" bo'ladi — qamrov to'liq
@@ -234,6 +264,11 @@ const buildInvoiceRow = ({
       proratedAmount: computed.proratedAmount,
       discountAmount: computed.discountAmount,
       discountSnapshot: computed.snapshot.length ? computed.snapshot : null,
+      // Xizmatlar ulushi (baseAmount ichida) — hisobot uchun alohida muhrlanadi
+      servicesAmount: computed.servicesAmount,
+      servicesSnapshot: computed.servicesSnapshot.length
+        ? computed.servicesSnapshot
+        : null,
       amount: computed.amount,
       // Oy override sababi/izohi — MUHRLANADI (hisobotda "nega o'zgargani")
       overrideReason: computed.overrideReason,
