@@ -1813,10 +1813,16 @@ const cancelMonth = async (data, userId) => {
  * hisob-fakturalarini yangi qoidalar bo'yicha qayta hisoblaydi. Shu tufayli
  * admin qo'lda "Qayta shakllantirish" bosishi shart emas.
  *
- * ⚠️ TO'LOV TUSHGANLARI (status != unpaid) TEGILMAYDI — summani o'zgartirish
+ * ⚠️ TO'LOV TUSHGANLARI (paidAmount > 0) TEGILMAYDI — summani o'zgartirish
  * taqsimotni yolg'onga aylantirardi; ular muhrlangan qoladi.
  * ⚠️ O'TGAN OY ham tegilmaydi (`fromMonth` joriy oygacha qisiladi) — sealed
  * tarixni jimgina qayta yozmaslik uchun; tarif o'zgarishi keyingi oydan.
+ *
+ * ⚠️ NOL SUMMALI "paid" FAKTURA HAM NOMZOD. 0 so'mlik faktura darhol
+ * "to'langan" bo'lib yopiladi (buildInvoiceRow: isZero → paid) — unda
+ * to'lov YO'Q (paidAmount = 0). Narx 0 dan ko'tarilganda (grant tarifiga
+ * narx qo'yildi) aynan shu qatorlar qayta hisoblanishi kerak, aks holda
+ * o'quvchi qarzdorlarga hech qachon tushmasdi.
  *
  * Xato bitta o'quvchida qolganini to'xtatmaydi (best-effort). Chaqiruvchi
  * tranzaksiyadan TASHQARIDA (commitdan keyin) chaqirishi kerak.
@@ -1838,7 +1844,11 @@ const regenerateForStudents = async (studentIds, { fromMonth } = {}) => {
     where: {
       studentId: { in: ids },
       month: { gte: from, lte: now },
-      status: "unpaid",
+      OR: [
+        { status: "unpaid" },
+        // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (yuqoridagi izoh)
+        { status: "paid", paidAmount: 0, amount: 0 },
+      ],
     },
     select: { id: true },
   });
@@ -1913,7 +1923,15 @@ const regenerateForTariff = async (tariffId, { fromMonth } = {}) => {
  */
 const regenerateAllUnpaid = async ({ fromMonth = null } = {}) => {
   const now = currentMonthKey();
-  const where = { status: "unpaid", month: { lte: now } };
+  const where = {
+    month: { lte: now },
+    OR: [
+      { status: "unpaid" },
+      // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (regenerateForStudents
+      // dagi izoh): grant tarifiga narx qo'yilganda shular ham tekislanadi
+      { status: "paid", paidAmount: 0, amount: 0 },
+    ],
+  };
   if (fromMonth != null) where.month.gte = fromMonth;
 
   const invoices = await prisma.monthlyInvoice.findMany({
