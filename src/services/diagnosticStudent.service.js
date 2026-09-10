@@ -222,6 +222,17 @@ async function getDashboard(studentId) {
 
   const { attempts, answers } = await _load(studentId);
   const { subjects, topics } = _aggregate(answers);
+
+  // Urinish → o'sha urinishdagi fan nomlari (tarix qatori uchun).
+  const subjectNamesByAttempt = new Map();
+  for (const row of answers) {
+    const name = row.attemptQuestion?.subjectName;
+    if (!name) continue;
+    if (!subjectNamesByAttempt.has(row.attemptId)) {
+      subjectNamesByAttempt.set(row.attemptId, new Set());
+    }
+    subjectNamesByAttempt.get(row.attemptId).add(name);
+  }
   const growth = _subjectGrowth(attempts, answers);
 
   const scored = attempts.filter((a) => a.score != null);
@@ -363,14 +374,23 @@ async function getDashboard(studentId) {
         ? { subject: worstSubject.subject, averageScore: worstSubject.averageScore }
         : null,
     },
+    // ⚠️ FAN NOMI JAVOB QATORLARIDAN OLINADI, `attempt.subjectId` dan
+    // EMAS. Aralash testda `subjectId` bo'sh bo'ladi va tarixdagi har bir
+    // qator "Aralash" bo'lib chiqardi — hatto savollarning hammasi bitta
+    // fandan bo'lganda ham. Urinishda haqiqatan bir nechta fan bo'lsa
+    // "Aralash" o'rinli, aks holda fanning o'z nomi ko'rsatiladi.
     trend: attempts
       .filter((a) => a.score != null)
-      .map((a) => ({
-        attemptId: a.id,
-        date: a.submittedAt,
-        score: a.score,
-        grade: a.grade,
-      })),
+      .map((a) => {
+        const names = subjectNamesByAttempt.get(a.id);
+        return {
+          attemptId: a.id,
+          date: a.submittedAt,
+          score: a.score,
+          grade: a.grade,
+          subject: names && names.size === 1 ? [...names][0] : null,
+        };
+      }),
     subjects: subjectList,
     strongTopics,
     weakTopics,
