@@ -36,15 +36,35 @@ CREATE INDEX IF NOT EXISTS "academic_targets_month_idx"
 -- ─────────────────────────────────────────────
 -- 3. Olimpiada va musobaqa yutuqlari
 -- ─────────────────────────────────────────────
+-- ⚠️ TUR TEKSHIRUVI SCHEMA BILAN CHEKLANADI (`current_schema()`).
+--
+-- `pg_type` BUTUN BAZAGA umumiy: unda barcha schema'lardagi turlar
+-- yotadi. Cheklanmagan `WHERE typname = 'AchievementLevel'` birinchi
+-- filialda (public) tur yaratilgandan keyin QOLGAN HAMMA filialda "tur
+-- bor" deb javob berardi — natijada tur o'sha schema'da YARATILMAS, va
+-- darhol keyingi `CREATE TABLE ... "level" "AchievementLevel"` satri
+-- `type "AchievementLevel" does not exist` bilan yiqilardi.
+--
+-- Aynan shu sabab `br_fayzobod` filialida migratsiya to'xtab qolgan edi:
+-- birinchi filialda hammasi o'tgan, ikkinchisida esa yo'q. Ko'p filialli
+-- tizimda har qanday katalog so'rovi schema bilan cheklanishi SHART.
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AchievementLevel') THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE t.typname = 'AchievementLevel' AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE "AchievementLevel" AS ENUM (
       'school', 'district', 'city', 'region', 'republic', 'international'
     );
   END IF;
 
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'AchievementPlace') THEN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE t.typname = 'AchievementPlace' AND n.nspname = current_schema()
+  ) THEN
     CREATE TYPE "AchievementPlace" AS ENUM ('first', 'second', 'third', 'participant');
   END IF;
 END
