@@ -47,6 +47,7 @@ const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
 const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job");
 const {
   startDiagnosticExpiryCron,
+  startDiagnosticScheduleCron,
   startDiagnosticInsightCron,
 } = require("./src/jobs/diagnostic.job");
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
@@ -182,6 +183,7 @@ const bootstrap = async () => {
   startTestSessionExpiryCron();
   // Diagnostika: ochiq qolgan urinishlarni yopish + navbatdagi AI tahlili
   startDiagnosticExpiryCron();
+  startDiagnosticScheduleCron();
   startDiagnosticInsightCron();
   startSeasonStatusCron();
   startPremiumExpiryCron();

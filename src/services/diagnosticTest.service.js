@@ -371,7 +371,12 @@ async function checkAvailability(test) {
 
 /** Bankdan savol tanlash sharti — bitta joyda (urinish ham shuni ishlatadi). */
 function _bankFilter(test, { levels = null } = {}) {
-  const where = { status: "approved" };
+  // ⚠️ `essay` CHIQARIB TASHLANADI — urinish tanlovi bilan AYNI shart
+  // (`diagnosticAttempt.service.js`: `type: { not: "essay" }`). Ilgari bu
+  // yerda filtr yo'q edi va tekshiruv insho savollarini ham sanardi:
+  // nashr paytida "bankda yetarli savol bor" deyilar, o'quvchi esa
+  // kamroq savol olardi. Ikki joyda ikki shart — aynan shu tafovut.
+  const where = { status: "approved", type: { not: "essay" } };
   if (test.subjectId) where.subjectId = test.subjectId;
   if (test.grade) where.grade = test.grade;
 
@@ -765,6 +770,47 @@ async function deleteTest(id) {
  * o'quvchi "ertaga matematikadan diagnostika bor" degan ma'lumotni
  * ko'rishi kerak, aks holda test kutilmaganda paydo bo'lardi.
  */
+/**
+ * Sanaga qarab test holatlarini haqiqatga moslaydi (cron chaqiradi).
+ *
+ * ⚠️ ILGARI BUNI HECH KIM QILMASDI. `scheduled` — "falon sanada ochiladi"
+ * degan va'da, lekin uni `active` ga o'tkazadigan yo'l yo'q edi: sana
+ * kelsa ham test yopiq turaverardi va o'quvchi ro'yxatida ko'rinmasdi
+ * (`listAvailableForStudent` `canStart` ni faqat `active` ga beradi).
+ * Ya'ni "rejalashtirilgan test" xususiyati amalda ISHLAMASDI.
+ *
+ * ⚠️ Muddati tugagan test ham YOPILADI. U o'quvchiga baribir ko'rinmasdi
+ * (`availableTo` filtri), lekin panelda "Faol" deb turardi — holat
+ * haqiqatni aytmasa, ro'yxatning ma'nosi qolmaydi.
+ *
+ * Ikkalasi ham IDEMPOTENT: qayta ishlaganda o'zgaradigan qator qolmaydi.
+ */
+async function syncTestStatuses() {
+  const now = new Date();
+
+  const opened = await prisma.diagnosticTest.updateMany({
+    where: {
+      status: "scheduled",
+      availableFrom: { not: null, lte: now },
+      OR: [{ availableTo: null }, { availableTo: { gt: now } }],
+    },
+    // ⚠️ `publishedAt` ga TEGILMAYDI: u test `scheduled` qilingan paytda
+    // allaqachon qo'yilgan (`updateTestStatus`). Bu yerda qayta yozilsa,
+    // "kim va qachon nashr qildi" degan iz yo'qolardi.
+    data: { status: "active" },
+  });
+
+  const closed = await prisma.diagnosticTest.updateMany({
+    where: {
+      status: { in: ["active", "scheduled"] },
+      availableTo: { not: null, lte: now },
+    },
+    data: { status: "archived" },
+  });
+
+  return { opened: opened.count, closed: closed.count };
+}
+
 async function listAvailableForStudent(studentId) {
   const now = new Date();
 
@@ -887,6 +933,7 @@ module.exports = {
   deleteTest,
   checkAvailability,
   listAvailableForStudent,
+  syncTestStatuses,
   assertCanStart,
   _bankFilter,
 };

@@ -12,6 +12,7 @@
 
 const XLSX = require("xlsx");
 const prisma = require("../config/prisma");
+const logger = require("../utils/logger");
 const { uploadFile } = require("./file.service");
 const { deleteObject } = require("./fileStorage.service");
 const {
@@ -905,14 +906,33 @@ const IMPORT_LEVEL_ALIASES = {
  * shablon bilan ishlardi.
  */
 function _readSheet(file) {
-  const extension = String(file.originalname || "").split(".").pop().toLowerCase();
+  const name = String(file.originalname || "");
+  const extension = name.includes(".")
+    ? name.split(".").pop().toLowerCase()
+    : "";
   if (!["xlsx", "xls", "csv"].includes(extension)) {
     throw new BadRequestError("Faqat .xlsx, .xls yoki .csv fayllar qabul qilinadi");
   }
 
   let workbook;
   try {
-    workbook = XLSX.read(file.buffer, { type: "buffer" });
+    // ⚠️ CSV MATN sifatida, ATAYLAB UTF-8 deb o'qiladi.
+    //
+    // `XLSX.read(buffer)` kodlashni o'zi taxmin qiladi va BOM'siz UTF-8
+    // faylni CP1252 deb o'qib yuboradi: "O‘zbekistonda" → "OÊ»zbekistonda".
+    // Google Sheets ham, LibreOffice ham BOM qo'ymaydi, ya'ni bu ODATIY
+    // hol edi. Eng yomoni — xato JIM: ustun sarlavhalari ASCII bo'lgani
+    // uchun qator muvaffaqiyatli import bo'ladi va buzuq matn bazaga
+    // tushadi. Sarlavhada apostrof bo'lsa ("To'g'ri javob") u ham buzilib,
+    // HAR BIR qator "To'g'ri javob ko'rsatilmagan" bilan yiqilardi.
+    //
+    // .xlsx/.xls o'z kodlashini ichida olib yuradi — ularga tegilmaydi.
+    if (extension === "csv") {
+      const text = file.buffer.toString("utf8").replace(/^\uFEFF/, "");
+      workbook = XLSX.read(text, { type: "string" });
+    } else {
+      workbook = XLSX.read(file.buffer, { type: "buffer" });
+    }
   } catch {
     throw new BadRequestError("Faylni o'qib bo'lmadi — format buzilgan bo'lishi mumkin");
   }
@@ -965,51 +985,138 @@ async function importQuestions(file, { subjectId, authorId, language = "uz" }) {
 
   const prepared = [];
   const errors = [];
+  const warnings = [];
 
   rows.forEach((row, index) => {
     const line = index + 2; // 1-qator — sarlavha
     try {
-      prepared.push(_prepareImportRow(row, { subjectId, topicByName, language }));
+      const item = _prepareImportRow(row, { subjectId, topicByName, language });
+      item.line = line;
+      prepared.push(item);
+      item.warnings.forEach((message) => warnings.push({ line, message }));
     } catch (error) {
       errors.push({ line, message: error.message });
     }
   });
+
+  // ⚠️ DUBLIKAT SAVOL YOZILMAYDI — na fayl ichida, na bazada bori.
+  //
+  // Import "bir marta bosiladigan" amal emas: foydalanuvchi bir necha
+  // qatorda xato topadi, faylni tuzatadi va QAYTA yuklaydi. Tekshiruvsiz
+  // har yuklash butun bankni ikkilantirardi va bu jimgina sodir bo'lardi —
+  // testga esa bir xil savol ikki marta tushib qolardi.
+  //
+  // Solishtirish MATN bo'yicha, `normalizeText` bilan (registr, apostrof va
+  // ortiqcha bo'shliq farqi hisobga olinmaydi) va faqat SHU FAN ichida:
+  // "Poytaxt qaysi shahar?" turli fanlarda boshqa savol bo'lishi mumkin.
+  const existing = await prisma.diagnosticQuestion.findMany({
+    where: { subjectId },
+    select: { text: true },
+  });
+  const seen = new Set(existing.map((q) => normalizeText(q.text)));
+
+  const toCreate = [];
+  let duplicates = 0;
+  for (const item of prepared) {
+    const key = normalizeText(item.question.text);
+    if (seen.has(key)) {
+      duplicates += 1;
+      warnings.push({
+        line: item.line,
+        message: `"${_shortText(item.question.text)}" — bunday savol bankda allaqachon bor, o'tkazib yuborildi`,
+      });
+      continue;
+    }
+    seen.add(key);
+    toCreate.push(item);
+  }
 
   let created = 0;
   // Kodlar KETMA-KET beriladi: har qator uchun alohida `_nextCode()`
   // chaqirish N ta qo'shimcha so'rov bo'lardi.
   let counter = await _nextCodeCounter();
 
-  for (const item of prepared) {
-    try {
+  for (const item of toCreate) {
+    // ⚠️ KOD TO'QNASHUVIDA QAYTA URINILADI. Sanoqchi import boshida BIR
+    // MARTA o'qiladi, ya'ni shu orada boshqa admin savol yaratsa (yoki
+    // ikkinchi import ketsa) `code` unique cheklovi buziladi. Qayta
+    // urinishsiz bitta to'qnashuv qolgan HAMMA qatorni yiqitardi —
+    // sanoqchi oldinga surilmagani uchun har keyingi qator ham aynan shu
+    // xatoga tushardi. `createQuestion` da ham AYNI himoya bor.
+    let saved = false;
+    for (let attempt = 0; attempt < 3 && !saved; attempt += 1) {
       counter += 1;
-      await prisma.diagnosticQuestion.create({
-        data: {
-          ...item.question,
-          code: `D-${String(counter).padStart(6, "0")}`,
-          authorId,
-          status: "draft",
-          options: { create: item.options },
-        },
-      });
-      created += 1;
-    } catch (error) {
-      errors.push({
-        line: null,
-        message: `"${String(item.question.text).slice(0, 40)}…" saqlanmadi: ${error.message}`,
-      });
+      try {
+        await prisma.diagnosticQuestion.create({
+          data: {
+            ...item.question,
+            code: `D-${String(counter).padStart(6, "0")}`,
+            authorId,
+            status: "draft",
+            options: { create: item.options },
+          },
+        });
+        created += 1;
+        saved = true;
+      } catch (error) {
+        if (error?.code === "P2002" && attempt < 2) {
+          counter = Math.max(counter, await _nextCodeCounter());
+          continue;
+        }
+        errors.push({
+          line: item.line,
+          message: `"${_shortText(item.question.text)}" saqlanmadi: ${_saveErrorMessage(error)}`,
+        });
+        saved = true;
+      }
     }
   }
 
-  return { total: rows.length, created, failed: errors.length, errors };
+  return {
+    total: rows.length,
+    created,
+    duplicates,
+    failed: errors.length,
+    errors,
+    warnings,
+  };
+}
+
+/** Xato xabarida savol matni — uzun savol butun ro'yxatni bosib ketmasligi uchun. */
+function _shortText(text) {
+  const value = String(text ?? "");
+  return value.length > 40 ? `${value.slice(0, 40)}…` : value;
+}
+
+/**
+ * Saqlash xatosini FOYDALANUVCHI TILIGA o'giradi.
+ *
+ * ⚠️ Prisma xatosining xom matni ekranga chiqmaydi: u ustun va cheklov
+ * nomlarini (`diagnostic_questions_code_key`) ko'rsatadi — foydalanuvchiga
+ * ma'nosiz, tizim tuzilishi haqida esa ortiqcha ma'lumot.
+ */
+function _saveErrorMessage(error) {
+  if (error?.code === "P2002") return "kod band bo'lib qoldi, qaytadan urinib ko'ring";
+  if (error?.code === "P2003") return "bog'liq yozuv topilmadi (fan yoki mavzu o'chirilgan bo'lishi mumkin)";
+  if (error?.code === "P2000") return "matn juda uzun";
+  if (error instanceof BadRequestError) return error.message;
+  logger.error("Diagnostika importida saqlash xatosi", { error });
+  return "ichki xato";
 }
 
 async function _nextCodeCounter() {
+  // ⚠️ FAQAT "D-<raqam>" ko'rinishidagi kodlar sanaladi. Bankda boshqa
+  // shakldagi kodlar ham bo'ladi (masalan demo seed "DEMO-…" yozadi) va
+  // ular `orderBy: code desc` da eng tepaga chiqib, sanoqchini noto'g'ri
+  // qiymatga tushirardi — natijada kod to'qnashuvi DOIMIY bo'lib qolardi.
   const last = await prisma.diagnosticQuestion.findFirst({
+    where: { code: { startsWith: "D-" } },
     orderBy: { code: "desc" },
     select: { code: true },
   });
-  return last ? parseInt(last.code.replace(/\D/g, ""), 10) || 0 : 0;
+  if (!last) return 0;
+  const digits = /^D-(\d+)$/.exec(last.code);
+  return digits ? parseInt(digits[1], 10) : 0;
 }
 
 const LETTERS = ["a", "b", "c", "d", "e", "f"];
@@ -1041,11 +1148,18 @@ function _prepareImportRow(row, { subjectId, topicByName, language }) {
   const correctRaw = pick("togri_javob", "correct", "javob", "answer");
   if (!correctRaw) throw new BadRequestError("To'g'ri javob ko'rsatilmagan");
 
-  const correctLetters = correctRaw
-    .toLowerCase()
-    .split(/[,;\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // ⚠️ TAKRORIY HARF TASHLANADI. "b,b" yozilgani savolni `multiple` ga
+  // aylantirib yuborardi (tur javoblar SONIDAN chiqadi), natijada bitta
+  // to'g'ri javobli savol "bir nechta javobni belgilang" bo'lib qolardi.
+  const correctLetters = [
+    ...new Set(
+      correctRaw
+        .toLowerCase()
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
 
   const known = new Set(options.map((o) => o.letter));
   const unknown = correctLetters.filter((l) => !known.has(l));
@@ -1055,13 +1169,35 @@ function _prepareImportRow(row, { subjectId, topicByName, language }) {
     );
   }
 
-  const difficultyRaw = normalizeText(pick("qiyinlik", "difficulty", "daraja"));
-  const difficulty = IMPORT_LEVEL_ALIASES[difficultyRaw] || "medium";
+  // ⚠️ NOMA'LUM QIYINLIK — XATO, jim `medium` EMAS. Ilgari "Juda qiyin",
+  // "yengil", "A2" kabi har qanday qiymat jimgina `medium` bo'lib yozilardi
+  // va buni hech kim sezmasdi; adaptiv tanlov esa noto'g'ri pog'onadan
+  // savol berardi. Qo'lda yaratish yo'li (`_parsePayload`) ayni holatda
+  // ALLAQACHON xato tashlaydi — ikki yo'l bir xil qat'iy bo'lishi kerak.
+  // Ustun umuman bo'sh bo'lsa `medium` qoladi: bu hujjatlashtirilgan sukut.
+  const difficultyRawText = pick("qiyinlik", "difficulty", "daraja");
+  const difficultyKey = normalizeText(difficultyRawText);
+  let difficulty = "medium";
+  if (difficultyKey) {
+    difficulty = IMPORT_LEVEL_ALIASES[difficultyKey];
+    if (!difficulty) {
+      throw new BadRequestError(
+        `Noma'lum qiyinlik: "${difficultyRawText}". Ruxsat etilgan: oson, o'rta, qiyin, murakkab`,
+      );
+    }
+  }
 
+  // ⚠️ MAVZU TOPILMASA QATOR RAD ETILMAYDI — OGOHLANTIRISH beriladi va
+  // savol mavzusiz saqlanadi. Ilgari butun qator yiqilardi: mavzular
+  // ro'yxati administratorda, savollar fayli esa ko'pincha o'qituvchida —
+  // bitta nomdagi farq tufayli 300 qatorli fayldan hech narsa o'tmasdi.
+  // Mavzu — savolning MAJBURIY qismi emas (qo'lda yaratishda ham `null`
+  // bo'lishi mumkin), shuning uchun uni to'siq qilish o'rinsiz edi.
   const topicName = pick("mavzu", "topic");
   const topicId = topicName ? topicByName.get(normalizeText(topicName)) || null : null;
+  const warnings = [];
   if (topicName && !topicId) {
-    throw new BadRequestError(`"${topicName}" mavzusi bu fanda topilmadi`);
+    warnings.push(`"${topicName}" mavzusi bu fanda topilmadi — savol mavzusiz saqlandi`);
   }
 
   const gradeRaw = pick("sinf", "grade");
@@ -1077,6 +1213,7 @@ function _prepareImportRow(row, { subjectId, topicByName, language }) {
   }
 
   return {
+    warnings,
     question: {
       text,
       subjectId,

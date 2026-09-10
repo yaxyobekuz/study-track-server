@@ -2,12 +2,13 @@ const cron = require("node-cron");
 const { branchCron } = require("../helpers/branchIterator");
 const attemptService = require("../services/diagnosticAttempt.service");
 const aiService = require("../services/diagnosticAi.service");
+const testService = require("../services/diagnosticTest.service");
 const logger = require("../utils/logger");
 
 /**
- * DIAGNOSTIKA CRON — ikkita mustaqil vazifa.
+ * DIAGNOSTIKA CRON — uchta mustaqil vazifa.
  *
- * ⚠️ IKKALASI HAM "OXIRIGACHA YETKAZISH" KAFOLATI, asosiy yo'l emas.
+ * ⚠️ HAMMASI HAM "OXIRIGACHA YETKAZISH" KAFOLATI, asosiy yo'l emas.
  * Oddiy holatda:
  *   - urinish o'quvchi topshirganda yakunlanadi;
  *   - muddati o'tgani so'rov paytida (`getActiveAttempt`, `saveAnswer`)
@@ -85,7 +86,41 @@ function startDiagnosticInsightCron() {
   );
 }
 
+/**
+ * Rejalashtirilgan testni sanasi kelganda OCHADI, muddati tugaganini yopadi.
+ *
+ * ⚠️ Har 5 daqiqada: test sanasi daqiqa aniqligida belgilanadi, soatiga
+ * bir marta tekshirish esa o'quvchini yarim soat kutishga majbur qilardi.
+ * Ish arzon — bu ikkita `updateMany`, odatda hech qanday qator topmaydi.
+ */
+function startDiagnosticScheduleCron() {
+  cron.schedule(
+    "*/5 * * * *",
+    branchCron("[DiagnostikaJadval]", async (branch) => {
+      try {
+        const result = await testService.syncTestStatuses();
+        if (result.opened > 0 || result.closed > 0) {
+          logger.info(
+            `[DiagnostikaJadval] ${branch.name}: ${result.opened} ta test ochildi, ` +
+              `${result.closed} tasi yopildi`,
+          );
+        }
+      } catch (error) {
+        logger.error(
+          `[DiagnostikaJadval] ${branch.name} xatosi: ${error.message}`,
+        );
+      }
+    }),
+    { scheduled: true, timezone: "Asia/Tashkent" },
+  );
+
+  logger.info(
+    "Diagnostika jadval cron ishga tushdi: har 5 daqiqada (Asia/Tashkent)",
+  );
+}
+
 module.exports = {
   startDiagnosticExpiryCron,
+  startDiagnosticScheduleCron,
   startDiagnosticInsightCron,
 };

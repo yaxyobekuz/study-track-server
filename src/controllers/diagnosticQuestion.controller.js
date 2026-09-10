@@ -95,13 +95,14 @@ const importQuestions = asyncHandler(async (req, res) => {
     language: req.body.language || "uz",
   });
 
-  res.json({
-    success: true,
-    message: `${data.created} ta savol qo'shildi${
-      data.failed ? `, ${data.failed} tasida xato` : ""
-    }`,
-    data,
-  });
+  // Xabar UCH sonni ham aytadi: qo'shilgani, dublikat bo'lgani va xatosi.
+  // Faqat "qo'shildi" deyilsa, 300 qatorli fayldan 40 tasi tushib qolgani
+  // jimgina o'tib ketardi.
+  const parts = [`${data.created} ta savol qo'shildi`];
+  if (data.duplicates) parts.push(`${data.duplicates} tasi takroriy`);
+  if (data.failed) parts.push(`${data.failed} tasida xato`);
+
+  res.json({ success: true, message: parts.join(", "), data });
 });
 
 const exportQuestions = asyncHandler(async (req, res) => {

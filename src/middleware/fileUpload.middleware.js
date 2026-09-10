@@ -20,12 +20,40 @@ const FILE_MIME_TYPES = {
   // qabul qiladi va `document` ga `text/csv` qo'shilsa, u xabar/premium
   // yuklashlarida ham jimgina ochilib ketardi — mavjud endpointlarning
   // qabul qiladigan fayllari kengayishi kerak emas.
+  // ⚠️ `text/plain` va `application/octet-stream` ATAYLAB kiritilgan.
+  // Brauzer .csv uchun tizim sozlamasiga qarab `text/plain`, .xlsx uchun
+  // esa (Excel o'rnatilmagan mashinada) `application/octet-stream`
+  // yuboradi. Ilgari panel ".csv qabul qilinadi" deb va'da qilar, fayl
+  // esa shu bosqichda rad etilardi. Bu bo'shashish XAVFSIZ, chunki
+  // haqiqiy darvoza — servisdagi KENGAYTMA tekshiruvi (`_readSheet`
+  // faqat .xlsx/.xls/.csv ni o'tkazadi) va faylni jadval sifatida
+  // ochib bo'lmasa import baribir yiqiladi.
   spreadsheet: [
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "text/csv",
     "application/csv",
+    "text/plain",
+    "application/octet-stream",
   ],
+};
+
+/** Toifalarning foydalanuvchiga ko'rsatiladigan nomlari. */
+const CATEGORY_LABELS = {
+  image: "rasm (JPG, PNG, WEBP)",
+  video: "video (MP4, WEBM, MOV)",
+  audio: "audio (MP3, WAV, OGG)",
+  document: "hujjat (PDF, DOC, XLS, TXT)",
+  json: "JSON fayl",
+  spreadsheet: "jadval (XLSX, XLS, CSV)",
+};
+
+/** "Faqat jadval (XLSX, XLS, CSV) yuklash mumkin" ko'rinishidagi xabar. */
+const unsupportedTypeMessage = (categories = []) => {
+  const labels = categories.map((c) => CATEGORY_LABELS[c]).filter(Boolean);
+  return labels.length
+    ? `Bu turdagi fayl qabul qilinmaydi. Faqat ${labels.join(" yoki ")} yuklash mumkin.`
+    : "Bu turdagi fayl qabul qilinmaydi.";
 };
 
 /**
@@ -86,7 +114,7 @@ const createSingleFileUpload = ({
     limits: { fileSize: maxFileSizeBytes, files: 1, fields: 30, parts: 31 },
     fileFilter: (req, file, cb) => {
       if (!allowedMimeTypes.includes(file.mimetype)) {
-        return cb(new Error("Unsupported file type."), false);
+        return cb(new Error(unsupportedTypeMessage(categories)), false);
       }
       cb(null, true);
     },
@@ -122,7 +150,7 @@ const createMultiFileUpload = ({
     },
     fileFilter: (req, file, cb) => {
       if (!allowedMimeTypes.includes(file.mimetype)) {
-        return cb(new Error("Unsupported file type."), false);
+        return cb(new Error(unsupportedTypeMessage(categories)), false);
       }
 
       cb(null, true);
@@ -172,7 +200,7 @@ const createFieldsUpload = ({
     },
     fileFilter: (req, file, cb) => {
       if (!allowedMimeTypes.includes(file.mimetype)) {
-        return cb(new Error("Unsupported file type."), false);
+        return cb(new Error(unsupportedTypeMessage(categories)), false);
       }
       cb(null, true);
     },
@@ -195,7 +223,7 @@ const handleFileUploadError = (err, req, res, next) => {
 
     return res.status(400).json({
       success: false,
-      message: `Upload error: ${err.message}`,
+      message: `Faylni yuklashda xato: ${err.message}`,
     });
   }
 
@@ -211,6 +239,7 @@ const handleFileUploadError = (err, req, res, next) => {
 
 module.exports = {
   FILE_MIME_TYPES,
+  unsupportedTypeMessage,
   withBranchContext,
   getAllowedMimeTypes,
   createSingleFileUpload,
