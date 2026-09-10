@@ -1868,6 +1868,52 @@ const regenerateForTariff = async (tariffId, { fromMonth } = {}) => {
 };
 
 /**
+ * JORIY FILIALDAGI BARCHA to'lanmagan hisob-fakturani joriy tarif/narx/chegirmaga
+ * moslashtiradi — "catch-up". Server ishga tushganda va kunlik cronda ishlaydi.
+ *
+ * Eski, muhrlangan (lekin to'lanmagan) fakturalar narx o'zgargandan keyin ham
+ * eski summada qolib ketmasin uchun: har birini JONLI qayta hisoblaydi.
+ * `skipIfUnchanged` tufayli summa aynan o'sha bo'lsa hech narsa yozilmaydi —
+ * shuning uchun har startup'da bemalol ishlayveradi (o'zgarmagani churn qilmaydi).
+ * To'langan oylar chetda qoladi.
+ *
+ * @param {{fromMonth?: number}} [opts] - null bo'lsa joriy oygacha BARCHA
+ *   to'lanmagan oylar
+ * @returns {Promise<{total: number, changed: number, failed: number}>}
+ */
+const regenerateAllUnpaid = async ({ fromMonth = null } = {}) => {
+  const now = currentMonthKey();
+  const where = { status: "unpaid", month: { lte: now } };
+  if (fromMonth != null) where.month.gte = fromMonth;
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where,
+    select: { id: true },
+    orderBy: { month: "asc" },
+  });
+
+  let changed = 0;
+  let failed = 0;
+  for (const inv of invoices) {
+    try {
+      const out = await regenerateInvoice(
+        inv.id,
+        "Avtomatik: joriy tarif narxiga moslashtirildi",
+        null,
+        { skipIfUnchanged: true },
+      );
+      // Yangi id qaytsa — qayta yozildi; o'sha id qaytsa — o'zgarmagan (skip)
+      if (out?.id && out.id !== inv.id) changed += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn(`[catchup] invoice ${inv.id} qayta hisoblanmadi: ${error.message}`);
+    }
+  }
+
+  return { total: invoices.length, changed, failed };
+};
+
+/**
  * BIR OYNING BARCHA HISOB-FAKTURASINI QAYTA SHAKLLANTIRADI.
  *
  * Bu — "tarifni to'g'riladim, endi oy yangilansin" tugmasi. Oddiy
@@ -2013,5 +2059,6 @@ module.exports = {
   regenerateInvoice,
   regenerateForStudents,
   regenerateForTariff,
+  regenerateAllUnpaid,
   restoreInvoice,
 };
