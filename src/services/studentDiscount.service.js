@@ -366,6 +366,20 @@ const getAssignmentById = async (id) => {
  * @param {{allowPast?: boolean}} options
  * @returns {Promise<object>}
  */
+/**
+ * Chegirma o'zgargach, o'quvchining HALI TO'LANMAGAN hisob-fakturalarini
+ * avtomatik qayta shakllantiradi (best-effort — biriktirishni to'xtatmaydi).
+ * To'langan oylar muhrlangan: regen ularga tegmaydi.
+ */
+const autoRegen = async (studentIds, fromMonth) => {
+  try {
+    const { regenerateForStudents } = require("./invoice.service");
+    await regenerateForStudents(studentIds, { fromMonth });
+  } catch (error) {
+    require("../utils/logger").warn(`[auto-regen] ${error.message}`);
+  }
+};
+
 const createAssignment = async (data, userId, { allowPast = false } = {}) => {
   if (!data.studentId) throw new BadRequestError("O'quvchi tanlanmagan");
   if (!data.discountId) throw new BadRequestError("Chegirma tanlanmagan");
@@ -398,45 +412,16 @@ const createAssignment = async (data, userId, { allowPast = false } = {}) => {
       });
     });
 
-    const warnings = await collectInvoiceWarnings(data.studentId, period);
+    // Chegirma qo'shildi → to'lanmagan oylar avtomatik qayta hisoblanadi.
+    await autoRegen([data.studentId], period.startMonth);
 
-    return { ...serializeAssignment(row, { student, discount }), warnings };
+    return { ...serializeAssignment(row, { student, discount }), warnings: [] };
   } catch (error) {
     return rethrowDuplicate(
       error,
       `Bu chegirma ${formatMonthKey(period.startMonth)} oyidan boshlab allaqachon biriktirilgan`,
     );
   }
-};
-
-/**
- * ALLAQACHON shakllangan hisob-fakturalar haqida ogohlantirish.
- *
- * Hisob-faktura summasi MUHRLANGAN: kech qo'shilgan chegirma o'tgan oyni
- * arzonlashtirmaydi. Admin buni hali harakat qila oladigan paytda
- * ko'rishi kerak (`POST /invoices/:id/regenerate` bor).
- */
-const collectInvoiceWarnings = async (studentId, period) => {
-  const invoices = await prisma.monthlyInvoice.findMany({
-    where: {
-      studentId,
-      status: { not: "cancelled" },
-      month: {
-        gte: period.startMonth,
-        ...(period.endMonth != null ? { lte: period.endMonth } : {}),
-      },
-    },
-    select: { month: true },
-    orderBy: { month: "asc" },
-  });
-
-  if (invoices.length === 0) return [];
-
-  const months = invoices.map((i) => formatMonthKey(i.month)).join(", ");
-  return [
-    `${months} uchun hisob-faktura allaqachon shakllantirilgan — ularning summasi o'zgarmaydi. ` +
-      "Kerak bo'lsa hisob-fakturani qayta shakllantiring.",
-  ];
 };
 
 /**
@@ -514,6 +499,9 @@ const updateAssignment = async (id, data, { allowPast = false } = {}) => {
 
       return tx.studentDiscount.update({ where: { id }, data: payload });
     });
+
+    // Davr/chegirma o'zgardi → o'quvchining to'lanmagan oylari qayta hisoblanadi.
+    await autoRegen([row.studentId], row.startMonth);
 
     return getAssignmentById(id);
   } catch (error) {
@@ -601,26 +589,12 @@ const bulkAssign = async (data, userId, { allowPast = false } = {}) => {
     }
   }
 
-  const invoiceCount = created.length
-    ? await prisma.monthlyInvoice.count({
-        where: {
-          studentId: { in: created.map((r) => r.studentId) },
-          status: { not: "cancelled" },
-          month: {
-            gte: period.startMonth,
-            ...(period.endMonth != null ? { lte: period.endMonth } : {}),
-          },
-        },
-      })
-    : 0;
+  // Chegirma qo'shilgan o'quvchilarning to'lanmagan oylari avtomatik yangilanadi.
+  if (created.length) {
+    await autoRegen(created.map((r) => r.studentId), period.startMonth);
+  }
 
-  const warnings = invoiceCount
-    ? [
-        `${invoiceCount} ta hisob-faktura bu davr uchun allaqachon shakllantirilgan — ularning summasi o'zgarmaydi`,
-      ]
-    : [];
-
-  return { created, skipped, warnings };
+  return { created, skipped, warnings: [] };
 };
 
 /**

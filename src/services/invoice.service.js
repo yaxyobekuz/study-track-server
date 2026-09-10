@@ -1570,7 +1570,7 @@ const cancelInvoice = async (id, reason, userId) => {
  * @param {string} userId
  * @returns {Promise<object>}
  */
-const regenerateInvoice = async (id, reason, userId) => {
+const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false } = {}) => {
   const invoice = await prisma.monthlyInvoice.findUnique({ where: { id } });
   if (!invoice) throw new NotFoundError("Hisob-faktura topilmadi");
 
@@ -1618,6 +1618,20 @@ const regenerateInvoice = async (id, reason, userId) => {
     throw new BadRequestError(
       "O'quvchida bu oy uchun tarif yoki narx yo'q — qayta shakllantirib bo'lmaydi",
     );
+  }
+
+  // Avtomatik regen tez-tez chaqiriladi (har tarif/chegirma o'zgarishida).
+  // Summa AYNAN o'sha bo'lsa — cancel+recreate qilmaymiz: aks holda har
+  // teginishda keraksiz `replacesInvoiceId` zanjiri va audit yozuvi paydo
+  // bo'lardi. Faqat haqiqiy o'zgarishda qayta muhrlaymiz.
+  if (
+    skipIfUnchanged &&
+    computed.amount.equals(invoice.amount) &&
+    computed.baseAmount.equals(invoice.baseAmount) &&
+    computed.proratedAmount.equals(invoice.proratedAmount ?? invoice.baseAmount) &&
+    computed.discountAmount.equals(invoice.discountAmount ?? 0)
+  ) {
+    return getInvoiceById(invoice.id);
   }
 
   const created = await prisma.$transaction(async (tx) => {
@@ -1760,6 +1774,97 @@ const cancelMonth = async (data, userId) => {
   );
 
   return summary;
+};
+
+/**
+ * AVTOMATIK QAYTA SHAKLLANTIRISH — tarif/narx/chegirma o'zgargach chaqiriladi.
+ *
+ * Berilgan o'quvchilarning [fromMonth..joriy oy] oralig'idagi TO'LANMAGAN
+ * hisob-fakturalarini yangi qoidalar bo'yicha qayta hisoblaydi. Shu tufayli
+ * admin qo'lda "Qayta shakllantirish" bosishi shart emas.
+ *
+ * ⚠️ TO'LOV TUSHGANLARI (status != unpaid) TEGILMAYDI — summani o'zgartirish
+ * taqsimotni yolg'onga aylantirardi; ular muhrlangan qoladi.
+ * ⚠️ O'TGAN OY ham tegilmaydi (`fromMonth` joriy oygacha qisiladi) — sealed
+ * tarixni jimgina qayta yozmaslik uchun; tarif o'zgarishi keyingi oydan.
+ *
+ * Xato bitta o'quvchida qolganini to'xtatmaydi (best-effort). Chaqiruvchi
+ * tranzaksiyadan TASHQARIDA (commitdan keyin) chaqirishi kerak.
+ *
+ * @param {string[]} studentIds
+ * @param {{fromMonth?: number}} options
+ * @returns {Promise<{regenerated: number}>}
+ */
+const regenerateForStudents = async (studentIds, { fromMonth } = {}) => {
+  const ids = [...new Set((studentIds || []).filter(Boolean))];
+  if (ids.length === 0) return { regenerated: 0 };
+
+  const now = currentMonthKey();
+  // O'tgan oyga tushmaymiz — sealed. Joriy oydan yuqoriga chiqmaymiz — u oy
+  // hali shakllanmagan (uning invoice'i yo'q).
+  const from = fromMonth != null ? Math.min(fromMonth, now) : now;
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: {
+      studentId: { in: ids },
+      month: { gte: from, lte: now },
+      status: "unpaid",
+    },
+    select: { id: true },
+  });
+
+  let regenerated = 0;
+  for (const invoice of invoices) {
+    try {
+      await regenerateInvoice(
+        invoice.id,
+        "Avtomatik: tarif/narx/chegirma o'zgardi",
+        null,
+        { skipIfUnchanged: true },
+      );
+      regenerated += 1;
+    } catch (error) {
+      // To'lov tushgan yoki boshqa sabab — jim o'tkazamiz (best-effort)
+      logger.warn(
+        `[auto-regen] invoice ${invoice.id} qayta shakllantirilmadi: ${error.message}`,
+      );
+    }
+  }
+
+  return { regenerated };
+};
+
+/**
+ * BITTA TARIFGA biriktirilgan o'quvchilarning HALI TO'LANMAGAN
+ * hisob-fakturalarini qayta shakllantiradi — narx (yoki versiya davri)
+ * o'zgargach chaqiriladi.
+ *
+ * Biriktirma yozuvi orqali nomzod o'quvchilar topiladi, so'ng
+ * `regenerateForStudents` har birini JONLI qayta hisoblaydi. Kengroq to'plam
+ * xavfsiz: keyinchalik boshqa tarifga o'tgan o'quvchi ham qayta hisoblanadi,
+ * lekin natija o'zgarmaydi (builder yutgan tarifni oladi).
+ *
+ * @param {string} tariffId
+ * @param {{fromMonth?: number}} [opts]
+ * @returns {Promise<{regenerated: number}>}
+ */
+const regenerateForTariff = async (tariffId, { fromMonth } = {}) => {
+  if (!tariffId) return { regenerated: 0 };
+
+  const now = currentMonthKey();
+  const from = fromMonth != null ? Math.min(fromMonth, now) : now;
+
+  const assignments = await prisma.studentTariff.findMany({
+    where: {
+      tariffId,
+      startMonth: { lte: now },
+      OR: [{ endMonth: null }, { endMonth: { gte: from } }],
+    },
+    select: { studentId: true },
+  });
+
+  const studentIds = [...new Set(assignments.map((a) => a.studentId))];
+  return regenerateForStudents(studentIds, { fromMonth: from });
 };
 
 /**
@@ -1906,5 +2011,7 @@ module.exports = {
   updateNote,
   cancelInvoice,
   regenerateInvoice,
+  regenerateForStudents,
+  regenerateForTariff,
   restoreInvoice,
 };
