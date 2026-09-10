@@ -39,6 +39,23 @@ const parseCustomAmount = (value) =>
   value != null && String(value).trim() !== ""
     ? parseAmount(value, "Individual narx")
     : null;
+
+/**
+ * AVTOMATIK QAYTA SHAKLLANTIRISH — tarif biriktirmasi o'zgargач o'quvchining
+ * joriy oy hisob-fakturasini yangi qoidaga moslaydi (admin qo'lda bosmaydi).
+ *
+ * ⚠️ Lazy require: `invoice.service` bizni `tariffResolution` orqali require
+ * qiladi — sikl bo'lmasligi uchun funksiya ichida yuklanadi. Tranzaksiyadan
+ * TASHQARIDA (commitdan keyin) chaqiriladi va xatosi asosiy amalni buzmaydi.
+ */
+const autoRegen = async (studentIds, fromMonth) => {
+  try {
+    const { regenerateForStudents } = require("./invoice.service");
+    await regenerateForStudents(studentIds, { fromMonth });
+  } catch (error) {
+    require("../utils/logger").warn(`[auto-regen] ${error.message}`);
+  }
+};
 const { resolveManyForMonth } = require("./tariffResolution.service");
 // Standart tarif KO'RSATKICHI moliya sozlamalarida (filial singletoni).
 // `financeSettings.service.js` EMAS, `settings.service.js` chaqiriladi:
@@ -432,6 +449,9 @@ const createAssignment = async (data, userId) => {
 
     const warnings = await collectWarnings(data.tariffId, period.startMonth);
 
+    // Joriy oy hisob-fakturasini avtomat yangilaymiz
+    await autoRegen([data.studentId], period.startMonth);
+
     return { ...serializeAssignment(assignment, { student, tariff }), warnings };
   } catch (error) {
     return rethrowDuplicate(
@@ -526,6 +546,9 @@ const updateAssignment = async (id, data) => {
 
       return tx.studentTariff.update({ where: { id }, data: payload });
     });
+
+    // Individual narx/davr o'zgargan bo'lishi mumkin — joriy oyni yangilaymiz
+    await autoRegen([assignment.studentId], updated.startMonth);
 
     return getAssignmentById(updated.id);
   } catch (error) {
@@ -638,6 +661,9 @@ const changeTariff = async (id, data, userId) => {
       ...(await collectWarnings(data.tariffId, fromMonth)),
       ...(await collectSealedInvoiceWarnings(assignment.studentId, fromMonth)),
     ];
+
+    // Joriy oy hisob-fakturasini avtomat yangilaymiz
+    await autoRegen([assignment.studentId], fromMonth);
 
     return {
       replaced,
@@ -772,13 +798,14 @@ const bulkAssign = async (data, userId) => {
   }
 
   const warnings = await collectWarnings(data.tariffId, period.startMonth);
-  // Joriy oy hisob-fakturasi almashgan tarifni AVTOMAT olmaydi (muhrlangan) —
-  // admin uni "Qayta shakllantirish" bilan yangilashi kerak.
-  if (changed.length > 0 && period.startMonth <= now) {
-    warnings.push(
-      `${changed.length} ta o'quvchi tarifi almashtirildi — ${formatMonthKey(period.startMonth)} hisob-fakturasini "Qayta shakllantirish" bilan yangilang.`,
-    );
-  }
+
+  // Ta'sirlangan o'quvchilarning joriy oy hisob-fakturasini AVTOMAT yangilaymiz
+  // (yangi biriktirilgan + tarifi almashtirilganlar).
+  const affected = [
+    ...created.map((a) => a.studentId),
+    ...changed.map((a) => a.studentId),
+  ];
+  await autoRegen(affected, period.startMonth);
 
   return {
     tariff,
