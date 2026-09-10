@@ -2186,6 +2186,68 @@ model StudentDiscount {
 }
 
 // ─────────────────────────────────────────────
+// MOLIYA — QO'SHIMCHA XIZMATLAR (yotoqxona, ovqat, transport, ...)
+// ─────────────────────────────────────────────
+//
+// Xizmat summasi o'quvchining oylik hisob-fakturasiga tarif narxi USTIGA
+// QO'SHILADI (alohida hisob-faktura EMAS — kalit (o'quvchi, oy) o'zgarmaydi,
+// to'lov taqsimoti/depozit/reconcile ga tegilmaydi).
+
+// Xizmat KATALOGI — FILIALDA (tarifdan farqli): yotoqxona bir filialda bor,
+// boshqasida yo'q; narxi ham filialniki. Versiyalanmaydi — narx o'zgarsa
+// maydon yangilanadi va to'lanmagan fakturalar avtomatik qayta hisoblanadi
+// (to'langanlari muhrlangan, invoiceBuilder doktrinasi).
+model Service {
+  id            String  @id @db.Char(24)
+  name          String  @unique
+  monthlyAmount Decimal @map("monthly_amount") @db.Decimal(14, 2)
+
+  note       String  @default("")
+  // O'chirilmaydi — arxivlanadi: o'tgan fakturalar snapshot'ida nomi qolgan
+  isArchived Boolean @default(false) @map("is_archived")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("services")
+}
+
+// Biriktirma — StudentDiscount uslubi (davr, oy aniqligida). O'quvchida bir
+// vaqtda BIR NECHTA xizmat bo'lishi mumkin (yotoqxona + ovqat) — HAMMASI
+// qo'shiladi. Lekin BITTA xizmat bir oyni ikki marta qamrasa xato —
+// kesishuv tekshiruvi service darajasida MAJBURIY (chegirma naqshi).
+model StudentService {
+  id        String @id @db.Char(24)
+  // soft ref → User (role = "student"), StudentTariff uslubi. FK YO'Q:
+  // moliyaviy tarix o'quvchi o'chirilsa ham qolishi kerak.
+  studentId String @map("student_id") @db.Char(24)
+  // soft ref → Service — katalog bu qatorning egasi emas
+  serviceId String @map("service_id") @db.Char(24)
+
+  startMonth Int  @map("start_month")
+  // null → ochiq davr. startMonth === endMonth → faqat o'sha oy.
+  endMonth   Int? @map("end_month")
+
+  // null → katalog narxi; qiymat → shu o'quvchi uchun maxsus narx
+  // (StudentTariff.customAmount uslubi)
+  customAmount Decimal? @map("custom_amount") @db.Decimal(14, 2)
+
+  note      String   @default("")
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Poyga backstop, kesishuv KAFOLATI EMAS — haqiqiy tekshiruv service'da
+  @@unique([studentId, serviceId, startMonth])
+  @@index([studentId, startMonth(sort: Desc)])
+  // Cron: "shu oyni qamragan barcha qatorlar" — bitta so'rov
+  @@index([startMonth, endMonth])
+  @@index([serviceId])
+  @@map("student_services")
+}
+
+// ─────────────────────────────────────────────
 // MOLIYA — HOLAT VA HISOB-FAKTURALAR
 // ─────────────────────────────────────────────
 //
@@ -2476,9 +2538,19 @@ model MonthlyInvoice {
   // qator tarif nomi bilan guruhlanadi.
   directionName   String  @default("") @map("direction_name")
 
-  // Chegirmagacha VA proratsiyagacha bo'lgan to'liq tarif narxi — "qancha
-  // chegirma/proratsiya berdik?" savoliga javob berish uchun saqlanadi.
+  // Chegirmagacha VA proratsiyagacha bo'lgan to'liq narx. Qo'shimcha
+  // xizmatlar (yotoqxona, ovqat) BUNING ICHIDA: base = tarif + xizmatlar.
+  // Shu tufayli reconcile invarianti (amount = prorated − discount,
+  // prorated <= base) o'zgarmaydi.
   baseAmount Decimal @map("base_amount") @db.Decimal(14, 2)
+
+  // QO'SHIMCHA XIZMATLAR ulushi — baseAmount ICHIDAGI xizmatlar yig'indisi
+  // (proratsiyagacha, nominal). Hisobotda "shundan yotoqxona qancha" degan
+  // savolga javob. 0 = xizmat yo'q.
+  servicesAmount   Decimal @default(0) @map("services_amount") @db.Decimal(14, 2)
+  // [{ serviceId, name, amount }] — chiqarilgan paytdagi xizmatlar.
+  // Nomi muhrlanadi (`tariffName` doktrinasi).
+  servicesSnapshot Json?   @map("services_snapshot")
 
   // KIRISH PRORATSIYASI koordinatasi — snapshot. null = proratsiya yo'q
   // (to'liq oy), shu jumladan bu maydonlardan oldin chiqarilgan qatorlar.
