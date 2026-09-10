@@ -20,7 +20,8 @@
     "students:diagnose": "node src/scripts/diagnose-student-count.js",
     "finance:demo": "node src/scripts/seed-finance-demo/index.js",
     "activity:demo": "node src/scripts/seed-activity-demo/index.js",
-    "seed:academic": "node src/scripts/seedAcademicDemo.js"
+    "seed:academic": "node src/scripts/seedAcademicDemo.js",
+    "diagnostics:demo": "node src/scripts/seed-diagnostics-demo/index.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",

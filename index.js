@@ -45,6 +45,10 @@ const { startAttendanceAbsentCron } = require("./src/jobs/attendanceAbsent.job")
 const { startStudentAttendanceAbsentCron } = require("./src/jobs/studentAttendanceAbsent.job");
 const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
 const { startTestSessionExpiryCron } = require("./src/jobs/testSessionExpiry.job");
+const {
+  startDiagnosticExpiryCron,
+  startDiagnosticInsightCron,
+} = require("./src/jobs/diagnostic.job");
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
 const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
@@ -176,6 +180,9 @@ const bootstrap = async () => {
   await startStudentAttendanceAbsentCron();
   startGradePenaltyCron();
   startTestSessionExpiryCron();
+  // Diagnostika: ochiq qolgan urinishlarni yopish + navbatdagi AI tahlili
+  startDiagnosticExpiryCron();
+  startDiagnosticInsightCron();
   startSeasonStatusCron();
   startPremiumExpiryCron();
   startInvoiceGenerationCron();

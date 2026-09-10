@@ -37,6 +37,12 @@ const testBindingRoutes = require("./testBinding.routes");
 const testSessionRoutes = require("./testSession.routes");
 const testResultRoutes = require("./testResult.routes");
 const testSettingsRoutes = require("./testSettings.routes");
+// DIAGNOSTIKA — mavjud test tizimidan ALOHIDA modul (`.claude` qoidalari
+// va `utils/permissions.js` dagi izohga qarang).
+const diagnosticRoutes = require("./diagnostic.routes");
+const diagnosticQuestionRoutes = require("./diagnosticQuestion.routes");
+const diagnosticTestRoutes = require("./diagnosticTest.routes");
+const diagnosticAttemptRoutes = require("./diagnosticAttempt.routes");
 const scheduleSettingsRoutes = require("./scheduleSettings.routes");
 const tariffRoutes = require("./tariff.routes");
 const studentTariffRoutes = require("./studentTariff.routes");
@@ -102,6 +108,11 @@ router.use("/bindings", testBindingRoutes);
 router.use("/test-sessions", testSessionRoutes);
 router.use("/test-results", testResultRoutes);
 router.use("/test-settings", testSettingsRoutes);
+// DIAGNOSTIKA
+router.use("/diagnostics", diagnosticRoutes);
+router.use("/diagnostic-questions", diagnosticQuestionRoutes);
+router.use("/diagnostic-tests", diagnosticTestRoutes);
+router.use("/diagnostic-attempts", diagnosticAttemptRoutes);
 router.use("/schedule-settings", scheduleSettingsRoutes);
 router.use("/tariffs", tariffRoutes);
 router.use("/student-tariffs", studentTariffRoutes);

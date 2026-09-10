@@ -525,9 +525,10 @@ model Class {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users        UserClass[]
-  testBindings TestBindingClass[]
-  weeklyStats  WeeklyStatsClass[]
+  users           UserClass[]
+  testBindings    TestBindingClass[]
+  weeklyStats     WeeklyStatsClass[]
+  diagnosticTests DiagnosticTestClass[]
 
   @@map("classes")
 }
@@ -541,10 +542,11 @@ model Subject {
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
-  topics       Topic[]
-  teachers     UserSubject[]
-  achievements StudentAchievement[]
-  clubs        Club[]
+  topics              Topic[]
+  teachers            UserSubject[]
+  achievements        StudentAchievement[]
+  clubs               Club[]
+  diagnosticQuestions DiagnosticQuestion[]
 
   @@map("subjects")
 }
@@ -560,6 +562,8 @@ model Topic {
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  diagnosticQuestions DiagnosticQuestion[]
 
   @@unique([subjectId, order])
   @@index([subjectId])
@@ -2552,6 +2556,11 @@ model MonthlyInvoice {
   @@index([studentId, month(sort: Desc)])
   // "Barcha qarzdorlar" (oylar bo'ylab)
   @@index([status, month])
+  // ⚠️ Yo'nalish kesimidagi hisobot. Indeks `20260905230500_invoice_direction_name`
+  // migratsiyasida QO'LDA yaratilgan, lekin bu yerda e'lon qilinmagan edi —
+  // shu sababli har bir yangi migratsiya uni JIM O'CHIRIB yuborardi
+  // (`DROP INDEX`). E'lon qilingandan keyin drift yo'q.
+  @@index([directionName])
   // dueDate YO'Q: "muddati o'tgan" = month < currentMonthKey() && status != paid.
   @@map("monthly_invoices")
 }
@@ -4377,3 +4386,539 @@ model ActivityEvent {
 // Ko'rish huquqi baribir filial bo'yicha chegaralanadi: so'rovlarda
 // `branchId` filtri bor (`securityDashboard.service.js`), owner esa
 // hammasini ko'radi.
+
+// ─────────────────────────────────────────────
+// DIAGNOSTIKA — AI ASOSIDAGI BILIM DIAGNOSTIKASI
+// ─────────────────────────────────────────────
+//
+// Mavjud TEST tizimidan (Test / Question / TestSession / TestResult) ATAYLAB
+// ALOHIDA turadi va uning birorta jadvaliga tegmaydi. Sabab ikkita va ikkalasi
+// ham strukturaviy:
+//
+//   1. `Question` — MAVJUD tizimda TESTGA TEGISHLI (`test_id` majburiy):
+//      o'qituvchi savolni bitta test uchun yozadi va u boshqa testda qayta
+//      ishlatilmaydi. Diagnostikada esa savol — QAYTA ISHLATILADIGAN BANK
+//      birligi: fan + mavzu + qiyinlik bo'yicha saralanadi, statistikasi
+//      (ishlatilish soni, aniqlik) yig'iladi va o'nlab urinishda qatnashadi.
+//      Ikkalasini bitta jadvalga sig'dirish `test_id` ni ixtiyoriy qilishni
+//      talab qilardi — o'sha paytdan boshlab mavjud tizimning eng kuchli
+//      kafolati ("savol testsiz qolmaydi") yo'qolardi.
+//
+//   2. MAVSUM. Mavjud test tizimi `TestSeason` atrofida qurilgan (mavsum,
+//      biriktirish, tanga taqsimoti). Diagnostika mavsumga bog'liq EMAS —
+//      o'quvchi istalgan vaqtda darajasini o'lchaydi.
+//
+// `Subject`, `Topic`, `Class`, `User` esa QAYTA ISHLATILADI — ular filialning
+// umumiy ma'lumotnomasi va ikkinchi nusxasi bo'lmasligi kerak.
+
+enum DiagnosticQuestionType {
+  single // bitta to'g'ri variant
+  multiple // bir nechta to'g'ri variant
+  truefalse // to'g'ri / noto'g'ri
+  gap // bo'sh joyni to'ldirish (variantli)
+  short // qisqa matnli javob (avtomat solishtiriladi)
+  essay // insho — avtomat baholanmaydi, AI izohlaydi
+}
+
+// Qiyinlik — mavjud `Difficulty` (easy/medium/hard) dan ALOHIDA va 4 pog'onali.
+// Diagnostikaning butun mohiyati o'quvchining darajasiga MOS qiyinlikni
+// berishda: uch pog'ona "boshlang'ich / o'rta / yuqori" darajalarni bir-biriga
+// yopishtirib yuborardi va adaptiv tanlov ma'nosini yo'qotardi.
+enum DiagnosticLevel {
+  easy // Oson
+  medium // O'rta
+  hard // Qiyin
+  expert // Murakkab
+}
+
+// Savol bankidagi moderatsiya holati. Testga FAQAT `approved` tushadi —
+// tekshirilmagan savol o'quvchining darajasini noto'g'ri o'lchaydi.
+enum DiagnosticQuestionStatus {
+  draft
+  review
+  approved
+  archived
+}
+
+enum DiagnosticMode {
+  adaptive // darajaga moslashuvchi qiyinlik
+  practice // vaqt chegarasisiz mashq
+  timed // real imtihon sharoiti
+  section // bitta mavzuga fokus
+}
+
+enum DiagnosticTestStatus {
+  draft
+  scheduled
+  active
+  archived
+}
+
+enum DiagnosticAttemptStatus {
+  in_progress
+  submitted
+  evaluated // AI tahlili ham tayyor
+  expired // vaqti tugadi, topshirilmadi
+}
+
+// AI chiqaradigan matnlar. Hammasi BITTA jadvalda, chunki hayot sikli bir xil
+// (navbat → ishlanmoqda → tayyor/xato) va ekran ularni birga o'qiydi.
+enum DiagnosticInsightKind {
+  feedback // umumiy tahlil: kuchli/zaif tomon, maslahat
+  explain // "nega xato?" — bitta savol uchun
+  plan // 1 kunlik aniq reja
+  roadmap // 30 kunlik yo'l xaritasi
+}
+
+enum DiagnosticInsightStatus {
+  queued
+  processing
+  done
+  failed
+}
+
+// ── SAVOLLAR BANKI ───────────────────────────
+
+model DiagnosticQuestion {
+  id String @id @db.Char(24)
+
+  // Inson o'qiydigan kod — import/eksport va moderatsiya suhbatida ishlatiladi
+  // ("D-000418 xato"). Avtomat beriladi, qo'lda kiritilmaydi.
+  code String @unique @db.VarChar(16)
+
+  subjectId String  @map("subject_id") @db.Char(24)
+  topicId   String? @map("topic_id") @db.Char(24)
+  // Sinf darajasi (1–11). Mavzu bo'lmagan savol ham sinf bo'yicha filtrlanadi.
+  grade     Int?
+
+  text       String
+  type       DiagnosticQuestionType @default(single)
+  difficulty DiagnosticLevel        @default(medium)
+  // Blum taksonomiyasi darajasi ("remember", "apply", "analyze") — tahlilda
+  // "biladi-yu, qo'llay olmaydi" holatini ajratadi. Ixtiyoriy.
+  bloom      String?                @db.VarChar(24)
+
+  // { key, url, type, originalName, sizeBytes } — mavjud tizimdagi bilan bir xil
+  image Json?
+
+  // Savolga o'rtacha necha soniya ketishi. XATO SABABINI ANIQLASHDA
+  // ishlatiladi: shundan ANCHA tez javob berilgan xato — "shoshildi".
+  estimatedTime Int   @default(60) @map("estimated_time")
+  points        Float @default(1)
+
+  // `short` turi uchun: qabul qilinadigan javob variantlari (kichik harfga
+  // keltirilib, bo'shliqlar siqilib solishtiriladi).
+  acceptedAnswers String[] @map("accepted_answers")
+
+  explanation String? // nega bu javob to'g'ri
+  solution    String? // bosqichma-bosqich yechim (matematika/fizika)
+
+  status   DiagnosticQuestionStatus @default(draft)
+  language String                   @default("uz") @db.VarChar(4)
+
+  // ── STATISTIKA ─────────────────────────────
+  // Bank sifatining o'lchovi: ko'p ishlatilgan-u hech kim to'g'ri javob
+  // bermaydigan savol — savolning o'zida muammo borligini bildiradi.
+  usageCount   Int   @default(0) @map("usage_count")
+  correctCount Int   @default(0) @map("correct_count")
+  accuracy     Float @default(0) // correctCount / usageCount * 100
+
+  authorId  String   @map("author_id") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  subject   Subject                    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic     Topic?                     @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  options   DiagnosticQuestionOption[]
+  testLinks DiagnosticTestQuestion[]
+
+  @@index([subjectId, status])
+  @@index([topicId])
+  @@index([subjectId, difficulty, status])
+  @@index([grade, subjectId, status])
+  @@index([status, usageCount])
+  @@map("diagnostic_questions")
+}
+
+model DiagnosticQuestionOption {
+  id         String  @id @db.Char(24)
+  questionId String  @map("question_id") @db.Char(24)
+  text       String?
+  image      Json?
+  isCorrect  Boolean @default(false) @map("is_correct")
+  position   Int
+
+  question DiagnosticQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+  @@map("diagnostic_question_options")
+}
+
+// ── TEST SHABLONI ────────────────────────────
+//
+// "Qaysi fan, qancha savol, qancha vaqt" degan QOIDA. Savollarning o'zi bu
+// yerda saqlanmaydi: ular urinish boshlanganda bankdan tanlanadi. Aniq
+// savollar tanlangan bo'lsa (`DiagnosticTestQuestion`), o'sha ro'yxat
+// ishlatiladi — o'qituvchi "aynan shu 20 ta savol" deyishi mumkin.
+
+model DiagnosticTest {
+  id          String  @id @db.Char(24)
+  title       String
+  description String?
+
+  subjectId String?          @map("subject_id") @db.Char(24)
+  grade     Int?
+  mode      DiagnosticMode   @default(practice)
+  // null → aralash qiyinlik (bank bo'yicha teng taqsimlanadi)
+  level     DiagnosticLevel?
+
+  questionCount Int @default(20) @map("question_count")
+  durationMin   Int @default(30) @map("duration_min")
+
+  /**
+   * SAVOLLAR TAQSIMOTI — "qaysi fandan, qaysi sinf bazasidan, nechta
+   * yengil / o'rta / og'ir savol".
+   *
+   * Shakli: `[{ subjectId, grade, easy, medium, hard }]`.
+   *
+   * ⚠️ BU REJA, NATIJA EMAS. Tanlangan savollar `DiagnosticTestQuestion`
+   * ga MUHRLANADI; blueprint esa "nima so'ralgani" yozuvi bo'lib
+   * qoladi. Ikkisi ajralishi mumkin (bankda savol yetmasa) va aynan
+   * shu farq ogohlantirishga aylanadi — reja saqlanmasa, testni keyin
+   * tahrirlashda "avval nima so'ralgan edi" degan savol javobsiz
+   * qolardi.
+   *
+   * ⚠️ FAN QATORI TAKRORLANISHI MUMKIN: bitta fanni turli sinf
+   * bazasidan olish odatiy hol ("Matematika 7-sinf + Matematika
+   * 6-sinf"), shuning uchun bu massiv, obyekt emas.
+   */
+  blueprint Json?
+
+  status DiagnosticTestStatus @default(draft)
+
+  // Ochiq oyna. `availableTo` INKLYUZIV emas — aniq lahza (`< availableTo`).
+  availableFrom DateTime? @map("available_from")
+  availableTo   DateTime? @map("available_to")
+
+  attemptsAllowed  Int     @default(1) @map("attempts_allowed")
+  shuffleQuestions Boolean @default(true) @map("shuffle_questions")
+  shuffleOptions   Boolean @default(true) @map("shuffle_options")
+  // Natijada to'g'ri javoblarni ko'rsatishmi. Diagnostikada odatda HA:
+  // maqsad — baho qo'yish emas, kamchilikni ko'rsatish.
+  showAnswers      Boolean @default(true) @map("show_answers")
+
+  createdBy   String    @map("created_by") @db.Char(24)
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  classes   DiagnosticTestClass[]
+  questions DiagnosticTestQuestion[]
+  attempts  DiagnosticAttempt[]
+
+  @@index([status, availableFrom])
+  @@index([subjectId, status])
+  @@index([createdAt(sort: Desc)])
+  @@map("diagnostic_tests")
+}
+
+// Test ↔ Sinf M2M. Bo'sh bo'lsa — test butun maktabga ochiq.
+model DiagnosticTestClass {
+  testId  String @map("test_id") @db.Char(24)
+  classId String @map("class_id") @db.Char(24)
+
+  test  DiagnosticTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+  class Class          @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  @@id([testId, classId])
+  @@index([classId])
+  @@map("diagnostic_test_classes")
+}
+
+// Aniq savol tanlangan test uchun. Bo'sh bo'lsa — bankdan avtomat tanlanadi.
+model DiagnosticTestQuestion {
+  testId     String @map("test_id") @db.Char(24)
+  questionId String @map("question_id") @db.Char(24)
+  position   Int
+
+  test     DiagnosticTest     @relation(fields: [testId], references: [id], onDelete: Cascade)
+  question DiagnosticQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([testId, questionId])
+  @@index([questionId])
+  @@map("diagnostic_test_questions")
+}
+
+// ── URINISH (MUHRLANGAN FAKT) ────────────────
+//
+// ⚠️ URINISH SAVOLLARNI MUHRLAB OLADI (`DiagnosticAttemptQuestion`).
+// Bankdagi savol keyin tahrirlansa yoki arxivlansa, o'tgan natija
+// O'ZGARMAYDI — aks holda "o'tgan oy 80 ball edi, bugun 60 bo'lib qoldi"
+// holati yuzaga kelardi. Bu mavjud `TestSessionQuestion` bilan AYNI doktrina.
+
+model DiagnosticAttempt {
+  id String @id @db.Char(24)
+
+  studentId String  @map("student_id") @db.Char(24)
+  testId    String? @map("test_id") @db.Char(24)
+  subjectId String? @map("subject_id") @db.Char(24)
+
+  // ⚠️ TANLOV MEZONLARI URINISHDA SAQLANADI, faqat testda emas. Adaptiv
+  // rejimda savollar BITTALAB tanlanadi va ikkinchi savol birinchisi bilan
+  // AYNI shart bo'yicha olinishi kerak. Mezon faqat so'rovda bo'lsa,
+  // keyingi so'rovda u yo'qolib, sinf yoki mavzu filtri jimgina tushib
+  // qolardi va test o'rtasidan boshqa savollar kela boshlardi.
+  // ⚠️ NOMI `grade` EMAS: bu modelda `grade` allaqachon NATIJA darajasi
+  // ("GOOD"/"MEDIUM"/"BAD"). Bitta modelda "grade" ikki xil narsani
+  // anglatsa, hisobotda sinf o'rniga baho kesimi chiqib ketardi.
+  schoolGrade Int?    @map("school_grade")
+  topicId     String? @map("topic_id") @db.Char(24)
+
+  mode   DiagnosticMode          @default(practice)
+  level  DiagnosticLevel?
+  status DiagnosticAttemptStatus @default(in_progress)
+
+  attemptNumber Int @default(1) @map("attempt_number")
+
+  // ⚠️ O'QUVCHI SURATI — hisobot kesimi SHU YERDAN olinadi, joriy sinfdan
+  // EMAS (`education.md` §5): o'quvchini boshqa sinfga o'tkazish o'tgan
+  // hisobotni jimgina qayta yozib yuborardi.
+  // { firstName, lastName, className }
+  studentSnapshot Json @map("student_snapshot")
+
+  totalQuestions Int  @default(0) @map("total_questions")
+  correctCount   Int? @map("correct_count")
+  wrongCount     Int? @map("wrong_count")
+  skippedCount   Int? @map("skipped_count")
+
+  score        Float? // 0–100
+  earnedPoints Float?  @map("earned_points")
+  maxPoints    Float?  @map("max_points")
+  accuracy     Float?
+  // "GOOD" | "MEDIUM" | "BAD" — `classifyScore` natijasi, muhrlangan holda.
+  // Chegara keyin o'zgarsa, o'tgan urinish qayta baholanmaydi.
+  grade        String? @db.VarChar(8)
+  // Bashorat oynasi: standart xato (0.2–0.75). Savol qancha kam bo'lsa,
+  // natija shuncha ishonchsiz — buni yashirish o'quvchini chalg'itardi.
+  seScore      Float?  @map("se_score")
+
+  timeSpentSec Int? @map("time_spent_sec")
+
+  // ── ADAPTIV REJIM (1PL / Rasch) ────────────
+  //
+  // ⚠️ HOLAT BAZADA, XOTIRADA EMAS. Adaptiv testda savollar BITTALAB
+  // beriladi, ya'ni sessiya urinish davomida yashashi kerak. Uni xotirada
+  // (yoki tashqi keshda) saqlash server qayta ishga tushganda o'quvchini
+  // yarim diagnostika bilan qoldirardi — qaytadan boshlashdan boshqa yo'l
+  // qolmasdi. Bu yerda esa urinish qatorining o'zi sessiya.
+  //
+  // `ability` — o'quvchining joriy qobiliyat bahosi (theta, −3…+3),
+  // `abilitySe` — o'sha bahoning standart xatosi (1 dan boshlanadi va
+  // har javobdan keyin kamayadi). Test `abilitySe` yetarlicha kichik
+  // bo'lganda TO'XTAYDI: qo'shimcha savol endi yangi ma'lumot bermaydi.
+  ability   Float? @default(0)
+  abilitySe Float? @default(1) @map("ability_se")
+
+  // [{ topicId, topic, score, questions, correct }]
+  breakdown     Json?
+  // { wrongCount, rushing, knowledge, misread } — foizlarda
+  errorPatterns Json? @map("error_patterns")
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  expiresAt   DateTime? @map("expires_at")
+  submittedAt DateTime? @map("submitted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  test      DiagnosticTest?             @relation(fields: [testId], references: [id], onDelete: SetNull)
+  questions DiagnosticAttemptQuestion[]
+  answers   DiagnosticAnswer[]
+  insights  DiagnosticInsight[]
+
+  // ⚠️ URINISHLAR SONI SHU YERDA CHEKLANADI. Xizmat qatlamidagi
+  // "nechta urinish bor?" tekshiruvi ikkita parallel so'rovda ikkalasiga
+  // ham yashil chiroq berardi; noyob indeks esa ikkinchisini BAZA
+  // darajasida rad etadi. `testId` null bo'lgan (mashq) urinishlar
+  // PostgreSQL'da bir-biri bilan to'qnashmaydi — NULL lar noyob
+  // hisoblanadi, ya'ni mashq urinishlari cheksiz.
+  @@unique([testId, studentId, attemptNumber])
+  @@index([studentId, createdAt(sort: Desc)])
+  @@index([status, expiresAt])
+  @@index([testId])
+  @@index([subjectId, submittedAt(sort: Desc)])
+  @@index([submittedAt(sort: Desc)])
+  @@map("diagnostic_attempts")
+}
+
+model DiagnosticAttemptQuestion {
+  id         String @id @db.Char(24)
+  attemptId  String @map("attempt_id") @db.Char(24)
+  // Proveniyans — bank statistikasini yangilash uchun. FK EMAS: savol
+  // arxivlansa ham urinish tarixi buzilmasligi kerak.
+  questionId String @map("question_id") @db.Char(24)
+
+  type       DiagnosticQuestionType
+  difficulty DiagnosticLevel
+  text       String
+  image      Json?
+  points     Float                  @default(1)
+
+  // Mavzu/fan SURATI — mavzu keyin nomi o'zgarsa yoki o'chirilsa, natija
+  // sahifasidagi kesim buzilmaydi.
+  topicId     String? @map("topic_id") @db.Char(24)
+  topicName   String? @map("topic_name")
+  subjectId   String? @map("subject_id") @db.Char(24)
+  subjectName String? @map("subject_name")
+
+  estimatedTime   Int      @default(60) @map("estimated_time")
+  explanation     String?
+  solution        String?
+  acceptedAnswers String[] @map("accepted_answers")
+
+  position Int
+
+  attempt DiagnosticAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  options DiagnosticAttemptOption[]
+  answer  DiagnosticAnswer?
+
+  @@index([attemptId, position])
+  @@index([questionId])
+  @@map("diagnostic_attempt_questions")
+}
+
+model DiagnosticAttemptOption {
+  id                String  @id @db.Char(24)
+  attemptQuestionId String  @map("attempt_question_id") @db.Char(24)
+  optionId          String? @map("option_id") @db.Char(24)
+  text              String?
+  image             Json?
+  // ⚠️ Test paytida bu maydon MIJOZGA CHIQMAYDI — `select` bilan
+  // boshqariladi (mavjud `TestSessionQuestionOption` bilan bir xil qoida).
+  isCorrect         Boolean @default(false) @map("is_correct")
+  position          Int
+
+  attemptQuestion DiagnosticAttemptQuestion @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+
+  @@index([attemptQuestionId])
+  @@map("diagnostic_attempt_options")
+}
+
+model DiagnosticAnswer {
+  id                String @id @db.Char(24)
+  attemptId         String @map("attempt_id") @db.Char(24)
+  // Bitta muhrlangan savolga BITTA javob — takroriy yozuv strukturaviy imkonsiz.
+  attemptQuestionId String @unique @map("attempt_question_id") @db.Char(24)
+
+  // Tanlangan variantlarning `DiagnosticAttemptOption.id` lari.
+  selectedOptionIds String[] @map("selected_option_ids")
+  // `short` / `essay` uchun matnli javob.
+  textAnswer        String?  @map("text_answer")
+
+  isCorrect    Boolean? // null → avtomat baholanmaydi (essay)
+  isSkipped    Boolean  @default(false) @map("is_skipped")
+  pointsEarned Float    @default(0) @map("points_earned")
+
+  // "rushing" | "knowledge" | "misread" — xato bo'lsa aniqlanadi.
+  errorReason String? @map("error_reason") @db.VarChar(16)
+
+  // O'quvchi javobiga qanchalik ishonganini o'zi belgilaydi ("low"|"mid"|"high").
+  confidence String? @db.VarChar(8)
+  flagged    Boolean @default(false)
+
+  // ⚠️ IKKALASI HAM XATO SABABINI ANIQLASH UCHUN — statistika uchun emas.
+  // Vaqt kam + xato = shoshildi; javobni ko'p o'zgartirgan + xato = savolni
+  // noto'g'ri tushundi; qolgani — bilim yetishmasligi.
+  timeSpentSec Int? @map("time_spent_sec")
+  changeCount  Int  @default(0) @map("change_count")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  attempt         DiagnosticAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  attemptQuestion DiagnosticAttemptQuestion @relation(fields: [attemptQuestionId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId])
+  @@map("diagnostic_answers")
+}
+
+// ── AI TAHLILI ───────────────────────────────
+//
+// AI javobi ALOHIDA jadvalda va urinishning ustuniga yozilmaydi: u kechikib
+// keladi (yoki umuman kelmaydi), urinish esa shu zahoti tayyor bo'lishi kerak.
+// Natija sahifasi baholarni darhol ko'rsatadi, AI matni esa tayyor bo'lgach
+// qo'shiladi.
+
+model DiagnosticInsight {
+  id String @id @db.Char(24)
+
+  attemptId String? @map("attempt_id") @db.Char(24)
+  studentId String? @map("student_id") @db.Char(24)
+
+  // ⚠️ NOYOBLIK KALITINING NULL BO'LMAYDIGAN QISMI.
+  //
+  // `explain` turi HAR SAVOL uchun alohida yozuv beradi, qolgan turlar
+  // (`feedback`, `roadmap`, `plan`) esa butun urinishga bitta. Bu farqni
+  // nullable ustun bilan ifodalash IKKI marta buzilardi:
+  //   1. PostgreSQL noyoblik indeksida NULL lar BIR-BIRIDAN FARQ QILADI,
+  //      ya'ni `[attempt, "feedback", NULL]` takrorlanishi to'silmasdi va
+  //      tugma har bosilganda yangi qator qo'shilaverardi;
+  //   2. Prisma `upsert` kompozit kalitda `null` ni umuman qabul qilmaydi.
+  //
+  // Shuning uchun ustun MAJBURIY: `explain` uchun MUHRLANGAN SAVOL id'si,
+  // qolgan turlar uchun `-` (ya'ni "urinishning o'zi").
+  targetId String @default("-") @map("target_id") @db.VarChar(24)
+
+  kind   DiagnosticInsightKind
+  status DiagnosticInsightStatus @default(queued)
+
+  // Qaysi model javob bergani. Bo'sh → heuristik zaxira rejim ishlagan.
+  model String? @db.VarChar(64)
+
+  input  Json?
+  output Json?
+  error  String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  attempt DiagnosticAttempt? @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  // Bitta urinish uchun har turdan BITTA yozuv — qayta so'ralganda o'sha
+  // qator yangilanadi, tarixga takroriy qator qo'shilmaydi.
+  @@unique([attemptId, kind, targetId])
+  @@index([studentId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("diagnostic_insights")
+}
+
+// ── SOZLAMALAR (filial singleton) ────────────
+
+model DiagnosticSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // AI o'chirilgan bo'lsa ham diagnostika ISHLAYDI: tahlil heuristik
+  // zaxira rejimda tuziladi. Bu bayroq faqat model chaqiruvini to'xtatadi.
+  aiEnabled Boolean @default(true) @map("ai_enabled")
+
+  defaultQuestionCount Int @default(20) @map("default_question_count")
+  defaultDurationMin   Int @default(30) @map("default_duration_min")
+  defaultAttempts      Int @default(1) @map("default_attempts")
+
+  // `classifyScore` chegaralari. Diagnostikaning butun tili shu ikki sondan
+  // chiqadi: "Yaxshi / O'rta / Zaif", heatmap ranglari, zaif mavzular ro'yxati.
+  goodScore   Int @default(70) @map("good_score")
+  mediumScore Int @default(40) @map("medium_score")
+
+  // Zaif mavzu chegarasi — shundan past mavzular yo'l xaritasiga tushadi.
+  weakTopicScore Int @default(80) @map("weak_topic_score")
+
+  // O'quvchi o'z darajasini tanlaganda qaysi qiyinliklar beriladi.
+  // { beginner: ["easy","medium"], intermediate: [...], advanced: [...] }
+  levelTiers Json? @map("level_tiers")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("diagnostic_settings")
+}

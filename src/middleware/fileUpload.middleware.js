@@ -16,6 +16,16 @@ const FILE_MIME_TYPES = {
   ],
   // Lottie animatsiya (.json) fayllari
   json: ["application/json", "text/plain", "application/octet-stream"],
+  // ⚠️ ALOHIDA TOIFA, `document` GA QO'SHILMAGAN. Import faqat jadval
+  // qabul qiladi va `document` ga `text/csv` qo'shilsa, u xabar/premium
+  // yuklashlarida ham jimgina ochilib ketardi — mavjud endpointlarning
+  // qabul qiladigan fayllari kengayishi kerak emas.
+  spreadsheet: [
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+    "application/csv",
+  ],
 };
 
 /**
@@ -123,6 +133,55 @@ const createMultiFileUpload = ({
 };
 
 /**
+ * Creates a MULTI-FIELD upload middleware (multer `.fields()`).
+ *
+ * ⚠️ `createMultiFileUpload` bitta maydonga bir nechta fayl oladi, bu esa
+ * TURLI maydonlarga (masalan `questionImage` + `optionImage_0`,
+ * `optionImage_1`) bittadan fayl oladi. Diagnostika savolida savolning
+ * o'z rasmi ham, har bir variantning rasmi ham bo'lishi mumkin va ular
+ * qaysi variantga tegishli ekani MAYDON NOMIDAN aniqlanadi — bitta
+ * massivda tartibga tayanib bo'lmasdi (bo'sh variantlar tartibni suradi).
+ *
+ * ⚠️ `withBranchContext` MAJBURIY (bu fayldagi qolganlari bilan bir xil
+ * sabab): busboy so'rovni soket async resursi orqali o'qiydi va u
+ * `runWithBranch()` dan OLDIN yaratilgan — o'ralmasa, yuklashdan keyingi
+ * butun zanjir filialsiz ishlab, birinchi so'rovda yiqilardi.
+ *
+ * @param {object} options
+ * @param {{name: string, maxCount?: number}[]} options.fields Maydonlar ro'yxati.
+ * @param {string[]} [options.categories=["image"]] Ruxsat etilgan toifalar.
+ * @param {number} [options.maxFiles=12] Umumiy fayllar chegarasi.
+ * @returns {Function} Multer fields middleware.
+ */
+const createFieldsUpload = ({
+  fields = [],
+  categories = ["image"],
+  maxFiles = 12,
+} = {}) => {
+  const maxFileSizeMb = config.maxUploadFileSizeMb;
+  const maxFileSizeBytes = Math.max(1, maxFileSizeMb) * 1024 * 1024;
+  const allowedMimeTypes = getAllowedMimeTypes(categories);
+
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: maxFileSizeBytes,
+      files: Math.max(1, maxFiles),
+      fields: 60,
+      parts: 80,
+    },
+    fileFilter: (req, file, cb) => {
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        return cb(new Error("Unsupported file type."), false);
+      }
+      cb(null, true);
+    },
+  });
+
+  return withBranchContext(upload.fields(fields));
+};
+
+/**
  * Handles multer errors in a consistent JSON format.
  */
 const handleFileUploadError = (err, req, res, next) => {
@@ -156,5 +215,6 @@ module.exports = {
   getAllowedMimeTypes,
   createSingleFileUpload,
   createMultiFileUpload,
+  createFieldsUpload,
   handleFileUploadError,
 };

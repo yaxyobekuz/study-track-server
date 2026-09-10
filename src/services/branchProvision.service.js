@@ -119,6 +119,7 @@ const seedBranch = async (branch) => {
       settingsService.getAttendanceSettings(),
       settingsService.getGradePenaltySettings(),
       settingsService.getTestSettings(),
+      settingsService.getDiagnosticSettings(),
       settingsService.getPenaltySettings(),
       settingsService.getPremiumSettings(),
       settingsService.getFinanceSettings(),

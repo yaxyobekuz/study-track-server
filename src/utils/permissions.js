@@ -30,6 +30,7 @@ const SECTIONS = {
   CLASSES: "classes",
   SUBJECTS: "subjects",
   TESTS: "tests",
+  DIAGNOSTICS: "diagnostics",
   MARKET: "market",
   TASKS: "tasks",
   PENALTIES: "penalties",
@@ -261,6 +262,42 @@ const PERMISSION_SECTIONS = [
       { key: "distribute", label: "Tanga taqsimlash" },
       { key: "finalize", label: "Mavsumni yakunlash" },
       A.settings,
+    ],
+  },
+  {
+    // DIAGNOSTIKA — mavjud "Testlar" bo'limidan ALOHIDA.
+    //
+    // ⚠️ Ikkalasi bir xil ko'rinsa ham, boshqa savolga javob beradi:
+    // "Testlar" — MAVSUM bo'yicha baho qo'yish (natija jurnalga tushadi,
+    // tanga taqsimlanadi), "Diagnostika" — o'quvchi QAYERDA turganini
+    // o'lchash (baho qo'yilmaydi, kamchilik va reja chiqadi). Bitta
+    // bo'limga qo'shilsa, test mavsumini boshqaradigan odam avtomatik
+    // ravishda har bir o'quvchining zaif tomonlari ro'yxatini ham olardi.
+    //
+    // ⚠️ AMALLAR ATAYLAB MAYDA:
+    //   `questions` — savollar bankini TAHRIRLASH (o'qituvchi oladi),
+    //   `moderate`  — savolni TASDIQLASH (bank sifati uchun javobgar
+    //                 odam oladi; o'z savolini o'zi tasdiqlash huquqi
+    //                 alohida qaror),
+    //   `attempts`  — BOSHQA o'quvchilarning natijalari (shaxsiy natija —
+    //                 o'quvchining o'zi baribir ko'radi),
+    //   `analytics` — sinf/fan kesimidagi manzara,
+    //   `ai`        — AI tahlilini ISHGA TUSHIRISH (pullik chaqiruv).
+    key: SECTIONS.DIAGNOSTICS,
+    label: "Diagnostika",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      { key: "questions", label: "Savollar bazasi" },
+      { key: "moderate", label: "Savolni tasdiqlash" },
+      { key: "attempts", label: "O'quvchilar natijalari" },
+      { key: "analytics", label: "Tahlil" },
+      { key: "ai", label: "AI tahlilini ishga tushirish" },
+      A.settings,
+      A.export,
     ],
   },
   {

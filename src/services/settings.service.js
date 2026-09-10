@@ -81,6 +81,22 @@ async function getTestSettings() {
 }
 
 /**
+ * DIAGNOSTIKA sozlamalari.
+ *
+ * ⚠️ `levelTiers` DEFAULT'i schema'da EMAS, `diagnostic.helpers.js` da
+ * (`DEFAULT_LEVEL_TIERS`): u ro'yxatlar to'plami va uni SQL default'iga
+ * yozib qo'yish qiymatni ikki joyda saqlashni anglatardi. Bu yerda `null`
+ * qoladi, resolver esa yaroqsiz/bo'sh qiymatni default bilan almashtiradi.
+ */
+async function getDiagnosticSettings() {
+  return prisma.diagnosticSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
+/**
  * PenaltySettings — lazy migration: fineAmounts bo'sh bo'lsa eski
  * studentFineAmount/teacherFineAmount dan to'ldiradi (Mongoose logikasi).
  */
@@ -179,6 +195,7 @@ module.exports = {
   getAttendanceSettings,
   getGradePenaltySettings,
   getTestSettings,
+  getDiagnosticSettings,
   getPenaltySettings,
   getPremiumSettings,
   getFinanceSettings,
