@@ -15,6 +15,7 @@ const {
   getInsights,
   refreshInsights,
   getAchievements,
+  getMyAchievements,
   getAchievementOptions,
   createAchievement,
   updateAchievement,
@@ -30,6 +31,13 @@ const {
 } = require("../controllers/academicDashboard.controller");
 
 router.use(protect);
+
+// ─────────────────────────────────────────────
+// O'QUVCHI YO'LI — ruxsat darvozalaridan OLDIN
+// ─────────────────────────────────────────────
+// ⚠️ `/achievements/me` `/achievements/:id` DAN OLDIN turishi SHART,
+// aks holda "me" id deb o'qilib, `validateObjectId` uni rad etardi.
+router.get("/achievements/me", getMyAchievements);
 
 // ─────────────────────────────────────────────
 // DASHBOARD

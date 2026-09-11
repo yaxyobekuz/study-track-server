@@ -51,6 +51,22 @@ const getAchievements = asyncHandler(async (req, res) => {
   res.json(result);
 });
 
+/**
+ * O'QUVCHINING O'Z YUTUQLARI (o'quvchi paneli).
+ *
+ * ⚠️ RUXSAT TALAB QILINMAYDI, lekin `studentId` SO'ROVDAN OLINMAYDI —
+ * u har doim `req.user.id`. Aks holda istalgan o'quvchi boshqasining
+ * yutuqlarini so'rab olardi. Diagnostikadagi `/me` yo'llari bilan ayni
+ * doktrina.
+ */
+const getMyAchievements = asyncHandler(async (req, res) => {
+  const result = await achievementService.getAchievements({
+    ...req.query,
+    studentId: req.user.id,
+  });
+  res.json(result);
+});
+
 const getAchievementOptions = asyncHandler(async (req, res) => {
   res.json({ success: true, data: achievementService.getOptions() });
 });
@@ -131,6 +147,7 @@ module.exports = {
   getInsights,
   refreshInsights,
   getAchievements,
+  getMyAchievements,
   getAchievementOptions,
   createAchievement,
   updateAchievement,
