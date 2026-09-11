@@ -479,6 +479,30 @@ const getVersions = async (tariffId, req) => {
  * @param {string} userId
  * @returns {Promise<object>}
  */
+/**
+ * Narx o'zgargach, shu tarifga biriktirilgan o'quvchilarning HALI TO'LANMAGAN
+ * hisob-fakturalarini avtomatik qayta shakllantiradi.
+ *
+ * Tarif/versiya PLATFORMADA yashaydi — narx BARCHA filiallarga tegishli,
+ * shuning uchun `forEachBranch` bilan har filialda alohida bajariladi.
+ * Best-effort: qayta shakllantirish xatosi versiya yaratishni to'xtatmaydi.
+ *
+ * @param {string} tariffId
+ * @param {number} fromMonth - qaysi oydan (versiya boshlanishi)
+ */
+const autoRegenForTariff = async (tariffId, fromMonth) => {
+  try {
+    const { forEachBranch } = require("../helpers/branchIterator");
+    const invoiceService = require("./invoice.service");
+    await forEachBranch(
+      () => invoiceService.regenerateForTariff(tariffId, { fromMonth }),
+      { label: "[auto-regen:tariff]" },
+    );
+  } catch (error) {
+    logger.warn(`[auto-regen:tariff] ${error.message}`);
+  }
+};
+
 const addVersion = async (tariffId, data, userId) => {
   const tariff = await platformPrisma.tariff.findUnique({ where: { id: tariffId } });
   if (!tariff) throw new NotFoundError("Tarif topilmadi");
@@ -500,8 +524,9 @@ const addVersion = async (tariffId, data, userId) => {
 
   let period = { startMonth, endMonth: explicitEnd };
 
+  let result;
   try {
-    return await platformPrisma.$transaction(async (tx) => {
+    result = await platformPrisma.$transaction(async (tx) => {
       if (autoClose) {
         // Yangi davrdan OLDIN boshlangan ochiq versiyani yopamiz.
         const openVersion = await tx.tariffVersion.findFirst({
@@ -549,6 +574,14 @@ const addVersion = async (tariffId, data, userId) => {
       `Tarifda ${formatMonthKey(startMonth)} oyidan boshlanadigan versiya allaqachon bor — uni tahrirlang`,
     );
   }
+
+  // Yangi narx joriy/o'tgan oyni qamrasa — mavjud (to'lanmagan) hisob-fakturalar
+  // yangilanadi. Kelajak versiyada regen qiladigan faktura yo'q (skip).
+  if (period.startMonth <= currentMonthKey()) {
+    await autoRegenForTariff(tariffId, period.startMonth);
+  }
+
+  return result;
 };
 
 /**
@@ -632,8 +665,9 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
     );
   }
 
+  let result;
   try {
-    return await platformPrisma.$transaction(async (tx) => {
+    result = await platformPrisma.$transaction(async (tx) => {
       if (payload.startMonth !== undefined || payload.endMonth !== undefined) {
         await assertNoVersionOverlap(
           tx,
@@ -662,6 +696,16 @@ const updateVersion = async (tariffId, versionId, data, options = {}) => {
       "Tarifda shu oydan boshlanadigan versiya allaqachon bor",
     );
   }
+
+  // Faqat NARX o'zgarishi joriy/o'tgan oy summasiga ta'sir qiladi (bu esa
+  // amaldagi versiyada `force` talab qiladi). Davrni oldinga surish mavjud
+  // summalarni o'zgartirmaydi — bekorga regen qilmaymiz.
+  const effectiveStart = payload.startMonth ?? version.startMonth;
+  if (payload.monthlyAmount !== undefined && effectiveStart <= now) {
+    await autoRegenForTariff(tariffId, effectiveStart);
+  }
+
+  return result;
 };
 
 /**

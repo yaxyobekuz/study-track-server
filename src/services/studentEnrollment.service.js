@@ -382,6 +382,19 @@ const collectFrozenWarnings = async (studentId, periods) => {
   ];
 };
 
+/**
+ * Boshlang'ich oy summasi o'zgargach, o'quvchining TO'LANMAGAN hisob-fakturasini
+ * avtomatik qayta shakllantiradi (best-effort). To'langan oylar muhrlangan.
+ */
+const autoRegen = async (studentId, fromMonth) => {
+  try {
+    const { regenerateForStudents } = require("./invoice.service");
+    await regenerateForStudents([studentId], { fromMonth });
+  } catch (error) {
+    logger.warn(`[auto-regen] ${error.message}`);
+  }
+};
+
 // ─────────────────────────────────────────────
 // Yozish
 // ─────────────────────────────────────────────
@@ -522,6 +535,13 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
       await assertNoOverlap(tx, row.studentId, payload, id);
       return tx.studentEnrollment.update({ where: { id }, data: payload });
     });
+
+    // Boshlang'ich oy summasi/oyi o'zgarsa — o'sha oyning to'lanmagan
+    // hisob-fakturasi avtomatik yangilanadi. Sana o'zgarishi qamrovni
+    // o'zgartirishi mumkin — u jim bekor qilinmaydi, ogohlantirish beriladi.
+    if (data.firstMonthAmount !== undefined || data.firstMonthKey !== undefined) {
+      await autoRegen(row.studentId, monthKeyOfDate(startDate));
+    }
 
     const periods = await getPeriodsForStudent(row.studentId);
     const warnings = [

@@ -38,6 +38,7 @@ const SECTIONS = {
   COINS: "coins",
   TARIFFS: "tariffs",
   DISCOUNTS: "discounts",
+  SERVICES: "services",
   FINANCE: "finance",
   DEBTORS: "debtors",
   REPORTS: "reports",
@@ -383,6 +384,21 @@ const PERMISSION_SECTIONS = [
     // "kimga qancha chegirma" degan qarorni ham qabul qila olmasligi kerak.
     key: SECTIONS.DISCOUNTS,
     label: "Chegirmalar",
+    group: "Moliya",
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      { key: "assign", label: "O'quvchiga biriktirish" },
+    ],
+  },
+  {
+    // Qo'shimcha xizmatlar (yotoqxona, ovqat, ...) — chegirmalar uslubida
+    // alohida bo'lim: xizmat katalogini boshqaradigan xodim tarif/chegirma
+    // qarorlarini ham qabul qila olmasligi kerak.
+    key: SECTIONS.SERVICES,
+    label: "Qo'shimcha xizmatlar",
     group: "Moliya",
     actions: [
       A.view,

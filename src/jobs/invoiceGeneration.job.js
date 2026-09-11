@@ -157,6 +157,34 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
 }
 
 /**
+ * CATCH-UP / MOSLASHTIRISH PASS.
+ *
+ * Joriy filialdagi BARCHA to'lanmagan hisob-fakturani joriy tarif/narx/chegirmaga
+ * moslashtiradi. Real-time avtomatik regen (tarif o'zgartirilganda) faqat SHU
+ * paytdagi o'zgarishni ushlaydi; eski, narx o'zgarishidan OLDIN muhrlangan
+ * fakturalar esa orqada qolib ketardi. Bu pass ularni ham tekislaydi.
+ *
+ * ⚠️ Kun tekshiruvi (`invoiceDayOfMonth`) SHU YERDA YO'Q: bu generatsiya emas,
+ * mavjud qarzlarni joriy narxga tekislash. `skipIfUnchanged` tufayli o'zgarmagan
+ * faktura yozilmaydi, shuning uchun har startup/har kunlik pass bemalol ishlaydi.
+ */
+async function runInvoiceRealignmentPass() {
+  const settings = await getFinanceSettings();
+  if (!settings.autoGenerateEnabled) return null;
+
+  const invoiceService = require("../services/invoice.service");
+  const result = await invoiceService.regenerateAllUnpaid({});
+
+  if (result.changed > 0 || result.failed > 0) {
+    logger.info(
+      `[InvoiceRealign] To'lanmagan fakturalar joriy narxga tekislandi: ` +
+        `jami ${result.total}, o'zgargan ${result.changed}, xato ${result.failed}`,
+    );
+  }
+  return result;
+}
+
+/**
  * Cron jobni belgilaydi. Har kuni 06:00 (Asia/Tashkent).
  */
 function startInvoiceGenerationCron() {
@@ -166,6 +194,8 @@ function startInvoiceGenerationCron() {
       logger.info(`[InvoiceCron] ${branch.name}: hisob-faktura tekshiruvi boshlandi...`);
       try {
         await runInvoiceGenerationPass();
+        // Mavjud to'lanmagan qarzlarni joriy tarif narxiga tekislash
+        await runInvoiceRealignmentPass();
       } catch (error) {
         logger.error("[InvoiceCron] Cron xatosi:", error);
       }
@@ -193,6 +223,8 @@ function startInvoiceGenerationCron() {
     branchCron("[InvoiceCron:startup]", async (branch) => {
       logger.info(`[InvoiceCron] ${branch.name}: startup tekshiruvi...`);
       await runInvoiceGenerationPass();
+      // Server ishga tushishi bilan barcha qarzlar joriy tarif narxiga tekislanadi
+      await runInvoiceRealignmentPass();
     })().catch((error) =>
       logger.error(`[InvoiceCron] Startup pass xatosi: ${error.message}`),
     );
@@ -200,4 +232,8 @@ function startInvoiceGenerationCron() {
   if (typeof startupTimer.unref === "function") startupTimer.unref();
 }
 
-module.exports = { startInvoiceGenerationCron, runInvoiceGenerationPass };
+module.exports = {
+  startInvoiceGenerationCron,
+  runInvoiceGenerationPass,
+  runInvoiceRealignmentPass,
+};

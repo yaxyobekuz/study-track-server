@@ -50,6 +50,10 @@ const {
   resolveDiscountsForStudent,
   resolveDiscountsForMonth,
 } = require("./studentDiscount.service");
+const {
+  resolveServicesForStudent,
+  resolveServicesForMonth,
+} = require("./service.service");
 const { getVacationSet } = require("./vacationMonth.service");
 const { getInvoiceAllocations, TX_OPTIONS } = require("./payment.service");
 const {
@@ -171,6 +175,11 @@ const serializeInvoice = (invoice, { student, payments } = {}) => {
         : null,
     discountAmount: formatAmount(discount),
     hasDiscount: discount.greaterThan(0),
+    // Qo'shimcha xizmatlar ulushi (baseAmount ichida) — "shundan yotoqxona
+    // qancha" degan savolga javob. Eski qatorlarda 0/null.
+    servicesAmount: formatAmount(invoice.servicesAmount ?? 0),
+    servicesSnapshot: invoice.servicesSnapshot ?? null,
+    hasServices: new Decimal(invoice.servicesAmount ?? 0).greaterThan(0),
     // Oy summasi qo'lda o'zgartirilgan bo'lsa — sabab yorlig'i (hisobot uchun)
     overrideReasonLabel: invoice.overrideReason
       ? OVERRIDE_REASON_LABELS[invoice.overrideReason] ?? invoice.overrideReason
@@ -651,13 +660,15 @@ const getMyFinance = async (studentId, options = {}) => {
 
   // Joriy oydagi tarif, chegirma va narx — hisob-faktura hali shakllanmagan
   // bo'lsa ham o'quvchi nimaga qarzdor bo'lishini ko'rishi kerak.
-  const [resolved, discounts, movements, periods, monthOverride] = await Promise.all([
-    resolveForStudentMonth(studentId, data.currentMonth),
-    resolveDiscountsForStudent(studentId, data.currentMonth),
-    getMovements(studentId),
-    getPeriodsForStudent(studentId),
-    resolveOverrideOne(studentId, data.currentMonth),
-  ]);
+  const [resolved, discounts, services, movements, periods, monthOverride] =
+    await Promise.all([
+      resolveForStudentMonth(studentId, data.currentMonth),
+      resolveDiscountsForStudent(studentId, data.currentMonth),
+      resolveServicesForStudent(studentId, data.currentMonth),
+      getMovements(studentId),
+      getPeriodsForStudent(studentId),
+      resolveOverrideOne(studentId, data.currentMonth),
+    ]);
 
   const item = resolved.items[0] ?? null;
   const settings = await getFinanceSettings();
@@ -668,6 +679,7 @@ const getMyFinance = async (studentId, options = {}) => {
     ? computeMonthlyAmount({
         baseAmount: item.amount,
         discounts,
+        services,
         periods,
         month: data.currentMonth,
         settings,
@@ -696,6 +708,14 @@ const getMyFinance = async (studentId, options = {}) => {
               d.type === "percent" ? `${Number(d.value)}%` : `${formatAmount(d.value)} so'm`,
           })),
           discountAmount: formatAmount(effective.discountAmount),
+          // Qo'shimcha xizmatlar (yotoqxona, ovqat) — o'quvchi nimaga pul
+          // to'layotganini ko'rishi kerak
+          services: services.map((s) => ({
+            id: s.id,
+            name: s.name,
+            amount: s.amount,
+          })),
+          servicesAmount: formatAmount(effective.servicesAmount),
           effectiveMonthly: formatAmount(effective.amount),
           isProrated: effective.isProrated,
           billableDays: effective.isProrated ? effective.enrollment.billableDays : null,
@@ -1017,6 +1037,7 @@ const getStudentRegistry = async (req) => {
   const [
     { byStudent },
     discountsByStudent,
+    servicesByStudent,
     periodsByStudent,
     overridesByStudent,
     balances,
@@ -1025,6 +1046,7 @@ const getStudentRegistry = async (req) => {
   ] = await Promise.all([
       resolveManyForMonth(month, { studentIds: ids }),
       resolveDiscountsForMonth(month, { studentIds: ids }),
+      resolveServicesForMonth(month, { studentIds: ids }),
       resolveEnrollmentsForStudents(ids),
       resolveOverridesForMonth(month, ids),
       // Qoldiq va qarz — BUTUN FILTR bo'yicha: qatorlar sahifadagilardan,
@@ -1060,6 +1082,7 @@ const getStudentRegistry = async (req) => {
   const items = students.map((student) => {
     const resolved = byStudent.get(student.id);
     const discounts = discountsByStudent.get(student.id) ?? [];
+    const services = servicesByStudent.get(student.id) ?? [];
     const balance = balances.get(student.id) ?? new Decimal(0);
     const debt = debtByStudent.get(student.id) ?? new Decimal(0);
     const status = statuses.get(student.id)?.status ?? "active";
@@ -1076,6 +1099,7 @@ const getStudentRegistry = async (req) => {
         ? computeMonthlyAmount({
             baseAmount: base,
             discounts,
+            services,
             periods,
             month,
             settings,
@@ -1107,6 +1131,10 @@ const getStudentRegistry = async (req) => {
       // GRANT = isExclusive (grant/homiylik) chegirmasi bor o'quvchi —
       // dashboard "grant vs to'lovchi" sanog'i shu bilan ajratiladi.
       isGrant: discounts.some((d) => d.isExclusive),
+      // Qo'shimcha xizmatlar (yotoqxona, ovqat) — kassir nimadan qancha
+      // yig'ilayotganini ko'rishi kerak
+      services: services.map((s) => ({ id: s.id, name: s.name, amount: s.amount })),
+      servicesAmount: priced ? formatAmount(priced.servicesAmount) : null,
       baseAmount: base != null ? formatAmount(base) : null,
       discountAmount: priced ? formatAmount(priced.discountAmount) : null,
       monthlyAmount: priced ? formatAmount(priced.amount) : null,
@@ -1570,7 +1598,7 @@ const cancelInvoice = async (id, reason, userId) => {
  * @param {string} userId
  * @returns {Promise<object>}
  */
-const regenerateInvoice = async (id, reason, userId) => {
+const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false } = {}) => {
   const invoice = await prisma.monthlyInvoice.findUnique({ where: { id } });
   if (!invoice) throw new NotFoundError("Hisob-faktura topilmadi");
 
@@ -1585,9 +1613,10 @@ const regenerateInvoice = async (id, reason, userId) => {
   }
 
   const settings = await getFinanceSettings();
-  const [resolved, discounts, periods, monthOverride] = await Promise.all([
+  const [resolved, discounts, services, periods, monthOverride] = await Promise.all([
     resolveForStudentMonth(invoice.studentId, invoice.month),
     resolveDiscountsForStudent(invoice.studentId, invoice.month),
+    resolveServicesForStudent(invoice.studentId, invoice.month),
     getPeriodsForStudent(invoice.studentId),
     resolveOverrideOne(invoice.studentId, invoice.month),
   ]);
@@ -1602,6 +1631,7 @@ const regenerateInvoice = async (id, reason, userId) => {
     settings,
     resolved,
     discounts,
+    services,
     periods,
     monthOverride,
     source: "manual",
@@ -1618,6 +1648,20 @@ const regenerateInvoice = async (id, reason, userId) => {
     throw new BadRequestError(
       "O'quvchida bu oy uchun tarif yoki narx yo'q — qayta shakllantirib bo'lmaydi",
     );
+  }
+
+  // Avtomatik regen tez-tez chaqiriladi (har tarif/chegirma o'zgarishida).
+  // Summa AYNAN o'sha bo'lsa — cancel+recreate qilmaymiz: aks holda har
+  // teginishda keraksiz `replacesInvoiceId` zanjiri va audit yozuvi paydo
+  // bo'lardi. Faqat haqiqiy o'zgarishda qayta muhrlaymiz.
+  if (
+    skipIfUnchanged &&
+    computed.amount.equals(invoice.amount) &&
+    computed.baseAmount.equals(invoice.baseAmount) &&
+    computed.proratedAmount.equals(invoice.proratedAmount ?? invoice.baseAmount) &&
+    computed.discountAmount.equals(invoice.discountAmount ?? 0)
+  ) {
+    return getInvoiceById(invoice.id);
   }
 
   const created = await prisma.$transaction(async (tx) => {
@@ -1760,6 +1804,161 @@ const cancelMonth = async (data, userId) => {
   );
 
   return summary;
+};
+
+/**
+ * AVTOMATIK QAYTA SHAKLLANTIRISH — tarif/narx/chegirma o'zgargach chaqiriladi.
+ *
+ * Berilgan o'quvchilarning [fromMonth..joriy oy] oralig'idagi TO'LANMAGAN
+ * hisob-fakturalarini yangi qoidalar bo'yicha qayta hisoblaydi. Shu tufayli
+ * admin qo'lda "Qayta shakllantirish" bosishi shart emas.
+ *
+ * ⚠️ TO'LOV TUSHGANLARI (paidAmount > 0) TEGILMAYDI — summani o'zgartirish
+ * taqsimotni yolg'onga aylantirardi; ular muhrlangan qoladi.
+ * ⚠️ O'TGAN OY ham tegilmaydi (`fromMonth` joriy oygacha qisiladi) — sealed
+ * tarixni jimgina qayta yozmaslik uchun; tarif o'zgarishi keyingi oydan.
+ *
+ * ⚠️ NOL SUMMALI "paid" FAKTURA HAM NOMZOD. 0 so'mlik faktura darhol
+ * "to'langan" bo'lib yopiladi (buildInvoiceRow: isZero → paid) — unda
+ * to'lov YO'Q (paidAmount = 0). Narx 0 dan ko'tarilganda (grant tarifiga
+ * narx qo'yildi) aynan shu qatorlar qayta hisoblanishi kerak, aks holda
+ * o'quvchi qarzdorlarga hech qachon tushmasdi.
+ *
+ * Xato bitta o'quvchida qolganini to'xtatmaydi (best-effort). Chaqiruvchi
+ * tranzaksiyadan TASHQARIDA (commitdan keyin) chaqirishi kerak.
+ *
+ * @param {string[]} studentIds
+ * @param {{fromMonth?: number}} options
+ * @returns {Promise<{regenerated: number}>}
+ */
+const regenerateForStudents = async (studentIds, { fromMonth } = {}) => {
+  const ids = [...new Set((studentIds || []).filter(Boolean))];
+  if (ids.length === 0) return { regenerated: 0 };
+
+  const now = currentMonthKey();
+  // O'tgan oyga tushmaymiz — sealed. Joriy oydan yuqoriga chiqmaymiz — u oy
+  // hali shakllanmagan (uning invoice'i yo'q).
+  const from = fromMonth != null ? Math.min(fromMonth, now) : now;
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: {
+      studentId: { in: ids },
+      month: { gte: from, lte: now },
+      OR: [
+        { status: "unpaid" },
+        // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (yuqoridagi izoh)
+        { status: "paid", paidAmount: 0, amount: 0 },
+      ],
+    },
+    select: { id: true },
+  });
+
+  let regenerated = 0;
+  for (const invoice of invoices) {
+    try {
+      await regenerateInvoice(
+        invoice.id,
+        "Avtomatik: tarif/narx/chegirma o'zgardi",
+        null,
+        { skipIfUnchanged: true },
+      );
+      regenerated += 1;
+    } catch (error) {
+      // To'lov tushgan yoki boshqa sabab — jim o'tkazamiz (best-effort)
+      logger.warn(
+        `[auto-regen] invoice ${invoice.id} qayta shakllantirilmadi: ${error.message}`,
+      );
+    }
+  }
+
+  return { regenerated };
+};
+
+/**
+ * BITTA TARIFGA biriktirilgan o'quvchilarning HALI TO'LANMAGAN
+ * hisob-fakturalarini qayta shakllantiradi — narx (yoki versiya davri)
+ * o'zgargach chaqiriladi.
+ *
+ * Biriktirma yozuvi orqali nomzod o'quvchilar topiladi, so'ng
+ * `regenerateForStudents` har birini JONLI qayta hisoblaydi. Kengroq to'plam
+ * xavfsiz: keyinchalik boshqa tarifga o'tgan o'quvchi ham qayta hisoblanadi,
+ * lekin natija o'zgarmaydi (builder yutgan tarifni oladi).
+ *
+ * @param {string} tariffId
+ * @param {{fromMonth?: number}} [opts]
+ * @returns {Promise<{regenerated: number}>}
+ */
+const regenerateForTariff = async (tariffId, { fromMonth } = {}) => {
+  if (!tariffId) return { regenerated: 0 };
+
+  const now = currentMonthKey();
+  const from = fromMonth != null ? Math.min(fromMonth, now) : now;
+
+  const assignments = await prisma.studentTariff.findMany({
+    where: {
+      tariffId,
+      startMonth: { lte: now },
+      OR: [{ endMonth: null }, { endMonth: { gte: from } }],
+    },
+    select: { studentId: true },
+  });
+
+  const studentIds = [...new Set(assignments.map((a) => a.studentId))];
+  return regenerateForStudents(studentIds, { fromMonth: from });
+};
+
+/**
+ * JORIY FILIALDAGI BARCHA to'lanmagan hisob-fakturani joriy tarif/narx/chegirmaga
+ * moslashtiradi — "catch-up". Server ishga tushganda va kunlik cronda ishlaydi.
+ *
+ * Eski, muhrlangan (lekin to'lanmagan) fakturalar narx o'zgargandan keyin ham
+ * eski summada qolib ketmasin uchun: har birini JONLI qayta hisoblaydi.
+ * `skipIfUnchanged` tufayli summa aynan o'sha bo'lsa hech narsa yozilmaydi —
+ * shuning uchun har startup'da bemalol ishlayveradi (o'zgarmagani churn qilmaydi).
+ * To'langan oylar chetda qoladi.
+ *
+ * @param {{fromMonth?: number}} [opts] - null bo'lsa joriy oygacha BARCHA
+ *   to'lanmagan oylar
+ * @returns {Promise<{total: number, changed: number, failed: number}>}
+ */
+const regenerateAllUnpaid = async ({ fromMonth = null } = {}) => {
+  const now = currentMonthKey();
+  const where = {
+    month: { lte: now },
+    OR: [
+      { status: "unpaid" },
+      // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (regenerateForStudents
+      // dagi izoh): grant tarifiga narx qo'yilganda shular ham tekislanadi
+      { status: "paid", paidAmount: 0, amount: 0 },
+    ],
+  };
+  if (fromMonth != null) where.month.gte = fromMonth;
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where,
+    select: { id: true },
+    orderBy: { month: "asc" },
+  });
+
+  let changed = 0;
+  let failed = 0;
+  for (const inv of invoices) {
+    try {
+      const out = await regenerateInvoice(
+        inv.id,
+        "Avtomatik: joriy tarif narxiga moslashtirildi",
+        null,
+        { skipIfUnchanged: true },
+      );
+      // Yangi id qaytsa — qayta yozildi; o'sha id qaytsa — o'zgarmagan (skip)
+      if (out?.id && out.id !== inv.id) changed += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn(`[catchup] invoice ${inv.id} qayta hisoblanmadi: ${error.message}`);
+    }
+  }
+
+  return { total: invoices.length, changed, failed };
 };
 
 /**
@@ -1906,5 +2105,8 @@ module.exports = {
   updateNote,
   cancelInvoice,
   regenerateInvoice,
+  regenerateForStudents,
+  regenerateForTariff,
+  regenerateAllUnpaid,
   restoreInvoice,
 };
