@@ -84,11 +84,24 @@ app.use(
 
 // Security middleware
 app.use(helmet());
+
+// ⚠️ `Content-Disposition` OCHIQ QILINADI. Panellar API bilan BOSHQA
+// domenda turadi (student.studytrack.uz → mbsi-api.studytrack.uz) va
+// brauzer bunday javobda "xavfsiz ro'yxat"dan tashqari sarlavhalarni
+// JavaScript'dan YASHIRADI. Natijada server fayl nomini yuborsa ham,
+// panel uni o'qiy olmasdi va har bir Excel hisobot "hisobot.xlsx" bo'lib
+// yuklanardi — ikkinchisi "hisobot (1).xlsx", uchinchisi "(2)"...
+// Sarlavha allaqachon yuboriladi; bu faqat uni o'qishga ruxsat beradi.
+const CORS_EXPOSED_HEADERS = ["Content-Disposition"];
 app.use(
   cors(
     config.corsOrigins.length > 0
-      ? { origin: config.corsOrigins, credentials: true }
-      : undefined,
+      ? {
+          origin: config.corsOrigins,
+          credentials: true,
+          exposedHeaders: CORS_EXPOSED_HEADERS,
+        }
+      : { exposedHeaders: CORS_EXPOSED_HEADERS },
   ),
 );
 // ⚠️ TANA PARSERI `xss()` DAN OLDIN. `xss-clean` middleware'i
