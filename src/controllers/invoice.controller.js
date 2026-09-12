@@ -54,6 +54,130 @@ const getDebtors = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Qarzdorlar ro'yxatini Excel'ga yuklab olish (butun maktab yoki bitta sinf).
+ * Chiroyli formatli xlsx: sarlavha, jami qatori, telefonlar bilan.
+ */
+const exportDebtors = asyncHandler(async (req, res) => {
+  const ExcelService = require("../services/excel.service");
+  const { formatMonthKey, currentMonthKey } = require("../helpers/month.helpers");
+
+  const { rows, totals, className } = await invoiceService.getDebtorsForExport({
+    classId: req.query.classId || null,
+  });
+
+  const scopeLabel = className ? className : "Butun maktab";
+  const monthLabel = formatMonthKey(currentMonthKey());
+
+  const columns = [
+    { header: "№", key: "no", width: 6 },
+    { header: "Ism", key: "firstName", width: 18 },
+    { header: "Familiya", key: "lastName", width: 18 },
+    { header: "Sinf", key: "className", width: 12 },
+    { header: "Telefon", key: "phone", width: 18 },
+    { header: "Ota-ona tel.", key: "parentPhone", width: 18 },
+    { header: "Qarzdor oylar", key: "unpaidCount", width: 14 },
+    { header: "Eng eski qarz", key: "oldestMonthLabel", width: 18 },
+    { header: "Hisoblangan", key: "charged", width: 16 },
+    { header: "To'langan", key: "paid", width: 16 },
+    { header: "Qolgan qarz", key: "debt", width: 16 },
+  ];
+
+  const workbook = ExcelService.createWorkbook();
+  const worksheet = ExcelService.addWorksheet(workbook, "Qarzdorlar", {
+    freezeHeader: false,
+  });
+
+  // Sarlavha bloki (2 qator) — ustunlardan oldin qo'lda yoziladi
+  worksheet.mergeCells(1, 1, 1, columns.length);
+  const titleCell = worksheet.getCell(1, 1);
+  titleCell.value = `Qarzdorlar ro'yxati — ${scopeLabel}`;
+  titleCell.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
+  titleCell.alignment = { vertical: "middle", horizontal: "left" };
+  worksheet.getRow(1).height = 26;
+
+  worksheet.mergeCells(2, 1, 2, columns.length);
+  const subCell = worksheet.getCell(2, 1);
+  subCell.value =
+    `Holat: ${monthLabel} · Qarzdorlar: ${totals.debtorCount} ta · ` +
+    `Jami qarz: ${totals.totalDebt} so'm`;
+  subCell.font = { size: 11, color: { argb: "FF6B7280" } };
+  worksheet.getRow(2).height = 20;
+
+  // Ustun sarlavhalari 4-qatordan (3-qator bo'sh ajratgich)
+  const headerRowIndex = 4;
+  columns.forEach((c, i) => {
+    worksheet.getColumn(i + 1).width = c.width;
+  });
+  const headerRow = worksheet.getRow(headerRowIndex);
+  headerRow.values = columns.map((c) => c.header);
+  headerRow.height = 22;
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF4472C4" } };
+    cell.alignment = { vertical: "middle", horizontal: "center" };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FFD0D0D0" } },
+      left: { style: "thin", color: { argb: "FFD0D0D0" } },
+      bottom: { style: "thin", color: { argb: "FFD0D0D0" } },
+      right: { style: "thin", color: { argb: "FFD0D0D0" } },
+    };
+  });
+
+  // Ma'lumot qatorlari
+  const moneyCols = new Set(["charged", "paid", "debt"]);
+  rows.forEach((row, index) => {
+    const excelRow = worksheet.addRow(columns.map((c) => row[c.key]));
+    if (index % 2 === 0) {
+      excelRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F6FC" } };
+    }
+    excelRow.eachCell((cell, colNumber) => {
+      const col = columns[colNumber - 1];
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE5E7EB" } },
+        left: { style: "thin", color: { argb: "FFE5E7EB" } },
+        bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
+        right: { style: "thin", color: { argb: "FFE5E7EB" } },
+      };
+      cell.alignment = {
+        vertical: "middle",
+        horizontal: moneyCols.has(col.key)
+          ? "right"
+          : col.key === "no"
+            ? "center"
+            : "left",
+      };
+      if (col.key === "debt") cell.font = { bold: true, color: { argb: "FFB91C1C" } };
+    });
+  });
+
+  // Jami qatori
+  const totalRow = worksheet.addRow([
+    "", "", "", "", "", "", "", "JAMI:",
+    totals.totalCharged, totals.totalPaid, totals.totalDebt,
+  ]);
+  totalRow.eachCell((cell, colNumber) => {
+    if (colNumber >= 8) {
+      cell.font = {
+        bold: true,
+        color: { argb: colNumber === 11 ? "FFB91C1C" : "FF1F2937" },
+      };
+      cell.alignment = { vertical: "middle", horizontal: "right" };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
+    }
+  });
+
+  worksheet.autoFilter = {
+    from: { row: headerRowIndex, column: 1 },
+    to: { row: headerRowIndex, column: columns.length },
+  };
+  worksheet.views = [{ state: "frozen", ySplit: headerRowIndex }];
+
+  const safeScope = (className || "butun-maktab").replace(/[^\p{L}\p{N}_-]+/gu, "-");
+  const filename = ExcelService.generateFileName(`qarzdorlar_${safeScope}`);
+  await ExcelService.sendWorkbook(res, workbook, filename);
+});
+
+/**
  * Qarzdorlarga Telegram eslatmasi.
  *
  * Ro'yxatdagi summaga ISHONILMAYDI — qarz service ichida qayta hisoblanadi:
@@ -206,6 +330,7 @@ module.exports = {
   getStudentRegistry,
   getOverviewDashboard,
   getDebtors,
+  exportDebtors,
   remindDebtors,
   getStudentInvoices,
   getInvoice,

@@ -20,6 +20,7 @@ const {
   getStudentRegistry,
   getOverviewDashboard,
   getDebtors,
+  exportDebtors,
   remindDebtors,
   getStudentInvoices,
   getInvoice,
@@ -52,6 +53,8 @@ router.get("/students", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), 
 // ALOHIDA ruxsat: bitta ekranda butun maktabning qarzi ko'rinadi, shuning
 // uchun uni `finance.view` bilan birga berib yubormaymiz.
 router.get("/debtors", protect, authorizePermission(PERMISSIONS.DEBTORS_VIEW), getDebtors);
+// Qarzdorlar Excel eksporti — `/:id` dan oldin, `/debtors/remind` yonida
+router.get("/debtors/export", protect, authorizePermission(PERMISSIONS.DEBTORS_VIEW), exportDebtors);
 // Eslatma yuborish — ko'rishdan ALOHIDA: ro'yxatni ochish ichki ish, ota-onaga
 // xabar yuborish esa maktabdan TASHQARIGA chiqadigan amal.
 router.post("/debtors/remind", protect, authorizePermission(PERMISSIONS.DEBTORS_REMIND), remindDebtors);

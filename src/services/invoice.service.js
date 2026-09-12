@@ -743,6 +743,123 @@ const describeEnrollmentForStudent = (periods) => {
 };
 
 /**
+ * QARZDORLAR EKSPORTI — Excel uchun BARCHA qarzdorlar (sahifalashsiz).
+ *
+ * Har qarzdor uchun: ism, familiya, sinf, telefon, ota-ona telefoni,
+ * jami hisoblangan (to'lanmagan+qisman fakturalar), to'langan va qolgan
+ * qarz. Sinf tanlansa — faqat o'sha sinf.
+ *
+ * `getDebtors` bilan bir xil qarz manbai (unpaid+partial fakturalar), lekin
+ * telefon/sinf qo'shilgan va sahifalanmagan.
+ *
+ * @param {{classId?: string}} options
+ * @returns {Promise<{rows: object[], totals: object, className: string|null}>}
+ */
+const getDebtorsForExport = async ({ classId } = {}) => {
+  // Sinf filtri — avval o'quvchi id'lari
+  let studentFilter = null;
+  let className = null;
+  if (classId) {
+    const [klass, matched] = await Promise.all([
+      prisma.class.findUnique({ where: { id: classId }, select: { name: true } }),
+      prisma.user.findMany({
+        where: { role: ROLES.STUDENT, classes: { some: { classId } } },
+        select: { id: true },
+      }),
+    ]);
+    className = klass?.name ?? null;
+    studentFilter = matched.map((s) => s.id);
+    if (studentFilter.length === 0) {
+      return { rows: [], className, totals: { totalCharged: "0.00", totalPaid: "0.00", totalDebt: "0.00", debtorCount: 0 } };
+    }
+  }
+
+  const grouped = await prisma.monthlyInvoice.groupBy({
+    by: ["studentId"],
+    where: {
+      status: { in: ["unpaid", "partial"] },
+      ...(studentFilter ? { studentId: { in: studentFilter } } : {}),
+    },
+    _sum: { amount: true, paidAmount: true },
+    _min: { month: true },
+    _count: { _all: true },
+  });
+
+  const debtRows = grouped
+    .map((row) => {
+      const charged = new Decimal(row._sum.amount ?? 0);
+      const paid = new Decimal(row._sum.paidAmount ?? 0);
+      return {
+        studentId: row.studentId,
+        charged,
+        paid,
+        debt: charged.minus(paid),
+        unpaidCount: row._count._all,
+        oldestMonth: row._min.month,
+      };
+    })
+    .filter((row) => row.debt.greaterThan(0))
+    // Eng katta qarz tepada
+    .sort((a, b) => b.debt.comparedTo(a.debt) || a.oldestMonth - b.oldestMonth);
+
+  if (debtRows.length === 0) {
+    return { rows: [], className, totals: { totalCharged: "0.00", totalPaid: "0.00", totalDebt: "0.00", debtorCount: 0 } };
+  }
+
+  const ids = debtRows.map((r) => r.studentId);
+  const students = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      username: true,
+      phone: true,
+      parentPhone: true,
+      classes: { select: { class: { select: { name: true } } } },
+    },
+  });
+  const studentMap = new Map(students.map((s) => [s.id, s]));
+
+  let totalCharged = new Decimal(0);
+  let totalPaid = new Decimal(0);
+  let totalDebt = new Decimal(0);
+
+  const rows = debtRows.map((row, index) => {
+    const s = studentMap.get(row.studentId);
+    totalCharged = totalCharged.plus(row.charged);
+    totalPaid = totalPaid.plus(row.paid);
+    totalDebt = totalDebt.plus(row.debt);
+
+    return {
+      no: index + 1,
+      firstName: s?.firstName ?? "",
+      lastName: s?.lastName ?? "",
+      fullName: s ? `${s.firstName} ${s.lastName ?? ""}`.trim() : "Noma'lum",
+      className: s?.classes?.map((c) => c.class?.name).filter(Boolean).join(", ") || "—",
+      phone: s?.phone || "—",
+      parentPhone: s?.parentPhone || "—",
+      unpaidCount: row.unpaidCount,
+      oldestMonthLabel: formatMonthKey(row.oldestMonth),
+      charged: formatAmount(row.charged),
+      paid: formatAmount(row.paid),
+      debt: formatAmount(row.debt),
+    };
+  });
+
+  return {
+    rows,
+    className,
+    totals: {
+      totalCharged: formatAmount(totalCharged),
+      totalPaid: formatAmount(totalPaid),
+      totalDebt: formatAmount(totalDebt),
+      debtorCount: rows.length,
+    },
+  };
+};
+
+/**
  * QARZDORLAR REGISTRI — "kim qancha qarzdor va qachondan beri".
  *
  * ⚠️ So'rov O'QUVCHIDAN emas, QARZDAN boshlanadi. O'quvchilar ro'yxatini
@@ -1583,6 +1700,116 @@ const cancelInvoice = async (id, reason, userId) => {
 };
 
 /**
+ * TO'LOV TUSHGAN fakturani JOYIDA tuzatadi — cancel+recreate emas.
+ *
+ * Nima uchun kerak: to'liq (yoki qisman) to'langan oyga qo'shimcha xizmat
+ * qo'shilsa (yotoqxona 1 oyda), summa oshishi va qarz hosil bo'lishi kerak,
+ * lekin allaqachon tushgan to'lovni yo'qotmasdan. Cancel+recreate
+ * taqsimotlarni kaskad bilan olib ketardi.
+ *
+ * NIMA QILADI: joriy tarif+xizmat+chegirma bo'yicha yangi summani hisoblaydi
+ * va faqat SUMMA maydonlarini (base/prorated/discount/services/amount +
+ * snapshotlar) qayta muhrlaydi. `paidAmount` va `PaymentAllocation`larga
+ * TEGMAYDI, statusni `deriveStatus` bilan qayta hisoblaydi.
+ *
+ * RECONCILE-XAVFSIZ: paidAmount = Σ allocations o'zgarmaydi;
+ * amount = prorated − discount tenglik saqlanadi; pul harakatlanmaydi.
+ *
+ * ⚠️ Yangi summa allaqachon to'langan summadan KAM bo'lsa (xizmat olib
+ * tashlangan/narx tushgan) — TEGILMAYDI: bu ortiqcha to'lovni depozitga
+ * qaytarishni talab qiladi, u alohida (qo'lda bekor qilish) yo'l bilan
+ * hal qilinadi. Faqat summa OSHGANDA yoki teng bo'lganda tuzatiladi.
+ *
+ * @param {object} invoice - to'liq MonthlyInvoice qatori
+ * @param {string} reason
+ * @param {string} userId
+ * @returns {Promise<object>}
+ */
+const amendPaidInvoice = async (invoice, reason, userId) => {
+  const settings = await getFinanceSettings();
+  const [resolved, discounts, services, periods, monthOverride] = await Promise.all([
+    resolveForStudentMonth(invoice.studentId, invoice.month),
+    resolveDiscountsForStudent(invoice.studentId, invoice.month),
+    resolveServicesForStudent(invoice.studentId, invoice.month),
+    getPeriodsForStudent(invoice.studentId),
+    resolveOverrideOne(invoice.studentId, invoice.month),
+  ]);
+
+  const { row, skip, computed } = buildInvoiceRow({
+    student: { id: invoice.studentId },
+    month: invoice.month,
+    settings,
+    resolved,
+    discounts,
+    services,
+    periods,
+    monthOverride,
+    source: "manual",
+    actorId: userId,
+    studentSnapshot: invoice.studentSnapshot,
+  });
+
+  // O'quvchi o'qimaydi / tarifsiz qoldi — to'langan oyga tegmaymiz
+  if (skip) return getInvoiceById(invoice.id);
+
+  const paid = new Decimal(invoice.paidAmount);
+  const newAmount = computed.amount;
+
+  // Summa o'zgarmagan — tegmaymiz (keraksiz yozuvni oldini olish)
+  if (newAmount.equals(invoice.amount)) return getInvoiceById(invoice.id);
+
+  // Yangi summa to'langandan kam — jimgina tuzatmaymiz (ortiqcha to'lov
+  // depozit/bekor qilishni talab qiladi). Loglaymiz, admin qo'lda hal qiladi.
+  if (newAmount.lessThan(paid)) {
+    logger.warn(
+      `[invoices] To'langan faktura summasi tushdi, JOYIDA tuzatilmadi: ` +
+        `invoice=${invoice.id} student=${invoice.studentId} month=${invoice.month} ` +
+        `eski=${invoice.amount.toFixed(2)} yangi=${newAmount.toFixed(2)} paid=${paid.toFixed(2)} ` +
+        `— ortiqcha to'lovni qo'lda bekor qiling`,
+    );
+    return getInvoiceById(invoice.id);
+  }
+
+  // COMPARE-AND-SWAP: paidAmount o'qilgan qiymatда qolgan bo'lsagina yozamiz —
+  // shu orada to'lov tushsa (paidAmount o'zgarsa) yozuv rad etiladi.
+  const status = deriveStatus(newAmount, paid);
+  const updated = await prisma.monthlyInvoice.updateMany({
+    where: { id: invoice.id, paidAmount: invoice.paidAmount },
+    data: {
+      baseAmount: row.baseAmount,
+      billableDays: row.billableDays,
+      monthDays: row.monthDays,
+      roundingUnit: row.roundingUnit,
+      proratedAmount: row.proratedAmount,
+      discountAmount: row.discountAmount,
+      discountSnapshot: row.discountSnapshot,
+      servicesAmount: row.servicesAmount,
+      servicesSnapshot: row.servicesSnapshot,
+      amount: newAmount,
+      status,
+      // To'liq yopilmagan bo'lsa "to'langan payt" bekor qilinadi
+      paidAt: status === "paid" ? invoice.paidAt : null,
+    },
+  });
+
+  if (updated.count !== 1) {
+    throw new ConflictError(
+      "Hisob-fakturaga shu orada to'lov tushdi — qayta urinib ko'ring.",
+    );
+  }
+
+  logger.warn(
+    `[invoices] To'langan faktura JOYIDA tuzatildi (xizmat/narx qo'shildi): ` +
+      `invoice=${invoice.id} student=${invoice.studentId} month=${invoice.month} ` +
+      `eski=${invoice.amount.toFixed(2)} yangi=${newAmount.toFixed(2)} ` +
+      `paid=${paid.toFixed(2)} qarz=${newAmount.minus(paid).toFixed(2)} ` +
+      `status=${status} actor=${userId} sabab="${reason}"`,
+  );
+
+  return getInvoiceById(invoice.id);
+};
+
+/**
  * Hisob-fakturani bekor qilib, joriy tarif va chegirmalar bo'yicha
  * QAYTA yaratadi.
  *
@@ -1605,11 +1832,14 @@ const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false }
   const trimmed = reason?.trim();
   if (!trimmed) throw new BadRequestError("Qayta shakllantirish sababi majburiy");
 
+  // ⚠️ TO'LOV TUSHGAN FAKTURA — cancel+recreate O'RNIGA JOYIDA TUZATISH.
+  // Cancel+recreate to'lov taqsimotlarini kaskad bilan olib ketardi. Lekin
+  // to'liq to'langan oyga qo'shimcha xizmat (yotoqxona) qo'shilsa, summa
+  // OSHISHI va qarz hosil bo'lishi kerak. Buni `amendPaidInvoice` bajaradi:
+  // paidAmount va taqsimotlarga TEGMAYDI, faqat summa maydonlarini qayta
+  // muhrlab, statusni qayta hisoblaydi (reconcile-xavfsiz).
   if (new Decimal(invoice.paidAmount).greaterThan(0)) {
-    throw new BadRequestError(
-      "To'lov tushgan hisob-fakturani qayta shakllantirib bo'lmaydi. " +
-        "Avval uni bekor qiling — pul depozitga qaytadi.",
-    );
+    return amendPaidInvoice(invoice, trimmed, userId);
   }
 
   const settings = await getFinanceSettings();
@@ -1840,15 +2070,14 @@ const regenerateForStudents = async (studentIds, { fromMonth } = {}) => {
   // hali shakllanmagan (uning invoice'i yo'q).
   const from = fromMonth != null ? Math.min(fromMonth, now) : now;
 
+  // unpaid → cancel+recreate; paid/partial (to'lov tushgan) → JOYIDA tuzatish
+  // (amendPaidInvoice) — qo'shimcha xizmat qo'shilganda qarz oshsin. cancelled
+  // chetda qoladi.
   const invoices = await prisma.monthlyInvoice.findMany({
     where: {
       studentId: { in: ids },
       month: { gte: from, lte: now },
-      OR: [
-        { status: "unpaid" },
-        // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (yuqoridagi izoh)
-        { status: "paid", paidAmount: 0, amount: 0 },
-      ],
+      status: { in: ["unpaid", "partial", "paid"] },
     },
     select: { id: true },
   });
@@ -1923,14 +2152,12 @@ const regenerateForTariff = async (tariffId, { fromMonth } = {}) => {
  */
 const regenerateAllUnpaid = async ({ fromMonth = null } = {}) => {
   const now = currentMonthKey();
+  // unpaid → cancel+recreate; paid/partial → JOYIDA tuzatish (amendPaidInvoice,
+  // faqat summa oshsa). Grant tarifiga narx qo'yilgani, xizmat qo'shilgani —
+  // hammasi shu bir passda tekislanadi.
   const where = {
     month: { lte: now },
-    OR: [
-      { status: "unpaid" },
-      // 0 so'mlik yopilgan faktura — to'lovsiz "paid" (regenerateForStudents
-      // dagi izoh): grant tarifiga narx qo'yilganda shular ham tekislanadi
-      { status: "paid", paidAmount: 0, amount: 0 },
-    ],
+    status: { in: ["unpaid", "partial", "paid"] },
   };
   if (fromMonth != null) where.month.gte = fromMonth;
 
@@ -2100,6 +2327,7 @@ module.exports = {
   getStudentRegistry,
   getOverviewDashboard,
   getDebtors,
+  getDebtorsForExport,
   getMyFinance,
   getSummary,
   updateNote,
