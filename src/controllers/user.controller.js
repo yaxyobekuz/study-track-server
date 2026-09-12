@@ -234,6 +234,59 @@ const restoreUser = asyncHandler(async (req, res) => {
 // Export users to Excel (Owner only)
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
+
+  // O'QUVCHILAR eksporti — MOLIYALI va IKKI VARAQLI:
+  //   1) "O'quvchilar" — hamma o'quvchi + tarif/to'langan/qarz;
+  //   2) "Qarzdorlar" — faqat to'liq to'lamaganlar.
+  // Boshqa rollar (xodim/o'qituvchi) uchun moliya ustunlari mantiqsiz —
+  // ular avvalgidek bitta varaqli eksport oladi.
+  if (role === "student") {
+    const { all, debtors } = await userService.getStudentsFinanceExport();
+
+    const workbook = ExcelService.createWorkbook();
+
+    const studentColumns = [
+      { header: "F.I.O", key: "fullName", width: 28 },
+      { header: "Username", key: "username", width: 18 },
+      { header: "Parol", key: "password", width: 16 },
+      { header: "Sinf", key: "className", width: 14 },
+      { header: "Telefon", key: "phone", width: 18 },
+      { header: "Ota-ona telefoni", key: "parentPhone", width: 18 },
+      { header: "Tarif", key: "tariff", width: 20 },
+      { header: "To'langan (so'm)", key: "paid", width: 18 },
+      { header: "Qarzdorlik (so'm)", key: "debt", width: 18 },
+      { header: "Tangalar", key: "coinBalance", width: 10 },
+      { header: "Jarimalar", key: "penaltyPoints", width: 10 },
+    ];
+
+    ExcelService.addSheet(workbook, {
+      sheetName: "O'quvchilar",
+      columns: studentColumns,
+      data: all,
+      headerStyle: { bgColor: ExcelService.COLORS.HEADER_BLUE },
+    });
+
+    // Ikkinchi varaq — faqat qarzdorlar (qarz ustuni bilan yakunlanadi)
+    ExcelService.addSheet(workbook, {
+      sheetName: "Qarzdorlar",
+      columns: [
+        { header: "F.I.O", key: "fullName", width: 28 },
+        { header: "Sinf", key: "className", width: 14 },
+        { header: "Telefon", key: "phone", width: 18 },
+        { header: "Ota-ona telefoni", key: "parentPhone", width: 18 },
+        { header: "Tarif", key: "tariff", width: 20 },
+        { header: "To'langan (so'm)", key: "paid", width: 18 },
+        { header: "Qarzdorlik (so'm)", key: "debt", width: 18 },
+      ],
+      data: debtors,
+      headerStyle: { bgColor: ExcelService.COLORS.HEADER_ORANGE },
+    });
+
+    const filename = ExcelService.generateFileName("students");
+    await ExcelService.sendWorkbook(res, workbook, filename);
+    return;
+  }
+
   const data = await userService.getUsersForExport(role);
 
   // Tanga faqat o'quvchida bo'ladi (`coin.service.js` butunlay `role:

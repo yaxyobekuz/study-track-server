@@ -179,6 +179,20 @@ class ExcelService {
    * @returns {ExcelJS.Workbook}
    */
   static createExcel(config) {
+    const workbook = this.createWorkbook();
+    this.addSheet(workbook, config);
+    return workbook;
+  }
+
+  /**
+   * Mavjud workbook'ga tayyor (stil berilgan) varaq qo'shadi — bir faylda
+   * bir nechta sheet kerak bo'lganda (masalan "O'quvchilar" + "Qarzdorlar").
+   *
+   * @param {ExcelJS.Workbook} workbook
+   * @param {Object} config - { sheetName, columns, data, headerStyle, rowStyle }
+   * @returns {ExcelJS.Worksheet}
+   */
+  static addSheet(workbook, config) {
     const {
       sheetName = "Sheet1",
       columns = [],
@@ -187,15 +201,13 @@ class ExcelService {
       rowStyle = {},
     } = config;
 
-    const workbook = this.createWorkbook();
     const worksheet = this.addWorksheet(workbook, sheetName);
-
     this.setColumns(worksheet, columns);
     this.styleHeader(worksheet, headerStyle);
     this.addRows(worksheet, data, rowStyle);
     this.addAutoFilter(worksheet, columns.length);
 
-    return workbook;
+    return worksheet;
   }
 }
 

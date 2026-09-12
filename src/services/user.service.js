@@ -1325,6 +1325,98 @@ async function getUsersForExport(role) {
 }
 
 /**
+ * O'QUVCHILAR uchun MOLIYALI eksport ma'lumoti — Excel'ga.
+ *
+ * Har o'quvchi uchun ma'lumot + moliya: joriy oy tarifi, jami to'langan
+ * (butun tarix) va joriy qarzdorlik (to'lanmagan+qisman fakturalar). Ikkinchi
+ * "Qarzdorlar" varag'i uchun to'liq to'lamaganlar alohida qaytariladi.
+ *
+ * `getUsersForExport("student")` bilan bir xil o'quvchi to'plami (arxivlangan
+ * ham — qarz arxivlashda bekor bo'lmaydi), lekin moliya ustunlari qo'shilgan.
+ *
+ * @returns {Promise<{ all: object[], debtors: object[] }>}
+ */
+async function getStudentsFinanceExport() {
+  const { resolveManyForMonth } = require("./tariffResolution.service");
+  const { formatAmount, Decimal } = require("../helpers/money.helpers");
+  const month = currentMonthKey();
+
+  const students = await prisma.user.findMany({
+    where: { role: "student" },
+    include: { classes: { include: { class: { select: { name: true } } } } },
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
+
+  if (students.length === 0) return { all: [], debtors: [] };
+
+  const ids = students.map((s) => s.id);
+
+  const [{ byStudent }, paidRows, debtRows] = await Promise.all([
+    resolveManyForMonth(month, { studentIds: ids }),
+    // Jami to'langan — butun tarix (bekor qilinmaganlar)
+    prisma.monthlyInvoice.groupBy({
+      by: ["studentId"],
+      where: { studentId: { in: ids }, status: { not: "cancelled" } },
+      _sum: { paidAmount: true },
+    }),
+    // Joriy qarz — to'lanmagan+qisman fakturalar
+    prisma.monthlyInvoice.groupBy({
+      by: ["studentId"],
+      where: { studentId: { in: ids }, status: { in: ["unpaid", "partial"] } },
+      _sum: { amount: true, paidAmount: true },
+    }),
+  ]);
+
+  const paidMap = new Map(
+    paidRows.map((r) => [r.studentId, new Decimal(r._sum.paidAmount ?? 0)]),
+  );
+  const debtMap = new Map(
+    debtRows.map((r) => [
+      r.studentId,
+      new Decimal(r._sum.amount ?? 0).minus(r._sum.paidAmount ?? 0),
+    ]),
+  );
+
+  const all = [];
+  const debtors = [];
+
+  for (const user of students) {
+    const resolved = byStudent.get(user.id);
+    const tariff = resolved?.items?.[0]?.tariff?.name ?? "—";
+    const paid = paidMap.get(user.id) ?? new Decimal(0);
+    const rawDebt = debtMap.get(user.id) ?? new Decimal(0);
+    const debt = rawDebt.greaterThan(0) ? rawDebt : new Decimal(0);
+
+    const row = {
+      fullName: `${user.firstName} ${user.lastName || ""}`.trim(),
+      username: user.username,
+      password: user.plainPassword || "N/A",
+      className:
+        user.classes && user.classes.length > 0
+          ? user.classes.map((c) => c.class.name).join(", ")
+          : "—",
+      phone: formatPhoneUz(user.phone),
+      parentPhone: formatPhoneUz(user.parentPhone),
+      tariff,
+      // Excel raqam sifatida — saralash/yig'ish uchun (matn emas)
+      paid: Number(formatAmount(paid)),
+      debt: Number(formatAmount(debt)),
+      coinBalance: user.coinBalance ?? 0,
+      penaltyPoints: user.penaltyPoints ?? 0,
+    };
+
+    all.push(row);
+    // Faqat to'liq to'lamaganlar ikkinchi varaqqa
+    if (debt.greaterThan(0)) debtors.push(row);
+  }
+
+  // Qarzdorlar varag'i eng katta qarz tepada
+  debtors.sort((a, b) => b.debt - a.debt);
+
+  return { all, debtors };
+}
+
+/**
  * Barcha faol foydalanuvchilarning qisqa ro'yxatini olish (owner bundan mustasno).
  */
 async function getAllUsersShort() {
@@ -1701,6 +1793,7 @@ module.exports = {
   archiveUser,
   restoreUser,
   getUsersForExport,
+  getStudentsFinanceExport,
   getAllUsersShort,
   getStudents,
   updateSelfProfile,
