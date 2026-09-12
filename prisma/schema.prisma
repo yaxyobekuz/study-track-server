@@ -650,6 +650,158 @@ model ScheduleSettings {
 }
 
 // ─────────────────────────────────────────────
+// DARS JADVALI MANBAI: PLATFORMA YOKI GOOGLE SHEETS
+// ─────────────────────────────────────────────
+//
+// ⚠️ AMALDAGI JADVAL HAR DOIM FAQAT `schedules` / `schedule_lessons` DA.
+// Quyidagi jadvallar amaldagi jadval EMAS: ular sheet'dan kelgan tahrirlar,
+// arxiv nusxalar va moslash qoidalari. Sabab: jadvalni o'qiydigan hamma joy
+// (baholar, jarima, oylik soati, o'rinbosarlik, davomat, monitor, bot) aynan
+// `schedules` ni o'qiydi. Nofaol nusxa o'sha jadvalga qo'shilsa, bot
+// (`findUnique(classId_day)`) va monitor (kun bo'yicha HAMMA qatorlar) ikki
+// jadvalni aralashtirib yuborardi.
+//
+// Rejim (`mode`) — kim jadvalni o'zgartira oladi:
+//   · platform — admin panelda tahrirlanadi (tizimning avvalgi xatti-harakati);
+//   · sheet    — admin panelda tahrirlash YOPIQ, o'zgarish sheet'da qilinadi
+//                va mas'ul odam ko'rib chiqib "Qo'llash" ni bosadi.
+//
+// Amaldagi jadvalni almashtiradigan HAR amal (qo'llash, rejimni almashtirish,
+// versiyani tiklash) avval joriy holatni `schedule_snapshots` ga yozadi —
+// hech narsa o'chib ketmaydi, har qadam orqaga qaytariladi.
+
+enum ScheduleSourceMode {
+  platform
+  sheet
+}
+
+enum ScheduleSheetRevisionStatus {
+  pending // ko'rib chiqilishi kutilmoqda
+  applied // amaldagi jadvalga qo'llangan
+  rejected // rad etilgan (sheet yana o'zgarmaguncha qayta so'ralmaydi)
+  superseded // undan yangiroq tahrir keldi yoki sheet havolasi almashdi
+}
+
+enum ScheduleSnapshotKind {
+  platform_archive // sheet rejimiga o'tishda — platformaning o'z jadvali
+  sheet_archive // platformaga qaytishda — sheet'dan kelgan jadval
+  before_apply // sheet o'zgarishi qo'llanishidan oldingi holat
+  before_restore // versiya tiklanishidan oldingi holat
+}
+
+// Singleton ("singleton"). Getter — `settings.service.js` dagi
+// `getScheduleSyncSettings()`; tranzaksiya ichida esa `tx` orqali o'qiladi.
+model ScheduleSyncSettings {
+  id                 String             @id @default("singleton") @db.VarChar(24)
+  mode               ScheduleSourceMode @default(platform)
+  sheetUrl           String?            @map("sheet_url")
+  spreadsheetId      String?            @map("spreadsheet_id") @db.VarChar(128)
+  sheetTab           String?            @map("sheet_tab") @db.VarChar(200)
+  // Sheet rejimida har 10 daqiqada avtomatik tekshirish
+  autoCheck          Boolean            @default(true) @map("auto_check")
+  // Havola yoki varaq oxirgi marta o'zgargan vaqt: undan oldingi tahrir
+  // boshqa sheet'niki — qo'llanmaydi
+  configChangedAt    DateTime?          @map("config_changed_at")
+  lastCheckedAt      DateTime?          @map("last_checked_at")
+  lastCheckOk        Boolean?           @map("last_check_ok")
+  lastCheckError     String?            @map("last_check_error")
+  // Ketma-ket muvaffaqiyatsiz tekshiruvlar (xabar 2-marta ketma-ket xatodan keyin)
+  checkFailureCount  Int                @default(0) @map("check_failure_count")
+  // Nosozlik xabari yuborilgan vaqt (6 soatda bir martadan ko'p emas)
+  failureNotifiedAt  DateTime?          @map("failure_notified_at")
+  // Oxirgi qo'llash yozgan holat imzosi (`hashState`). Amaldagi jadval undan
+  // farq qilsa (masalan versiya tiklangan), sheet bilan mos EMAS.
+  appliedStateHash   String?            @map("applied_state_hash") @db.VarChar(64)
+  // Sheet rejimiga o'tishda arxivlangan platforma jadvali (qaytishda tiklanadi)
+  platformSnapshotId String?            @map("platform_snapshot_id") @db.Char(24)
+  modeChangedAt      DateTime?          @map("mode_changed_at")
+  modeChangedBy      String?            @map("mode_changed_by") @db.Char(24)
+  updatedBy          String?            @map("updated_by") @db.Char(24)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  @@map("schedule_sync_settings")
+}
+
+// Sheet'ning o'qilgan holati. MAZMUN o'zgarganda yangi qator yoziladi
+// (`contentHash`), aks holda tekshiruv faqat vaqtni yangilaydi.
+//
+// `data` — `parseScheduleSheet()` natijasi: sheet'dagi NOMLAR bilan
+// (sinf/fan/o'qituvchi id'lari emas). Nomlar tizimdagi yozuvlarga har safar
+// JONLI moslanadi: moslash qoidasi keyin to'g'rilansa, tahrirni qayta
+// yuklash shart emas. Qo'llangan paytdagi moslash `resolution` ga muhrlanadi.
+model ScheduleSheetRevision {
+  id            String                      @id @db.Char(24)
+  spreadsheetId String                      @map("spreadsheet_id") @db.VarChar(128)
+  sheetTab      String                      @map("sheet_tab") @db.VarChar(200)
+  contentHash   String                      @map("content_hash") @db.VarChar(64)
+  data          Json
+  lessonCount   Int                         @map("lesson_count")
+  classCount    Int                         @map("class_count")
+  issueCount    Int                         @map("issue_count")
+  status        ScheduleSheetRevisionStatus @default(pending)
+  // null — avtomatik tekshiruv
+  fetchedBy     String?                     @map("fetched_by") @db.Char(24)
+  reviewedBy    String?                     @map("reviewed_by") @db.Char(24)
+  reviewedAt    DateTime?                   @map("reviewed_at")
+  rejectReason  String?                     @map("reject_reason")
+  resolution    Json?
+  // Qo'llashdan OLDINGI holat (orqaga qaytarish uchun)
+  snapshotId    String?                     @map("snapshot_id") @db.Char(24)
+  notifiedAt    DateTime?                   @map("notified_at")
+  createdAt     DateTime                    @default(now()) @map("created_at")
+  updatedAt     DateTime                    @updatedAt @map("updated_at")
+
+  @@index([createdAt])
+  @@index([status])
+  @@map("schedule_sheet_revisions")
+}
+
+// Amaldagi jadvalning TO'LIQ nusxasi (butun maktab). O'chirilmaydi.
+//
+// `data.schedules` — `schedules` jadvalining HAR BIR qatori alohida (bir
+// sinf-kun uchun ikki qator bo'lsa ham), shuning uchun tiklash avvalgi
+// holatni AYNAN qaytaradi. Nomlar (sinf/fan/o'qituvchi) ko'rsatish uchun
+// muhrlanadi: keyin o'chirilgan yozuv ham tarixda o'qiladi.
+model ScheduleSnapshot {
+  id          String               @id @db.Char(24)
+  kind        ScheduleSnapshotKind
+  // Nusxa olingan paytdagi rejim
+  mode        ScheduleSourceMode
+  data        Json
+  contentHash String               @map("content_hash") @db.VarChar(64)
+  classCount  Int                  @map("class_count")
+  lessonCount Int                  @map("lesson_count")
+  note        String?
+  revisionId  String?              @map("revision_id") @db.Char(24)
+  createdBy   String?              @map("created_by") @db.Char(24)
+  createdAt   DateTime             @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("schedule_snapshots")
+}
+
+// Sheet'dagi nom → tizimdagi yozuv. Faqat ODAM qarori saqlanadi: aniq va
+// yagona mos keladigan nom avtomatik moslanadi, lekin bu yerga yozilmaydi —
+// keyin ikkinchi bir xil nomli yozuv paydo bo'lsa, moslash "noaniq" bo'lib
+// qoladi va jimgina noto'g'ri odamga bog'lanmaydi.
+//
+// `kind`: "class" | "subject" | "teacher". `key` — `normalizeKey(label)`.
+model ScheduleSheetMapping {
+  id        String   @id @db.Char(24)
+  kind      String   @db.VarChar(16)
+  key       String   @db.VarChar(300)
+  label     String   @db.VarChar(300)
+  targetId  String   @map("target_id") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([kind, key])
+  @@map("schedule_sheet_mappings")
+}
+
+// ─────────────────────────────────────────────
 // DARS O'RINBOSARLIGI (dars o'rniga chiqish)
 // ─────────────────────────────────────────────
 //

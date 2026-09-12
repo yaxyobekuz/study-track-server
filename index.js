@@ -62,6 +62,7 @@ const {
   startChangelogNotificationCron,
 } = require("./src/jobs/changelogNotification.job");
 const { startSecuritySweepCron } = require("./src/jobs/securitySweep.job");
+const { startScheduleSheetSyncCron } = require("./src/jobs/scheduleSheetSync.job");
 
 // ================================
 
@@ -206,6 +207,8 @@ const bootstrap = async () => {
   startInventoryCheckReminderCron();
   startChangelogNotificationCron();
   startSecuritySweepCron();
+  // Dars jadvali: Google Sheets manbasini avtomatik tekshirish (faqat sheet rejimida)
+  startScheduleSheetSyncCron();
 
   // Navbatlar: modul yuklanganda filial konteksti yo'q, shuning uchun
   // "qotib qolgan" yozuvlarni tiklash va navbatni uyg'otish BOOTSTRAP'da,

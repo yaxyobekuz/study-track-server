@@ -41,6 +41,21 @@ async function getScheduleSettings() {
 }
 
 /**
+ * Dars jadvali manbai (Platforma / Google Sheets). Sukut bo'yicha `platform`.
+ *
+ * ⚠️ Tranzaksiya ICHIDA chaqirilmaydi: getter global `prisma` ni ishlatadi,
+ * ya'ni boshqa ulanishda o'qiydi. Yozishdan oldingi rejim tekshiruvi
+ * `tx.scheduleSyncSettings` orqali qilinadi (`scheduleWriteGuard.service.js`).
+ */
+async function getScheduleSyncSettings() {
+  return prisma.scheduleSyncSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
+/**
  * Dars jadvalini rejalashtirish qoidalari (preview qatlami).
  *
  * Dars soatlari (`periods`) BU YERDA EMAS — ular ScheduleSettings da:
@@ -191,6 +206,7 @@ async function getPremiumSettings() {
 module.exports = {
   getCoinSettings,
   getScheduleSettings,
+  getScheduleSyncSettings,
   getPlannerSettings,
   getAttendanceSettings,
   getGradePenaltySettings,

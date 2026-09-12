@@ -20,6 +20,11 @@
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { DAYS } = require("../utils/constants");
+const {
+  MODES,
+  readSourceMode,
+  sheetModeError,
+} = require("./scheduleWriteGuard.service");
 
 const VALID_DAYS = Object.values(DAYS);
 
@@ -101,6 +106,13 @@ async function getDraft(classId, userId) {
  * @returns {Promise<{updatedAt: Date}>}
  */
 async function saveDraft(classId, userId, week, baseHash) {
+  // Sheet rejimida platformada tahrir yo'q — tahrirning zaxirasi ham yo'q.
+  // Qulf shart emas: qoralama amaldagi jadvalga hech qachon tegmaydi,
+  // yakuniy "Saqlash" esa qulf ichida rejimni qayta tekshiradi.
+  if ((await readSourceMode()) === MODES.SHEET) {
+    throw sheetModeError();
+  }
+
   const classExists = await prisma.class.findUnique({ where: { id: classId } });
   if (!classExists) {
     throw new NotFoundError("Sinf topilmadi");

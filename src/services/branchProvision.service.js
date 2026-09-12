@@ -115,6 +115,7 @@ const seedBranch = async (branch) => {
     await Promise.all([
       settingsService.getCoinSettings(),
       settingsService.getScheduleSettings(),
+      settingsService.getScheduleSyncSettings(),
       settingsService.getPlannerSettings(),
       settingsService.getAttendanceSettings(),
       settingsService.getGradePenaltySettings(),

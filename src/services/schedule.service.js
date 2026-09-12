@@ -4,6 +4,10 @@ const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { getCurrentDayUz, isSunday } = require("../helpers/date.helpers");
 const { DAYS, ROLES } = require("../utils/constants");
 const { hasRole } = require("../utils/permissions");
+const {
+  withScheduleWriteLock,
+  assertPlatformMode,
+} = require("./scheduleWriteGuard.service");
 
 // Jadval kunlari — YAGONA manba (`ScheduleDay` enumi bilan bir xil tartib).
 const VALID_DAYS = Object.values(DAYS);
@@ -287,7 +291,7 @@ function validateDayShape(subjects, day) {
  *
  * @param {Array} entries - [{ day, subjects }] (darslari bor kunlar)
  */
-async function validateLessonRefs(entries) {
+async function validateLessonRefs(entries, client = prisma) {
   const subjectIds = new Set();
   const teacherIds = new Set();
 
@@ -310,29 +314,59 @@ async function validateLessonRefs(entries) {
 
   if (subjectIds.size === 0) return;
 
+  const refs = await loadLessonRefContext([...subjectIds], [...teacherIds], client);
+
+  for (const entry of entries) {
+    for (const item of entry.subjects) {
+      const issue = checkLessonRef(
+        refs,
+        String(item.subject),
+        String(item.teacher),
+        `${dayLabel(entry.day)}, ${item.order}-dars`,
+      );
+      if (issue) {
+        throw issue.status === 404
+          ? new NotFoundError(issue.message)
+          : new BadRequestError(issue.message);
+      }
+    }
+  }
+}
+
+/**
+ * Fan va o'qituvchi havolalarini tekshirish uchun kerakli ma'lumot —
+ * BITTA to'plam so'rov. Platformadagi saqlash ham, Google Sheets'dan
+ * qo'llash ham shu funksiya va `checkLessonRef` dan o'tadi: qoida ikki
+ * joyda yozilsa, biri ikkinchisidan ajralib qolardi.
+ *
+ * @param {string[]} subjectIds
+ * @param {string[]} teacherIds
+ * @param {object} [client] - `prisma` yoki tranzaksiya (`tx`)
+ * @returns {Promise<{subjectMap: Map, teacherMap: Map, assigned: Map<string, Set<string>>}>}
+ */
+async function loadLessonRefContext(subjectIds, teacherIds, client = prisma) {
   const [subjects, teachers, links] = await Promise.all([
-    prisma.subject.findMany({
-      where: { id: { in: [...subjectIds] } },
+    client.subject.findMany({
+      where: { id: { in: subjectIds } },
       select: { id: true, name: true },
     }),
-    prisma.user.findMany({
-      where: { id: { in: [...teacherIds] } },
+    client.user.findMany({
+      where: { id: { in: teacherIds } },
       select: {
         id: true,
         firstName: true,
         lastName: true,
         role: true,
         extraRoles: true,
+        isArchived: true,
+        isActive: true,
       },
     }),
-    prisma.userSubject.findMany({
-      where: { userId: { in: [...teacherIds] } },
+    client.userSubject.findMany({
+      where: { userId: { in: teacherIds } },
       select: { userId: true, subjectId: true },
     }),
   ]);
-
-  const subjectMap = new Map(subjects.map((s) => [s.id, s]));
-  const teacherMap = new Map(teachers.map((t) => [t.id, t]));
 
   // teacherId -> Set(subjectId). Bo'sh to'plam = fan biriktirilmagan.
   const assigned = new Map();
@@ -341,33 +375,44 @@ async function validateLessonRefs(entries) {
     assigned.get(link.userId).add(link.subjectId);
   }
 
-  for (const entry of entries) {
-    for (const item of entry.subjects) {
-      const prefix = `${dayLabel(entry.day)}, ${item.order}-dars`;
+  return {
+    subjectMap: new Map(subjects.map((s) => [s.id, s])),
+    teacherMap: new Map(teachers.map((t) => [t.id, t])),
+    assigned,
+  };
+}
 
-      const subject = subjectMap.get(String(item.subject));
-      if (!subject) {
-        throw new NotFoundError(`${prefix}: fan topilmadi`);
-      }
+/**
+ * Bitta dars uchun havola qoidasi. Xato bo'lsa `{status, message}`,
+ * aks holda `null`.
+ *
+ * Uch narsa: fan bormi; o'qituvchi bormi va u haqiqatan O'QITUVCHIMI;
+ * o'qituvchida fan biriktirilgan bo'lsa — shu fan ular orasidami.
+ *
+ * @param {{subjectMap: Map, teacherMap: Map, assigned: Map}} refs
+ * @param {string} subjectId
+ * @param {string} teacherId
+ * @param {string} prefix - xato matni boshi ("Dushanba, 2-dars")
+ * @returns {{status: 400|404, message: string} | null}
+ */
+function checkLessonRef(refs, subjectId, teacherId, prefix) {
+  const subject = refs.subjectMap.get(subjectId);
+  if (!subject) return { status: 404, message: `${prefix}: fan topilmadi` };
 
-      const teacher = teacherMap.get(String(item.teacher));
-      if (!teacher) {
-        throw new NotFoundError(`${prefix}: o'qituvchi topilmadi`);
-      }
-      if (!hasRole(teacher, ROLES.TEACHER)) {
-        throw new BadRequestError(
-          `${prefix}: ${teacherName(teacher)} o'qituvchi emas`,
-        );
-      }
-
-      const teacherSubjects = assigned.get(teacher.id);
-      if (teacherSubjects?.size && !teacherSubjects.has(subject.id)) {
-        throw new BadRequestError(
-          `${prefix}: ${teacherName(teacher)} "${subject.name}" fanidan dars bermaydi. Fan biriktirilishi "Xodimlar" bo'limida o'zgartiriladi`,
-        );
-      }
-    }
+  const teacher = refs.teacherMap.get(teacherId);
+  if (!teacher) return { status: 404, message: `${prefix}: o'qituvchi topilmadi` };
+  if (!hasRole(teacher, ROLES.TEACHER)) {
+    return { status: 400, message: `${prefix}: ${teacherName(teacher)} o'qituvchi emas` };
   }
+
+  const teacherSubjects = refs.assigned.get(teacher.id);
+  if (teacherSubjects?.size && !teacherSubjects.has(subject.id)) {
+    return {
+      status: 400,
+      message: `${prefix}: ${teacherName(teacher)} "${subject.name}" fanidan dars bermaydi. Fan biriktirilishi "Xodimlar" bo'limida o'zgartiriladi`,
+    };
+  }
+  return null;
 }
 
 /**
@@ -392,13 +437,14 @@ function teacherName(teacher) {
  *
  * @param {string} classId - joriy sinf
  * @param {Array} entries - [{ day, subjects }] (darslari bor kunlar)
+ * @param {object} [client] - `prisma` yoki tranzaksiya (`tx`)
  * @returns {Promise<Array>} [{ day, dayLabel, order, classId, className, teacherId, teacherName }]
  */
-async function collectTeacherConflicts(classId, entries) {
+async function collectTeacherConflicts(classId, entries, client = prisma) {
   const days = entries.map((e) => e.day);
   if (days.length === 0) return [];
 
-  const otherSchedules = await prisma.schedule.findMany({
+  const otherSchedules = await client.schedule.findMany({
     where: { day: { in: days }, classId: { not: classId } },
     include: { lessons: { select: { teacherId: true, order: true } } },
   });
@@ -430,11 +476,11 @@ async function collectTeacherConflicts(classId, entries) {
 
   // Nomlar faqat HAQIQIY to'qnashuvlar uchun yuklanadi
   const [classes, teachers] = await Promise.all([
-    prisma.class.findMany({
+    client.class.findMany({
       where: { id: { in: [...new Set(conflicts.map((c) => c.classId))] } },
       select: { id: true, name: true },
     }),
-    prisma.user.findMany({
+    client.user.findMany({
       where: { id: { in: [...new Set(conflicts.map((c) => c.teacherId))] } },
       select: { id: true, firstName: true, lastName: true },
     }),
@@ -458,11 +504,17 @@ async function collectTeacherConflicts(classId, entries) {
  * Hech narsa YOZILMASDAN OLDIN chaqiriladi — bitta yaroqsiz kun yarim
  * saqlangan jadval qoldirmasligi kerak.
  *
+ * ⚠️ Yozuv tranzaksiyasi ICHIDA, qulfdan KEYIN va `tx` bilan chaqiriladi
+ * (`scheduleWriteGuard.service.js`). Tranzaksiyadan tashqarida tekshirilsa,
+ * ikki sinf bir vaqtda saqlanganda ikkalasi ham "o'qituvchi bo'sh" deb
+ * o'tib ketardi va o'qituvchi bir soatda ikki sinfga yozilib qolardi.
+ *
  * @param {string} classId
  * @param {Array} schedules - [{ day, subjects }]
+ * @param {object} [client] - `prisma` yoki tranzaksiya (`tx`)
  * @returns {Promise<Array>} darslari bor kunlar
  */
-async function validateWeek(classId, schedules) {
+async function validateWeek(classId, schedules, client = prisma) {
   const seenDays = new Set();
   const filled = [];
 
@@ -481,9 +533,9 @@ async function validateWeek(classId, schedules) {
     if (subjects.length > 0) filled.push({ day, subjects });
   }
 
-  await validateLessonRefs(filled);
+  await validateLessonRefs(filled, client);
 
-  const conflicts = await collectTeacherConflicts(classId, filled);
+  const conflicts = await collectTeacherConflicts(classId, filled, client);
   if (conflicts.length > 0) {
     const shown = conflicts
       .slice(0, 5)
@@ -522,32 +574,38 @@ async function createOrUpdateSchedule(data, createdBy) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  // Tekshiruv bitta joyda — haftalik saqlash bilan AYNAN bir xil qoidalar.
-  // Ikkita mustaqil tekshirgich bo'lsa, yangi qoida faqat bittasiga
-  // qo'shilib qolardi.
-  await validateWeek(classId, [{ day, subjects }]);
+  // Qulf → rejim → tekshiruv → yozuv: hammasi BITTA tranzaksiyada.
+  // Avval o'chirib keyin yozish tranzaksiyasiz bo'lsa, oradagi uzilish
+  // kunni bo'sh qoldirardi.
+  const scheduleId = await withScheduleWriteLock(async (tx) => {
+    await assertPlatformMode(tx);
 
-  const existing = await prisma.schedule.findFirst({
-    where: { classId, day },
-  });
+    // Tekshiruv bitta joyda — haftalik saqlash bilan AYNAN bir xil qoidalar.
+    // Ikkita mustaqil tekshirgich bo'lsa, yangi qoida faqat bittasiga
+    // qo'shilib qolardi.
+    await validateWeek(classId, [{ day, subjects }], tx);
 
-  let scheduleId;
-  if (existing) {
-    scheduleId = existing.id;
-    // Eski darslarni tozalab, yangilarini qayta yozamiz (position bilan)
-    await prisma.scheduleLesson.deleteMany({ where: { scheduleId } });
-    await prisma.scheduleLesson.createMany({
-      data: buildLessonRows(scheduleId, subjects),
+    const existing = await tx.schedule.findFirst({
+      where: { classId, day },
     });
-  } else {
-    const schedule = await prisma.schedule.create({
+
+    if (existing) {
+      // Eski darslarni tozalab, yangilarini qayta yozamiz (position bilan)
+      await tx.scheduleLesson.deleteMany({ where: { scheduleId: existing.id } });
+      await tx.scheduleLesson.createMany({
+        data: buildLessonRows(existing.id, subjects),
+      });
+      return existing.id;
+    }
+
+    const schedule = await tx.schedule.create({
       data: { classId, day, createdBy },
     });
-    scheduleId = schedule.id;
-    await prisma.scheduleLesson.createMany({
-      data: buildLessonRows(scheduleId, subjects),
+    await tx.scheduleLesson.createMany({
+      data: buildLessonRows(schedule.id, subjects),
     });
-  }
+    return schedule.id;
+  });
 
   const saved = await prisma.schedule.findUnique({
     where: { id: scheduleId },
@@ -577,14 +635,18 @@ async function saveClassSchedule(classId, schedules, createdBy) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  // HAMMASI avval tekshiriladi: bitta yaroqsiz kun yarim saqlangan
-  // jadval qoldirmasligi kerak.
-  await validateWeek(classId, schedules);
-
   // Yozish BITTA tranzaksiyada: aks holda uzilish (tarmoq, xato) haftaning
   // yarmini yangi, yarmini eski holatda qoldirardi va bunday jadval hech
   // kimda bo'lmagan variant bo'lib chiqardi.
-  await prisma.$transaction(async (tx) => {
+  await withScheduleWriteLock(async (tx) => {
+    // Sheet rejimida platformadan tahrir yo'q (owner uchun ham): tekshiruv
+    // qulfdan KEYIN — rejim shu lahzada almashtirilayotgan bo'lsa ham.
+    await assertPlatformMode(tx);
+
+    // HAMMASI avval tekshiriladi: bitta yaroqsiz kun yarim saqlangan
+    // jadval qoldirmasligi kerak.
+    await validateWeek(classId, schedules, tx);
+
     for (const entry of schedules) {
       const { day, subjects = [] } = entry;
 
@@ -629,12 +691,16 @@ async function saveClassSchedule(classId, schedules, createdBy) {
  * @returns {Promise<void>}
  */
 async function deleteSchedule(id) {
-  const schedule = await prisma.schedule.findUnique({ where: { id } });
-  if (!schedule) {
-    throw new NotFoundError("Dars jadvali topilmadi");
-  }
+  await withScheduleWriteLock(async (tx) => {
+    await assertPlatformMode(tx);
 
-  await prisma.schedule.delete({ where: { id } });
+    // `deleteMany` + son: tekshiruv va o'chirish orasida boshqa so'rov
+    // o'chirib yuborsa, P2025 (500) emas, 404 qaytadi.
+    const { count } = await tx.schedule.deleteMany({ where: { id } });
+    if (count === 0) {
+      throw new NotFoundError("Dars jadvali topilmadi");
+    }
+  });
 }
 
 /**
@@ -990,4 +1056,10 @@ module.exports = {
   getMyTodaySchedule,
   getClassesBySubject,
   updateCurrentTopic,
+  // Google Sheets sinxronizatsiyasi uchun — tekshiruv qoidalari bitta joyda
+  dayLabel,
+  teacherName,
+  validateDayShape,
+  loadLessonRefContext,
+  checkLessonRef,
 };

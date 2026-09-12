@@ -24,6 +24,7 @@ const SECTIONS = {
   ACHIEVEMENTS: "achievements",
   CLUBS: "clubs",
   SCHEDULES: "schedules",
+  SCHEDULE_SYNC: "scheduleSync",
   PLANNER: "planner",
   SUBSTITUTIONS: "substitutions",
   TOPICS: "topics",
@@ -196,6 +197,29 @@ const PERMISSION_SECTIONS = [
     label: "Dars jadvali",
     group: "Ta'lim",
     actions: [A.view, A.create, A.update, A.delete, A.export, A.settings],
+  },
+  {
+    // Dars jadvalini Google Sheets orqali boshqarish.
+    //
+    // ⚠️ ALOHIDA BO'LIM, `schedules` ichidagi amal EMAS. Eski yozuvlardagi
+    // bare "schedules" kaliti bo'limning HAMMA amalini beradi
+    // (`hasPermission`, `expandLegacyKeys`). Bu amallar o'sha yerda bo'lsa,
+    // "Dars jadvali" ga eski umumiy ruxsati bor har kim butun maktab
+    // jadvalini almashtira olardi — owner hech kimga bermagan bo'lsa ham.
+    //
+    // `review` — sheet'dan kelgan o'zgarishni ko'rib chiqish, nomlarni
+    // moslash, "Qo'llash"/"Rad etish". Kunlik ish (jadval tuzuvchi).
+    // `source` — manbani almashtirish (Platforma ↔ Google Sheets), sheet
+    // havolasini sozlash, arxiv versiyani tiklash. Butun maktab jadvalini
+    // bir bosishda almashtiradi — alohida qaror, odatda faqat rahbarda.
+    key: SECTIONS.SCHEDULE_SYNC,
+    label: "Google Sheets jadvali",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "review", label: "O'zgarishlarni ko'rib chiqish va qo'llash" },
+      { key: "source", label: "Manbani almashtirish va versiyani tiklash" },
+    ],
   },
   {
     // REJALASHTIRISH — amaldagi jadvaldan ALOHIDA bo'lim.

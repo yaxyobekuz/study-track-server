@@ -79,10 +79,14 @@ class BadRequestError extends Error {
  * HTTP status code: 409
  */
 class ConflictError extends Error {
-  constructor(message = "Ma'lumot o'zgardi, qayta urinib ko'ring") {
+  constructor(message = "Ma'lumot o'zgardi, qayta urinib ko'ring", details = null) {
     super(message);
     this.name = "ConflictError";
     this.statusCode = 409;
+    // `BadRequestError` dagi kabi: mijoz sababni (`details.reason`) matndan
+    // emas, tuzilmadan o'qiydi — "jadval o'zgargan" va "sheet rejimi"
+    // holatlariga har xil javob beradi.
+    if (details) this.details = details;
     Error.captureStackTrace(this, this.constructor);
   }
 }
