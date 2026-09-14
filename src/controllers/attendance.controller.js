@@ -18,11 +18,12 @@ const checkIn = asyncHandler(async (req, res) => {
   });
   const adminUserId = adminUser?.id || req.user.id;
 
+  // ⚠️ Joylashuv TEKSHIRILMAY uzatiladi: uni hal qilish servisning ishi
+  // (`geolocation.helpers.js`). Controller'da ikkinchi tekshiruv paydo
+  // bo'lsa, bittasi qattiqroq bo'lib qayd etishni to'sib qo'yardi.
   const record = await attendanceService.checkIn(
     req.user.id,
-    lat,
-    lng,
-    accuracy,
+    { lat, lng, accuracy },
     adminUserId,
   );
 
@@ -40,9 +41,7 @@ const checkOut = asyncHandler(async (req, res) => {
 
   const record = await attendanceService.checkOut(
     req.user.id,
-    lat,
-    lng,
-    accuracy,
+    { lat, lng, accuracy },
     adminUserId,
   );
 

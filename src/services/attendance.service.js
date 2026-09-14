@@ -2,7 +2,11 @@ const prisma = require("../config/prisma");
 // Rollar katalogi PLATFORMADA — ish vaqti default'lari barcha filiallarga umumiy
 const platformPrisma = require("../config/platformPrisma");
 const { getAttendanceSettings } = require("./settings.service");
-const { checkOfficeLocation } = require("../helpers/geolocation.helpers");
+const {
+  resolveLocation,
+  LOCATION_STATUS,
+  parseCoords,
+} = require("../helpers/geolocation.helpers");
 const {
   getPaginationParams,
   formatPaginationResponse,
@@ -11,6 +15,7 @@ const {
   BadRequestError,
   NotFoundError,
   ForbiddenError,
+  ValidationError,
 } = require("../utils/errors");
 const logger = require("../utils/logger");
 const { WORK_TIME_SOURCE } = require("../utils/constants");
@@ -226,7 +231,64 @@ async function createAttendancePenalty(userId, givenByUserId, title, points) {
   return penalty;
 }
 
-async function checkIn(userId, lat, lng, accuracy, adminUserId) {
+/**
+ * Joylashuv natijasini BAZA USTUNLARIGA aylantiradi.
+ *
+ * Kelish va ketish bir xil shaklda yoziladi — ikkita qo'lda terilgan
+ * ro'yxat bo'lsa, biriga yangi maydon qo'shilib ikkinchisida unutilardi.
+ *
+ * @param {"checkIn"|"checkOut"} prefix
+ * @param {object} location - `resolveLocation()` natijasi
+ * @returns {object} Prisma `data` bo'lagi
+ */
+function locationFields(prefix, location) {
+  return {
+    [`${prefix}Location`]: location.snapshot,
+    [`${prefix}LocationStatus`]: location.status,
+    [`${prefix}Distance`]: location.distance,
+  };
+}
+
+/**
+ * Shubhali joylashuvni jurnalga yozadi.
+ *
+ * Bu TO'SIQ EMAS — qayd baribir o'tadi. Maqsad: buzuq yoki qalbaki
+ * mijozni keyin ko'rib olish mumkin bo'lsin, chunki yaroqsiz koordinata
+ * odatdagi ishda umuman uchramaydi.
+ *
+ * @param {string} kind - "kelish" yoki "ketish"
+ * @param {string} userId
+ * @param {object} location - `resolveLocation()` natijasi
+ */
+function logSuspiciousLocation(kind, userId, location) {
+  if (location.status === LOCATION_STATUS.INVALID) {
+    logger.warn(
+      `Davomat (${kind}): yaroqsiz koordinata keldi, userId=${userId} — qayd "invalid" deb yozildi`,
+    );
+    return;
+  }
+
+  if (location.snapshot && !location.trusted) {
+    logger.warn(
+      `Davomat (${kind}): ishonchsiz aniqlik (${Math.round(location.accuracy)} m), userId=${userId}`,
+    );
+  }
+}
+
+/**
+ * KELGANLIKNI QAYD ETISH.
+ *
+ * ⚠️ JOYLASHUV MAJBURIY EMAS. GPS bermagan telefon xodimni davomatdan
+ * butunlay chetlab qo'ymaydi — qayd o'tadi, lekin joylashuv holati
+ * `missing` bo'lib YOZILADI. Ilgari u umuman yozilmasdi va GPS-ni
+ * o'chirib qo'ygan xodim ofisda o'tirgani bilan bir xil ko'rinardi.
+ *
+ * @param {string} userId
+ * @param {{ lat?: *, lng?: *, accuracy?: * }} [locationPayload] - mijozdan
+ * @param {string} [adminUserId] - jarima "kim tomonidan" uchun
+ * @returns {Promise<object>} Attendance qatori
+ */
+async function checkIn(userId, locationPayload, adminUserId) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
@@ -247,31 +309,13 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
 
   const settings = await getAttendanceSettings();
 
-  // Geolokatsiya tekshiruvi
-  let outOfOffice = false;
-  let locationWarning = false;
-  let checkInLocation = null;
-
-  if (lat !== undefined && lng !== undefined) {
-    checkInLocation = { lat, lng, accuracy: accuracy || 0 };
-
-    if (
-      settings.officeLocation &&
-      settings.officeLocation.lat &&
-      settings.officeLocation.lng
-    ) {
-      const geoResult = checkOfficeLocation(
-        lat,
-        lng,
-        accuracy || 0,
-        settings.officeLocation.lat,
-        settings.officeLocation.lng,
-        settings.officeRadius,
-      );
-      outOfOffice = geoResult.outOfOffice;
-      locationWarning = geoResult.locationWarning;
-    }
-  }
+  // Joylashuv — qaror BITTA joyda hal qilinadi (geolocation.helpers.js)
+  const location = resolveLocation(
+    locationPayload,
+    settings.officeLocation,
+    settings.officeRadius,
+  );
+  logSuspiciousLocation("kelish", userId, location);
 
   // Kech kelish tekshiruvi
   const schedule = await getEffectiveSchedule(user);
@@ -303,9 +347,9 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
         status,
         isLate,
         lateMinutes,
-        checkInLocation,
-        outOfOffice,
-        locationWarning,
+        ...locationFields("checkIn", location),
+        outOfOffice: location.outOfOffice,
+        locationWarning: location.locationWarning,
       },
     });
   } else {
@@ -317,9 +361,9 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
         status,
         isLate,
         lateMinutes,
-        checkInLocation,
-        outOfOffice,
-        locationWarning,
+        ...locationFields("checkIn", location),
+        outOfOffice: location.outOfOffice,
+        locationWarning: location.locationWarning,
         createdBy: userId,
       },
     });
@@ -346,7 +390,19 @@ async function checkIn(userId, lat, lng, accuracy, adminUserId) {
   return record;
 }
 
-async function checkOut(userId, lat, lng, accuracy, adminUserId) {
+/**
+ * KETGANLIKNI QAYD ETISH.
+ *
+ * ⚠️ Ketishdagi joylashuv KELISHNIKINI YUVMAYDI: har biri o'z ustunida
+ * saqlanadi. "Kelganda ofisda edi, ketganda tashqarida" — bu ikki xil
+ * fakt va ular bitta bayroqqa siqilsa, tekshirishning ma'nosi qolmaydi.
+ *
+ * @param {string} userId
+ * @param {{ lat?: *, lng?: *, accuracy?: * }} [locationPayload]
+ * @param {string} [adminUserId]
+ * @returns {Promise<object>} Attendance qatori
+ */
+async function checkOut(userId, locationPayload, adminUserId) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
@@ -368,31 +424,13 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
 
   const settings = await getAttendanceSettings();
 
-  // Geolokatsiya tekshiruvi
-  let checkOutLocation = null;
-  let checkOutOutOfOffice = false;
-  let checkOutWarning = false;
-
-  if (lat !== undefined && lng !== undefined) {
-    checkOutLocation = { lat, lng, accuracy: accuracy || 0 };
-
-    if (
-      settings.officeLocation &&
-      settings.officeLocation.lat &&
-      settings.officeLocation.lng
-    ) {
-      const geoResult = checkOfficeLocation(
-        lat,
-        lng,
-        accuracy || 0,
-        settings.officeLocation.lat,
-        settings.officeLocation.lng,
-        settings.officeRadius,
-      );
-      checkOutOutOfOffice = geoResult.outOfOffice;
-      checkOutWarning = geoResult.locationWarning;
-    }
-  }
+  // Joylashuv — kelish bilan AYNI helper, ikkinchi nusxa yo'q
+  const location = resolveLocation(
+    locationPayload,
+    settings.officeLocation,
+    settings.officeRadius,
+  );
+  logSuspiciousLocation("ketish", userId, location);
 
   // Erta ketish tekshiruvi
   const schedule = await getEffectiveSchedule(user);
@@ -417,14 +455,14 @@ async function checkOut(userId, lat, lng, accuracy, adminUserId) {
     checkOut: now,
     isEarlyOut,
     earlyOutMinutes,
-    checkOutLocation,
+    ...locationFields("checkOut", location),
   };
 
-  // Agar check-out ham ofisdan tashqarida bo'lsa, locationWarning ni yangilash
-  if (checkOutOutOfOffice && !record.locationWarning) {
-    updateData.locationWarning = true;
-    updateData.outOfOffice = true;
-  }
+  // Kun yakuni bayroqlari — IKKALA qayddan yig'iladi (ochilgan bayroq
+  // yopilmaydi: kelish tashqarida bo'lgani ketish yaxshi bo'lgani uchun
+  // o'chib ketmasligi kerak).
+  updateData.outOfOffice = record.outOfOffice || location.outOfOffice;
+  updateData.locationWarning = record.locationWarning || location.locationWarning;
 
   // Erta ketish jarimasi (avval penaltyApplied bo'lmagan bo'lsa)
   if (
@@ -676,6 +714,11 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         excuseReason: rec?.excuseReason || null,
         absenceReason: rec?.absenceReason || null,
         outOfOffice: rec?.outOfOffice || false,
+        locationWarning: rec?.locationWarning || false,
+        checkInLocationStatus: rec?.checkInLocationStatus || null,
+        checkOutLocationStatus: rec?.checkOutLocationStatus || null,
+        checkInDistance: rec?.checkInDistance ?? null,
+        checkOutDistance: rec?.checkOutDistance ?? null,
         expectedStart: schedule.workStartTime || null,
         expectedEnd: schedule.workEndTime || null,
         scheduleSource: schedule.source,
@@ -766,6 +809,63 @@ async function getSettings() {
   return getAttendanceSettings();
 }
 
+/** Ofis radiusining maqbul chegarasi (metr). */
+const MIN_OFFICE_RADIUS = 20;
+const MAX_OFFICE_RADIUS = 10000;
+
+/**
+ * Ofis koordinatasini tekshiradi.
+ *
+ * Bo'sh qiymat — XATO EMAS: "geotekshiruv kerak emas" degan ataylab
+ * qilingan tanlov (`null` yoziladi va tekshiruv o'chadi).
+ *
+ * @param {*} value
+ * @returns {{lat: number, lng: number}|null}
+ */
+function normalizeOfficeLocation(value) {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value !== "object") {
+    throw new ValidationError("Ofis joylashuvi noto'g'ri formatda");
+  }
+
+  const empty =
+    (value.lat === null || value.lat === undefined || value.lat === "") &&
+    (value.lng === null || value.lng === undefined || value.lng === "");
+  if (empty) return null;
+
+  const coords = parseCoords(value.lat, value.lng);
+  if (!coords) {
+    throw new ValidationError(
+      "Ofis koordinatasi noto'g'ri: kenglik −90…90, uzunlik −180…180 oralig'ida bo'lishi kerak",
+    );
+  }
+  return coords;
+}
+
+/**
+ * Ofis radiusini tekshiradi.
+ *
+ * Pastki chegara bejiz emas: 20 m dan kichik radius shahar GPS'ining
+ * odatdagi xatosidan ham kichik — ofisda o'tirgan xodim ham har kuni
+ * "tashqarida" bo'lib chiqaverardi.
+ *
+ * @param {*} value
+ * @returns {number} Metr
+ */
+function normalizeOfficeRadius(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    throw new ValidationError("Hudud radiusi raqam bo'lishi kerak");
+  }
+  if (num < MIN_OFFICE_RADIUS || num > MAX_OFFICE_RADIUS) {
+    throw new ValidationError(
+      `Hudud radiusi ${MIN_OFFICE_RADIUS}–${MAX_OFFICE_RADIUS} metr oralig'ida bo'lishi kerak`,
+    );
+  }
+  return Math.round(num);
+}
+
 async function updateSettings(data, updatedBy) {
   const settings = await getAttendanceSettings();
 
@@ -786,6 +886,17 @@ async function updateSettings(data, updatedBy) {
   allowed.forEach((key) => {
     if (data[key] !== undefined) update[key] = data[key];
   });
+
+  // ⚠️ Bu yerda yaroqsiz qiymat RAD ETILADI — qayd etishdagidan farqli.
+  // U yerda xodimni to'sib qo'yib bo'lmaydi, bu yerda esa sozlamani
+  // kiritayotgan odam xatoni darhol ko'radi va tuzatadi. Jim qabul
+  // qilinsa, butun geotekshiruv bilinmay o'chib qolardi.
+  if (update.officeLocation !== undefined) {
+    update.officeLocation = normalizeOfficeLocation(update.officeLocation);
+  }
+  if (update.officeRadius !== undefined) {
+    update.officeRadius = normalizeOfficeRadius(update.officeRadius);
+  }
 
   update.updatedBy = updatedBy;
 

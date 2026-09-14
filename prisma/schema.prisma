@@ -1103,30 +1103,41 @@ model PlannerDistribution {
 // ─────────────────────────────────────────────
 
 model Attendance {
-  id               String           @id @db.Char(24)
-  userId           String           @map("user_id") @db.Char(24)
-  date             DateTime
-  checkIn          DateTime?        @map("check_in")
-  checkOut         DateTime?        @map("check_out")
-  status           AttendanceStatus @default(present)
-  isLate           Boolean          @default(false) @map("is_late")
-  lateMinutes      Int              @default(0) @map("late_minutes")
-  isEarlyOut       Boolean          @default(false) @map("is_early_out")
-  earlyOutMinutes  Int              @default(0) @map("early_out_minutes")
-  // { lat, lng, accuracy }
-  checkInLocation  Json?            @map("check_in_location")
-  checkOutLocation Json?            @map("check_out_location")
-  locationWarning  Boolean          @default(false) @map("location_warning")
-  outOfOffice      Boolean          @default(false) @map("out_of_office")
-  penaltyApplied   Boolean          @default(false) @map("penalty_applied")
-  penaltyRef       String?          @map("penalty_ref") @db.Char(24)
-  excuseReason     String?          @map("excuse_reason")
-  absenceReason    String?          @map("absence_reason") @db.Char(24)
-  autoMarked       Boolean          @default(false) @map("auto_marked")
-  createdBy        String?          @map("created_by") @db.Char(24)
-  lastModifiedBy   String?          @map("last_modified_by") @db.Char(24)
-  createdAt        DateTime         @default(now()) @map("created_at")
-  updatedAt        DateTime         @updatedAt @map("updated_at")
+  id                     String           @id @db.Char(24)
+  userId                 String           @map("user_id") @db.Char(24)
+  date                   DateTime
+  checkIn                DateTime?        @map("check_in")
+  checkOut               DateTime?        @map("check_out")
+  status                 AttendanceStatus @default(present)
+  isLate                 Boolean          @default(false) @map("is_late")
+  lateMinutes            Int              @default(0) @map("late_minutes")
+  isEarlyOut             Boolean          @default(false) @map("is_early_out")
+  earlyOutMinutes        Int              @default(0) @map("early_out_minutes")
+  // { lat, lng, accuracy, distance, status } — `geolocation.helpers.js`
+  // natijasi TO'LIQ muhrlanadi: radius keyin o'zgarsa eski qaror qayta
+  // hisoblanmaydi.
+  checkInLocation        Json?            @map("check_in_location")
+  checkOutLocation       Json?            @map("check_out_location")
+  // Qaror ALOHIDA ustunda — kelish va ketish bir-birini YUVIB TASHLAMASLIGI
+  // uchun. Qiymatlar: inside | edge | outside | missing | invalid | unconfigured
+  checkInLocationStatus  String?          @map("check_in_location_status")
+  checkOutLocationStatus String?          @map("check_out_location_status")
+  // Ofisgacha masofa (metr) — "12 m narida" va "5 km narida" ni ajratish uchun
+  checkInDistance        Int?             @map("check_in_distance")
+  checkOutDistance       Int?             @map("check_out_distance")
+  // KUN YAKUNI bayroqlari (kelish yoki ketishdan birortasi): eski ekranlar
+  // shularni o'qiydi, tafsilot esa yuqoridagi ustunlarda.
+  locationWarning        Boolean          @default(false) @map("location_warning")
+  outOfOffice            Boolean          @default(false) @map("out_of_office")
+  penaltyApplied         Boolean          @default(false) @map("penalty_applied")
+  penaltyRef             String?          @map("penalty_ref") @db.Char(24)
+  excuseReason           String?          @map("excuse_reason")
+  absenceReason          String?          @map("absence_reason") @db.Char(24)
+  autoMarked             Boolean          @default(false) @map("auto_marked")
+  createdBy              String?          @map("created_by") @db.Char(24)
+  lastModifiedBy         String?          @map("last_modified_by") @db.Char(24)
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
 
   @@unique([userId, date])
   @@index([date, status])
