@@ -1078,4 +1078,8 @@ module.exports = {
   getSubstitutions,
   getSubstitution,
   getMySubstitutions,
+  // AI yordamchi taklif ko'rinishi uchun: faqat O'QIYDI. Tasdiqdan oldin
+  // xuddi shu tekshiruvlar ishlashi kerak — nusxa yozilsa shartlar ajralib ketardi.
+  prepareSubstitution,
+  assertNotStarted,
 };

@@ -4515,6 +4515,149 @@ model AcademicInsight {
 }
 
 // ═════════════════════════════════════════════════════════════════════
+// AI YORDAMCHI (faqat tizim egasi)
+// ═════════════════════════════════════════════════════════════════════
+//
+// ⚠️ SUHBAT FILIAL SCHEMA'SIDA. Suhbat, undagi ma'lumot va amallar ega
+// o'sha paytda turgan filialga tegishli. Shu sababli "A filialda taklif
+// qilingan amal B filialda bajarildi" holati STRUKTURAVIY imkonsiz: boshqa
+// schema'da qator topilmaydi. `branchId` ustuni ataylab yo'q — schema'ning
+// o'zi filial.
+//
+// ⚠️ O'CHIRISH YUMSHOQ (`deletedAt`). Bajarilgan amallar audit izi bo'lib
+// qolishi kerak; kaskad faqat qattiq o'chirishda ishlaydi va uni hech
+// qaysi endpoint qilmaydi.
+
+enum AiMessageRole {
+  user
+  assistant
+}
+
+enum AiInputMode {
+  text
+  voice
+}
+
+enum AiMessageStatus {
+  complete
+  error
+  interrupted
+}
+
+enum AiActionStatus {
+  pending
+  executing
+  succeeded
+  failed
+  rejected
+  expired
+}
+
+model AiConversation {
+  id             String    @id @db.Char(24)
+  ownerId        String    @map("owner_id") @db.Char(24)
+  title          String    @db.VarChar(120)
+  // Model `open_toolsets` bilan ochgan bo'limlar — keyingi xabarlarda ham
+  // ochiq turadi (har raundda hamma vositani yuborish qimmat va chalg'itadi).
+  activeToolsets String[]  @default([]) @map("active_toolsets")
+  messageCount   Int       @default(0) @map("message_count")
+  lastMessageAt  DateTime  @default(now()) @map("last_message_at")
+  // Yumshoq o'chirish: bajarilgan amallar audit bo'lib qoladi.
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  messages AiMessage[]
+  actions  AiAction[]
+
+  @@index([ownerId, deletedAt, lastMessageAt(sort: Desc)])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id               String          @id @db.Char(24)
+  conversationId   String          @map("conversation_id") @db.Char(24)
+  role             AiMessageRole
+  content          String          @db.Text
+  inputMode        AiInputMode     @default(text) @map("input_mode")
+  audioDurationMs  Int?            @map("audio_duration_ms")
+  // Yordamchi: [{ id, name, label, kind, status, durationMs, error? }] —
+  // qaysi manbalar tekshirilgani. Vosita natijalari SAQLANMAYDI: ular
+  // jonli ma'lumot, tarixda qayta o'ynatilsa eskirgan raqam yangi deb
+  // ko'rinardi.
+  steps            Json?
+  status           AiMessageStatus @default(complete)
+  errorMessage     String?         @map("error_message") @db.Text
+  model            String?         @db.VarChar(60)
+  promptTokens     Int?            @map("prompt_tokens")
+  completionTokens Int?            @map("completion_tokens")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  audio        AiVoiceClip?
+  actions      AiAction[]
+
+  @@index([conversationId, createdAt])
+  @@map("ai_messages")
+}
+
+/// Egasining o'z ovozli xabari. Fayl DigitalOcean Spaces'da MAXFIY
+/// (`ACL: private`) yotadi, bu yerda faqat uning kaliti.
+/// ⚠️ Ochiq havola YO'Q: fayl faqat egalik tekshiruvidan o'tgan so'rov
+/// orqali server tomonidan o'qib beriladi (`GET /ai-assistant/messages/:id/audio`).
+model AiVoiceClip {
+  id         String   @id @db.Char(24)
+  messageId  String   @unique @map("message_id") @db.Char(24)
+  mimeType   String   @map("mime_type") @db.VarChar(60)
+  sizeBytes  Int      @map("size_bytes")
+  durationMs Int?     @map("duration_ms")
+  storageKey String   @map("storage_key") @db.VarChar(255)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  message AiMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@map("ai_voice_clips")
+}
+
+// Model TAKLIF qilgan amal. Ega tasdiqlamaguncha hech narsa bajarilmaydi.
+//
+// ⚠️ Holat o'tishlari compare-and-swap bilan (`updateMany where status`):
+// ikki marta bosilgan "Tasdiqlash" amalni ikki marta bajara olmaydi.
+// ⚠️ `fingerprint` — ko'rinish qurilgan holatning sha256 izi. Tasdiqda
+// `prepare` qayta ishlaydi; iz boshqacha bo'lsa ega yangilangan
+// ko'rinishni qayta tasdiqlaydi (eskirgan raqamga "ha" deyilmaydi).
+model AiAction {
+  id             String         @id @db.Char(24)
+  conversationId String         @map("conversation_id") @db.Char(24)
+  messageId      String?        @map("message_id") @db.Char(24)
+  ownerId        String         @map("owner_id") @db.Char(24)
+  type           String         @db.VarChar(80)
+  toolName       String         @map("tool_name") @db.VarChar(64)
+  title          String         @db.VarChar(160)
+  risk           String         @db.VarChar(16)
+  permission     String?        @db.VarChar(80)
+  args           Json
+  params         Json
+  preview        Json
+  fingerprint    String         @db.VarChar(64)
+  status         AiActionStatus @default(pending)
+  result         Json?
+  errorMessage   String?        @map("error_message") @db.Text
+  expiresAt      DateTime       @map("expires_at")
+  decidedAt      DateTime?      @map("decided_at")
+  executedAt     DateTime?      @map("executed_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      AiMessage?     @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([ownerId, status, createdAt(sort: Desc)])
+  @@map("ai_actions")
+}
+
+// ═════════════════════════════════════════════════════════════════════
 // FAOLLIK VA XAVFSIZLIK
 // ═════════════════════════════════════════════════════════════════════
 //

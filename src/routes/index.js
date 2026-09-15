@@ -74,6 +74,7 @@ const changelogRoutes = require("./changelog.routes");
 const changelogSettingsRoutes = require("./changelogSettings.routes");
 const activityRoutes = require("./activity.routes");
 const securityRoutes = require("./security.routes");
+const aiAssistantRoutes = require("./aiAssistant.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -152,6 +153,9 @@ router.use("/changelog-settings", changelogSettingsRoutes);
 // ma'lumot bilan ishlaydi (IP, qurilma, kirish vaqti).
 router.use("/activity", activityRoutes);
 router.use("/security", securityRoutes);
+// AI YORDAMCHI — faqat asosiy tizim egasi: jonli ma'lumot tahlili va
+// o'zgarishlarni TAKLIF qilish (bajarish faqat ega tasdiqlagandan keyin).
+router.use("/ai-assistant", aiAssistantRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

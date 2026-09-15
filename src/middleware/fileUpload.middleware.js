@@ -36,6 +36,23 @@ const FILE_MIME_TYPES = {
     "text/plain",
     "application/octet-stream",
   ],
+  // ⚠️ ALOHIDA TOIFA, `audio` GA QO'SHILMAGAN (`spreadsheet` bilan bir xil
+  // sabab): AI yordamchining ovozli xabari brauzer MediaRecorder'idan
+  // keladi — Chrome/Firefox `audio/webm` (ba'zan `video/webm`), Safari
+  // `audio/mp4` yuboradi. `audio` kengaytirilsa, mavjud yuklash yo'llari
+  // ham jimgina yangi turlarni qabul qilib ketardi.
+  voice: [
+    "audio/webm",
+    "video/webm",
+    "audio/ogg",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/aac",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/wave",
+  ],
 };
 
 /** Toifalarning foydalanuvchiga ko'rsatiladigan nomlari. */
@@ -46,6 +63,7 @@ const CATEGORY_LABELS = {
   document: "hujjat (PDF, DOC, XLS, TXT)",
   json: "JSON fayl",
   spreadsheet: "jadval (XLSX, XLS, CSV)",
+  voice: "ovozli xabar (WEBM, OGG, MP3, M4A, WAV)",
 };
 
 /** "Faqat jadval (XLSX, XLS, CSV) yuklash mumkin" ko'rinishidagi xabar. */

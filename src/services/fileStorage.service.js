@@ -1,6 +1,7 @@
 const {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
 const { config } = require("../config/env.config");
@@ -59,6 +60,56 @@ const uploadBuffer = async ({ key, buffer, contentType }) => {
 };
 
 /**
+ * MAXFIY fayl yuklaydi (`ACL: private`).
+ *
+ * ⚠️ `uploadBuffer` DAN FARQI: u yerda fayl havola orqali hammaga ochiq
+ * (`public-read`) va brauzer uni bir yil keshda saqlaydi. Bu yerda obyektni
+ * faqat server kaliti bilan o'qish mumkin — fayl mijozga faqat egalik
+ * tekshiruvidan o'tgan so'rov orqali, `getObjectBuffer` bilan beriladi.
+ * Shuning uchun natijada `url` YO'Q: uni hech qayerga yozib bo'lmasin.
+ *
+ * @param {object} params
+ * @param {string} params.key Destination object key.
+ * @param {Buffer} params.buffer File content.
+ * @param {string} params.contentType MIME type.
+ * @returns {Promise<{key:string,size:number}>}
+ */
+const uploadPrivateBuffer = async ({ key, buffer, contentType }) => {
+  await spacesClient.send(
+    new PutObjectCommand({
+      Bucket: config.doBucketName,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      ACL: "private",
+      CacheControl: "private, no-store",
+    }),
+  );
+
+  return { key, size: buffer.length };
+};
+
+/**
+ * Obyektni server kaliti bilan o'qiydi (maxfiy fayllar uchun).
+ * @param {string} key Object key.
+ * @returns {Promise<{buffer:Buffer,contentType:string|null}>}
+ */
+const getObjectBuffer = async (key) => {
+  const response = await spacesClient.send(
+    new GetObjectCommand({
+      Bucket: config.doBucketName,
+      Key: key,
+    }),
+  );
+
+  const bytes = await response.Body.transformToByteArray();
+  return {
+    buffer: Buffer.from(bytes),
+    contentType: response.ContentType || null,
+  };
+};
+
+/**
  * Deletes an object from DigitalOcean Spaces.
  * @param {string} key Object key to delete.
  * @returns {Promise<void>}
@@ -76,6 +127,8 @@ const deleteObject = async (key) => {
 
 module.exports = {
   uploadBuffer,
+  uploadPrivateBuffer,
+  getObjectBuffer,
   deleteObject,
   getPublicUrl,
 };
