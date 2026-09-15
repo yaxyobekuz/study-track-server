@@ -102,6 +102,22 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
 - Jobs must log start/end/errors via `logger`.
 - Jobs must not crash the process - wrap logic in try/catch.
 
+## Mobile push (Firebase Cloud Messaging)
+
+- `services/push.service.js` is the only place that talks to Firebase.
+  Credentials come from `FIREBASE_SERVICE_ACCOUNT_BASE64` (service account
+  JSON, base64). Empty → push is disabled and the server runs normally.
+- Device tokens live in the **platform** schema (`PushDevice`), keyed by
+  `token` and bound to the session `jti`: push goes only to devices whose
+  session is still alive; logout deletes them, switch-branch moves them.
+- ⚠️ `sendToUsers` never throws and callers do not await it — a Firebase
+  outage must not fail the business action that triggered the push.
+- Message text/`data` for tasks: `helpers/taskPush.helpers.js`. The `data`
+  keys (`type`, `event`, `taskId`, `status`, `branchId`) are a contract
+  with the mobile app.
+- Mobile API: `POST /api/push/devices { token, platform }` after every login
+  and token refresh, `DELETE /api/push/devices { token }` before logout.
+
 ## Logging
 
 - Use the shared `logger` from `utils/logger.js` everywhere.

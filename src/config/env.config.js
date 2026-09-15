@@ -150,6 +150,12 @@ const config = {
   aiMaxQuestionsPerRequest:
     parseInt(process.env.AI_MAX_QUESTIONS_PER_REQUEST, 10) || 20,
 
+  // Firebase Cloud Messaging — mobil ilovaga push (ixtiyoriy).
+  // Service account JSON'ining base64 ko'rinishi: fayl diskda turmaydi va
+  // ko'p qatorli `private_key` .env ni buzmaydi. Bo'sh bo'lsa push o'chiq,
+  // server normal ishlaydi.
+  firebaseServiceAccountBase64: process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || "",
+
   // Message queue
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,
 

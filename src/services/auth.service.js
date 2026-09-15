@@ -24,6 +24,7 @@ const { allRoles, hasRole } = require("../utils/permissions");
 const branchService = require("./branch.service");
 const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
+const pushService = require("./push.service");
 
 /**
  * SOXTA BCRYPT HASH — vaqtni tenglashtirish uchun.
@@ -382,6 +383,10 @@ async function switchBranch(user, branchId, { client = {}, currentJti } = {}) {
     })
     .catch(() => {});
 
+  // Eski seans `superseded` bilan yopiladi — telefon push'dan uzilib
+  // qolmasligi uchun qurilma yangi seansga ko'chiriladi.
+  pushService.moveSession(currentJti, { jti, branchId: branch.id });
+
   return { token, branch: publicBranch(branch) };
 }
 
@@ -403,6 +408,8 @@ async function logout(jti) {
   const closed = jti
     ? await securityService.closeSession({ jti, reason: "logout" })
     : 0;
+  // Chiqqan telefon topshiriq bildirishnomalarini olishda davom etmasin
+  await pushService.forgetSession(jti);
   return { closed };
 }
 

@@ -679,3 +679,47 @@ model SecurityAlert {
   @@index([day, type])
   @@map("security_alerts")
 }
+
+// ═════════════════════════════════════════════════════════════════════
+// MOBIL PUSH — FIREBASE CLOUD MESSAGING
+// ═════════════════════════════════════════════════════════════════════
+
+/**
+ * PUSH QURILMASI — mobil ilova login qilgach yuboradigan FCM tokeni.
+ *
+ * ⚠️ NIMA UCHUN PLATFORMADA: xodim bir nechta filialda ishlaydi va `userId`
+ * hamma filialda BIR XIL (`UserDirectory.id`). Topshiriq qaysi filialdan
+ * kelmasin, u o'sha odamning telefoniga borishi kerak.
+ *
+ * ⚠️ `token` YAGONA: bitta telefonga boshqa odam kirsa, qator unga
+ * KO'CHADI (upsert). Aks holda oldingi egasining topshiriqlari yangi
+ * odamning telefoniga tushib qolardi.
+ *
+ * ⚠️ SEANSGA BOG'LANGAN (`jti`): push faqat seansi TIRIK qurilmaga
+ * ketadi. Admin seansni bekor qilsa yoki yangi kirish eskisini yopsa,
+ * o'sha telefon topshiriq matnini ko'rishda davom etmasligi kerak.
+ * `jti` siz ESKI tokenlar o'tadi — `auth.middleware` bilan bir xil mantiq.
+ */
+model PushDevice {
+  id String @id @db.Char(24)
+
+  // FCM registration token (~160 belgi, zaxira bilan).
+  token String @unique @db.VarChar(512)
+
+  // Filial schema'sidagi `User.id` (FK EMAS — boshqa schema).
+  userId   String  @map("user_id") @db.Char(24)
+  // Qaysi filialdan ro'yxatga olingan — faqat ma'lumot uchun.
+  branchId String  @map("branch_id") @db.Char(24)
+  // JWT `jti` → `user_sessions.jti`.
+  jti      String? @db.VarChar(32)
+
+  // "android" | "ios"
+  platform String? @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([jti])
+  @@map("push_devices")
+}

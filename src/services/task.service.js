@@ -13,8 +13,34 @@ const {
   ForbiddenError,
 } = require("../utils/errors");
 const logger = require("../utils/logger");
+const pushService = require("./push.service");
+const { getBranch } = require("../config/branchContext");
+const {
+  TASK_PUSH_EVENTS,
+  buildTaskPush,
+} = require("../helpers/taskPush.helpers");
 
 // ─── YORDAMCHI FUNKSIYALAR ─────────────────────────────────────────
+
+// Ijrochiga mobil push. ⚠️ KUTILMAYDI: topshiriq allaqachon yozilgan va
+// Firebase sekin yoki ishlamay qolsa javob ushlanib qolmasligi kerak.
+// Ketma-ket yuboriladi — 50 ijrochili topshiriq platforma bazasiga 50 ta
+// parallel so'rov ochmasligi uchun.
+const _notifyAssignees = (event, tasks, extra = {}) => {
+  const branchId = getBranch()?.id;
+  const list = Array.isArray(tasks) ? tasks : [tasks];
+
+  (async () => {
+    for (const task of list) {
+      await pushService.sendToUsers(
+        [task.assignee],
+        buildTaskPush(event, task, { ...extra, branchId }),
+      );
+    }
+  })().catch((error) =>
+    logger.error(`[task] push yuborilmadi (${event}): ${error.message}`),
+  );
+};
 
 const _uploadTaskAttachments = async (files) => {
   return uploadPenaltyAttachments(files);
@@ -142,6 +168,8 @@ const createTasks = async ({
     });
     tasks.push(task);
   }
+
+  _notifyAssignees(TASK_PUSH_EVENTS.CREATED, tasks);
 
   return tasks;
 };
@@ -338,6 +366,8 @@ const approveTask = async (taskId, { reason, approvedBy }) => {
     },
   });
 
+  _notifyAssignees(TASK_PUSH_EVENTS.COMPLETED, updated, { reason });
+
   return updated;
 };
 
@@ -416,6 +446,12 @@ const rejectTask = async (taskId, { reason, rejectedBy, newDueDate }) => {
     data,
   });
 
+  _notifyAssignees(TASK_PUSH_EVENTS.REJECTED, updated, {
+    reason,
+    deadlineChanged: Boolean(newDueDate),
+    penaltyPoints: data.penaltyRef ? task.penaltyPoints : 0,
+  });
+
   return updated;
 };
 
@@ -437,12 +473,14 @@ const stopTask = async (
   }
 
   const data = {};
+  let appliedPoints = 0;
 
   if (withPenalty && !task.autopenalized) {
     const points = penaltyPoints || task.penaltyPoints;
     const penalty = await _applyPenalty(task, points, reason, stoppedBy);
     data.penaltyRef = penalty.id;
     data.autopenalized = true;
+    appliedPoints = points;
   }
 
   const position = await prisma.taskStatusHistory.count({
@@ -463,6 +501,11 @@ const stopTask = async (
   const updated = await prisma.task.update({
     where: { id: task.id },
     data,
+  });
+
+  _notifyAssignees(TASK_PUSH_EVENTS.STOPPED, updated, {
+    reason,
+    penaltyPoints: appliedPoints,
   });
 
   return updated;
