@@ -177,6 +177,8 @@ const publicSession = (row, names) => ({
   channel: row.channel,
   ip: row.ip,
   device: row.device || "Noma'lum qurilma",
+  // Bir xil yorliqli qurilmalarni ajratadigan qisqa belgi ("#3F9A1C")
+  deviceTag: securityService.deviceTagOf(row.deviceId),
   createdAt: row.createdAt,
   createdLabel: formatDateTimeUz(row.createdAt),
   lastSeenAt: row.lastSeenAt,
@@ -375,15 +377,17 @@ async function getOverview({ days, actor, branch, withDetails = false } = {}) {
 
   const multiSession = [];
   for (const [userId, sessions] of byUser) {
-    const origins = new Set(sessions.map((s) => securityService.originKeyOf(s)));
-    if (origins.size < 2) continue;
+    // ⚠️ `countOrigins` — `sameOrigin` bilan AYNI qoida: `deviceId` bor
+    // joyda ikkita "Chrome · Android" telefon IKKI qurilma bo'lib sanaladi.
+    const origins = securityService.countOrigins(sessions);
+    if (origins < 2) continue;
 
     multiSession.push({
       userId,
       name: names.get(userId)?.name ?? sessions[0].username ?? "Noma'lum",
       role: names.get(userId)?.role ?? null,
       sessions: sessions.length,
-      origins: origins.size,
+      origins,
       items: sessions.map((s) => publicSession(s, names)),
     });
   }

@@ -522,6 +522,19 @@ model UserSession {
   userAgent String? @map("user_agent") @db.VarChar(400)
   // "Chrome · Windows" — ro'yxatda o'qiladigan yorliq.
   device    String? @db.VarChar(120)
+  // Brauzer xotirasida yashaydigan tasodifiy qurilma identifikatori
+  // (`X-Device-Id`). ⚠️ `device` yorlig'i qurilmani AJRATA OLMAYDI: ikkita
+  // turli telefon ham "Chrome · Android". Yuborilmagan bo'lsa `null` —
+  // taqqoslash yorliqqa tushadi (`security.service.js` → `sameOrigin`).
+  deviceId  String? @map("device_id") @db.VarChar(64)
+
+  // ⚠️ BIR NECHTA QURILMAGA RUXSAT — seans ochilgan paytdagi SIYOSAT.
+  // `true` (o'quvchi) → yangi kirish BOSHQA qurilmadagi seansni yopmaydi,
+  // hammasi faqat qayd etiladi. `false` (xodim) → bir turdagi qurilmadan
+  // yangi kirish eskisini `superseded` bilan yopadi. Qatorga YOZILADI,
+  // chunki kechki supurgi (`dedupeLiveSessions`) rolni bilmaydi va
+  // filial bazasiga bormasligi kerak.
+  multiDevice Boolean @default(false) @map("multi_device")
 
   createdAt  DateTime @default(now()) @map("created_at")
   lastSeenAt DateTime @default(now()) @map("last_seen_at")

@@ -141,11 +141,39 @@ function clientChannel(req) {
   return "admin";
 }
 
+/** Qurilma identifikatori shakli — `user_sessions.device_id` kengligi bilan bir xil. */
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
 /**
- * Uchala qiymatni birdan qaytaradi — chaqiruvchi joyda uch qator o'rniga bitta.
+ * QURILMA IDENTIFIKATORI — `X-Device-Id` sarlavhasi.
+ *
+ * Panel uni bir marta tasodifiy yaratib, brauzer xotirasida saqlaydi
+ * (`shared/api/http.js`). ⚠️ `deviceLabel` BU SAVOLGA JAVOB BERMAYDI:
+ * ikkita turli telefon ham "Chrome · Android" — yorliq qurilma TURINI
+ * bildiradi, qurilmaning O'ZINI emas.
+ *
+ * ⚠️ BU ISHONCH MANBAI EMAS: qiymatni mijoz yozadi. U faqat "bu o'sha
+ * brauzermi" degan savol uchun ishlatiladi (o'z seansini yangilash va
+ * qayd etish) — hech qanday ruxsat yoki to'siq unga tayanmaydi.
+ *
+ * Shaklga mos kelmagan qiymat `null`: uzun/buzuq sarlavha INSERT ni
+ * yiqitmasligi va jurnalga axlat yozilmasligi kerak.
  *
  * @param {import("express").Request} req
- * @returns {{ ip: string|null, userAgent: string|null, device: string|null, channel: string }}
+ * @returns {string|null}
+ */
+function clientDeviceId(req) {
+  const raw = req?.headers?.["x-device-id"];
+  const value = String(Array.isArray(raw) ? raw[0] : raw || "").trim();
+  return DEVICE_ID_PATTERN.test(value) ? value : null;
+}
+
+/**
+ * Mijoz haqidagi barcha qiymatlarni birdan qaytaradi — chaqiruvchi joyda
+ * besh qator o'rniga bitta.
+ *
+ * @param {import("express").Request} req
+ * @returns {{ ip: string|null, userAgent: string|null, device: string|null, deviceId: string|null, channel: string }}
  */
 function clientInfo(req) {
   const ua = userAgent(req);
@@ -153,6 +181,7 @@ function clientInfo(req) {
     ip: clientIp(req),
     userAgent: ua,
     device: deviceLabel(ua),
+    deviceId: clientDeviceId(req),
     channel: clientChannel(req),
   };
 }
@@ -162,6 +191,7 @@ module.exports = {
   clientIp,
   userAgent,
   deviceLabel,
+  clientDeviceId,
   clientChannel,
   clientInfo,
 };

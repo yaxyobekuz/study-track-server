@@ -16,6 +16,20 @@
  * javob bera oladi. Uzish tugmasi bor — lekin uni odam bosadi
  * (`security.revoke`).
  *
+ * ── QURILMA SIYOSATI: O'QUVCHI VA XODIM ──────────────────────────────
+ *
+ * ⚠️ O'QUVCHIDA QURILMA CHEKLOVI YO'Q. Yangi kirish uning BOSHQA
+ * qurilmadagi seansini hech qachon yopmaydi — hammasi faqat qayd etiladi
+ * va admin panelga boradi (seanslar, "bir vaqtda bir nechta seans").
+ * Faqat AYNI brauzerning (`deviceId` teng) eski seansi yangilanadi: u
+ * brauzerda eski token allaqachon yangisi bilan almashgan.
+ *
+ * ⚠️ XODIMDA AVVALGIDEK: bir turdagi qurilmadan ("Chrome · Android")
+ * yangi kirish eskisini `superseded` bilan yopadi.
+ *
+ * Siyosat seans qatoriga yoziladi (`multiDevice`), chunki kechki supurgi
+ * rolni bilmaydi. Qaror — `allowsMultiDevice()`, BITTA joyda.
+ *
  * ── PAROL VA MAXFIYLIK ───────────────────────────────────────────────
  *
  * ⚠️ Parol (hatto noto'g'risi ham) HECH QACHON yozilmaydi. `username`
@@ -33,6 +47,7 @@ const platformPrisma = require("../config/platformPrisma");
 const { generateId } = require("../utils/idGenerator");
 const { currentDayDate } = require("../helpers/month.helpers");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
+const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 
 /**
@@ -279,6 +294,11 @@ function networkOf(ip) {
  * tushadi: aks holda barcha noma'lum qurilmalar bitta "qurilma" bo'lib
  * qo'shilib ketardi.
  *
+ * ⚠️ BU QURILMA TURINING KALITI, qurilmaning O'ZINIKI emas: ikkita turli
+ * telefon ham "Chrome · Android". Aniq qurilma — `deviceId`
+ * (`sameBrowser` / `sameOrigin`). Xodimning "bir turdagi qurilmada bitta
+ * seans" qoidasi ataylab shu kalitda qoladi.
+ *
  * Joylashuv o'zgarishini bu kalit EMAS, alohida qoida ushlaydi
  * ("tanish qurilma, notanish tarmoq" — `new_network`).
  *
@@ -289,13 +309,110 @@ const originKeyOf = (s = {}) =>
   `${s.channel || "admin"}|${s.device || `ip:${s.ip || "?"}`}`;
 
 /**
- * "Qurilma o'sha-o'shami?" — ikkala seansning qurilma kimligi bir xilmi.
+ * "Bu AYNAN o'sha brauzermi?" — ikkala tomonda ham `deviceId` bo'lib,
+ * ular teng bo'lsagina `true`.
+ *
+ * ⚠️ QAT'IY: identifikator bir tomonda yo'q bo'lsa `false`. Bu funksiya
+ * o'quvchi seansini YOPISH uchun ishlatiladi va shubhada yopmaslik
+ * kerak — yorliq bo'yicha taxmin qilish aynan "ikkinchi telefon
+ * birinchisini otib yuboradi" xatosining o'zi edi.
  *
  * @param {object} a
  * @param {object} b
  * @returns {boolean}
  */
-const sameOrigin = (a, b) => originKeyOf(a) === originKeyOf(b);
+const sameBrowser = (a = {}, b = {}) =>
+  Boolean(a.deviceId) &&
+  a.deviceId === b.deviceId &&
+  (a.channel || "admin") === (b.channel || "admin");
+
+/**
+ * "Qurilma o'sha-o'shami?" — QAYD ETISH uchun (ogohlantirish, statistika).
+ *
+ * Ikkala tomonda `deviceId` bo'lsa — faqat u solishtiriladi: ikkita
+ * "Chrome · Android" telefon endi IKKI qurilma bo'lib ko'rinadi.
+ *
+ * ⚠️ Bir tomonda identifikator yo'q bo'lsa — eskicha, yorliq bo'yicha.
+ * Joriy etish kunida hamma ochiq seans identifikatorsiz: aks holda har
+ * o'quvchining birinchi kirishi o'z telefonidagi eski seans bilan
+ * "bir vaqtda ikki seans" bo'lib, ogohlantirishlar ro'yxatini to'ldirardi.
+ *
+ * @param {object} a
+ * @param {object} b
+ * @returns {boolean}
+ */
+const sameOrigin = (a = {}, b = {}) => {
+  if (a.deviceId && b.deviceId) return sameBrowser(a, b);
+  return originKeyOf(a) === originKeyOf(b);
+};
+
+/**
+ * NECHTA ALOHIDA QURILMA — `sameOrigin` bilan AYNI qoida bo'yicha.
+ *
+ * Identifikatorli seanslar identifikator bo'yicha sanaladi.
+ * Identifikatorsiz seans esa faqat o'z yorlig'idagi identifikatorli
+ * seans bo'lmasa alohida qurilma: aks holda joriy etish kunidagi eski
+ * seans bilan o'sha telefonning yangi seansi "2 qurilma" bo'lib qolardi.
+ *
+ * @param {object[]} sessions
+ * @returns {number}
+ */
+function countOrigins(sessions = []) {
+  const browsers = new Set();
+  const labelsWithId = new Set();
+  const labelsWithoutId = new Set();
+
+  for (const session of sessions) {
+    if (session.deviceId) {
+      browsers.add(`${session.channel || "admin"}|${session.deviceId}`);
+      labelsWithId.add(originKeyOf(session));
+    } else {
+      labelsWithoutId.add(originKeyOf(session));
+    }
+  }
+
+  let count = browsers.size;
+  for (const key of labelsWithoutId) {
+    if (!labelsWithId.has(key)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * Qurilmaning qisqa belgisi — "#3F9A1C". Ro'yxatda bir xil yorliqli
+ * ikkita telefonni ajratib ko'rsatish uchun.
+ *
+ * ⚠️ To'liq identifikator mijozga CHIQMAYDI: belgi ajratish uchun
+ * yetarli, to'liq qiymat esa keraksiz ravishda brauzerni kuzatish
+ * kalitiga aylanardi.
+ *
+ * @param {string|null} deviceId
+ * @returns {string|null}
+ */
+const deviceTagOf = (deviceId) =>
+  deviceId ? `#${deviceId.replace(/[^A-Za-z0-9]/g, "").slice(0, 6).toUpperCase()}` : null;
+
+/**
+ * Matndagi qurilma nomi — "Chrome · Android #3F9A1C (10.0.0.5)".
+ *
+ * @param {object} s
+ * @returns {string}
+ */
+const describeOrigin = (s = {}) =>
+  `${[s.device || "noma'lum qurilma", deviceTagOf(s.deviceId)].filter(Boolean).join(" ")} ` +
+  `(${s.ip || "IP yo'q"})`;
+
+/**
+ * BU HISOB BIR NECHTA QURILMADA BIR VAQTDA ISHLAY OLADIMI.
+ *
+ * ⚠️ FAQAT O'QUVCHI. Qaror `role` (asosiy rol) bo'yicha, `hasRole` EMAS:
+ * qo'shimcha "student" roli berilgan xodim o'z cheklovidan jimgina
+ * chiqib ketmasligi kerak.
+ *
+ * @param {{ role?: string }} user
+ * @returns {boolean}
+ */
+const allowsMultiDevice = (user) => user?.role === ROLES.STUDENT;
 
 /**
  * YANGI SEANS OCHISH + QOIDALARNI ISHLATISH.
@@ -316,6 +433,13 @@ const sameOrigin = (a, b) => originKeyOf(a) === originKeyOf(b);
  * brauzerda ikkinchi tab ochilgani "ikkinchi seans" emas. Usiz ro'yxatda
  * bitta odamning o'ndan ortiq "ochiq" seansi yig'ilib qolardi va
  * `concurrent_session` ogohlantirishi shu shovqindan chiqardi.
+ *
+ * ⚠️ "AYNI QURILMA" SIYOSATGA BOG'LIQ (`allowsMultiDevice`):
+ *   xodim    — yorliq bo'yicha ("Chrome · Android"), avvalgidek;
+ *   o'quvchi — FAQAT `deviceId` bo'yicha. Yorliq ikkita turli telefonni
+ *              ajrata olmaydi va o'quvchi ikkinchi telefondan kirganda
+ *              birinchisidan otib yuborilardi. Identifikator yo'q bo'lsa
+ *              hech narsa yopilmaydi.
  *
  * @param {object} input
  * @param {object} input.user - `{ id, username, firstName, lastName, role }`
@@ -344,10 +468,13 @@ async function openSession({ user, branchId, jti, expiresAt, client = {}, supers
     // mumkin va filial almashtirish o'z seansini `supersedeJti` bilan
     // alohida yopadi. Filialni hisobga olmasak, Chilonzordagi ish
     // Yunusoboddagi seansni jimgina yopib qo'yardi.
-    const originKey = originKeyOf({ ...client, channel: client.channel || "admin" });
-    const replaced = live.filter(
-      (s) => s.branchId === branchId && originKeyOf(s) === originKey,
-    );
+    const multiDevice = allowsMultiDevice(user);
+    const current = { ...client, channel: client.channel || "admin" };
+    const isSameDevice = multiDevice
+      ? (s) => sameBrowser(s, current)
+      : (s) => originKeyOf(s) === originKeyOf(current);
+
+    const replaced = live.filter((s) => s.branchId === branchId && isSameDevice(s));
 
     if (replaced.length > 0) {
       await closeSessions(
@@ -371,6 +498,8 @@ async function openSession({ user, branchId, jti, expiresAt, client = {}, supers
         ip: client.ip ?? null,
         userAgent: client.userAgent ?? null,
         device: client.device ?? null,
+        deviceId: client.deviceId ?? null,
+        multiDevice,
         expiresAt,
       },
     });
@@ -439,16 +568,15 @@ async function runRules({ user, branchId, session, previous, client }) {
       title: `${fullName} — bitta hisobda ${total} ta seans`,
       detail:
         `Hisobga bir vaqtning o'zida turli qurilmalardan kirilgan. ` +
-        `Joriy: ${session.device || "noma'lum qurilma"} (${session.ip || "IP yo'q"}). ` +
-        `Boshqa seanslar: ${foreign
-          .map((s) => `${s.device || "noma'lum"} (${s.ip || "IP yo'q"})`)
-          .join(", ")}.`,
+        `Joriy: ${describeOrigin(session)}. ` +
+        `Boshqa seanslar: ${foreign.map(describeOrigin).join(", ")}.`,
       meta: {
         total,
         sessions: [session, ...foreign].map((s) => ({
           id: s.id,
           ip: s.ip,
           device: s.device,
+          deviceTag: deviceTagOf(s.deviceId),
           channel: s.channel,
           at: s.createdAt,
         })),
@@ -909,6 +1037,10 @@ async function expireStaleSessions() {
  * `openSession` dagi shart bilan AYNI. Ikki joyda ikki xil bo'lsa,
  * kechasi supurgi kunduzi ochilgan seansni yopib yurardi.
  *
+ * ⚠️ O'QUVCHI SEANSI (`multiDevice`) FAQAT `deviceId` BO'YICHA
+ * guruhlanadi, identifikatorsizi umuman tegilmaydi: yorliq bo'yicha
+ * birlashtirish ikkinchi telefonini kechasi jimgina uzib qo'yardi.
+ *
  * @returns {Promise<number>} - nechta ortiqcha seans yopildi
  */
 async function dedupeLiveSessions() {
@@ -921,6 +1053,8 @@ async function dedupeLiveSessions() {
       branchId: true,
       ip: true,
       device: true,
+      deviceId: true,
+      multiDevice: true,
       channel: true,
     },
   });
@@ -929,7 +1063,15 @@ async function dedupeLiveSessions() {
   const extra = [];
 
   for (const session of sessions) {
-    const key = `${session.userId}|${session.branchId}|${originKeyOf(session)}`;
+    let deviceKey;
+    if (session.multiDevice) {
+      if (!session.deviceId) continue;
+      deviceKey = `${session.channel || "admin"}|id:${session.deviceId}`;
+    } else {
+      deviceKey = originKeyOf(session);
+    }
+
+    const key = `${session.userId}|${session.branchId}|${deviceKey}`;
     if (seen.has(key)) extra.push(session.id);
     else seen.add(key);
   }
@@ -945,6 +1087,11 @@ module.exports = {
   RAPID_SWITCH_THRESHOLD,
   networkOf,
   originKeyOf,
+  sameBrowser,
+  sameOrigin,
+  countOrigins,
+  deviceTagOf,
+  allowsMultiDevice,
   recordAttempt,
   raise,
   liveSessions,
