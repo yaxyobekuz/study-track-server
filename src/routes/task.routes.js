@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const {
+  deleteTask,
   createTask,
   getTasks,
   getMyTasks,
@@ -45,5 +46,9 @@ router.put("/:id/approve", validateObjectId("id"), authorizePermission(PERMISSIO
 router.put("/:id/reject", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_REVIEW), rejectTask);
 router.put("/:id/stop", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_STOP), stopTask);
 router.put("/:id/extend", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_EXTEND), extendDeadline);
+
+// ⚠️ VAQTINCHA — o'chirish (keyin olib tashlanadi). Alohida ruxsat kaliti
+// ataylab qo'shilmadi: u ikki qo'lda sinxron katalogga tushib qolardi.
+router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.TASKS_STOP), deleteTask);
 
 module.exports = router;
