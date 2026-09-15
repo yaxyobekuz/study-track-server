@@ -355,9 +355,13 @@ const createSalary = async (data, userId) => {
   const allowances = normalizeAllowances(data.allowances);
 
   const hasKpi = Boolean(category) || perHourRate.greaterThan(0);
-  if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi) {
+  // USTAMA-FAQAT qoida QONUNIY: bazasi lavozimdan keladigan xodimga admin
+  // faqat ustama (summa yoki foiz) qo'shishi mumkin — engine lavozim bazasi
+  // bilan o'zi birlashtiradi.
+  const hasAllowances = Array.isArray(allowances) && allowances.length > 0;
+  if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi && !hasAllowances) {
     throw new BadRequestError(
-      "Kamida bittasi — fiksa oylik yoki KPI (toifa/stavka) — bo'lishi kerak",
+      "Kamida bittasi — fiksa oylik, KPI (toifa/stavka) yoki ustama — bo'lishi kerak",
     );
   }
 
@@ -423,9 +427,17 @@ const updateSalary = async (id, data) => {
         : new Decimal(row.perHourRate);
 
     const hasKpi = Boolean(categoryId) || perHourRate.greaterThan(0);
-    if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi) {
+    // Ustama-faqat qoida qonuniy (createSalary dagi izoh)
+    const nextAllowances =
+      data.allowances !== undefined
+        ? normalizeAllowances(data.allowances)
+        : Array.isArray(row.allowances)
+          ? row.allowances
+          : [];
+    const hasAllowances = nextAllowances.length > 0;
+    if (fixedAmount.lessThanOrEqualTo(0) && !hasKpi && !hasAllowances) {
       throw new BadRequestError(
-        "Kamida bittasi — fiksa oylik yoki KPI (toifa/stavka) — bo'lishi kerak",
+        "Kamida bittasi — fiksa oylik, KPI (toifa/stavka) yoki ustama — bo'lishi kerak",
       );
     }
 
