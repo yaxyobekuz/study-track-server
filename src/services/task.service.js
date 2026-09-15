@@ -590,43 +590,7 @@ const extendDeadline = async (
   return updated;
 };
 
-// ─── VAQTINCHA: TOPSHIRIQNI O'CHIRISH ──────────────────────────────
-// ⚠️ VAQTINCHALIK — keraksiz topshiriqlarni tozalash uchun qo'shilgan va
-// keyin OLIB TASHLANADI (route, controller, admin tugmasi bilan birga).
-// Status va muddat tarixi FK cascade bilan o'chadi. Qo'llangan jarima
-// (`penaltyRef`) O'CHIRILMAYDI — u alohida yozuv, Jarimalar bo'limida.
-
-const deleteTask = async (taskId) => {
-  const task = await prisma.task.findUnique({ where: { id: taskId } });
-  if (!task) throw new NotFoundError("Topshiriq topilmadi");
-
-  await prisma.task.delete({ where: { id: task.id } });
-
-  // ⚠️ `attachments` bir yaratishdagi BARCHA ijrochilarga UMUMIY (fayl bir
-  // marta yuklanadi). Boshqa topshiriq hali ishlatayotgan fayl o'chirilmaydi.
-  const orphaned = [];
-  for (const file of task.attachments || []) {
-    if (!file?.key) continue;
-    const stillUsed = await prisma.task.count({
-      where: { attachments: { array_contains: [{ key: file.key }] } },
-    });
-    if (stillUsed === 0) orphaned.push(file);
-  }
-
-  const files = [...orphaned, ...(task.completionAttachments || [])];
-  if (files.length > 0) {
-    try {
-      await _deleteTaskAttachments(files);
-    } catch (error) {
-      logger.warn(`[task] o'chirilgan topshiriq fayllari qoldi: ${error.message}`);
-    }
-  }
-
-  return { id: task.id };
-};
-
 module.exports = {
-  deleteTask,
   createTasks,
   getTasks,
   getMyTasks,

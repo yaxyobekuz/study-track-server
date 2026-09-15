@@ -149,17 +149,7 @@ const extendDeadline = asyncHandler(async (req, res) => {
   return res.json({ success: true, data: task, message: "Ijro muddati uzaytirildi" });
 });
 
-/**
- * ⚠️ VAQTINCHA — topshiriqni butunlay o'chiradi (keyin olib tashlanadi)
- * DELETE /tasks/:id
- */
-const deleteTask = asyncHandler(async (req, res) => {
-  const result = await taskService.deleteTask(req.params.id);
-  return res.json({ success: true, data: result, message: "Topshiriq o'chirildi" });
-});
-
 module.exports = {
-  deleteTask,
   createTask,
   getTasks,
   getMyTasks,
