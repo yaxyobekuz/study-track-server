@@ -225,48 +225,93 @@ const getExpenses = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { query } = req;
 
-  const where = {};
-  if (query.categoryId) where.categoryId = query.categoryId;
-  if (query.accountId) where.accountId = query.accountId;
-  if (query.includeVoided !== "true") where.isVoided = false;
-
+  const includeVoided = query.includeVoided === "true";
   // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
-  // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
   const range = parseDayRangeFilter(query);
-  if (range) where.occurredAt = range;
 
-  const [rows, total, agg] = await Promise.all([
+  // ── Xarajatlar (Expense) ──────────────────────────────────────────────
+  const expWhere = {};
+  if (query.categoryId) expWhere.categoryId = query.categoryId;
+  if (query.accountId) expWhere.accountId = query.accountId;
+  if (!includeVoided) expWhere.isVoided = false;
+  if (range) expWhere.occurredAt = range;
+
+  // ── XODIMLAR OYLIGI (SalaryPayment) ───────────────────────────────────
+  // ⚠️ Chiqim = TO'LANGAN oylik + xarajatlar. Ro'yxatda ikkalasi BIRGA
+  // ko'rinadi (xodimlar sahifasidan to'langan oylik ham shu yerda chiqadi).
+  // Bu FAQAT KO'RINISH birlashuvi — Expense yozuvi YARATILMAYDI, shuning
+  // uchun hisobot summasi qo'sh hisoblanmaydi. Oylik kategoriyasiz, shuning
+  // uchun `categoryId` filtri berilganda qo'shilmaydi.
+  const includeSalary = !query.categoryId;
+  const salWhere = {};
+  if (query.accountId) salWhere.accountId = query.accountId;
+  if (!includeVoided) salWhere.isVoided = false;
+  if (range) salWhere.paidAt = range;
+
+  const [expenses, salaries] = await Promise.all([
     prisma.expense.findMany({
-      where,
-      orderBy: [{ occurredAt: "desc" }, { createdAt: "desc" }],
-      skip,
-      take: limit,
+      where: expWhere,
       include: {
         category: { select: { name: true } },
         account: { select: { name: true } },
       },
     }),
-    prisma.expense.count({ where }),
-    // Jami — SAHIFA bo'yicha emas, butun filtr bo'yicha
-    prisma.expense.aggregate({
-      where: { ...where, isVoided: false },
-      _sum: { amount: true },
-      _count: { _all: true },
-    }),
+    includeSalary
+      ? prisma.salaryPayment.findMany({
+          where: salWhere,
+          include: { account: { select: { name: true } } },
+        })
+      : [],
   ]);
+
+  // Oylik to'lovlari uchun xodim ismlari
+  const staffIds = [...new Set(salaries.map((s) => s.staffId))];
+  const staffRows = staffIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: staffIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const staffName = new Map(
+    staffRows.map((s) => [s.id, `${s.firstName ?? ""} ${s.lastName ?? ""}`.trim()]),
+  );
+
+  // Ikkala manbani BITTA shaklda birlashtiramiz (frontend bir xil chizadi)
+  const merged = [
+    ...expenses.map(({ category, account, ...row }) => ({
+      ...serializeExpense(row, { category, account }),
+      kind: "expense",
+    })),
+    ...salaries.map((s) => ({
+      id: s.id,
+      kind: "salary",
+      categoryName: "Oylik",
+      note: s.note || null,
+      payee: staffName.get(s.staffId) || "Xodim",
+      accountName: s.account?.name ?? null,
+      amount: formatAmount(s.amount),
+      occurredAt: s.paidAt,
+      isVoided: s.isVoided,
+      voidReason: s.voidReason || null,
+    })),
+  ].sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt));
+
+  const active = merged.filter((r) => !r.isVoided);
+  const totalAmount = active.reduce(
+    (acc, r) => acc.plus(new Decimal(r.amount)),
+    new Decimal(0),
+  );
 
   return {
     ...formatPaginationResponse(
-      rows.map(({ category, account, ...row }) =>
-        serializeExpense(row, { category, account }),
-      ),
-      total,
+      merged.slice(skip, skip + limit),
+      merged.length,
       page,
       limit,
     ),
     totals: {
-      amount: formatAmount(new Decimal(agg._sum.amount ?? 0)),
-      count: agg._count._all,
+      amount: formatAmount(totalAmount),
+      count: active.length,
     },
   };
 };
