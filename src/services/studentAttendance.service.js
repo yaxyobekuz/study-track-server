@@ -4,6 +4,7 @@ const { getLessonDayMap } = require("./schedule.service");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { DAYS_UZ } = require("../utils/constants");
+const { currentMonthKey } = require("../helpers/month.helpers");
 
 const STUDENT_STATUSES = ["present", "late", "absent", "excused"];
 
@@ -691,6 +692,37 @@ async function getStudentMonthRecords(studentId, month, year) {
   return { student, records, summary, month: m, year: y };
 }
 
+/**
+ * O'quvchining o'z oylik davomati (o'quvchi paneli). `studentId` faqat
+ * tokendan keladi — boshqa o'quvchini so'rash yo'li yo'q.
+ * Oy berilmasa TOSHKENT bo'yicha joriy oy: UTC serverda oyning 1-kuni
+ * 00:00–05:00 oralig'ida `new Date().getMonth()` o'tgan oyni berardi.
+ * Kim belgilagani (`createdBy`, `lastModifiedBy`) o'quvchiga chiqmaydi.
+ */
+async function getMyMonthRecords(studentId, { month, year } = {}) {
+  const current = currentMonthKey();
+  const m = month ? parseInt(month, 10) : current % 100;
+  const y = year ? parseInt(year, 10) : Math.floor(current / 100);
+  if (!Number.isInteger(m) || m < 1 || m > 12) {
+    throw new BadRequestError("Oy noto'g'ri (1–12)");
+  }
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) {
+    throw new BadRequestError("Yil noto'g'ri");
+  }
+
+  const { records } = await getStudentMonthRecords(studentId, m, y);
+  const safeRecords = records.map(
+    ({ createdBy, lastModifiedBy, ...rest }) => rest
+  );
+
+  return {
+    records: safeRecords,
+    summary: buildSummary(safeRecords.length, safeRecords),
+    month: m,
+    year: y,
+  };
+}
+
 async function getAllRecords(req) {
   const { classId, status, month, year } = req.query;
   const { page, limit, skip } = getPaginationParams(req);
@@ -756,5 +788,6 @@ module.exports = {
   getClassList,
   getClassMonthRecords,
   getStudentMonthRecords,
+  getMyMonthRecords,
   getAllRecords,
 };

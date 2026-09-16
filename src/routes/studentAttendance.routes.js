@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { protect, authorizePermission } = require("../middleware/auth.middleware");
+const { protect, authorize, authorizePermission } = require("../middleware/auth.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const {
@@ -12,8 +12,13 @@ const {
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,
+  getMyMonthRecords,
   getAllRecords,
 } = require("../controllers/studentAttendance.controller");
+
+// O'quvchining o'z davomati — ruxsatsiz, faqat rol bo'yicha (id tokendan).
+// `?month=1..12&year=YYYY`, berilmasa Toshkent bo'yicha joriy oy.
+router.get("/my", protect, authorize(ROLES.STUDENT), getMyMonthRecords);
 
 // Reception va owner: belgilash va ko'rish
 router.get("/classes", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW, ROLES.RECEPTION), getClasses);

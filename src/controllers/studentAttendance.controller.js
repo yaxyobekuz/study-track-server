@@ -72,6 +72,15 @@ const getStudentMonthRecords = asyncHandler(async (req, res) => {
   res.json({ success: true, ...result });
 });
 
+// O'quvchining o'z davomati — id tokendan
+const getMyMonthRecords = asyncHandler(async (req, res) => {
+  const result = await studentAttendanceService.getMyMonthRecords(req.user.id, {
+    month: req.query.month,
+    year: req.query.year,
+  });
+  res.json({ success: true, ...result });
+});
+
 const getAllRecords = asyncHandler(async (req, res) => {
   const result = await studentAttendanceService.getAllRecords(req);
   res.json(result);
@@ -86,5 +95,6 @@ module.exports = {
   getClasses,
   getClassMonthRecords,
   getStudentMonthRecords,
+  getMyMonthRecords,
   getAllRecords,
 };
