@@ -16,6 +16,9 @@ const {
   updateSalary,
   closeSalary,
   deleteSalary,
+  getContract,
+  previewContract,
+  saveContract,
 } = require("../controllers/staffSalary.controller");
 
 const {
@@ -88,6 +91,12 @@ router.post("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN
 router.get("/salaries/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffHistory);
 // Dars soati preview'i (KPI summasini oldindan ko'rsatish uchun)
 router.get("/salaries/lesson-hours/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getLessonHours);
+// Shartnoma sharti (vedomost oynasi): qoida + toifa bir yo'la.
+// ⚠️ UCHALASI HAM `assign`: o'qish ham forma qiymatlari va toifalar
+// katalogini ochadi, preview esa aynan belgilash qarorining bir qismi.
+router.get("/salaries/staff/:staffId/contract", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), getContract);
+router.post("/salaries/staff/:staffId/contract/preview", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), previewContract);
+router.put("/salaries/staff/:staffId/contract", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), saveContract);
 router.put("/salaries/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), updateSalary);
 router.patch("/salaries/:id/close", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), closeSalary);
 router.delete("/salaries/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteSalary);

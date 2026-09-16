@@ -43,10 +43,21 @@ const coveringBonusWhere = (month) => ({
 const loadContext = async (month, users, preloaded = {}) => {
   const positionIds = [...new Set(users.map((u) => u.positionId).filter(Boolean))];
   const categoryIds = [...new Set(users.map((u) => u.salaryCategoryId).filter(Boolean))];
-  const teacherIds = users.filter((u) => u.salaryCategoryId).map((u) => u.id);
   const staffIds = users.map((u) => u.id);
 
   const salaryRules = preloaded.salaryRules || (await resolveSalariesForMonth(month));
+
+  // Soat kerak bo'lganlar: toifasi bor YOKI qoidasida qo'lda soat narxi bor.
+  // ⚠️ Faqat toifa bo'yicha filtrlansa, qo'lda stavkali o'qituvchining soati
+  // 0 bo'lib qolardi: vedomost (soatni o'zi yuklaydi) KPI ni ko'rsatardi,
+  // shakllantirilgan majburiyat esa KPI siz muhrlanardi.
+  const teacherIds = users
+    .filter(
+      (u) =>
+        u.salaryCategoryId ||
+        new Decimal(salaryRules.get(u.id)?.perHourRate ?? 0).greaterThan(0),
+    )
+    .map((u) => u.id);
 
   const [positions, categories, hoursMap, bonusRows] = await Promise.all([
     positionIds.length

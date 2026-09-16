@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const staffSalaryService = require("../services/staffSalary.service");
+const staffContractService = require("../services/staffContract.service");
 
 const getSalaries = asyncHandler(async (req, res) => {
   const data = await staffSalaryService.getSalaries(req);
@@ -40,6 +41,29 @@ const deleteSalary = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
+/**
+ * SHARTNOMA SHARTI — vedomostdagi oynadan qoida va toifani bir yo'la
+ * o'qish / jonli hisoblash / saqlash (`staffContract.service.js`).
+ */
+const getContract = asyncHandler(async (req, res) => {
+  const data = await staffContractService.getContract(req.params.staffId, req.query.month);
+  res.json({ success: true, data });
+});
+
+const previewContract = asyncHandler(async (req, res) => {
+  const data = await staffContractService.previewContract(req.params.staffId, req.body);
+  res.json({ success: true, data });
+});
+
+const saveContract = asyncHandler(async (req, res) => {
+  const data = await staffContractService.saveContract(
+    req.params.staffId,
+    req.body,
+    req.user.id,
+  );
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getSalaries,
   getStaffHistory,
@@ -48,4 +72,7 @@ module.exports = {
   updateSalary,
   closeSalary,
   deleteSalary,
+  getContract,
+  previewContract,
+  saveContract,
 };
