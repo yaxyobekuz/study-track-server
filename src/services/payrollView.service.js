@@ -392,11 +392,17 @@ const getAllowancesView = async (req) => {
 
     if (items.length === 0) continue;
 
+    // Oylik (asosiy) = lavozim/soatbay + fiksa; Jami = oylik + faol ustamalar
+    const baseSalary = preBonus;
+    const grandTotal = baseSalary.plus(staffActive);
+
     rows.push({
       ...info,
       departmentName: deptName,
       items,
+      baseSalary: formatAmount(baseSalary),
       activeTotal: formatAmount(staffActive),
+      grandTotal: formatAmount(grandTotal),
       activeItemCount: items.filter((i) => i.status === "active").length,
       pendingCount,
     });
