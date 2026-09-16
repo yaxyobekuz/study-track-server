@@ -670,6 +670,7 @@ async function createUser(data, actorId, actor = null) {
     phone,
     parentPhone,
     classes: userClasses,
+    workTimeSource,
     workStartTime,
     workEndTime,
     workDays,
