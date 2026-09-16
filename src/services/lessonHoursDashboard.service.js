@@ -7,6 +7,20 @@
  *   · vedomost — "har bir o'qituvchida qancha soat va qancha pul";
  *   · o'qituvchi — "menda hozir qancha yig'ilyapti".
  *
+ * ⚠️ RO'YXAT DARS JADVALIDAN QURILADI, OYLIK QOIDASIDAN EMAS.
+ * Ilgari ro'yxat `resolveSalariesForMonth` dan olinardi va oqibati shu
+ * edi: oylik qoidasi biriktirilmagan o'qituvchi — darsi bo'lsa ham —
+ * ekranda UMUMAN ko'rinmasdi, jami soat esa 0 bo'lib turardi. Holbuki
+ * bo'limning savoli aynan "kim qancha dars beradi", ya'ni u pul
+ * qarorining NATIJASI emas, KIRISHI: avval soat ko'rinadi, keyin unga
+ * oylik biriktiriladi. Shuning uchun manba — jadval, o'rinbosarlik,
+ * toifa va qoida birlashmasi.
+ *
+ * ⚠️ SOAT PUL QOIDASIGA BOG'LIQ EMAS. Qoidasi yo'q o'qituvchining ham
+ * soati to'liq hisoblanadi va ko'rsatiladi; faqat PUL ustunlari bo'sh
+ * qoladi. Aks holda "oylik belgilanmagan" holati "dars bermaydi" bilan
+ * bir xil ko'rinardi.
+ *
  * ⚠️ JAMI RAQAM SERVERDA HISOBLANADI. Panel qatorlarni qo'shib jami
  * chiqarmaydi: pul `Decimal(14,2)` va API'da STRING — `Number` ga
  * aylantirib qo'shish katta summalarda aniqlikni yo'qotardi
@@ -17,6 +31,11 @@
  * oy yopilganda muhrlanadi. Ikkalasi ataylab alohida ko'rsatiladi, aks
  * holda "panelda 5 200 000 turgan edi, vedomostda 4 900 000" degan savolga
  * javob bo'lmasdi — javob shu: oradan o'rinbosarlik o'tgan.
+ *
+ * ⚠️ PUL FORMULASI BU YERDA YOZILMAYDI. Summa `payrollEngine.service.js`
+ * dan keladi — vedomostdagi raqam "Struktura" ekranidagi va muhrlangan
+ * majburiyatdagi raqam bilan bir xil bo'lishi SHART (`finance.md` §10:
+ * formula bitta joyda).
  */
 
 const prisma = require("../config/prisma");
@@ -29,29 +48,86 @@ const {
   monthEndDate,
   daysInMonth,
 } = require("../helpers/month.helpers");
-const {
-  Decimal,
-  formatAmount,
-  sumAmounts,
-} = require("../helpers/money.helpers");
-const { computeSalary, normProgress } = require("../helpers/lessonHours");
+const { Decimal, formatAmount, sumAmounts } = require("../helpers/money.helpers");
 const { formatDateRangeUz } = require("../helpers/date.helpers");
 const { REASON_LABELS } = require("./lessonSubstitution.service");
-const {
-  resolveSalariesForMonth,
-  TYPE_LABELS,
-  formulaOf,
-  STAFF_SELECT,
-} = require("./staffSalary.service");
+const { resolveSalariesForMonth, TYPE_LABELS } = require("./staffSalary.service");
+const { loadContext, computeForStaff } = require("./payrollEngine.service");
 const {
   getTeachersHours,
   getMonthCalendar,
   cutoffForMonth,
-  assertTeacher,
 } = require("./lessonHours.service");
+const { NotFoundError } = require("../utils/errors");
+
+/**
+ * Xodim shakli — `STAFF_SELECT` dan FARQLI: bu yerda `positionId` va
+ * `salaryCategoryId` ham kerak, chunki qatorlar payroll dvigatelidan
+ * o'tadi va u aynan shu ikki maydondan lavozim/toifa summasini topadi.
+ */
+const DASHBOARD_STAFF_SELECT = {
+  id: true,
+  firstName: true,
+  lastName: true,
+  username: true,
+  role: true,
+  isArchived: true,
+  positionId: true,
+  salaryCategoryId: true,
+};
 
 const fullName = (person) =>
   person ? `${person.firstName} ${person.lastName ?? ""}`.trim() : "Noma'lum";
+
+/**
+ * Summani odam o'qiydigan ko'rinishga keltiradi ("45 000").
+ *
+ * ⚠️ `Intl.NumberFormat` ISHLATILMAYDI: natija Node ICU qurilishiga
+ * bog'liq bo'lib qolardi (`dates.md` §3 bilan bir xil sabab — u yerda
+ * sana, bu yerda ajratgich). Guruhlash qo'lda, natija har muhitda bir xil.
+ */
+const groupAmount = (value) =>
+  new Decimal(value ?? 0)
+    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+    .toFixed(0)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+
+/**
+ * SHARTNOMA FORMULASI — qatordagi ikkinchi qator matni.
+ *
+ * Komponentlardan quriladi, qoidaning o'zidan emas: fiksa qism lavozim
+ * maoshi bilan qo'shilgan bo'lishi mumkin va o'qituvchi ekranda aynan
+ * o'ziga to'lanadigan raqamni ko'rishi kerak.
+ */
+function formulaLabelOf(comp) {
+  if (!comp) return null;
+
+  const parts = [];
+  if (comp.fixedAmount.greaterThan(0)) parts.push(`${groupAmount(comp.fixedAmount)} so'm`);
+  if (comp.perHourRate.greaterThan(0)) {
+    parts.push(`${groupAmount(comp.perHourRate)} so'm × soat`);
+  }
+
+  return parts.length ? parts.join(" + ") : "Summa belgilanmagan";
+}
+
+/**
+ * `getTeachersHours` natijasini payroll dvigateli kutadigan shaklga
+ * o'tkazadi. `field` — qaysi soat olinishi: `hours` (butun oy) yoki
+ * `taughtHours` (bugungacha o'tilgani).
+ */
+const toEngineHours = (hoursMap, field) => {
+  const out = new Map();
+  for (const [teacherId, info] of hoursMap) {
+    out.set(String(teacherId), {
+      hours: info[field] ?? 0,
+      weeklyHours: info.weeklyHours ?? 0,
+      weeklyLessons: info.weeklyHours ?? 0,
+      monthlyLessons: info.teachingDays ?? 0,
+    });
+  }
+  return out;
+};
 
 /**
  * O'rinbosarlik yozuvining qisqa ko'rinishi.
@@ -73,21 +149,73 @@ const summarizeSubstitution = (row, partner) => ({
 });
 
 /**
+ * KIM RO'YXATGA KIRADI.
+ *
+ * To'rtta manba birlashtiriladi va har biri o'z savoliga javob beradi:
+ *   1. dars jadvali      — "darsi bor" (asosiy manba);
+ *   2. o'rinbosarlik     — shu oyda kimdir o'rniga chiqqan bo'lsa, uning
+ *                          soati bor, lekin jadvalda o'z darsi bo'lmasligi
+ *                          mumkin;
+ *   3. toifa             — KPI toifasi biriktirilgan, jadvali hali
+ *                          to'ldirilmagan o'qituvchi ("nega ro'yxatda
+ *                          yo'q" degan savol tug'ilmasligi uchun);
+ *   4. oylik qoidasi     — eski qatorlar ham yo'qolmasin.
+ *
+ * ⚠️ ROLGA TAYANILMAYDI. `User.role` — `Role.value` ga ishora va rollar
+ * katalogi filial bo'yicha o'zgaruvchan ("o'qituvchi" boshqa nom bilan
+ * bo'lishi mumkin, direktor ham dars berishi mumkin). Jadvalda darsi
+ * borligi esa har filialda bir xil ma'noni bildiradi. Faqat o'quvchi
+ * ATAYLAB chiqariladi.
+ */
+async function collectStaff(month) {
+  const from = monthStartDate(month);
+  const to = monthEndDate(month);
+
+  const [lessonRows, substitutionRows, salaries] = await Promise.all([
+    prisma.scheduleLesson.findMany({
+      distinct: ["teacherId"],
+      select: { teacherId: true },
+    }),
+    prisma.lessonSubstitution.findMany({
+      where: { status: "active", fromDate: { lte: to }, toDate: { gte: from } },
+      select: { originalTeacherId: true, substituteTeacherId: true },
+    }),
+    resolveSalariesForMonth(month),
+  ]);
+
+  const ids = new Set();
+  for (const row of lessonRows) if (row.teacherId) ids.add(row.teacherId);
+  for (const row of substitutionRows) {
+    ids.add(row.originalTeacherId);
+    ids.add(row.substituteTeacherId);
+  }
+  for (const staffId of salaries.keys()) ids.add(staffId);
+
+  const staff = await prisma.user.findMany({
+    where: {
+      isArchived: false,
+      role: { not: ROLES.STUDENT },
+      OR: [{ id: { in: [...ids] } }, { salaryCategoryId: { not: null } }],
+    },
+    select: DASHBOARD_STAFF_SELECT,
+  });
+
+  return { staff, salaries };
+}
+
+/**
  * Bitta o'qituvchi qatori — vedomost va profil bitta shakldan o'qiydi.
  *
- * @param {object} person - `STAFF_SELECT` shaklidagi xodim
- * @param {object|null} rule - `StaffSalary` qatori
+ * @param {object} person - `DASHBOARD_STAFF_SELECT` shaklidagi xodim
+ * @param {object|null} projected - dvigatel natijasi, BUTUN oy soati bo'yicha
+ * @param {object|null} accrued - dvigatel natijasi, BUGUNGACHA o'tilgan soat bo'yicha
  * @param {object|null} hoursRow - `lessonHours.service` natijasi
  * @param {object|null} entry - o'sha oyning MUHRLANGAN majburiyati
  */
-function buildRow(person, rule, hoursRow, entry) {
+function buildRow(person, projected, accrued, hoursRow, entry) {
   const hours = hoursRow?.hours ?? 0;
   const taught = hoursRow?.taughtHours ?? 0;
-
-  // Ikki raqam ATAYLAB alohida: "hozirgacha yig'ilgani" odamni qiziqtiradi,
-  // "oy oxirida chiqadigani" esa byudjetni.
-  const accrued = rule ? computeSalary(rule, taught) : null;
-  const projected = rule ? computeSalary(rule, hours) : null;
+  const perHourRate = projected?.perHourRate ?? null;
 
   return {
     staffId: person.id,
@@ -96,16 +224,21 @@ function buildRow(person, rule, hoursRow, entry) {
     role: person.role,
 
     // ── Shartnoma sharti ──────────────────
-    hasRule: Boolean(rule),
-    salaryType: rule?.type ?? null,
-    salaryTypeLabel: rule ? (TYPE_LABELS[rule.type] ?? rule.type) : null,
-    formulaLabel: rule ? formulaOf(rule) : null,
-    baseAmount: rule ? formatAmount(rule.amount) : null,
-    hourlyRate: rule?.hourlyRate != null ? formatAmount(rule.hourlyRate) : null,
-    monthlyHourNorm: rule?.monthlyHourNorm ?? null,
-    usesHours: rule?.type === "hourly" || rule?.type === "mixed",
+    hasRule: Boolean(projected),
+    salaryType: projected?.salaryType ?? null,
+    salaryTypeLabel: projected
+      ? (TYPE_LABELS[projected.salaryType] ?? projected.salaryType)
+      : null,
+    formulaLabel: formulaLabelOf(projected),
+    baseAmount: projected ? formatAmount(projected.fixedAmount) : null,
+    hourlyRate: perHourRate ? formatAmount(perHourRate) : null,
+    categoryName: projected?.categoryName || null,
+    positionName: projected?.positionName || null,
+    // Soat PULGA aylanadimi — ustunni ko'rsatish sharti EMAS, faqat
+    // "bu odamda soat pul hosil qiladi" belgisi (rang va jami uchun).
+    usesHours: Boolean(perHourRate && perHourRate.greaterThan(0)),
 
-    // ── Soat ──────────────────────────────
+    // ── Soat (QOIDADAN QAT'IY NAZAR) ──────
     weeklyHours: hoursRow?.weeklyHours ?? 0,
     scheduledHours: hoursRow?.scheduledHours ?? 0,
     substitutedOutHours: hoursRow?.substitutedOutHours ?? 0,
@@ -113,13 +246,17 @@ function buildRow(person, rule, hoursRow, entry) {
     hours,
     taughtHours: taught,
     remainingHours: hoursRow?.remainingHours ?? 0,
-    normProgress: rule ? normProgress(rule, hours) : null,
+    // Norma tushunchasi payroll-v2 da YO'Q (KPI stavkasi har soatga
+    // to'lanadi, chegara yo'q) — maydon shakl uchun qoladi.
+    normProgress: null,
+    extraHours: 0,
 
     // ── Pul (JONLI, muhrlanmagan) ─────────
     accruedAmount: accrued ? formatAmount(accrued.amount) : null,
     projectedAmount: projected ? formatAmount(projected.amount) : null,
-    projectedHoursAmount: projected ? formatAmount(projected.hoursAmount) : null,
-    extraHours: projected?.extraHours ?? 0,
+    projectedHoursAmount: projected ? formatAmount(projected.kpiAmount) : null,
+    fixedAmount: projected ? formatAmount(projected.fixedAmount) : null,
+    allowanceAmount: projected ? formatAmount(projected.allowanceAmount) : null,
 
     // ── Muhrlangan majburiyat (agar bor bo'lsa) ──
     entryId: entry?.id ?? null,
@@ -129,27 +266,22 @@ function buildRow(person, rule, hoursRow, entry) {
 }
 
 /**
- * BOSHLIQ KO'RINISHI — bir oy, butun maktab.
- *
- * @param {number} month - YYYYMM
- * @returns {Promise<object>}
+ * VEDOMOST YADROSI — qatorlar, kalendar va muhrlangan majburiyatlar.
+ * `getOverview` ham, `getLedger` ham SHU funksiyadan o'qiydi: ikki ekran
+ * bir xil raqamni ko'rsatishi kerak, ikkita mustaqil yig'uvchi bo'lsa
+ * ular vaqt o'tib bir-biridan uzoqlashardi.
  */
-async function getOverview(month) {
+async function buildLedger(month) {
   const cutoff = cutoffForMonth(month);
+  const { staff, salaries } = await collectStaff(month);
+  const staffIds = staff.map((p) => p.id);
 
-  const salaries = await resolveSalariesForMonth(month);
-  const staffIds = [...salaries.keys()];
-
-  const [staff, entries] = await Promise.all([
-    staffIds.length
-      ? prisma.user.findMany({
-          where: { id: { in: staffIds }, isArchived: false, role: { not: ROLES.STUDENT } },
-          select: STAFF_SELECT,
-        })
-      : [],
+  const [hoursMap, calendar, entries] = await Promise.all([
+    getTeachersHours(staffIds, month, { asOfDayOfMonth: cutoff }),
+    getMonthCalendar(month, { asOfDayOfMonth: cutoff }),
     staffIds.length
       ? prisma.payrollEntry.findMany({
-          where: { month, staffId: { in: staffIds }, status: { not: "cancelled" } },
+          where: { month, staffId: { in: staffIds } },
           select: { id: true, staffId: true, status: true, amount: true },
         })
       : [],
@@ -157,44 +289,59 @@ async function getOverview(month) {
 
   const entryMap = new Map(entries.map((e) => [e.staffId, e]));
 
-  // Soat FAQAT soatbay/aralash uchun — fiksa xodimning jadvali bo'lmasligi
-  // mumkin va uni hisobga qo'shish har oy ma'nosiz ish bo'lardi.
-  const hourStaff = staff.filter((person) => {
-    const rule = salaries.get(person.id);
-    return rule && (rule.type === "hourly" || rule.type === "mixed");
+  // Ikki kontekst, BITTA dvigatel: farq faqat soatda. Shu tufayli
+  // "hozirgacha" va "oy oxirida" ustunlari bir xil formuladan chiqadi —
+  // ustama foizlari ham ikkalasida to'g'ri qayta hisoblanadi.
+  const ctx = await loadContext(month, staff, {
+    salaryRules: salaries,
+    hoursMap: toEngineHours(hoursMap, "hours"),
   });
-
-  const [hoursMap, calendar] = await Promise.all([
-    hourStaff.length
-      ? getTeachersHours(hourStaff.map((p) => p.id), month, {
-          asOfDayOfMonth: cutoff,
-        })
-      : new Map(),
-    getMonthCalendar(month, { asOfDayOfMonth: cutoff }),
-  ]);
+  const accruedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "taughtHours") };
 
   const rows = staff
     .map((person) =>
       buildRow(
         person,
-        salaries.get(person.id),
+        computeForStaff(person, month, ctx),
+        computeForStaff(person, month, accruedCtx),
         hoursMap.get(person.id),
         entryMap.get(person.id),
       ),
     )
     .sort((a, b) => b.hours - a.hours || a.staffName.localeCompare(b.staffName));
 
+  return { rows, calendar, cutoff, entries, hoursMap };
+}
+
+/**
+ * BOSHLIQ KO'RINISHI — bir oy, butun maktab.
+ *
+ * @param {number} month - YYYYMM
+ * @returns {Promise<object>}
+ */
+async function getOverview(month) {
+  const { rows, calendar, cutoff, entries, hoursMap } = await buildLedger(month);
+
   // ── Rejimlar kesimi ─────────────────────
+  // "Belgilanmagan" ALOHIDA bucket: rahbar uchun "nechta o'qituvchi dars
+  // beryapti-yu, oyligi hali biriktirilmagan" — shu ekranning eng muhim
+  // ogohlantirishi. Uni ro'yxatdan tashqarida qoldirish jim bo'shliq edi.
   const byMode = new Map(
     Object.keys(TYPE_LABELS).map((key) => [
       key,
       { type: key, label: TYPE_LABELS[key], staffCount: 0, hours: 0, amounts: [] },
     ]),
   );
+  byMode.set("none", {
+    type: "none",
+    label: "Belgilanmagan",
+    staffCount: 0,
+    hours: 0,
+    amounts: [],
+  });
 
   for (const row of rows) {
-    if (!row.salaryType) continue;
-    const bucket = byMode.get(row.salaryType);
+    const bucket = byMode.get(row.salaryType ?? "none");
     if (!bucket) continue;
     bucket.staffCount += 1;
     bucket.hours += row.hours;
@@ -226,22 +373,19 @@ async function getOverview(month) {
     }),
   ]);
 
-  const withHours = rows.filter((r) => r.usesHours);
+  // ⚠️ JAMI SOAT — BARCHA qatordan, `usesHours` filtrisiz. Maktab olgan
+  // soat oylik qoidasi biriktirilgan-biriktirilmaganiga bog'liq emas.
+  const totalHours = rows.reduce((sum, r) => sum + r.hours, 0);
+  const taughtHours = rows.reduce((sum, r) => sum + r.taughtHours, 0);
+  const teachingStaff = rows.filter((r) => r.hours > 0);
 
-  const projectedTotal = sumAmounts(
-    rows.map((r) => r.projectedAmount).filter(Boolean),
-  );
-  const accruedTotal = sumAmounts(
-    rows.map((r) => r.accruedAmount).filter(Boolean),
-  );
+  const projectedTotal = sumAmounts(rows.map((r) => r.projectedAmount).filter(Boolean));
+  const accruedTotal = sumAmounts(rows.map((r) => r.accruedAmount).filter(Boolean));
   const sealedTotal = sumAmounts(entries.map((e) => e.amount));
 
-  const totalHours = withHours.reduce((sum, r) => sum + r.hours, 0);
-  const taughtHours = withHours.reduce((sum, r) => sum + r.taughtHours, 0);
-
-  // Kunlik egri chiziq — barcha soatbay o'qituvchilarning kunlik soatlari
-  // qo'shiladi. Nuqtalar soni oy uzunligiga TENG: `getTeachersHours` endi
-  // har bir kalendar kuni uchun nuqta qaytaradi (bayram — nol soat), ya'ni
+  // Kunlik egri chiziq — barcha o'qituvchilarning kunlik soatlari
+  // qo'shiladi. Nuqtalar soni oy uzunligiga TENG: `getTeachersHours` har
+  // bir kalendar kuni uchun nuqta qaytaradi (bayram — nol soat), ya'ni
   // indeks bo'yicha to'g'ridan-to'g'ri qo'shsa bo'ladi.
   const dayCount = daysInMonth(month);
   const series = Array.from({ length: dayCount }, (_, index) => ({
@@ -263,6 +407,14 @@ async function getOverview(month) {
     point.cumulative = cumulative;
   }
 
+  // BIR SOATNING O'RTACHA TANNARXI — byudjet uchun eng qisqa ko'rsatkich.
+  //
+  // ⚠️ SURAT VA MAXRAJ BITTA TO'PLAMDAN. Faqat soatdan pul chiqadigan
+  // xodimlar olinadi: maxrajga butun maktab soati, suratga esa faqat
+  // KPI to'lovi qo'yilsa, raqam bir necha barobar past chiqardi.
+  const paidByHours = rows.filter((r) => r.usesHours);
+  const paidHours = paidByHours.reduce((sum, r) => sum + r.hours, 0);
+
   return {
     month,
     monthLabel: formatMonthKey(month),
@@ -275,32 +427,22 @@ async function getOverview(month) {
     teachingDays: calendar.teachingDays,
     totals: {
       staffCount: rows.length,
-      hourlyStaffCount: withHours.length,
+      // "Dars beruvchi" = jadvalda soati bor. Oylik rejimi bilan aloqasi yo'q.
+      hourlyStaffCount: teachingStaff.length,
+      unassignedCount: rows.filter((r) => r.hours > 0 && !r.hasRule).length,
       totalHours,
       taughtHours,
       remainingHours: Math.max(0, totalHours - taughtHours),
-      substitutedHours: withHours.reduce((sum, r) => sum + r.substitutedInHours, 0),
+      substitutedHours: rows.reduce((sum, r) => sum + r.substitutedInHours, 0),
       // Jonli prognoz — muhrlangan qarz EMAS
       projectedAmount: formatAmount(projectedTotal),
       accruedAmount: formatAmount(accruedTotal),
       sealedAmount: formatAmount(sealedTotal),
       sealedCount: entries.length,
-      // BIR SOATNING O'RTACHA TANNARXI — byudjet uchun eng qisqa ko'rsatkich.
-      //
-      // ⚠️ SURATDA `projectedHoursAmount` EMAS, TO'LIQ `projectedAmount`.
-      // Aralash rejimda soatdan chiqqan qism faqat NORMADAN ORTIQCHA
-      // soatlarni to'laydi; bazaviy oylik esa birinchi `norm` soatning
-      // haqqi. Suratga faqat ortiqcha qism qo'yilsa, maxrajda BARCHA
-      // soatlar turgani uchun raqam bir necha barobar past chiqardi
-      // (3 000 000 + 80 soat normali xodimda 100 soat → 10 000 so'm/soat,
-      // aslida 40 000). Bu raqam boshliqqa "1 soat qanchaga tushadi" deb
-      // ko'rsatiladi, ya'ni u TANNARX bo'lishi kerak, marjinal stavka emas.
       averageHourCost:
-        totalHours > 0
+        paidHours > 0
           ? formatAmount(
-              sumAmounts(
-                rows.filter((r) => r.usesHours).map((r) => r.projectedAmount ?? "0"),
-              ).div(totalHours),
+              sumAmounts(paidByHours.map((r) => r.projectedAmount ?? "0")).div(paidHours),
             )
           : null,
       substitutionCount,
@@ -309,7 +451,7 @@ async function getOverview(month) {
     modes,
     series,
     // Eng ko'p yuklamali o'nlik — butun ro'yxat vedomost sahifasida
-    topTeachers: rows.filter((r) => r.usesHours).slice(0, 10),
+    topTeachers: teachingStaff.slice(0, 10),
   };
 }
 
@@ -324,51 +466,19 @@ async function getOverview(month) {
  * @param {object} query - { type, search, withHoursOnly }
  */
 async function getLedger(month, query = {}) {
-  const cutoff = cutoffForMonth(month);
-  const salaries = await resolveSalariesForMonth(month);
-  const staffIds = [...salaries.keys()];
+  const { rows: allRows, calendar, cutoff } = await buildLedger(month);
 
-  const [staff, entries] = await Promise.all([
-    staffIds.length
-      ? prisma.user.findMany({
-          where: { id: { in: staffIds }, isArchived: false, role: { not: ROLES.STUDENT } },
-          select: STAFF_SELECT,
-        })
-      : [],
-    staffIds.length
-      ? prisma.payrollEntry.findMany({
-          where: { month, staffId: { in: staffIds } },
-          select: { id: true, staffId: true, status: true, amount: true },
-        })
-      : [],
-  ]);
+  let rows = allRows;
 
-  const entryMap = new Map(entries.map((e) => [e.staffId, e]));
-
-  const hourStaff = staff.filter((person) => {
-    const rule = salaries.get(person.id);
-    return rule && (rule.type === "hourly" || rule.type === "mixed");
-  });
-
-  const hoursMap = hourStaff.length
-    ? await getTeachersHours(
-        hourStaff.map((p) => p.id),
-        month,
-        { asOfDayOfMonth: cutoff },
-      )
-    : new Map();
-
-  let rows = staff.map((person) =>
-    buildRow(
-      person,
-      salaries.get(person.id),
-      hoursMap.get(person.id),
-      entryMap.get(person.id),
-    ),
-  );
-
-  if (query.type) rows = rows.filter((r) => r.salaryType === query.type);
-  if (query.withHoursOnly === "true") rows = rows.filter((r) => r.usesHours);
+  // `type` filtri: "none" — oyligi belgilanmaganlar (ular uchun
+  // `salaryType` null, ya'ni oddiy tenglik ishlamaydi).
+  if (query.type) {
+    rows =
+      query.type === "none"
+        ? rows.filter((r) => !r.salaryType)
+        : rows.filter((r) => r.salaryType === query.type);
+  }
+  if (query.withHoursOnly === "true") rows = rows.filter((r) => r.hours > 0);
 
   if (query.search) {
     const needle = String(query.search).trim().toLowerCase();
@@ -379,16 +489,19 @@ async function getLedger(month, query = {}) {
     );
   }
 
-  rows.sort((a, b) => b.hours - a.hours || a.staffName.localeCompare(b.staffName));
-
   return {
     month,
     monthLabel: formatMonthKey(month),
     isCurrentMonth: month === currentMonthKey(),
+    isVacationMonth: calendar.isVacationMonth,
+    cutoffDay: cutoff,
+    teachingDays: calendar.teachingDays,
     items: rows,
     totals: {
       staffCount: rows.length,
       totalHours: rows.reduce((sum, r) => sum + r.hours, 0),
+      taughtHours: rows.reduce((sum, r) => sum + r.taughtHours, 0),
+      unassignedCount: rows.filter((r) => r.hours > 0 && !r.hasRule).length,
       projectedAmount: formatAmount(
         sumAmounts(rows.map((r) => r.projectedAmount).filter(Boolean)),
       ),
@@ -406,16 +519,24 @@ async function getLedger(month, query = {}) {
  * @param {number} month
  */
 async function getTeacherDetail(teacherId, month) {
-  const teacher = await assertTeacher(teacherId);
+  // ⚠️ `assertTeacher` O'RNIGA TO'G'RIDAN-TO'G'RI O'QISH: payroll dvigateli
+  // `positionId` va `salaryCategoryId` ni talab qiladi, `TEACHER_SELECT`
+  // da esa ular yo'q — ularsiz har bir o'qituvchi "oyligi yo'q" bo'lib
+  // ko'rinardi.
+  const teacher = await prisma.user.findUnique({
+    where: { id: teacherId },
+    select: DASHBOARD_STAFF_SELECT,
+  });
+
+  if (!teacher || teacher.role === ROLES.STUDENT) {
+    throw new NotFoundError("O'qituvchi topilmadi");
+  }
+
   const cutoff = cutoffForMonth(month);
-
   const salaries = await resolveSalariesForMonth(month);
-  const rule = salaries.get(teacher.id) ?? null;
 
-  const [hoursRow, entry, substitutions] = await Promise.all([
-    getTeachersHours([teacher.id], month, { asOfDayOfMonth: cutoff }).then((m) =>
-      m.get(teacher.id),
-    ),
+  const [hoursMap, entry, substitutions] = await Promise.all([
+    getTeachersHours([teacher.id], month, { asOfDayOfMonth: cutoff }),
     prisma.payrollEntry.findUnique({
       where: { staffId_month: { staffId: teacher.id, month } },
       select: { id: true, staffId: true, status: true, amount: true },
@@ -432,7 +553,21 @@ async function getTeacherDetail(teacherId, month) {
     }),
   ]);
 
-  const row = buildRow(teacher, rule, hoursRow, entry);
+  const hoursRow = hoursMap.get(teacher.id);
+
+  const ctx = await loadContext(month, [teacher], {
+    salaryRules: salaries,
+    hoursMap: toEngineHours(hoursMap, "hours"),
+  });
+  const accruedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "taughtHours") };
+
+  const row = buildRow(
+    teacher,
+    computeForStaff(teacher, month, ctx),
+    computeForStaff(teacher, month, accruedCtx),
+    hoursRow,
+    entry,
+  );
 
   // Oylik tarix — oxirgi 6 oy, egri chiziq uchun
   const history = await prisma.payrollEntry.findMany({
@@ -442,9 +577,9 @@ async function getTeacherDetail(teacherId, month) {
     select: {
       month: true,
       amount: true,
-      hoursWorked: true,
-      hoursAmount: true,
-      baseAmount: true,
+      lessonHours: true,
+      kpiAmount: true,
+      fixedAmount: true,
       status: true,
     },
   });
@@ -484,9 +619,11 @@ async function getTeacherDetail(teacherId, month) {
         // ro'yxatning YAGONA manbasi (`month.helpers.js`).
         monthShortLabel: formatMonthShort(h.month),
         amount: formatAmount(h.amount),
-        baseAmount: formatAmount(h.baseAmount),
-        hoursAmount: formatAmount(h.hoursAmount),
-        hoursWorked: h.hoursWorked,
+        // Muhrlangan majburiyatning v2 komponentlari: fiksa qism va
+        // soatdan chiqqan (KPI) qism.
+        baseAmount: formatAmount(h.fixedAmount),
+        hoursAmount: formatAmount(h.kpiAmount),
+        hoursWorked: Number(h.lessonHours),
         status: h.status,
       }))
       .reverse(),

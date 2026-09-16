@@ -29,8 +29,16 @@ const coveringBonusWhere = (month) => ({
 
 /**
  * Oy uchun payroll kontekstini bir marta yuklaydi (N+1 so'rovsiz).
+ *
+ * ⚠️ `preloaded.hoursMap` — chaqiruvchi dars soatini ALLAQACHON hisoblagan
+ * bo'lsa, uni qayta hisoblamaslik uchun. `lessonHoursDashboard` soatni
+ * kesim kuni bilan o'qiydi va o'sha bitta natijadan ikki xil kontekst
+ * quradi ("bugungacha" va "oy oxirida") — bu yerda qayta hisoblansa,
+ * kesim yo'qolib, ikkala raqam bir xil chiqib qolardi.
+ *
  * @param {number} month - YYYYMM
  * @param {Array} users - {id, positionId, salaryCategoryId, ...}
+ * @param {object} [preloaded] - { salaryRules, hoursMap }
  */
 const loadContext = async (month, users, preloaded = {}) => {
   const positionIds = [...new Set(users.map((u) => u.positionId).filter(Boolean))];
@@ -53,7 +61,7 @@ const loadContext = async (month, users, preloaded = {}) => {
           include: { department: { select: { name: true } } },
         })
       : [],
-    computeLessonHoursForMonth(month, teacherIds),
+    preloaded.hoursMap || computeLessonHoursForMonth(month, teacherIds),
     prisma.payrollBonus.findMany({
       where: { staffId: { in: staffIds }, ...coveringBonusWhere(month) },
     }),
