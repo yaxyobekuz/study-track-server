@@ -28,6 +28,15 @@
  *   · yozuv COMPARE-AND-SWAP (`amount` + `paidAmount` + `status`), to'lov esa
  *     o'z CAS ida `amount` ni ham tekshiradi — poyga ikkala tomonda ham
  *     xato bilan tugaydi, ortiqcha to'lov bilan emas.
+ *
+ * ── "HAMMASI" KEYIN KELGANLARGA HAM ─────────
+ *
+ * ⚠️ "Hammasi" tanlab yozilgan guruh (`appliesToAll`) keyin oyligi
+ * belgilangan xodimga ham yoyiladi (biznes qarori): "hammadan 10%" — siyosat,
+ * saqlash paytidagi ro'yxat emas. Yoyish ham ALOHIDA QATOR yozadi (registr,
+ * bekor qilish va xodimning o'z ekrani qator bilan ishlaydi). Chaqiriladigan
+ * joylar: lavozim/toifa biriktirish, oylik qoidasi, shartnoma sharti,
+ * toifa zayavkasini tasdiqlash va — zaxira sifatida — oylik shakllantirish.
  */
 
 const prisma = require("../config/prisma");
@@ -48,6 +57,7 @@ const { computeDeductions } = require("../helpers/salaryRules.helpers");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
 const { loadContext, computeForStaff } = require("./payrollEngine.service");
 const payrollAudit = require("./payrollAudit.service");
+const logger = require("../utils/logger");
 
 const TYPES = ["fixed", "percent", "hours"];
 /** Bir amalda ushlab qolinadigan dars soati chegarasi (xato kiritishga qarshi). */
@@ -110,7 +120,7 @@ const sealStateOf = (entry) => {
  * `endMonth`: son → oraliq; `null` → muddatsiz; berilmasa → faqat
  * `startMonth` (bir martalik — eng xavfsiz standart).
  *
- * @param {object} data - { staffIds, type, value, reason, note, startMonth, endMonth }
+ * @param {object} data - { staffIds, scope, type, value, reason, note, startMonth, endMonth }
  */
 const parseDraft = (data = {}) => {
   const staffIds = Array.isArray(data.staffIds)
@@ -161,7 +171,10 @@ const parseDraft = (data = {}) => {
     throw new BadRequestError("Tugash oyi boshlanish oyidan oldin bo'lishi mumkin emas");
   }
 
-  return { staffIds, type, value, reason, note, startMonth, endMonth };
+  // "Hammasi" — keyin oyligi belgilanganlarga ham yoyiladi
+  const appliesToAll = data.scope === "all";
+
+  return { staffIds, type, value, reason, note, startMonth, endMonth, appliesToAll };
 };
 
 /**
@@ -502,6 +515,7 @@ const createDeductions = async (data, actorId) => {
         startMonth: draft.startMonth,
         endMonth: draft.endMonth,
         note: draft.note,
+        appliesToAll: draft.appliesToAll,
         createdBy: actorId,
       })),
     });
@@ -523,6 +537,7 @@ const createDeductions = async (data, actorId) => {
           value: formatAmount(draft.value),
           startMonth: draft.startMonth,
           endMonth: draft.endMonth,
+          appliesToAll: draft.appliesToAll,
         },
       },
       tx,
@@ -540,12 +555,226 @@ const createDeductions = async (data, actorId) => {
     affectedMonths(draft.startMonth, draft.endMonth),
   );
 
+  // "Hammasi": formadagi ro'yxat shu oyda oyligi > 0 bo'lganlar edi —
+  // oyligi bor, lekin shu oyda 0 chiqqanlar ham darhol qo'shiladi
+  const extended = draft.appliesToAll
+    ? await extendAllScopeDeductionsSafe(null, { batchIds: [batchId] })
+    : null;
+  if (extended) mergeResync(resync, extended.resync);
+
   return {
     batchId,
     created: created.targets.length,
+    extended: extended?.created ?? 0,
     skippedDuplicates: [...created.duplicateIds].map((id) => fullName(userMap.get(id))),
     resync,
   };
+};
+
+/* ─────────────────────── "Hammasi" — yangi xodimlarga ─────────────────────── */
+
+const mergeResync = (into, part) => {
+  into.updated += part.updated;
+  into.conflicts += part.conflicts;
+  into.locked.push(...part.locked);
+  return into;
+};
+
+/**
+ * "HAMMAGA" GURUHLARNI keyin oyligi belgilangan xodimlarga yoyadi.
+ *
+ * Kimga: arxivlanmagan, o'quvchi emas, oyligi bor (lavozim, toifa yoki
+ * guruh davriga tushadigan oylik qoidasi) va shu guruhda HALI QATORI YO'Q.
+ *   · qatori BEKOR QILINGAN xodimga qayta yozilmaydi — u admin qarori;
+ *   · xuddi shu ushlab qolish (sabab + tur + qiymat + davr) boshqa guruhda
+ *     faol bo'lsa ham yozilmaydi — ikki marta ushlanmasin (`createDeductions`
+ *     dagi takror qoidasi bilan AYNI);
+ *   · muddati tugagan guruh yoyilmaydi.
+ *
+ * Yangi qator guruh bilan AYNI davr va `createdAt` ni oladi: chegara
+ * (`computeDeductions`) yaratilish tartibida qo'llanadi, siyosat esa guruh
+ * yozilgan paytdagi o'rnida qolishi kerak.
+ *
+ * IDEMPOTENT: `(batchId, staffId)` yagona, `skipDuplicates` — parallel
+ * chaqiruv ikkinchi qator yoza olmaydi.
+ *
+ * @param {string[]|null} staffIds - null → hamma xodim
+ * @param {{ batchIds?: string[] }} [options]
+ * @returns {Promise<{created: number, resync: object}>}
+ */
+const extendAllScopeDeductions = async (staffIds = null, { batchIds = null } = {}) => {
+  const result = { created: 0, resync: { updated: 0, locked: [], conflicts: 0 } };
+  if (Array.isArray(staffIds) && staffIds.length === 0) return result;
+
+  const templates = await prisma.payrollDeduction.findMany({
+    where: {
+      appliesToAll: true,
+      status: "active",
+      OR: [{ endMonth: null }, { endMonth: { gte: currentMonthKey() } }],
+      ...(batchIds ? { batchId: { in: batchIds } } : {}),
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+  const byBatch = new Map();
+  for (const row of templates) if (!byBatch.has(row.batchId)) byBatch.set(row.batchId, row);
+  if (byBatch.size === 0) return result;
+
+  // Oyligi bor xodimlar — `getCandidates` bilan AYNI shart, oyga bog'lanmagan
+  const minStart = Math.min(...[...byBatch.values()].map((t) => t.startMonth));
+  const rules = await prisma.staffSalary.findMany({
+    where: {
+      ...(staffIds ? { staffId: { in: staffIds } } : {}),
+      OR: [{ endMonth: null }, { endMonth: { gte: minStart } }],
+    },
+    select: { staffId: true },
+  });
+  const ruleIds = [...new Set(rules.map((r) => r.staffId))];
+
+  const staff = await prisma.user.findMany({
+    where: {
+      ...(staffIds ? { id: { in: staffIds } } : {}),
+      isArchived: false,
+      role: { not: ROLES.STUDENT },
+      OR: [
+        { positionId: { not: null } },
+        { salaryCategoryId: { not: null } },
+        ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+      ],
+    },
+    select: { id: true },
+  });
+  if (staff.length === 0) return result;
+  const eligibleIds = staff.map((u) => u.id);
+
+  const existing = await prisma.payrollDeduction.findMany({
+    where: { batchId: { in: [...byBatch.keys()] }, staffId: { in: eligibleIds } },
+    select: { batchId: true, staffId: true },
+  });
+  const hasRow = new Set(existing.map((r) => `${r.batchId}|${r.staffId}`));
+
+  for (const t of byBatch.values()) {
+    let targets = eligibleIds.filter((id) => !hasRow.has(`${t.batchId}|${id}`));
+    if (targets.length === 0) continue;
+
+    const twins = await prisma.payrollDeduction.findMany({
+      where: {
+        staffId: { in: targets },
+        batchId: { not: t.batchId },
+        status: "active",
+        reason: t.reason,
+        type: t.type,
+        value: t.value,
+        startMonth: t.startMonth,
+        endMonth: t.endMonth,
+      },
+      select: { staffId: true },
+    });
+    const twinIds = new Set(twins.map((r) => r.staffId));
+    targets = targets.filter((id) => !twinIds.has(id));
+    if (targets.length === 0) continue;
+
+    const count = await prisma.$transaction(async (tx) => {
+      const res = await tx.payrollDeduction.createMany({
+        data: targets.map((staffId) => ({
+          staffId,
+          batchId: t.batchId,
+          reason: t.reason,
+          type: t.type,
+          value: t.value,
+          startMonth: t.startMonth,
+          endMonth: t.endMonth,
+          note: t.note,
+          appliesToAll: true,
+          createdBy: t.createdBy,
+          createdAt: t.createdAt,
+        })),
+        skipDuplicates: true,
+      });
+      if (res.count > 0) {
+        await payrollAudit.record(
+          {
+            actorId: t.createdBy,
+            action: "deduction.extend",
+            targetType: "deduction",
+            targetId: t.batchId,
+            summary:
+              `"Hammaga" ushlab qolish ${res.count} ta yangi xodimga avtomatik qo'llandi: ` +
+              `${t.reason} — ${valueLabelOf(t.type, t.value)}`,
+            newValue: { batchId: t.batchId, staffIds: targets },
+          },
+          tx,
+        );
+      }
+      return res.count;
+    });
+
+    result.created += count;
+    mergeResync(
+      result.resync,
+      await resyncSealedEntries(targets, affectedMonths(t.startMonth, t.endMonth)),
+    );
+  }
+
+  return result;
+};
+
+/**
+ * Biriktirish nuqtalari uchun: HECH QACHON xato tashlamaydi. Asosiy amal
+ * (lavozim, qoida) allaqachon saqlangan — yoyish yiqilsa ham u orqaga
+ * qaytmasligi kerak; oylik shakllantirish keyin yana urinadi.
+ */
+const extendAllScopeDeductionsSafe = async (staffIds = null, options = {}) => {
+  try {
+    return await extendAllScopeDeductions(staffIds, options);
+  } catch (error) {
+    logger.warn(`"Hammaga" ushlab qolishni yoyib bo'lmadi: ${error.message}`);
+    return null;
+  }
+};
+
+/**
+ * MAVJUD GURUHNI "HAMMAGA" QILISH — belgi paydo bo'lishidan oldin yozilgan
+ * guruhlar uchun (ular qanday tanlangani saqlanmagan) va keyin fikr
+ * o'zgarganda. Darhol yoyiladi.
+ *
+ * @param {string} batchId
+ * @param {string} actorId
+ */
+const applyBatchToAll = async (batchId, actorId) => {
+  const rows = await prisma.payrollDeduction.findMany({ where: { batchId } });
+  if (rows.length === 0) throw new NotFoundError("Ushlab qolish guruhi topilmadi");
+
+  const active = rows.filter((r) => r.status === "active");
+  if (active.length === 0) {
+    throw new BadRequestError("Guruh bekor qilingan — yangi xodimlarga qo'llab bo'lmaydi");
+  }
+  const sample = active[0];
+  if (sample.endMonth != null && sample.endMonth < currentMonthKey()) {
+    throw new BadRequestError(
+      `Guruh muddati tugagan (${periodLabelOf(sample.startMonth, sample.endMonth)}) — yoyiladigan oy qolmagan`,
+    );
+  }
+  if (rows.every((r) => r.appliesToAll)) {
+    throw new BadRequestError("Bu ushlab qolish allaqachon yangi xodimlarga ham qo'llanadi");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.payrollDeduction.updateMany({ where: { batchId }, data: { appliesToAll: true } });
+    await payrollAudit.record(
+      {
+        actorId,
+        action: "deduction.apply_all",
+        targetType: "deduction",
+        targetId: batchId,
+        summary: `Ushlab qolish endi yangi xodimlarga ham qo'llanadi: ${sample.reason} — ${valueLabelOf(sample.type, sample.value)}`,
+        newValue: { batchId, appliesToAll: true },
+      },
+      tx,
+    );
+  });
+
+  const extended = await extendAllScopeDeductions(null, { batchIds: [batchId] });
+  return { batchId, created: extended.created, resync: extended.resync };
 };
 
 /* ─────────────────────── Bekor qilish ─────────────────────── */
@@ -759,6 +988,7 @@ const listDeductions = async (req) => {
           ? formatMonthRange(row.startMonth, null)
           : periodLabelOf(row.startMonth, row.endMonth),
       status: row.status,
+      appliesToAll: row.appliesToAll,
       // Tanlangan oyda: summa | null (ta'sir qilmagan)
       monthAmount: monthInfo?.amount ?? null,
       monthCapped: monthInfo?.capped ?? false,
@@ -893,6 +1123,9 @@ module.exports = {
   createDeductions,
   cancelDeduction,
   cancelBatch,
+  applyBatchToAll,
+  extendAllScopeDeductions,
+  extendAllScopeDeductionsSafe,
   listDeductions,
   listMyDeductions,
   resyncSealedEntries,

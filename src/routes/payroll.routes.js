@@ -68,6 +68,7 @@ router.get("/deductions/candidates", protect, authorizePermission(PERMISSIONS.PA
 router.post("/deductions/preview", protect, authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.previewDeductions);
 router.post("/deductions", protect, authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.createDeductions);
 router.post("/deductions/batch/:batchId/cancel", protect, validateObjectId("batchId"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelBatch);
+router.post("/deductions/batch/:batchId/apply-all", protect, validateObjectId("batchId"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.applyBatchToAll);
 router.post("/deductions/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelDeduction);
 
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──

@@ -6,6 +6,7 @@
 
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
 const payrollAudit = require("./payrollAudit.service");
 
 const KINDS = ["staff", "teaching"];
@@ -119,11 +120,28 @@ const deleteDepartment = async (id) => {
   return { message: "Bo'lim o'chirildi" };
 };
 
+/** Shaxsiy maosh: bo'sh → null (lavozim maoshi), aks holda > 0 summa. */
+const parseCustomBase = (value) => {
+  if (value == null || value === "") return null;
+  const amount = parseAmount(value, "Shaxsiy maosh");
+  if (!amount.greaterThan(0)) throw new BadRequestError("Shaxsiy maosh noldan katta bo'lishi kerak");
+  return amount;
+};
+
+const sameAmount = (a, b) =>
+  a == null || b == null ? a == null && b == null : new Decimal(a).equals(b);
+
 /**
  * Xodimni LAVOZIM (staff) yoki TOIFA (teacher) ga biriktiradi.
  * Xodim ikkalasidan faqat bittasiga tegishli bo'ladi (biri o'rnatilsa ikkinchisi tozalanadi).
+ *
+ * SHAXSIY MAOSH (`customBaseSalary`) — lavozim bilan birga keladi: berilsa
+ * xodim lavozim maoshi o'rniga shu summani oladi, berilmasa lavozim maoshi.
+ * ⚠️ Lavozim olinsa yoki toifaga o'tsa u TOZALANADI — aks holda keyin boshqa
+ * yo'l bilan berilgan lavozimga eski shaxsiy summa jimgina ergashib ketardi.
+ *
  * @param {string} staffId
- * @param {{ positionId?: string|null, salaryCategoryId?: string|null }} data
+ * @param {{ positionId?: string|null, salaryCategoryId?: string|null, customBaseSalary?: string|number|null }} data
  */
 const assignStaff = async (staffId, data, actorId) => {
   const staff = await prisma.user.findUnique({
@@ -135,6 +153,7 @@ const assignStaff = async (staffId, data, actorId) => {
       lastName: true,
       positionId: true,
       salaryCategoryId: true,
+      customBaseSalary: true,
     },
   });
   if (!staff) throw new NotFoundError("Xodim topilmadi");
@@ -147,15 +166,24 @@ const assignStaff = async (staffId, data, actorId) => {
     if (data.positionId) {
       const pos = await prisma.position.findUnique({ where: { id: data.positionId } });
       if (!pos) throw new NotFoundError("Lavozim topilmadi");
+      const customBase = parseCustomBase(data.customBaseSalary);
       // Qayta tanlash hech narsa o'zgartirmaydi — jim "Biriktirildi" o'rniga aytamiz
-      if (staff.positionId === pos.id) {
-        throw new BadRequestError(`${fullName(staff)} allaqachon "${pos.name}" lavozimida`);
+      if (staff.positionId === pos.id && sameAmount(staff.customBaseSalary, customBase)) {
+        throw new BadRequestError(
+          customBase
+            ? `${fullName(staff)} allaqachon "${pos.name}" lavozimida shu maosh bilan`
+            : `${fullName(staff)} allaqachon "${pos.name}" lavozimida`,
+        );
       }
       payload.positionId = data.positionId;
       payload.salaryCategoryId = null; // lavozim va toifa birga bo'lmaydi
-      label = `lavozim "${pos.name}"`;
+      payload.customBaseSalary = customBase;
+      label = customBase
+        ? `lavozim "${pos.name}", shaxsiy maosh ${formatAmount(customBase)}`
+        : `lavozim "${pos.name}"`;
     } else {
       payload.positionId = null;
+      payload.customBaseSalary = null;
       label = "lavozim olib tashlandi";
     }
   }
@@ -169,6 +197,7 @@ const assignStaff = async (staffId, data, actorId) => {
       }
       payload.salaryCategoryId = data.salaryCategoryId;
       payload.positionId = null;
+      payload.customBaseSalary = null;
       label = `toifa "${cat.name}"`;
     } else {
       payload.salaryCategoryId = null;
@@ -179,7 +208,14 @@ const assignStaff = async (staffId, data, actorId) => {
   const updated = await prisma.user.update({
     where: { id: staffId },
     data: payload,
-    select: { id: true, firstName: true, lastName: true, positionId: true, salaryCategoryId: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      positionId: true,
+      salaryCategoryId: true,
+      customBaseSalary: true,
+    },
   });
 
   if (actorId) {
@@ -189,11 +225,28 @@ const assignStaff = async (staffId, data, actorId) => {
       targetType: "user",
       targetId: staffId,
       summary: `${fullName(staff)} — ${label ?? "biriktirma yangilandi"}`,
-      oldValue: { positionId: staff.positionId, salaryCategoryId: staff.salaryCategoryId },
-      newValue: { positionId: updated.positionId, salaryCategoryId: updated.salaryCategoryId },
+      oldValue: {
+        positionId: staff.positionId,
+        salaryCategoryId: staff.salaryCategoryId,
+        customBaseSalary: staff.customBaseSalary == null ? null : formatAmount(staff.customBaseSalary),
+      },
+      newValue: {
+        positionId: updated.positionId,
+        salaryCategoryId: updated.salaryCategoryId,
+        customBaseSalary: updated.customBaseSalary == null ? null : formatAmount(updated.customBaseSalary),
+      },
     });
   }
-  return updated;
+
+  // "Hammaga" ushlab qolishlar endi oyligi bor xodimga ham yoyiladi
+  if (updated.positionId || updated.salaryCategoryId) {
+    await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([staffId]);
+  }
+
+  return {
+    ...updated,
+    customBaseSalary: updated.customBaseSalary == null ? null : formatAmount(updated.customBaseSalary),
+  };
 };
 
 module.exports = {

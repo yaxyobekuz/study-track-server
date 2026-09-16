@@ -334,7 +334,8 @@ const changeStaffSalary = defineAction({
 
     // ── Summa qaysi qoida maydoniga tushadi ────────────────────────────
     let ruleFixed;
-    const base = new Decimal(position ? position.baseSalary : 0);
+    // Shaxsiy maosh bo'lsa baza o'sha (engine bilan AYNI tanlov)
+    const base = payrollEngine.resolvePositionBase(user, position, engineCtx).amount;
     const projectedKpi = new Decimal(before ? before.kpiAmount : 0);
 
     if (category) {

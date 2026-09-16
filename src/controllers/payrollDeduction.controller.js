@@ -49,6 +49,12 @@ const cancelBatch = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+/** Mavjud guruhni keyin oyligi belgilanganlarga ham yoyish. */
+const applyBatchToAll = asyncHandler(async (req, res) => {
+  const data = await deductionService.applyBatchToAll(req.params.batchId, req.user.id);
+  res.json({ success: true, data });
+});
+
 module.exports = {
   getDeductions,
   getMyDeductions,
@@ -57,4 +63,5 @@ module.exports = {
   createDeductions,
   cancelDeduction,
   cancelBatch,
+  applyBatchToAll,
 };

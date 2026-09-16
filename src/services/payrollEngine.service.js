@@ -5,6 +5,7 @@
  *         + APPROVED BONUSES − DEDUCTIONS (ushlab qolish, yalpidan oshmaydi)
  *
  *   staff (Texnik/Boshqaruv):  base = position.baseSalary
+ *                              (yoki xodimning shaxsiy maoshi — `customBaseSalary`)
  *   teacher (MTB/Boshlang'ich/Yuqori): teaching = category.perHourRate × hours
  *   fixed  — ixtiyoriy qo'shimcha (mavjud StaffSalary.fixedAmount qatlami)
  *   bonus  — tasdiqlangan PayrollBonus + eski StaffSalary.allowances
@@ -60,7 +61,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     )
     .map((u) => u.id);
 
-  const [positions, categories, hoursMap, bonusRows, deductionRows] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -90,7 +91,24 @@ const loadContext = async (month, users, preloaded = {}) => {
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         })
       : [],
+    // SHAXSIY MAOSH — chaqiruvchining `select` iga ishonilmaydi: bitta
+    // ekranda maydon tanlanmay qolsa, u lavozim maoshini ko'rsatib, vedomost
+    // bilan boshqa raqam chiqarardi. Shu yerda bir marta, bazadan.
+    positionIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: staffIds }, customBaseSalary: { not: null } },
+          select: { id: true, positionId: true, customBaseSalary: true },
+        })
+      : [],
   ]);
+
+  // Faqat O'SHA lavozimda amal qiladi: taxminiy (hypothetical) lavozim
+  // almashtirishda eski shaxsiy summa yangi lavozimga ko'chib ketmasin
+  const customBaseMap = new Map(
+    customBaseRows
+      .filter((row) => row.customBaseSalary != null && row.positionId)
+      .map((row) => [row.id, { positionId: row.positionId, amount: row.customBaseSalary }]),
+  );
 
   const deductionMap = new Map();
   for (const d of deductionRows) {
@@ -106,7 +124,20 @@ const loadContext = async (month, users, preloaded = {}) => {
     bonusMap.get(b.staffId).push(b);
   }
 
-  return { positionMap, categoryMap, salaryRules, hoursMap, bonusMap, deductionMap };
+  return { positionMap, categoryMap, salaryRules, hoursMap, bonusMap, deductionMap, customBaseMap };
+};
+
+/**
+ * Lavozim bazasi: shaxsiy maosh bo'lsa — u, aks holda lavozim maoshi.
+ * @returns {{ amount: Decimal, isCustom: boolean }}
+ */
+const resolvePositionBase = (user, position, ctx) => {
+  if (!position) return { amount: new Decimal(0), isCustom: false };
+  const custom = ctx.customBaseMap?.get(user.id);
+  if (custom && custom.positionId === user.positionId) {
+    return { amount: new Decimal(custom.amount), isCustom: true };
+  }
+  return { amount: new Decimal(position.baseSalary), isCustom: false };
 };
 
 /**
@@ -123,7 +154,7 @@ const computeForStaff = (user, month, ctx) => {
   // Biriktirilmagan (na lavozim, na toifa, na eski qoida) → payroll yo'q
   if (!position && !category && !rule) return null;
 
-  const base = new Decimal(position ? position.baseSalary : 0);
+  const { amount: base, isCustom: baseIsCustom } = resolvePositionBase(user, position, ctx);
   const extraFixed = new Decimal(rule ? rule.fixedAmount : 0);
   const fixedAmount = base.plus(extraFixed);
 
@@ -176,6 +207,8 @@ const computeForStaff = (user, month, ctx) => {
   return {
     eligible: true,
     salaryType,
+    baseAmount: base,
+    baseIsCustom,
     fixedAmount,
     kpiAmount,
     allowanceAmount,
@@ -198,6 +231,8 @@ const previewForStaff = (user, month, ctx) => {
   if (!c) return null;
   return {
     salaryType: c.salaryType,
+    baseAmount: formatAmount(c.baseAmount),
+    baseIsCustom: c.baseIsCustom,
     fixedAmount: formatAmount(c.fixedAmount),
     kpiAmount: formatAmount(c.kpiAmount),
     allowanceAmount: formatAmount(c.allowanceAmount),
@@ -216,6 +251,7 @@ const previewForStaff = (user, month, ctx) => {
 
 module.exports = {
   loadContext,
+  resolvePositionBase,
   computeForStaff,
   previewForStaff,
 };

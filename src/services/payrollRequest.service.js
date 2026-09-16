@@ -360,7 +360,8 @@ const reviewRequest = async (id, decision, reviewerId) => {
       const prevCatId = staff.salaryCategoryId;
       await tx.user.update({
         where: { id: staff.id },
-        data: { salaryCategoryId: cat.id, positionId: null },
+        // Lavozim bilan birga shaxsiy maoshi ham ketadi (`assignStaff` bilan AYNI)
+        data: { salaryCategoryId: cat.id, positionId: null, customBaseSalary: null },
       });
 
       const updated = await tx.payrollRequest.update({
@@ -427,6 +428,11 @@ const reviewRequest = async (id, decision, reviewerId) => {
     );
     return updated;
   });
+
+  // Toifa berildi — "hammaga" ushlab qolishlar unga ham yoyiladi
+  if (row.kind === "category") {
+    await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([row.staffId]);
+  }
 
   const [serialized] = await attachRefs([result]);
   return serialized;

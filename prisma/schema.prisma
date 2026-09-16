@@ -419,6 +419,13 @@ model User {
   //   salaryCategoryId — teaching o'qituvchi uchun TOIFA (KPI toifadan)
   positionId       String? @map("position_id") @db.Char(24)
   salaryCategoryId String? @map("salary_category_id") @db.Char(24)
+  //   customBaseSalary — SHU XODIMNING shaxsiy maoshi: lavozim qoladi (nomi va
+  //                      bo'limi), lekin `Position.baseSalary` o'rniga shu
+  //                      summa olinadi. null → lavozim maoshi. Faqat lavozim
+  //                      bilan ma'noga ega: lavozim o'zgarsa/olinsa tozalanadi.
+  //                      ⚠️ Engine uni BAZADAN o'zi o'qiydi (`loadContext`),
+  //                      chaqiruvchining `select` idan emas.
+  customBaseSalary Decimal? @map("custom_base_salary") @db.Decimal(14, 2)
   // QO'SHIMCHA ROLLAR — bitta odam bir nechta rolda bo'lishi mumkin
   // (o'qituvchi + ma'muriyat). `role` ASOSIY bo'lib qoladi va uning
   // ma'nosi o'zgarmaydi: butun tizimda 160 dan ortiq joy unga qarab
@@ -3102,8 +3109,13 @@ model PayrollBonus {
 //   oylik   = yalpi − ushlab
 //
 // ⚠️ HAR XODIMGA ALOHIDA QATOR. "Hammaga" amali ham shu yerda har bir odam
-// uchun qator yozadi (`batchId` bilan guruhlanadi): kimdan ushlanishi
-// yaratilgan paytdagi qaror, keyin ishga kirgan xodimga jimgina yoyilmaydi.
+// uchun qator yozadi (`batchId` bilan guruhlanadi) — bekor qilish, registr va
+// xodimning o'z ekrani qator bo'yicha ishlaydi.
+//
+// ⚠️ "HAMMAGA" (`appliesToAll`) KEYIN KELGANLARGA HAM YOYILADI (biznes
+// qarori): oyligi keyin belgilangan xodimga guruhning faol qatori nusxasi
+// yoziladi (`extendAllScopeDeductions`). Bir odamning qatori bekor qilinsa u
+// qayta yozilmaydi — `(batchId, staffId)` yagona.
 //
 // ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (sababi va aktyori bilan): muhrlangan
 // oyliklar unga tayanadi va "nega kam to'landi" degan savolga javob qolishi
@@ -3128,6 +3140,10 @@ model PayrollDeduction {
 
   note String @default("")
 
+  // "Hammasi" tanlab yozilgan guruh — keyin oyligi belgilangan xodimga ham
+  // qo'llanadi. false → faqat saqlash paytidagi ro'yxat.
+  appliesToAll Boolean @default(false) @map("applies_to_all")
+
   status       DeductionStatus @default(active)
   cancelReason String          @default("") @map("cancel_reason")
   cancelledAt  DateTime?       @map("cancelled_at")
@@ -3137,9 +3153,10 @@ model PayrollDeduction {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  @@unique([batchId, staffId])
   @@index([staffId, status, startMonth])
-  @@index([batchId])
   @@index([status, startMonth])
+  @@index([appliesToAll, status])
   @@map("payroll_deductions")
 }
 

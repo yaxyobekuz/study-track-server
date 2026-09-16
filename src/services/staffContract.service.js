@@ -479,7 +479,11 @@ const saveContract = async (staffId, data, actorId) => {
     if ((staff.salaryCategoryId ?? null) !== nextCategoryId) {
       userPatch.salaryCategoryId = nextCategoryId;
     }
-    if (nextCategoryId && staff.positionId) userPatch.positionId = null;
+    if (nextCategoryId && staff.positionId) {
+      userPatch.positionId = null;
+      // Shaxsiy maosh lavozimga tegishli — lavozim bilan birga ketadi
+      userPatch.customBaseSalary = null;
+    }
 
     if (Object.keys(userPatch).length) {
       await tx.user.update({ where: { id: staffId }, data: userPatch });
@@ -558,6 +562,9 @@ const saveContract = async (staffId, data, actorId) => {
       tx,
     );
   });
+
+  // Oylik paydo bo'lgan bo'lishi mumkin — "hammaga" ushlab qolishlar yoyiladi
+  await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([staffId]);
 
   return getContract(staffId, month);
 };

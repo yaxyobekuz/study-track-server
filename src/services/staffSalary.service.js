@@ -387,6 +387,9 @@ const createSalary = async (data, userId) => {
     });
   });
 
+  // ⚠️ Kechiktirilgan require: payrollDeduction bu faylni yuqorida o'qiydi (sikl)
+  await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([staff.id]);
+
   return serializeSalary(created, { staff, category });
 };
 
@@ -482,6 +485,8 @@ const updateSalary = async (id, data) => {
   if (category === undefined && updated.categoryId) {
     category = await prisma.salaryCategory.findUnique({ where: { id: updated.categoryId } });
   }
+
+  await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([row.staffId]);
 
   return serializeSalary(updated, { staff, category });
 };

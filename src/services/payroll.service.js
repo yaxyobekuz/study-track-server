@@ -148,6 +148,13 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   const summary = emptySummary(month, null);
 
+  // 0 ── "Hammaga" ushlab qolishlar keyin oyligi belgilanganlarga ham
+  // yoyiladi — MUHRDAN OLDIN. Biriktirish nuqtalari buni o'zi qiladi, bu
+  // yer (kunlik cron) — ulardan birortasi o'tkazib yuborgan holat uchun.
+  if (!dryRun) {
+    await require("./payrollDeduction.service").extendAllScopeDeductionsSafe(staffIds ?? null);
+  }
+
   // 1 ── Oylik oladigan xodimlar: lavozim (staff) YOKI toifa (teacher) YOKI
   // eski StaffSalary qoidasi bor. `isArchived` FILTRLANADI (ketganga yozilmaydi).
   const salaryRules = await resolveSalariesForMonth(month); // eski qatlam
