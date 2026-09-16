@@ -28,6 +28,7 @@ const MAX_CATCH_UP_MONTHS = 12;
 const serializeSettings = (settings) => ({
   ...settings,
   firstInvoiceMonthLabel: formatMonthKey(settings.firstInvoiceMonth),
+  firstPayrollMonthLabel: formatMonthKey(settings.firstPayrollMonth),
   lastGeneratedMonthLabel: formatMonthKey(settings.lastGeneratedMonth),
 });
 
@@ -157,6 +158,13 @@ const updateSettings = async (data, userId) => {
     payload.firstInvoiceMonth = parseOptionalMonthKey(
       data.firstInvoiceMonth,
       "Birinchi hisob-faktura oyi",
+    );
+  }
+
+  if (data.firstPayrollMonth !== undefined) {
+    payload.firstPayrollMonth = parseOptionalMonthKey(
+      data.firstPayrollMonth,
+      "Birinchi oylik oyi",
     );
   }
 

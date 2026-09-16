@@ -524,6 +524,36 @@ const getStudentInvoices = async (studentId, options = {}) => {
   const paid = new Decimal(agg._sum.paidAmount ?? 0);
   const debt = invoiced.minus(paid);
 
+  // ── QARZ MANBA BO'YICHA: tarif qancha, qo'shimcha xizmatlar (yotoqxona,
+  // ovqat) qancha ──────────────────────────────────────────────────────
+  // Har fakturada `servicesAmount` — xom xizmat summasi, `baseAmount` esa
+  // tarif + xizmat. Yakuniy `amount` (proratsiya + chegirmadan keyin)
+  // ichidagi xizmat ulushi = amount × servicesAmount / baseAmount. To'lov
+  // fakturaga BUTUN qo'llanadi, shuning uchun QOLGAN qarzni shu nisbatda
+  // taqsimlaymiz — ikki bo'lak yig'indisi AYNAN `debt` ga teng qoladi
+  // (tarif = qolgan − xizmat, yaxlitlash farqi tarifga tushadi).
+  let servicesDebt = new Decimal(0);
+  let hasServices = false;
+  for (const row of rows) {
+    if (row.status === "cancelled") continue;
+    const rowAmount = new Decimal(row.amount);
+    const rowBase = new Decimal(row.baseAmount ?? 0);
+    const rowServices = new Decimal(row.servicesAmount ?? 0);
+    if (rowServices.greaterThan(0)) hasServices = true;
+    const remaining = rowAmount.minus(row.paidAmount);
+    if (remaining.lessThanOrEqualTo(0) || rowBase.lessThanOrEqualTo(0)) continue;
+    if (rowServices.lessThanOrEqualTo(0)) continue;
+    // remaining × servicesAmount / baseAmount
+    servicesDebt = servicesDebt.plus(
+      remaining.times(rowServices).div(rowBase),
+    );
+  }
+  servicesDebt = servicesDebt.toDecimalPlaces(2);
+  const positiveDebt = debt.isNegative() ? new Decimal(0) : debt;
+  // Yaxlitlash farqi tarifga tushadi — yig'indi har doim `debt` ga teng
+  if (servicesDebt.greaterThan(positiveDebt)) servicesDebt = positiveDebt;
+  const tariffDebt = positiveDebt.minus(servicesDebt);
+
   // O'quvchining TO'LIQ oylar jadvali — ta'til oylari ham ko'rinadi,
   // shunda "iyulda nega hisob yo'q?" savoli tug'ilmaydi.
   const invoiceByMonth = new Map(rows.map((r) => [r.month, r]));
@@ -616,7 +646,13 @@ const getStudentInvoices = async (studentId, options = {}) => {
       discountAmount: formatAmount(new Decimal(agg._sum.discountAmount ?? 0)),
       invoiced: formatAmount(invoiced),
       paid: formatAmount(paid),
-      debt: formatAmount(debt.isNegative() ? new Decimal(0) : debt),
+      debt: formatAmount(positiveDebt),
+      // Qarz manba bo'yicha — tarifdan qancha, xizmatlardan (yotoqxona/ovqat)
+      // qancha. Yig'indisi aynan `debt` ga teng. `hasServices` — o'quvchida
+      // umuman xizmat bo'lganmi (ajratmani ko'rsatish/berkitish uchun).
+      debtTariff: formatAmount(tariffDebt),
+      debtServices: formatAmount(servicesDebt),
+      hasServices,
       // Bekor qilingani "to'lanmagan" emas — u QAROR (yuqoridagi
       // `liveWhere` izohiga qarang)
       unpaidCount: rows.filter(
@@ -1770,7 +1806,7 @@ const amendPaidInvoice = async (invoice, reason, userId) => {
     return getInvoiceById(invoice.id);
   }
 
-  // COMPARE-AND-SWAP: paidAmount o'qilgan qiymatда qolgan bo'lsagina yozamiz —
+  // COMPARE-AND-SWAP: paidAmount o'qilgan qiymatda qolgan bo'lsagina yozamiz —
   // shu orada to'lov tushsa (paidAmount o'zgarsa) yozuv rad etiladi.
   const status = deriveStatus(newAmount, paid);
   const updated = await prisma.monthlyInvoice.updateMany({

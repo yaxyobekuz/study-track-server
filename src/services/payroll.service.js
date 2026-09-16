@@ -35,6 +35,7 @@ const {
 } = require("./staffSalary.service");
 const payrollEngine = require("./payrollEngine.service");
 const { getTeacherHours } = require("./lessonHours.service");
+const { getFinanceSettings } = require("./settings.service");
 
 // Payroll uchun user maydonlari — biriktirmalar bilan
 const PAYROLL_USER_SELECT = {
@@ -129,6 +130,15 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   if (month > currentMonthKey()) {
     throw new BadRequestError("Kelajakdagi oy uchun oylik shakllantirilmaydi");
+  }
+
+  // Qattiq pol: xodimlar shu oydan "ish boshlagan" — undan oldingi oylarga
+  // oylik majburiyati (xarajat) yozilmaydi. `firstInvoiceMonth` ning ko'zgusi.
+  const settings = await getFinanceSettings();
+  if (settings.firstPayrollMonth != null && month < settings.firstPayrollMonth) {
+    const skipped = emptySummary(month, "Oylik boshlanish oyidan oldingi oy");
+    skipped.durationMs = Date.now() - startedAt;
+    return skipped;
   }
 
   const summary = emptySummary(month, null);

@@ -2460,6 +2460,12 @@ model FinanceSettings {
   // tizimga o'tishdan oldingi oylarga qarz yozib qo'yishning oldini oladi.
   firstInvoiceMonth Int? @map("first_invoice_month")
 
+  // Qattiq pol: bu oydan oldin hech qachon XODIM OYLIGI shakllanmaydi —
+  // `firstInvoiceMonth` ning chiqim tomonidagi ko'zgusi. "Hamma xodim shu
+  // oydan ish boshladi" deganning tizimdagi ifodasi: tizimga o'tishdan
+  // oldingi oylarga oylik majburiyati (xarajat) yozib qo'yilmaydi.
+  firstPayrollMonth Int? @map("first_payroll_month")
+
   // STANDART TARIF — yangi o'quvchi yaratilganda unga AVTOMAT biriktiriladi.
   //
   // ⚠️ soft ref → platform.Tariff. FK YO'Q va bo'lishi ham mumkin emas:
