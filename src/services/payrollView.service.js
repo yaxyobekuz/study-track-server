@@ -5,6 +5,8 @@
  */
 
 const prisma = require("../config/prisma");
+const platformPrisma = require("../config/platformPrisma");
+const { requireBranch } = require("../config/branchContext");
 const { NotFoundError, BadRequestError } = require("../utils/errors");
 const {
   getPaginationParams,
@@ -13,6 +15,7 @@ const {
 const { currentMonthKey, parseMonthKey, formatMonthKey } = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const payrollEngine = require("./payrollEngine.service");
+const { resolveSalariesForMonth } = require("./staffSalary.service");
 
 const USER_SELECT = {
   id: true,
@@ -486,6 +489,17 @@ const getAllowancesView = async (req) => {
  * bilan) — tanlansa ko'chiriladi, ikkinchi nusxa paydo bo'lmaydi.
  * Lavozimni almashtirish — xodim qatoridagi tugma orqali.
  *
+ * ⚠️ `isActive` bo'yicha FILTRLANMAYDI — u login bayrog'i. Oylik
+ * shakllantirish ham faqat `isArchived` ni filtrlaydi, "Xodimlar" sahifasi
+ * ham login o'chirilganlarni ko'rsatadi. Ilgari bu yerda `isActive: true`
+ * turardi: tizimga kirmaydigan (oshpaz, farrosh) xodim ro'yxatda bor-u,
+ * tanlagichda yo'q edi — "Biriktirilmagan xodim topilmadi".
+ * Istisno — FILIALDAN CHIQARILGAN xodim (`detachFromBranch` ham
+ * `isActive: false` yozadi): unda shu filialga ruxsat qatori yo'q.
+ *
+ * Tartib: OYLIGI BELGILANMAGANLAR TEPADA (lavozim/toifa ham, amaldagi
+ * StaffSalary qoidasi ham yo'q) — tanlagich aynan shular uchun ochiladi.
+ *
  * @param {object} req - query: { departmentId }
  */
 const getAssignCandidates = async (req) => {
@@ -496,36 +510,54 @@ const getAssignCandidates = async (req) => {
   if (!dept) throw new NotFoundError("Bo'lim topilmadi");
   const isTeaching = dept.kind === "teaching";
 
-  const [positions, categories] = await Promise.all([
+  // Teaching bo'limga faqat o'qituvchilar, staff bo'limga qolgan xodimlar
+  const [positions, categories, salaryRules, users] = await Promise.all([
     prisma.position.findMany({ select: { id: true, name: true, departmentId: true } }),
     prisma.salaryCategory.findMany({ select: { id: true, name: true, departmentId: true } }),
+    resolveSalariesForMonth(currentMonthKey()),
+    prisma.user.findMany({
+      where: {
+        isArchived: false,
+        role: isTeaching ? "teacher" : { notIn: ["student", "teacher", "owner"] },
+      },
+      select: { ...USER_SELECT, isActive: true },
+      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+    }),
   ]);
   const positionById = new Map(positions.map((p) => [p.id, p]));
   const categoryById = new Map(categories.map((c) => [c.id, c]));
 
-  // Teaching bo'limga faqat o'qituvchilar, staff bo'limga qolgan xodimlar
-  const users = await prisma.user.findMany({
-    where: {
-      isActive: true,
-      isArchived: false,
-      role: isTeaching ? "teacher" : { notIn: ["student", "teacher", "owner"] },
-    },
-    select: USER_SELECT,
-    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-  });
+  const inactiveIds = users.filter((u) => !u.isActive).map((u) => u.id);
+  const stillAttached = new Set();
+  if (inactiveIds.length > 0) {
+    const access = await platformPrisma.userBranchAccess.findMany({
+      where: { branchId: requireBranch().id, userId: { in: inactiveIds } },
+      select: { userId: true },
+    });
+    access.forEach((a) => stillAttached.add(a.userId));
+  }
 
-  return users
+  const rows = users
+    .filter((u) => u.isActive || stillAttached.has(u.id))
     .filter((u) => {
       const own = isTeaching
         ? categoryById.get(u.salaryCategoryId)
         : positionById.get(u.positionId);
       return own?.departmentId !== departmentId;
     })
-    .map((u) => ({
-      ...userInfo(u),
-      currentLabel:
-        positionById.get(u.positionId)?.name ?? categoryById.get(u.salaryCategoryId)?.name ?? null,
-    }));
+    .map((u) => {
+      const currentLabel =
+        positionById.get(u.positionId)?.name ?? categoryById.get(u.salaryCategoryId)?.name ?? null;
+      return {
+        ...userInfo(u),
+        currentLabel,
+        hasSalary: Boolean(currentLabel) || salaryRules.has(u.id),
+        loginDisabled: !u.isActive,
+      };
+    });
+
+  // Barqaror saralash — guruh ichida ism tartibi saqlanadi
+  return rows.sort((a, b) => Number(a.hasSalary) - Number(b.hasSalary));
 };
 
 module.exports = {

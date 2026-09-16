@@ -26,10 +26,17 @@ const users = [
   { id: "u4".padEnd(24, "0"), firstName: "Zafar", lastName: "", role: "cook", positionId: POS_A, salaryCategoryId: null },
   { id: "u5".padEnd(24, "0"), firstName: "Olim", lastName: "", role: "teacher", positionId: null, salaryCategoryId: null },
   { id: "u6".padEnd(24, "0"), firstName: "Sardor", lastName: "", role: "student", positionId: null, salaryCategoryId: null },
-];
+  // Login o'chirilgan, lekin filialda — nomzod
+  { id: "u7".padEnd(24, "0"), firstName: "Gulnora", lastName: "", role: "cleaner", positionId: null, salaryCategoryId: null, isActive: false },
+  // Filialdan chiqarilgan (ruxsat qatori yo'q) — nomzod EMAS
+  { id: "u8".padEnd(24, "0"), firstName: "Kamol", lastName: "", role: "cook", positionId: null, salaryCategoryId: null, isActive: false },
+  // Lavozimsiz, lekin amaldagi StaffSalary qoidasi bor — oyligi bor
+  { id: "u9".padEnd(24, "0"), firstName: "Farhod", lastName: "", role: "guard", positionId: null, salaryCategoryId: null },
+].map((u) => ({ isActive: true, ...u }));
 
-// Faqat servis ishlatadigan shartlar: role (satr / notIn), positionId (in)
+// Faqat servis ishlatadigan shartlar: isActive, role (satr / notIn), positionId (in)
 const matches = (u, where = {}) => {
+  if (where.isActive !== undefined && u.isActive !== where.isActive) return false;
   if (typeof where.role === "string" && u.role !== where.role) return false;
   if (where.role?.notIn && where.role.notIn.includes(u.role)) return false;
   if (where.role?.not && u.role === where.role.not) return false;
@@ -73,6 +80,18 @@ const prisma = {
 };
 
 fakeModule("../src/config/prisma", prisma);
+fakeModule("../src/config/platformPrisma", {
+  userBranchAccess: {
+    findMany: async ({ where }) =>
+      [{ userId: users[6].id, branchId: "main" }].filter(
+        (a) => a.branchId === where.branchId && where.userId.in.includes(a.userId),
+      ),
+  },
+});
+fakeModule("../src/config/branchContext", { requireBranch: () => ({ id: "main" }) });
+fakeModule("../src/services/staffSalary.service", {
+  resolveSalariesForMonth: async () => new Map([[users[8].id, { staffId: users[8].id }]]),
+});
 fakeModule("../src/services/payrollEngine.service", {
   loadContext: async () => ({}),
   previewForStaff: (u) => ({ amount: u.firstName === "Ali" ? "9000000.00" : "1000000.00" }),
@@ -80,16 +99,30 @@ fakeModule("../src/services/payrollEngine.service", {
 
 const view = require("../src/services/payrollView.service");
 
-test("nomzodlar: shu bo'limdagilar chiqariladi, boshqa bo'limdagi hozirgi lavozimi bilan qoladi", async () => {
+test("nomzodlar: shu bo'limdagilar chiqariladi, oyligi belgilanmaganlar tepada", async () => {
   const rows = await view.getAssignCandidates({ query: { departmentId: DEPT_A } });
   const names = rows.map((r) => r.fullName);
 
-  // Ali va Zafar allaqachon Oshxonada — qayta tanlanmaydi
-  assert.deepEqual(names, ["Bobur", "Dilnoza"]);
-  assert.equal(rows[0].currentLabel, "Qorovul");
-  assert.equal(rows[1].currentLabel, null);
+  // Ali va Zafar allaqachon Oshxonada — qayta tanlanmaydi.
+  // Avval oyligi yo'qlar (ism tartibida), keyin lavozimi/qoidasi borlar.
+  assert.deepEqual(names, ["Dilnoza", "Gulnora", "Bobur", "Farhod"]);
+  const byName = Object.fromEntries(rows.map((r) => [r.fullName, r]));
+  assert.equal(byName.Bobur.currentLabel, "Qorovul");
+  assert.equal(byName.Bobur.hasSalary, true);
+  assert.equal(byName.Farhod.hasSalary, true);
+  assert.equal(byName.Dilnoza.currentLabel, null);
+  assert.equal(byName.Dilnoza.hasSalary, false);
   // O'qituvchi va o'quvchi staff bo'limga nomzod emas
   assert.ok(!names.includes("Olim") && !names.includes("Sardor"));
+});
+
+test("nomzodlar: login o'chirilgan xodim chiqadi, filialdan chiqarilgani chiqmaydi", async () => {
+  const rows = await view.getAssignCandidates({ query: { departmentId: DEPT_A } });
+  const byName = Object.fromEntries(rows.map((r) => [r.fullName, r]));
+
+  assert.equal(byName.Gulnora?.loginDisabled, true);
+  assert.equal(byName.Dilnoza.loginDisabled, false);
+  assert.equal(byName.Kamol, undefined);
 });
 
 test("sukut saralash: oxirgi biriktirilgan tepada, qolganlari ism bo'yicha", async () => {
