@@ -46,6 +46,10 @@ const PAYROLL_USER_SELECT = {
   salaryCategoryId: true,
 };
 
+// TIZIM AKTYORI — cron/avtomatik shakllantirish uchun. `createdBy` NOT NULL
+// (eski holat saqlangan), cron esa odam emas — shu sentinel yoziladi.
+const SYSTEM_ACTOR_ID = "000000000000000000000000";
+
 const STATUS_LABELS = {
   unpaid: "To'lanmagan",
   partial: "Qisman to'langan",
@@ -206,7 +210,8 @@ const generateForMonth = async (monthInput, options = {}) => {
         username: person.username,
         role: person.role,
       },
-      createdBy: actorId,
+      // Cron (actor yo'q) — tizim sentineli: NOT NULL ustun buzilmaydi
+      createdBy: actorId ?? SYSTEM_ACTOR_ID,
     });
   }
 
