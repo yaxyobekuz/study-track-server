@@ -17,12 +17,16 @@ const createCategory = asyncHandler(async (req, res) => {
 });
 
 const updateCategory = asyncHandler(async (req, res) => {
-  const data = await service.updateCategory(req.params.id, req.body);
+  const data = await service.updateCategory(req.params.id, req.body, req.user.id);
   res.json({ success: true, data });
 });
 
 const archiveCategory = asyncHandler(async (req, res) => {
-  const data = await service.archiveCategory(req.params.id, req.body.isArchived);
+  const data = await service.archiveCategory(
+    req.params.id,
+    req.body.isArchived,
+    req.user.id,
+  );
   res.json({ success: true, data });
 });
 

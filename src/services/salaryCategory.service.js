@@ -10,12 +10,13 @@
  *
  * O'qituvchi toifaga biriktiriladi (User.salaryCategoryId); KPI = perHourRate ×
  * o'tilgan dars soati. Stavka payroll generatsiyasida MUHRLANADI (o'zgarsa
- * o'tgan oyга tegmaydi).
+ * o'tgan oyga tegmaydi).
  */
 
 const prisma = require("../config/prisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { parseAmount, formatAmount } = require("../helpers/money.helpers");
+const payrollAudit = require("./payrollAudit.service");
 
 const serialize = (row, { usageCount, department } = {}) => ({
   id: row.id,
@@ -142,7 +143,7 @@ const createCategory = async (data, userId) => {
   }
 };
 
-const updateCategory = async (id, data) => {
+const updateCategory = async (id, data, actorId = null) => {
   const row = await prisma.salaryCategory.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Toifa topilmadi");
 
@@ -163,6 +164,31 @@ const updateCategory = async (id, data) => {
       data: payload,
       include: { department: { select: { name: true } } },
     });
+
+    // MOLIYAVIY tarix: stavka/maosh o'zgarishi kim tomonidan qachon
+    // qilinganini audit saqlaydi ("kim maoshni o'zgartirdi" savoli)
+    if (actorId) {
+      const MONEY_FIELDS = ["perHourRate", "monthlyPerHour", "hoursPerStavka", "baseSalary"];
+      const changed = MONEY_FIELDS.filter(
+        (f) => payload[f] !== undefined && String(payload[f]) !== String(row[f]),
+      );
+      if (changed.length || payload.name !== undefined) {
+        await payrollAudit.record({
+          actorId,
+          action: "category.update",
+          targetType: "salaryCategory",
+          targetId: id,
+          summary: `Toifa "${updated.name}" yangilandi (${changed.length ? changed.join(", ") : "nom/izoh"})`,
+          oldValue: Object.fromEntries(
+            [...changed, ...(payload.name !== undefined ? ["name"] : [])].map((f) => [f, String(row[f])]),
+          ),
+          newValue: Object.fromEntries(
+            [...changed, ...(payload.name !== undefined ? ["name"] : [])].map((f) => [f, String(updated[f])]),
+          ),
+        });
+      }
+    }
+
     return serialize(updated);
   } catch (error) {
     if (error?.code === "P2002") throw new BadRequestError("Bu bo'limda shu nomli toifa allaqachon bor");
@@ -170,7 +196,7 @@ const updateCategory = async (id, data) => {
   }
 };
 
-const archiveCategory = async (id, isArchived) => {
+const archiveCategory = async (id, isArchived, actorId = null) => {
   const row = await prisma.salaryCategory.findUnique({ where: { id } });
   if (!row) throw new NotFoundError("Toifa topilmadi");
 
@@ -179,6 +205,19 @@ const archiveCategory = async (id, isArchived) => {
     data: { isArchived: Boolean(isArchived), archivedAt: isArchived ? new Date() : null },
     include: { department: { select: { name: true } } },
   });
+
+  if (actorId) {
+    await payrollAudit.record({
+      actorId,
+      action: "category.archive",
+      targetType: "salaryCategory",
+      targetId: id,
+      summary: `Toifa "${updated.name}" ${isArchived ? "arxivlandi" : "arxivdan qaytarildi"}`,
+      oldValue: { isArchived: row.isArchived },
+      newValue: { isArchived: updated.isArchived },
+    });
+  }
+
   return serialize(updated);
 };
 

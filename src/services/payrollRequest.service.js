@@ -233,11 +233,21 @@ const getAvailableCategories = async (staffId) => {
   const rows = await prisma.salaryCategory.findMany({
     where,
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    select: { id: true, name: true, perHourRate: true, baseSalary: true, departmentId: true },
+    select: {
+      id: true,
+      name: true,
+      perHourRate: true,
+      baseSalary: true,
+      departmentId: true,
+      // Toifasiz o'qituvchiga BARCHA bo'lim toifalari keladi — nomlar
+      // takrorlanadi ("2-toifa" x3), shuning uchun bo'lim nomi shart
+      department: { select: { name: true } },
+    },
   });
   return rows.map((c) => ({
     id: c.id,
     name: c.name,
+    departmentName: c.department?.name ?? null,
     perHourRate: formatAmount(c.perHourRate),
     baseSalary: formatAmount(c.baseSalary),
     isCurrent: c.id === staff?.salaryCategoryId,

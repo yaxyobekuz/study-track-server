@@ -13,4 +13,10 @@ const getTeacherPayroll = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
-module.exports = { getStaffPayroll, getTeacherPayroll };
+/** Ustama haq registri — manba va holati bilan (Yo'nalish → Ustama haq). */
+const getAllowancesView = asyncHandler(async (req, res) => {
+  const data = await payrollViewService.getAllowancesView(req);
+  res.json({ success: true, ...data });
+});
+
+module.exports = { getStaffPayroll, getTeacherPayroll, getAllowancesView };

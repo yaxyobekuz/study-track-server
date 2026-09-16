@@ -51,9 +51,11 @@ const {
 } = require("../controllers/department.controller");
 
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──
-const { getStaffPayroll, getTeacherPayroll } = require("../controllers/payrollView.controller");
+const { getStaffPayroll, getTeacherPayroll, getAllowancesView } = require("../controllers/payrollView.controller");
 router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);
 router.get("/view/teachers", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getTeacherPayroll);
+// Ustama haq registri (Yo'nalish -> Ustama haq)
+router.get("/view/allowances", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getAllowancesView);
 
 // ── Bo'limlar (staff/teaching) ──
 router.get("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getDepartments);
