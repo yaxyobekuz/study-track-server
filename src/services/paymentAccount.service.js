@@ -168,11 +168,59 @@ const getAccounts = async (query = {}) => {
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
 
-  const total = rows.reduce((acc, row) => acc.plus(row.balance), new Decimal(0));
+  // Sana filtri (from/to) — kartalar tanlangan OY holatini ko'rsatadi:
+  //   balance      = oy OXIRIGA qadar qoldiq ("o'sha oyda qancha pul bor edi")
+  //   periodIncome = o'sha davr kirimi, periodExpense = chiqimi
+  const range = parseDayRangeFilter(query);
+  if (!range) {
+    const total = rows.reduce((acc, row) => acc.plus(row.balance), new Decimal(0));
+    return {
+      items: rows.map((row) => serializeAccount(row)),
+      totals: { count: rows.length, totalBalance: formatAmount(total) },
+    };
+  }
 
+  const items = await Promise.all(
+    rows.map(async (row) => {
+      // Oy oxiriga qadar qoldiq = openingBalance + Σ entries (occurredAt <= to).
+      const asOfAgg = await prisma.accountEntry.aggregate({
+        where: {
+          accountId: row.id,
+          ...(range.lte ? { occurredAt: { lte: range.lte } } : {}),
+        },
+        _sum: { amount: true },
+      });
+      const asOfBalance = new Decimal(row.openingBalance).plus(
+        asOfAgg._sum.amount ?? 0,
+      );
+
+      const [inc, exp] = await Promise.all([
+        prisma.accountEntry.aggregate({
+          where: { accountId: row.id, occurredAt: range, amount: { gt: 0 } },
+          _sum: { amount: true },
+        }),
+        prisma.accountEntry.aggregate({
+          where: { accountId: row.id, occurredAt: range, amount: { lt: 0 } },
+          _sum: { amount: true },
+        }),
+      ]);
+
+      return serializeAccount(row, {
+        balance: formatAmount(asOfBalance),
+        periodIncome: formatAmount(new Decimal(inc._sum.amount ?? 0)),
+        periodExpense: formatAmount(new Decimal(exp._sum.amount ?? 0).abs()),
+      });
+    }),
+  );
+
+  const total = items.reduce((acc, it) => acc.plus(new Decimal(it.balance)), new Decimal(0));
   return {
-    items: rows.map((row) => serializeAccount(row)),
-    totals: { count: rows.length, totalBalance: formatAmount(total) },
+    items,
+    totals: {
+      count: items.length,
+      totalBalance: formatAmount(total),
+      periodFiltered: true,
+    },
   };
 };
 
