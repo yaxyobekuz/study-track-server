@@ -148,6 +148,74 @@ const summarizeSubstitution = (row, partner) => ({
   reasonLabel: REASON_LABELS[row.reason] ?? row.reason,
 });
 
+/** Fan manbalari tartibi — ro'yxatda avval amalda dars beradigan fanlar. */
+const SUBJECT_SOURCE_RANK = { schedule: 0, substitution: 1, profile: 2 };
+
+/**
+ * FANLAR — "bu odam qaysi fan o'qituvchisi".
+ *
+ * Uch manba BIRLASHTIRILADI, chunki har biri boshqa savolga javob beradi:
+ *   · jadval shabloni (`schedule`)     — haftalik jadvalda o'z darsi bor fan;
+ *   · o'rinbosarlik (`substitution`)   — o'z darsi yo'q, lekin shu oyda
+ *                                        kimningdir o'rniga shu fandan chiqqan;
+ *   · profil (`profile`)               — `UserSubject` da biriktirilgan,
+ *                                        jadvalda esa darsi yo'q.
+ *
+ * ⚠️ FAQAT JADVAL OLINSA, jadvali hali to'ldirilmagan o'qituvchida fan
+ * umuman ko'rinmasdi. FAQAT PROFIL OLINSA, ikkinchi fandan ham dars
+ * beradigan o'qituvchining o'sha fani yo'qolardi — oylik soati esa aynan
+ * o'sha fandan kelayotgan bo'lishi mumkin.
+ *
+ * ⚠️ "JADVALDA BORMI" SHABLONDAN aniqlanadi, oyning soatidan EMAS. Ta'til
+ * oyida soat nol bo'ladi va oy kesimiga qaralsa, har bir fan
+ * "jadvalda yo'q" deb ko'rinib qolardi.
+ *
+ * ⚠️ O'RINBOSARLIK ALOHIDA BELGILANADI: bir kun fizika darsiga chiqqan
+ * matematika o'qituvchisi "fizika o'qituvchisi" bo'lib qolmasligi kerak,
+ * lekin o'sha soat pulga kirgani uchun ro'yxatdan ham tushib qolmaydi.
+ *
+ * @param {object} params
+ * @param {Array<{id, name, hours, covered}>} params.bySubject - oy kesimi (`getTeachersHours`)
+ * @param {Array<{subjectId, _count: {_all}}>} params.weekly - jadval shabloni, fan bo'yicha
+ * @param {Array<{id, name, isActive}>} params.assigned - profildagi fanlar
+ * @param {Map<string, string>} params.names - qo'shimcha nomlar (shablondagi, oyda soati yo'q fanlar)
+ * @returns {Array<{id, name, hours, weeklyHours, coveredHours, source, isAssigned}>}
+ */
+function buildSubjects({ bySubject, weekly, assigned, names }) {
+  const monthly = new Map(bySubject.filter((row) => row.id).map((row) => [row.id, row]));
+  const weeklyMap = new Map(weekly.map((row) => [row.subjectId, row._count._all]));
+  const assignedMap = new Map(assigned.map((subject) => [subject.id, subject]));
+
+  const ids = new Set([...weeklyMap.keys(), ...monthly.keys()]);
+  // Arxivlangan fan profilda qolib ketgan bo'lsa, u "jadvalda yo'q" bo'lib
+  // ko'rinmasin — faqat amalda dars bo'lsa chiqadi.
+  for (const subject of assigned) if (subject.isActive) ids.add(subject.id);
+
+  const rows = [...ids].map((id) => {
+    const row = monthly.get(id);
+    const weeklyHours = weeklyMap.get(id) ?? 0;
+    const coveredHours = row?.covered ?? 0;
+
+    return {
+      id,
+      name: row?.name ?? assignedMap.get(id)?.name ?? names.get(id) ?? "Noma'lum",
+      hours: row?.hours ?? 0,
+      weeklyHours,
+      coveredHours,
+      source: weeklyHours > 0 ? "schedule" : coveredHours > 0 ? "substitution" : "profile",
+      isAssigned: assignedMap.has(id),
+    };
+  });
+
+  return rows.sort(
+    (a, b) =>
+      SUBJECT_SOURCE_RANK[a.source] - SUBJECT_SOURCE_RANK[b.source] ||
+      b.hours - a.hours ||
+      b.weeklyHours - a.weeklyHours ||
+      a.name.localeCompare(b.name, "uz"),
+  );
+}
+
 /**
  * KIM RO'YXATGA KIRADI.
  *
@@ -238,6 +306,9 @@ function buildRow(person, projected, accrued, hoursRow, entry) {
     hourlyRate: perHourRate ? formatAmount(perHourRate) : null,
     categoryName: projected?.categoryName || null,
     positionName: projected?.positionName || null,
+    // Toifa/lavozim qaysi bo'limniki ("Yuqori sinflar") — bir xil nomli
+    // toifa har bo'limda boshqa stavka bilan bo'lishi mumkin.
+    departmentName: projected?.departmentName || null,
     // Soat PULGA aylanadimi — ustunni ko'rsatish sharti EMAS, faqat
     // "bu odamda soat pul hosil qiladi" belgisi (rang va jami uchun).
     usesHours: Boolean(perHourRate),
@@ -539,7 +610,7 @@ async function getTeacherDetail(teacherId, month) {
   const cutoff = cutoffForMonth(month);
   const salaries = await resolveSalariesForMonth(month);
 
-  const [hoursMap, entry, substitutions] = await Promise.all([
+  const [hoursMap, entry, substitutions, weeklySubjects, assignedSubjects] = await Promise.all([
     getTeachersHours([teacher.id], month, { asOfDayOfMonth: cutoff }),
     prisma.payrollEntry.findUnique({
       where: { staffId_month: { staffId: teacher.id, month } },
@@ -555,9 +626,30 @@ async function getTeacherDetail(teacherId, month) {
       include: { items: true },
       orderBy: { fromDate: "desc" },
     }),
+    prisma.scheduleLesson.groupBy({
+      by: ["subjectId"],
+      where: { teacherId: teacher.id },
+      _count: { _all: true },
+    }),
+    prisma.userSubject.findMany({
+      where: { userId: teacher.id },
+      select: { subject: { select: { id: true, name: true, isActive: true } } },
+    }),
   ]);
 
   const hoursRow = hoursMap.get(teacher.id);
+
+  // Shablonda bor-u shu oyda soati yo'q fan (ta'til oyi) nomsiz qolmasin
+  const bySubject = hoursRow?.bySubject ?? [];
+  const assigned = assignedSubjects.map((row) => row.subject);
+  const knownIds = new Set([...bySubject.map((row) => row.id), ...assigned.map((s) => s.id)]);
+  const unnamedIds = weeklySubjects.map((row) => row.subjectId).filter((id) => !knownIds.has(id));
+  const extraNames = unnamedIds.length
+    ? await prisma.subject.findMany({
+        where: { id: { in: unnamedIds } },
+        select: { id: true, name: true },
+      })
+    : [];
 
   const ctx = await loadContext(month, [teacher], {
     salaryRules: salaries,
@@ -599,7 +691,13 @@ async function getTeacherDetail(teacherId, month) {
     taughtDays: hoursRow?.taughtDays ?? 0,
     byDay: hoursRow?.byDay ?? [],
     byClass: hoursRow?.byClass ?? [],
-    bySubject: hoursRow?.bySubject ?? [],
+    bySubject,
+    subjects: buildSubjects({
+      bySubject,
+      weekly: weeklySubjects,
+      assigned,
+      names: new Map(extraNames.map((s) => [s.id, s.name])),
+    }),
     series: (hoursRow?.series ?? []).reduce((acc, point) => {
       const prev = acc[acc.length - 1];
       acc.push({ ...point, cumulative: (prev?.cumulative ?? 0) + point.hours });
