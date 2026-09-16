@@ -76,6 +76,7 @@ const {
 } = require("../helpers/enrollment.helpers");
 const {
   releaseInvoiceAllocations,
+  applyDepositsForStudents,
   getBalance,
   getBalances,
   getMovements,
@@ -1794,15 +1795,68 @@ const amendPaidInvoice = async (invoice, reason, userId) => {
   // Summa o'zgarmagan — tegmaymiz (keraksiz yozuvni oldini olish)
   if (newAmount.equals(invoice.amount)) return getInvoiceById(invoice.id);
 
-  // Yangi summa to'langandan kam — jimgina tuzatmaymiz (ortiqcha to'lov
-  // depozit/bekor qilishni talab qiladi). Loglaymiz, admin qo'lda hal qiladi.
+  // Yangi summa to'langandan KAM (masalan tarif narxi to'g'rilandi:
+  // 2 000 000 → 1 750 000). JOYIDA arzonlashtira olmaymiz — paidAmount
+  // amount'dan katta bo'lib qolardi. Buning o'rniga:
+  //   1. Taqsimotlarni bo'shatamiz → to'langan pul DEPOZITGA qaytadi
+  //   2. Faktura summasini yangi (arzon) narxga qayta muhrlaymiz
+  //   3. Depozitni qayta qo'llaymiz → yangi summa yopiladi, ortiqchasi
+  //      (250 000) depozitda qoladi (keyingi oyga yoki qaytarishga)
+  // Bu — `cancelInvoice` (depozitga qaytarish) + qayta yaratishning
+  // @@unique(studentId, month) ni buzmaydigan, JOYIDAGI ko'rinishi.
   if (newAmount.lessThan(paid)) {
+    const status = deriveStatus(newAmount, new Decimal(0));
+    await prisma.$transaction(async (tx) => {
+      // Lock tartibi: StudentAccount birinchi (moliya moduli invarianti)
+      await tx.studentAccount.upsert({
+        where: { studentId: invoice.studentId },
+        create: { studentId: invoice.studentId, balance: 0 },
+        update: { version: { increment: 1 } },
+      });
+
+      const fresh = await tx.monthlyInvoice.findUnique({ where: { id: invoice.id } });
+      if (!fresh || fresh.status === "cancelled") {
+        throw new ConflictError("Hisob-faktura holati o'zgardi. Qayta urinib ko'ring.");
+      }
+
+      // To'langan pulni depozitga qaytaramiz (paidAmount → 0)
+      await releaseInvoiceAllocations(tx, fresh);
+
+      // Yangi (arzon) narxni muhrlaymiz — faktura endi to'lovsiz
+      await tx.monthlyInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          baseAmount: row.baseAmount,
+          billableDays: row.billableDays,
+          monthDays: row.monthDays,
+          roundingUnit: row.roundingUnit,
+          proratedAmount: row.proratedAmount,
+          discountAmount: row.discountAmount,
+          discountSnapshot: row.discountSnapshot,
+          servicesAmount: row.servicesAmount,
+          servicesSnapshot: row.servicesSnapshot,
+          amount: newAmount,
+          status,
+          paidAmount: 0,
+          paidAt: null,
+        },
+      });
+    }, TX_OPTIONS);
+
+    // Depozitni qayta qo'llaymiz (avtomat qo'llash yoqilgan bo'lsa) — yangi
+    // arzon faktura yopiladi, ortiqchasi depozitda qoladi.
+    if (settings.depositAutoApply) {
+      await applyDepositsForStudents([invoice.studentId]);
+    }
+
     logger.warn(
-      `[invoices] To'langan faktura summasi tushdi, JOYIDA tuzatilmadi: ` +
-        `invoice=${invoice.id} student=${invoice.studentId} month=${invoice.month} ` +
-        `eski=${invoice.amount.toFixed(2)} yangi=${newAmount.toFixed(2)} paid=${paid.toFixed(2)} ` +
-        `— ortiqcha to'lovni qo'lda bekor qiling`,
+      `[invoices] To'langan faktura narxi tushdi — depozit orqali qayta ` +
+        `shakllantirildi: invoice=${invoice.id} student=${invoice.studentId} ` +
+        `month=${invoice.month} eski=${invoice.amount.toFixed(2)} ` +
+        `yangi=${newAmount.toFixed(2)} paid=${paid.toFixed(2)} actor=${userId} ` +
+        `sabab="${reason}"`,
     );
+
     return getInvoiceById(invoice.id);
   }
 
