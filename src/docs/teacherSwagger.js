@@ -364,6 +364,12 @@ const schemas = {
       grade: { type: "integer", minimum: 1, maximum: 5, example: 5 },
       comment: { type: "string", maxLength: 512 },
       lessonOrder: { type: "integer", minimum: 1, example: 1 },
+      date: {
+        type: "string",
+        format: "date",
+        description:
+          "Boshliq ochib bergan O'TGAN kun (YYYY-MM-DD). Berilmasa — bugun. Ochilmagan kun → 403.",
+      },
     },
   },
 
@@ -1213,7 +1219,10 @@ const paths = {
     post: {
       tags: ["Baholar"],
       summary: "Baho qo'yish",
-      description: "Ruxsat: teacher.",
+      description:
+        "Ruxsat: teacher. Bugungi darsga — faqat MAKTABDA (bugun kelgan va ketmagan): " +
+        "aks holda 403 \"Siz maktabda emassiz — ...\". O'tgan kunga — faqat boshliq ochgan " +
+        "kunga (`date`), maktabda bo'lish sharti yo'q. Tahrirlash va o'chirishda ham shu qoida.",
       requestBody: {
         required: true,
         content: {
@@ -1257,10 +1266,31 @@ const paths = {
   "/grades/teacher/subjects/{classId}": {
     get: {
       tags: ["Baholar"],
-      summary: "O'qituvchining shu sinfdagi bugungi fanlari",
+      summary: "O'qituvchining shu sinfdagi bugungi (yoki ochilgan kundagi) fanlari",
       description: "Ruxsat: teacher. Baho qo'yish uchun fan/mavzu ro'yxati.",
-      parameters: [idParam("classId", "Class ObjectId")],
+      parameters: [
+        idParam("classId", "Class ObjectId"),
+        {
+          name: "date",
+          in: "query",
+          schema: { type: "string", format: "date" },
+          description: "Boshliq ochgan o'tgan kun (YYYY-MM-DD). Berilmasa — bugun.",
+        },
+      ],
       responses: { 200: okData("#/components/schemas/Subject", true), 403: responses.Forbidden },
+    },
+  },
+  "/grades/access/my": {
+    get: {
+      tags: ["Baholar"],
+      summary: "Baho qo'yish huquqim: maktabdamanmi va ochilgan kunlar",
+      description:
+        "Ruxsat: teacher. `presence` — bugungi darsga baho qo'ya olamanmi " +
+        "(`atSchool`, `state`: atSchool | notArrived | excused | left | disabled | exempt, `message`). " +
+        "`unlocks` — boshliq ochgan oynalar (`rangeLabel`, `expiresAtLabel`). " +
+        "`days` — ochiq kunlardagi BAHO QO'YILMAGAN darslar: " +
+        "`[{ date, dateLabel, dayName, expiresAtLabel, lessons: [{ classId, className, subjectId, subjectName, lessonOrder, reasonLabel }] }]`.",
+      responses: { 200: { description: "{ presence, unlocks, days }" }, 403: responses.Forbidden },
     },
   },
   "/grades/students-with-grades": {

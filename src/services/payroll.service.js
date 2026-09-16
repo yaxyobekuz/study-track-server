@@ -69,6 +69,9 @@ const serializeEntry = (row, { staff } = {}) => {
     fixedAmount: formatAmount(row.fixedAmount ?? 0),
     allowanceAmount: formatAmount(row.allowanceAmount ?? 0),
     allowanceBreakdown: Array.isArray(row.allowanceBreakdown) ? row.allowanceBreakdown : [],
+    // Ushlab qolish — `amount` dan ALLAQACHON ayirilgan, faqat tushuntirish
+    deductionAmount: formatAmount(row.deductionAmount ?? 0),
+    deductionBreakdown: Array.isArray(row.deductionBreakdown) ? row.deductionBreakdown : [],
     kpiAmount: formatAmount(row.kpiAmount ?? 0),
     perHourRate: formatAmount(row.perHourRate ?? 0),
     lessonHours: Number(row.lessonHours ?? 0),
@@ -106,6 +109,7 @@ const emptySummary = (month, reason) => ({
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
+  deductionTotal: "0.00",
   // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
   // monthOpen  — soatbay qismi bor, oy hali yopilmagan (pastdagi izoh)
   skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0, monthOpen: 0 },
@@ -182,6 +186,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
   let kpiTotal = new Decimal(0);
+  let deductionTotal = new Decimal(0);
 
   for (const person of staff) {
     if (existingIds.has(person.id)) {
@@ -203,7 +208,10 @@ const generateForMonth = async (monthInput, options = {}) => {
       summary.skipped.monthOpen += 1;
       continue;
     }
-    if (c.amount.lessThanOrEqualTo(0)) {
+    // ⚠️ YALPI tekshiriladi, sof emas: oylik bor-u ushlab qolish uni to'liq
+    // yopgan xodimga ham qator yoziladi (0 so'm, "to'langan") — aks holda
+    // "shu oy 3 000 000 ushlab qolindi" degan fakt registrdan yo'qolardi.
+    if (c.grossAmount.lessThanOrEqualTo(0)) {
       summary.skipped.zeroAmount += 1;
       continue;
     }
@@ -211,6 +219,7 @@ const generateForMonth = async (monthInput, options = {}) => {
     total = total.plus(c.amount);
     fixedTotal = fixedTotal.plus(c.fixedAmount).plus(c.allowanceAmount);
     kpiTotal = kpiTotal.plus(c.kpiAmount);
+    deductionTotal = deductionTotal.plus(c.deductionAmount);
 
     rows.push({
       staffId: person.id,
@@ -219,6 +228,10 @@ const generateForMonth = async (monthInput, options = {}) => {
       fixedAmount: c.fixedAmount,
       allowanceAmount: c.allowanceAmount,
       allowanceBreakdown: c.allowanceBreakdown,
+      deductionAmount: c.deductionAmount,
+      deductionBreakdown: c.deductionBreakdown,
+      // To'liq ushlab qolingan oylik — to'lanadigan narsa yo'q
+      ...(c.amount.lessThanOrEqualTo(0) ? { status: "paid" } : {}),
       kpiAmount: c.kpiAmount,
       lessonHours: c.lessonHours,
       perHourRate: c.perHourRate,
@@ -241,6 +254,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   summary.totalAmount = formatAmount(total);
   summary.fixedTotal = formatAmount(fixedTotal);
   summary.kpiTotal = formatAmount(kpiTotal);
+  summary.deductionTotal = formatAmount(deductionTotal);
   summary.dryRun = dryRun;
 
   if (!dryRun && rows.length > 0) {
@@ -498,8 +512,32 @@ const getMySalaryStats = async (userId) => {
   // ── 2. Joriy oy majburiyati (shakllangan bo'lsa) ──
   const currentEntry = await prisma.payrollEntry.findFirst({
     where: { staffId: userId, month, status: { not: "cancelled" } },
-    select: { amount: true, paidAmount: true, status: true },
+    select: {
+      amount: true,
+      paidAmount: true,
+      status: true,
+      deductionAmount: true,
+      deductionBreakdown: true,
+    },
   });
+
+  // ── Ushlab qolish — muhrlangan bo'lsa muhrdan, aks holda jonli ──
+  // Xodim "nega kam" degan savolga shu yerda javob oladi: sabab va izoh bilan.
+  const deductionRows = currentEntry
+    ? Array.isArray(currentEntry.deductionBreakdown)
+      ? currentEntry.deductionBreakdown
+      : []
+    : computed?.deductionBreakdown ?? [];
+  const deductionRules = deductionRows.length
+    ? await prisma.payrollDeduction.findMany({
+        where: { id: { in: deductionRows.map((row) => row.id) } },
+        select: { id: true, reason: true, note: true },
+      })
+    : [];
+  const ruleMap = new Map(deductionRules.map((rule) => [rule.id, rule]));
+  const currentDeduction = currentEntry
+    ? new Decimal(currentEntry.deductionAmount ?? 0)
+    : new Decimal(computed?.deductionAmount ?? 0);
 
   // ── 3. Umumiy tarix ──────────────────────
   const totalsAgg = await prisma.payrollEntry.aggregate({
@@ -531,6 +569,16 @@ const getMySalaryStats = async (userId) => {
       fixedAmount: formatAmount(computed?.fixedAmount ?? 0),
       kpiAmount: formatAmount(computed?.kpiAmount ?? 0),
       allowanceAmount: formatAmount(computed?.allowanceAmount ?? 0),
+      // Ushlab qolingan (summa `amount` dan allaqachon ayirilgan)
+      deductionAmount: formatAmount(currentDeduction),
+      deductions: deductionRows.map((row) => ({
+        id: row.id,
+        reason: ruleMap.get(row.id)?.reason ?? row.reason ?? "",
+        note: ruleMap.get(row.id)?.note ?? "",
+        type: row.type,
+        value: row.value,
+        amount: formatAmount(row.amount ?? 0),
+      })),
       salaryType: computed?.salaryType ?? null,
       // Toifa va stavka
       categoryName: computed?.categoryName || null,

@@ -67,11 +67,11 @@ function tashkentDayKey(instant) {
 /* ─────────────────────── DARS O'TILDIMI ─────────────────────── */
 
 /**
- * O'TILMAGAN DARS SABABLARI — tartib MA'NOLI (birinchisi yutadi).
+ * O'TILMAGAN DARS SABABLARI.
  *
- * Davomat bahodan OLDIN tekshiriladi: o'qituvchi kelmagan kuni "baho
- * qo'yilmagan" deyish sababni yashirardi — admin baholarni emas,
- * davomatni to'g'rilashi kerak bo'ladi.
+ * Sabab AYNAN qaysi tuzatish kerakligini aytadi: "kelmagan" — davomatni
+ * yoki kunni ochib baho qo'ydirishni, "sababli" va "baho qo'yilmagan" —
+ * baho qo'yishni ochib berish (`GradingUnlock`).
  */
 const LESSON_MISS_REASONS = {
   absent: "Kelmagan",
@@ -89,7 +89,7 @@ const teacherDayKey = (teacherId, day) => `${teacherId}|${day}`;
 /**
  * Qaysi kungacha darslar TEKSHIRILADI (INKLYUZIV kun raqami).
  *
- * ⚠️ BUGUN TEKSHIRILMAYDI. Baho faqat o'sha kuni qo'yiladi
+ * ⚠️ BUGUN TEKSHIRILMAYDI. Baho odatda o'sha kuni qo'yiladi
  * (`grade.controller.js`), davomat esa kun oxirida avtomat yopiladi —
  * kunning o'rtasida "baho yo'q" degani hali "o'tilmagan" degani emas.
  * Bugungi dars ertasiga yakuniy baholanadi.
@@ -106,30 +106,84 @@ function judgedThroughDay(month, currentMonth, today) {
 }
 
 /**
- * Bitta dars O'TILDIMI — sof qaror.
+ * Bitta dars O'TILDIMI — sof qaror (biznes qarori):
  *
- * Qoida (biznes qarori): dars o'tilgan hisoblanadi, agar o'sha kuni darsga
- * chiqishi kerak bo'lgan o'qituvchi "kelmadi" yoki "sababli" EMAS va shu
- * darsga KAMIDA BITTA baho qo'yilgan bo'lsa. Istisno yo'q — baho jarimasidan
- * ozod qilinganlar uchun ham shu qoida.
+ *   · kun OCHILGAN (`GradingUnlock`) → baho bo'lsa O'TILGAN, davomatdan
+ *                                      qat'i nazar;
+ *   · "kelmadi" (sababsiz)            → O'TILMAGAN, baho bo'lsa ham;
+ *   · "sababli"                       → baho bo'lsa O'TILGAN, bo'lmasa o'tilmagan;
+ *   · davomat muammosiz               → baho bo'lsa O'TILGAN, bo'lmasa o'tilmagan.
+ *
+ * Baho — KAMIDA BITTA o'quvchiga. Istisno yo'q (baho jarimasidan ozod
+ * qilinganlar uchun ham).
+ *
+ * ⚠️ OCHILGAN KUN DAVOMATNI USTIDAN YOZADI: boshliq platforma sababli baho
+ * qo'yilmay qolgan kunlarni ochadi va bu "shu kunlar bahosiga ishonaman"
+ * degani — o'sha kunlarning davomati ham (kelish tugmasi ishlamagan,
+ * avtomat "kelmadi") noto'g'ri bo'lishi mumkin. Oyna yopilgani yoki muddati
+ * o'tgani qarorni o'zgartirmaydi: qo'yilgan baho o'z kuchida qoladi.
  *
  * @param {object} lesson - { teacherId, classId, subjectId, lessonOrder, day }
  * @param {object} facts
  * @param {Set<string>} facts.gradedKeys - `lessonGradeKey` to'plami
  * @param {Map<string, {status: string, autoMarked: boolean}>} facts.absences -
  *   `teacherDayKey` → davomat (faqat absent/excused)
+ * @param {Set<string>} [facts.unlockedDays] - `teacherDayKey` → ochilgan kunlar
  * @returns {null | {reason: "absent"|"excused"|"noGrade", autoMarked: boolean}}
  */
-function judgeLesson(lesson, { gradedKeys, absences }) {
-  const absence = absences.get(teacherDayKey(lesson.teacherId, lesson.day));
-  if (absence) {
-    return { reason: absence.status, autoMarked: Boolean(absence.autoMarked) };
-  }
-
+function judgeLesson(lesson, { gradedKeys, absences, unlockedDays }) {
+  const dayKeyOfTeacher = teacherDayKey(lesson.teacherId, lesson.day);
   const graded = gradedKeys.has(
     lessonGradeKey(lesson.classId, lesson.subjectId, lesson.lessonOrder, lesson.day),
   );
-  return graded ? null : { reason: "noGrade", autoMarked: false };
+  if (graded && unlockedDays?.has(dayKeyOfTeacher)) return null;
+
+  const absence = absences.get(dayKeyOfTeacher);
+  if (absence?.status === "absent") {
+    return { reason: "absent", autoMarked: Boolean(absence.autoMarked) };
+  }
+
+  if (graded) return null;
+
+  return absence
+    ? { reason: "excused", autoMarked: Boolean(absence.autoMarked) }
+    : { reason: "noGrade", autoMarked: false };
+}
+
+/**
+ * OCHILGAN KUNLAR — `GradingUnlock` oynalari → `teacherDayKey` to'plami.
+ *
+ * `scope = all` oyna chaqiruvchi bergan HAMMA o'qituvchini qamraydi
+ * (oyna ochilgandan keyin qo'shilganini ham), `selected` — faqat
+ * ro'yxatdagilarni. Holat (yopilgan, muddati o'tgan) ATAYLAB
+ * tekshirilmaydi — `judgeLesson` izohiga qarang.
+ *
+ * @param {Array<{dateFrom: Date, dateTo: Date, scope: string, teacherIds: string[]}>} unlocks
+ * @param {string[]} teacherIds
+ * @param {Array<{date: Date, key: string}>} days
+ * @returns {Set<string>}
+ */
+function unlockedTeacherDays(unlocks, teacherIds, days) {
+  const result = new Set();
+  const wanted = new Set(teacherIds);
+
+  for (const unlock of unlocks) {
+    const targets =
+      unlock.scope === "all"
+        ? teacherIds
+        : (unlock.teacherIds ?? []).filter((id) => wanted.has(id));
+    if (targets.length === 0) continue;
+
+    const from = unlock.dateFrom.getTime();
+    const to = unlock.dateTo.getTime();
+    for (const day of days) {
+      const time = day.date.getTime();
+      if (time < from || time > to) continue;
+      for (const teacherId of targets) result.add(teacherDayKey(teacherId, day.key));
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -291,6 +345,7 @@ module.exports = {
   teacherDayKey,
   judgedThroughDay,
   judgeLesson,
+  unlockedTeacherDays,
   eachDayOfMonth,
   teachingDaysOfMonth,
   expandWeeklyHours,

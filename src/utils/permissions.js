@@ -152,7 +152,16 @@ const PERMISSION_SECTIONS = [
     key: SECTIONS.GRADES,
     label: "Baholar jurnali",
     group: "Ta'lim",
-    actions: [A.view, A.create, A.update, A.delete, A.export],
+    actions: [
+      A.view,
+      A.create,
+      A.update,
+      A.delete,
+      A.export,
+      // O'TGAN KUN DARSIGA BAHO QO'YISHNI OCHISH — oylikka ta'sir qiladi:
+      // sababli kun baho bilan to'lanadi (`gradingUnlock.service.js`)
+      { key: "unlock", label: "O'tgan kunlarga baho qo'yishni ochish" },
+    ],
   },
   {
     // TA'LIM DASHBOARDI — bitta ekranda butun maktabning o'quv manzarasi.
@@ -558,6 +567,10 @@ const PERMISSION_SECTIONS = [
       { key: "pay", label: "To'lash" },
       { key: "void", label: "To'lovni bekor qilish" },
       { key: "cancel", label: "Majburiyatni bekor qilish" },
+      // USHLAB QOLISH — `assign` DAN ALOHIDA: oylik belgilash va oylikni
+      // kamaytirish boshqa-boshqa qaror. U to'lanmagan muhrlangan oylikni
+      // ham qayta yozadi (`payrollDeduction.service.js`).
+      { key: "deduct", label: "Oylikdan ushlab qolish" },
     ],
   },
   {

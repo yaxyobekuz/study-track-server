@@ -59,6 +59,7 @@ const {
   cutoffForMonth,
 } = require("./lessonHours.service");
 const { NotFoundError } = require("../utils/errors");
+const { listForTeacherMonth: listGradingUnlocks } = require("./gradingUnlock.service");
 
 /**
  * Xodim shakli — `STAFF_SELECT` dan FARQLI: bu yerda `positionId` va
@@ -698,6 +699,10 @@ async function getTeacherDetail(teacherId, month) {
     entry,
   );
 
+  // Baho qo'yish oynalari (shu o'qituvchini qamragan) — "O'tilmagan darslar"
+  // ro'yxatida qaysi kun ochilgani ko'rinishi uchun
+  const gradingUnlocks = await listGradingUnlocks(teacher.id, month);
+
   // Oylik tarix — oxirgi 6 oy, egri chiziq uchun
   const history = await prisma.payrollEntry.findMany({
     where: { staffId: teacher.id, status: { not: "cancelled" } },
@@ -728,6 +733,7 @@ async function getTeacherDetail(teacherId, month) {
     // O'tilmagan darslar — "nega 61 emas, 60 soat" degan savolga javob
     missedLessons: hoursRow?.missedLessons ?? [],
     judgedThroughDay: hoursRow?.judgedThroughDay ?? null,
+    gradingUnlocks,
     subjects: buildSubjects({
       bySubject,
       weekly: weeklySubjects,

@@ -95,6 +95,8 @@ const prisma = {
     findMany: async ({ where }) => db.categories.filter((c) => where.id.in.includes(c.id)),
   },
   payrollBonus: { findMany: async () => [] },
+  payrollDeduction: { findMany: async () => [] },
+  gradingUnlock: { findMany: async () => [] },
   payrollEntry: {
     findUnique: async () => null,
     findMany: async () => [],

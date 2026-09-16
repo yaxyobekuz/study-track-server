@@ -2,7 +2,7 @@
  * PAYROLL ENGINE — bitta xodim/o'qituvchi uchun oylik komponentlarini hisoblaydi.
  *
  * FINAL = BASE (lavozim) + FIXED (ixtiyoriy) + TEACHING (toifa × dars soati)
- *         + APPROVED BONUSES
+ *         + APPROVED BONUSES − DEDUCTIONS (ushlab qolish, yalpidan oshmaydi)
  *
  *   staff (Texnik/Boshqaruv):  base = position.baseSalary
  *   teacher (MTB/Boshlang'ich/Yuqori): teaching = category.perHourRate × hours
@@ -17,6 +17,7 @@ const prisma = require("../config/prisma");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { ROLES } = require("../utils/constants");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
+const { computeDeductions } = require("../helpers/salaryRules.helpers");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
 
 const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -59,7 +60,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     )
     .map((u) => u.id);
 
-  const [positions, categories, hoursMap, bonusRows] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -76,7 +77,26 @@ const loadContext = async (month, users, preloaded = {}) => {
     prisma.payrollBonus.findMany({
       where: { staffId: { in: staffIds }, ...coveringBonusWhere(month) },
     }),
+    // Ushlab qolish — YARATILISH TARTIBIDA: yalpidan oshsa, chegara
+    // avval yozilganidan boshlab qo'llanadi (`computeDeductions`)
+    staffIds.length
+      ? prisma.payrollDeduction.findMany({
+          where: {
+            staffId: { in: staffIds },
+            status: "active",
+            startMonth: { lte: month },
+            OR: [{ endMonth: null }, { endMonth: { gte: month } }],
+          },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        })
+      : [],
   ]);
+
+  const deductionMap = new Map();
+  for (const d of deductionRows) {
+    if (!deductionMap.has(d.staffId)) deductionMap.set(d.staffId, []);
+    deductionMap.get(d.staffId).push(d);
+  }
 
   const positionMap = new Map(positions.map((p) => [p.id, p]));
   const categoryMap = new Map(categories.map((c) => [c.id, c]));
@@ -86,7 +106,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     bonusMap.get(b.staffId).push(b);
   }
 
-  return { positionMap, categoryMap, salaryRules, hoursMap, bonusMap };
+  return { positionMap, categoryMap, salaryRules, hoursMap, bonusMap, deductionMap };
 };
 
 /**
@@ -135,7 +155,16 @@ const computeForStaff = (user, month, ctx) => {
     allowanceBreakdown.push({ label: b.label, type: b.type, value: b.value, amount: formatAmount(amt) });
   }
 
-  const amount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
+  const grossAmount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
+
+  // Ushlab qolish — YALPIDAN, oylik manfiy bo'lolmaydi
+  const { total: deductionAmount, breakdown: deductionBreakdown } = computeDeductions(
+    grossAmount,
+    ctx.deductionMap?.get(user.id) || [],
+    { perHourRate },
+  );
+
+  const amount = grossAmount.minus(deductionAmount);
 
   const hasFixed = fixedAmount.greaterThan(0);
   const hasKpi = kpiAmount.greaterThan(0) || Boolean(category);
@@ -154,6 +183,9 @@ const computeForStaff = (user, month, ctx) => {
     perHourRate,
     amount,
     allowanceBreakdown,
+    grossAmount,
+    deductionAmount,
+    deductionBreakdown,
     categoryName: category?.name ?? "",
     positionName: position?.name ?? "",
     departmentName,
@@ -173,6 +205,9 @@ const previewForStaff = (user, month, ctx) => {
     perHourRate: formatAmount(c.perHourRate),
     amount: formatAmount(c.amount),
     allowanceBreakdown: c.allowanceBreakdown,
+    grossAmount: formatAmount(c.grossAmount),
+    deductionAmount: formatAmount(c.deductionAmount),
+    deductionBreakdown: c.deductionBreakdown,
     categoryName: c.categoryName,
     positionName: c.positionName,
     departmentName: c.departmentName,

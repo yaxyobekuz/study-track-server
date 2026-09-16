@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getSalaries,
   getStaffHistory,
+  getMySalary,
   getLessonHours,
   createSalary,
   updateSalary,
@@ -24,6 +25,7 @@ const {
 const {
   getEntries,
   getStaffEntries,
+  getMyEntries,
   getMySalaryStats,
   generate,
   cancelEntry,
@@ -53,6 +55,20 @@ const {
   deletePosition,
   assignStaff,
 } = require("../controllers/department.controller");
+
+// ── Oylikdan ushlab qolish ──
+// ⚠️ `deduct` ALOHIDA HUQUQ: ushlab qolish pulni kamaytiradi va to'lanmagan
+// muhrlangan oylikni qayta yozadi. Ro'yxatni ko'rish — `view` bilan.
+// `/deductions/...` `/:id` dan OLDIN turadi (pastdagi izohga qarang).
+const deductionController = require("../controllers/payrollDeduction.controller");
+// O'zimniki — ruxsatsiz, faqat o'zi (`/my` bilan bir xil mulohaza)
+router.get("/deductions/my", protect, deductionController.getMyDeductions);
+router.get("/deductions", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), deductionController.getDeductions);
+router.get("/deductions/candidates", protect, authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.getCandidates);
+router.post("/deductions/preview", protect, authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.previewDeductions);
+router.post("/deductions", protect, authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.createDeductions);
+router.post("/deductions/batch/:batchId/cancel", protect, validateObjectId("batchId"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelBatch);
+router.post("/deductions/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelDeduction);
 
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──
 const { getStaffPayroll, getTeacherPayroll, getAllowancesView, createBonus, deleteBonus } = require("../controllers/payrollView.controller");
@@ -90,6 +106,12 @@ router.delete("/categories/:id", protect, validateObjectId("id"), authorizePermi
 // ── Oylik qoidalari (kimga qancha) ───────────
 // `assign` ALOHIDA huquq: to'laydigan xodim oylik miqdorini o'zi
 // belgilay olmasligi kerak.
+// O'zimniki (xodim panelidagi profil → "Oylik" tabi). Ruxsat kaliti YO'Q:
+// identifikator tokendan, o'quvchi controller'da rad etiladi.
+// ⚠️ `/salaries/staff/:staffId` va `/staff/:staffId` dan OLDIN. Bu ikki yo'l
+// bir marta birlashtirishda tushib qolgan va tab "yuklab bo'lmadi" deb turardi.
+router.get("/salaries/my", protect, getMySalary);
+router.get("/my", protect, getMyEntries);
 router.get("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getSalaries);
 router.post("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createSalary);
 router.get("/salaries/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffHistory);

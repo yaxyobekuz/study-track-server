@@ -15,6 +15,7 @@ const {
   tashkentDayKey,
   lessonGradeKey,
   teacherDayKey,
+  unlockedTeacherDays,
 } = require("../src/helpers/lessonHours");
 
 /* ───────────────────────── Sof qoida ───────────────────────── */
@@ -31,7 +32,7 @@ test("baho kuni TOSHKENT bo'yicha: UTC 19:30 — ertangi kun", () => {
   assert.equal(tashkentDayKey(new Date("2026-08-03T18:59:59Z")), "2026-08-03");
 });
 
-test("davomat bahodan ustun: kelmagan kuni baho bo'lsa ham o'tilmagan", () => {
+test("sababsiz kelmagan kuni baho bo'lsa ham o'tilmagan; sababli kun baho bilan o'tilgan", () => {
   const lesson = { teacherId: "t1", classId: "c1", subjectId: "s1", lessonOrder: 1, day: "2026-08-03" };
   const gradedKeys = new Set([lessonGradeKey("c1", "s1", 1, "2026-08-03")]);
 
@@ -46,6 +47,50 @@ test("davomat bahodan ustun: kelmagan kuni baho bo'lsa ham o'tilmagan", () => {
   assert.deepEqual(
     judgeLesson({ ...lesson, lessonOrder: 2 }, { gradedKeys, absences: new Map() }),
     { reason: "noGrade", autoMarked: false },
+  );
+
+  // Sababli: baho bo'lsa — o'tilgan (ruxsat ochib berilib qo'yilgan baho)
+  const excused = new Map([[teacherDayKey("t1", "2026-08-03"), { status: "excused", autoMarked: false }]]);
+  assert.equal(judgeLesson(lesson, { gradedKeys, absences: excused }), null);
+  assert.deepEqual(
+    judgeLesson({ ...lesson, lessonOrder: 2 }, { gradedKeys, absences: excused }),
+    { reason: "excused", autoMarked: false },
+  );
+});
+
+test("ochilgan kun: baho bo'lsa davomatdan qat'i nazar o'tilgan, bahosiz — o'tilmagan", () => {
+  const lesson = { teacherId: "t1", classId: "c1", subjectId: "s1", lessonOrder: 1, day: "2026-08-03" };
+  const gradedKeys = new Set([lessonGradeKey("c1", "s1", 1, "2026-08-03")]);
+  const absent = new Map([[teacherDayKey("t1", "2026-08-03"), { status: "absent", autoMarked: true }]]);
+  const unlockedDays = new Set([teacherDayKey("t1", "2026-08-03")]);
+
+  assert.equal(judgeLesson(lesson, { gradedKeys, absences: absent, unlockedDays }), null);
+  // Bahosiz — ochiq kun ham o'tilgan qilmaydi
+  assert.deepEqual(
+    judgeLesson({ ...lesson, lessonOrder: 2 }, { gradedKeys, absences: absent, unlockedDays }),
+    { reason: "absent", autoMarked: true },
+  );
+  // Boshqa o'qituvchining ochiq kuni bu o'qituvchiga ta'sir qilmaydi
+  assert.deepEqual(
+    judgeLesson(lesson, { gradedKeys, absences: absent, unlockedDays: new Set([teacherDayKey("t2", "2026-08-03")]) }),
+    { reason: "absent", autoMarked: true },
+  );
+});
+
+test("ochilgan kunlar to'plami: hammaga / tanlanganlarga, oraliq INKLYUZIV", () => {
+  const days = ["2026-08-03", "2026-08-04", "2026-08-05"].map((key) => ({ key, date: utc(key) }));
+  const set = unlockedTeacherDays(
+    [
+      { scope: "all", teacherIds: [], dateFrom: utc("2026-08-04"), dateTo: utc("2026-08-04") },
+      { scope: "selected", teacherIds: ["t2", "t9"], dateFrom: utc("2026-08-01"), dateTo: utc("2026-08-05") },
+    ],
+    ["t1", "t2"],
+    days,
+  );
+
+  assert.deepEqual(
+    [...set].sort(),
+    ["t1|2026-08-04", "t2|2026-08-03", "t2|2026-08-04", "t2|2026-08-05"],
   );
 });
 
@@ -96,6 +141,7 @@ const db = {
     // Kechikkan kun — soat yoziladi
     { userId: "t1", date: utc("2026-08-31"), status: "late", autoMarked: false },
   ],
+  unlocks: [],
 };
 
 fakeModule("../src/config/prisma", {
@@ -115,6 +161,10 @@ fakeModule("../src/config/prisma", {
         (a) => inList(a.userId, where.userId) && inRange(a.date, where.date) && inList(a.status, where.status),
       ),
   },
+  gradingUnlock: {
+    findMany: async ({ where }) =>
+      db.unlocks.filter((u) => u.dateFrom <= where.dateFrom.lte && u.dateTo >= where.dateTo.gte),
+  },
 });
 fakeModule("../src/services/holiday.service", { buildHolidaySet: async () => new Set() });
 fakeModule("../src/services/vacationMonth.service", { getVacationSet: async () => new Set() });
@@ -129,16 +179,16 @@ test("o'tilmagan darslar soatdan ayiriladi va sababi bilan qaytadi", async () =>
   // Reja: 5 dushanba + 4 seshanba = 9; 24-avgust o'rinbosarga berilgan
   assert.equal(t1.scheduledHours, 9);
   assert.equal(t1.substitutedOutHours, 1);
-  // O'tilmagan: 10 (baho yo'q), 17 (kelmagan), 18 (sababli), 25 (baho yo'q)
-  assert.equal(t1.missedHours, 4);
-  assert.deepEqual(t1.missedByReason, { absent: 1, excused: 1, noGrade: 2 });
-  assert.equal(t1.hours, 9 - 1 - 4);
+  // O'tilmagan: 10 (baho yo'q), 17 (sababsiz kelmagan — baho bo'lsa ham),
+  // 25 (baho yo'q). 18-avgust — sababli, lekin baho qo'yilgan → O'TILGAN.
+  assert.equal(t1.missedHours, 3);
+  assert.deepEqual(t1.missedByReason, { absent: 1, excused: 0, noGrade: 2 });
+  assert.equal(t1.hours, 9 - 1 - 3);
   assert.deepEqual(
     t1.missedLessons.map((m) => [m.dateLabel, m.lessonOrder, m.reason]),
     [
       ["10-avgust, 2026", 1, "noGrade"],
       ["17-avgust, 2026", 1, "absent"],
-      ["18-avgust, 2026", 2, "excused"],
       ["25-avgust, 2026", 2, "noGrade"],
     ],
   );
@@ -152,8 +202,8 @@ test("o'tilmagan darslar soatdan ayiriladi va sababi bilan qaytadi", async () =>
 
   // Kesimlar ham faqat o'tilganini sanaydi
   const cls = t1.byClass.find((row) => row.id === "c1");
-  assert.equal(cls.hours, 4);
-  assert.equal(cls.missed, 4);
+  assert.equal(cls.hours, 5);
+  assert.equal(cls.missed, 3);
 });
 
 test("o'rinbosar kelmagan bo'lsa soat hech kimga yozilmaydi", async () => {
@@ -165,7 +215,7 @@ test("o'rinbosar kelmagan bo'lsa soat hech kimga yozilmaydi", async () => {
     assert.equal(t2.missedLessons[0].substituted, true);
     assert.equal(t2.missedLessons[0].autoMarked, true);
     // Dars egasiga ham qaytmaydi — u darsni bergan
-    assert.equal(map.get("t1").hours, 4);
+    assert.equal(map.get("t1").hours, 5);
   } finally {
     db.attendance.pop();
   }
@@ -183,4 +233,28 @@ test("vedomost qatori: Oy = O'tildi + O'tilmadi + Qoldi", async () => {
   assert.equal(row.plannedHours, hoursRow.scheduledHours - hoursRow.substitutedOutHours + hoursRow.substitutedInHours);
   assert.equal(row.hours, row.taughtHours + row.remainingHours);
   assert.ok(row.remainingHours > 0 && row.taughtHours > 0 && row.missedHours > 0);
+});
+
+test("ochilgan oraliq: sababsiz kelmagan kundagi baho bor dars — o'tilgan, oyna yopilgan bo'lsa ham", async () => {
+  // Hammaga 17–18-avgust ochilgan va keyin YOPILGAN; 17-avgust — "kelmadi", lekin baho bor
+  db.unlocks.push({
+    scope: "all",
+    teacherIds: [],
+    dateFrom: utc("2026-08-16"),
+    dateTo: utc("2026-08-18"),
+    revokedAt: new Date("2026-08-20T10:00:00Z"),
+  });
+  try {
+    const t1 = (await getTeachersHours(["t1"], 202608)).get("t1");
+    assert.equal(t1.missedHours, 2);
+    assert.deepEqual(t1.missedByReason, { absent: 0, excused: 0, noGrade: 2 });
+    assert.equal(t1.hours, 9 - 1 - 2);
+    // Ro'yxatda fan identifikatori ham bor — o'qituvchi sahifasi shu darsni ochadi
+    assert.equal(t1.missedLessons[0].subjectId, "s1");
+  } finally {
+    db.unlocks.pop();
+  }
+
+  // Oynasiz — avvalgidek o'tilmagan
+  assert.equal((await getTeachersHours(["t1"], 202608)).get("t1").missedByReason.absent, 1);
 });

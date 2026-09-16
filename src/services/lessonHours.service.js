@@ -54,6 +54,7 @@ const {
   teacherDayKey,
   judgedThroughDay,
   judgeLesson,
+  unlockedTeacherDays,
   LESSON_MISS_REASONS,
 } = require("../helpers/lessonHours");
 
@@ -243,18 +244,22 @@ async function getMonthCalendar(month, { asOfDayOfMonth = null } = {}) {
  * o'qituvchi kelmagan yoki hech kimga baho qo'yilmagan dars o'tilmagan
  * hisoblanadi va uning soati yozilmaydi (`judgeLesson`).
  *
- * Ikkala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
+ * ⚠️ OCHILGAN KUNLAR (`GradingUnlock`) ham fakt: boshliq ochgan kunda baho
+ * bor dars davomatdan qat'i nazar o'tilgan (`judgeLesson`). Oyna holati
+ * (yopilgan, muddati o'tgan) ATAYLAB filtrlanmaydi.
+ *
+ * Uchala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
  *
  * @param {number} month - YYYYMM
  * @param {string[]} teacherIds
  * @param {string[]} classIds - soati hisoblanadigan darslarning sinflari
- * @returns {Promise<{gradedKeys: Set<string>, absences: Map<string, object>}>}
+ * @returns {Promise<{gradedKeys: Set<string>, absences: Map<string, object>, unlockedDays: Set<string>}>}
  */
 async function loadLessonFacts(month, teacherIds, classIds) {
   // `Grade.date` — instant, shuning uchun oy chegarasi ham TOSHKENT instanti
   const { from, to } = monthInstantRange(month);
 
-  const [grades, absences] = await Promise.all([
+  const [grades, absences, unlocks] = await Promise.all([
     classIds.length
       ? prisma.grade.findMany({
           where: { classId: { in: classIds }, date: { gte: from, lte: to } },
@@ -271,6 +276,11 @@ async function loadLessonFacts(month, teacherIds, classIds) {
       },
       select: { userId: true, date: true, status: true, autoMarked: true },
     }),
+    // Kesishuv: oyna.from <= oy.oxiri VA oyna.to >= oy.boshi
+    prisma.gradingUnlock.findMany({
+      where: { dateFrom: { lte: monthEndDate(month) }, dateTo: { gte: monthStartDate(month) } },
+      select: { dateFrom: true, dateTo: true, scope: true, teacherIds: true },
+    }),
   ]);
 
   return {
@@ -285,6 +295,7 @@ async function loadLessonFacts(month, teacherIds, classIds) {
         { status: a.status, autoMarked: a.autoMarked },
       ]),
     ),
+    unlockedDays: unlockedTeacherDays(unlocks, teacherIds, eachDayOfMonth(month)),
   };
 }
 
@@ -369,7 +380,7 @@ async function getTeachersHours(teacherIds, month, options = {}) {
 
   const facts = judgedKeys.size
     ? await loadLessonFacts(month, ids, [...classIds])
-    : { gradedKeys: new Set(), absences: new Map() };
+    : { gradedKeys: new Set(), absences: new Map(), unlockedDays: new Set() };
 
   // O'qituvchi → o'z darslari
   const ownLessons = new Map(ids.map((id) => [id, []]));
@@ -444,6 +455,7 @@ async function getTeachersHours(teacherIds, month, options = {}) {
         dateLabel: formatDateUz(day.date, { utc: true }),
         classId: lesson.classId,
         className: classMap.get(lesson.classId) ?? "Noma'lum",
+        subjectId: lesson.subjectId,
         subjectName: subjectMap.get(lesson.subjectId) ?? "Noma'lum",
         lessonOrder: lesson.lessonOrder,
         reason: miss.reason,

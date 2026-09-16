@@ -119,6 +119,7 @@ const prisma = {
   salaryCategory: table("categories"),
   staffSalary: table("salaries"),
   payrollBonus: table("bonuses"),
+  payrollDeduction: { findMany: async () => [] },
   payrollEntry: table("entries"),
   payrollAudit: table("audits"),
   $transaction: async (fn) => fn(prisma),

@@ -20,6 +20,25 @@ const { ROLES } = require("../utils/constants");
 // All routes are protected
 router.use(protect);
 
+// ── Baho qo'yish huquqi: maktabda bo'lish va o'tgan kunlar oynasi ──
+// ⚠️ `/:id` yo'llaridan OLDIN. Ochish/yopish — alohida `grades.unlock`:
+// u oylikka ta'sir qiladi (ochilgan kunda baho bor dars to'lanadi).
+const unlockController = require("../controllers/gradingUnlock.controller");
+router.get("/access/my", authorize(ROLES.TEACHER), unlockController.getMyAccess);
+router.get("/unlocks", authorizePermission(PERMISSIONS.GRADES_UNLOCK), unlockController.listUnlocks);
+router.get(
+  "/unlocks/teachers",
+  authorizePermission(PERMISSIONS.GRADES_UNLOCK),
+  unlockController.getTeacherOptions,
+);
+router.post("/unlocks", authorizePermission(PERMISSIONS.GRADES_UNLOCK), unlockController.createUnlock);
+router.post(
+  "/unlocks/:id/revoke",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.GRADES_UNLOCK),
+  unlockController.revokeUnlock,
+);
+
 // Export grades to Excel
 router.get("/export", authorizePermission(PERMISSIONS.GRADES_EXPORT, ROLES.TEACHER), exportGrades);
 

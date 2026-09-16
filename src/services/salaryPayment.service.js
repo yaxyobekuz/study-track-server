@@ -197,10 +197,19 @@ const createPayment = async (data, userId) => {
 
     // 5 ── Har bir majburiyat: COMPARE-AND-SWAP.
     //      Yo'qolgan yangilanish strukturaviy IMKONSIZ bo'ladi.
+    //
+    // ⚠️ `amount` HAM SOLISHTIRILADI. To'lanmagan qatorning summasi ushlab
+    // qolish qo'shilganda/bekor qilinganda qayta yoziladi
+    // (`payrollDeduction.service`). Faqat `paidAmount` tekshirilsa, shu
+    // orada kamaygan summaga eski qarz bo'yicha pul yozilib, ortiqcha
+    // to'lov paydo bo'lardi.
+    const amountById = new Map(entries.map((e) => [e.id, e.amount]));
+
     for (const allocation of allocations) {
       const updated = await tx.payrollEntry.updateMany({
         where: {
           id: allocation.invoiceId,
+          amount: amountById.get(allocation.invoiceId),
           paidAmount: allocation.previousPaidAmount,
           status: { in: ["unpaid", "partial"] },
         },

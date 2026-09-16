@@ -28,6 +28,10 @@ const {
 router.get("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getSettings);
 router.put("/settings", protect, authorizePermission(PERMISSIONS.ATTENDANCE_SETTINGS), updateSettings);
 
+// Darsga kelmaganlar — jonli ro'yxat. ⚠️ `/:id` dan OLDIN.
+const { getAbsentees } = require("../controllers/lessonAbsence.controller");
+router.get("/lesson-absentees", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getAbsentees);
+
 router.get("/today", protect, getToday);
 router.get("/today/all", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getTodayAll);
 router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), markStaff);

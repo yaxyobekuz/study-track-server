@@ -1,6 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const { hasRole } = require("../utils/permissions");
-const { ROLES } = require("../utils/constants");
+const { ROLES, DAYS_UZ } = require("../utils/constants");
 const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
@@ -13,20 +13,65 @@ const { isHoliday } = require("../services/holiday.service");
 // biriktirish) servisda — HTTP'dan tashqarida ham chaqiriladi.
 const gradeService = require("../services/grade.service");
 const { attachGradeRefs } = gradeService;
-const { resolveLessonAccess } = require("../helpers/teacherAccess");
+const { resolveLessonAccess, scheduleDayOf } = require("../helpers/teacherAccess");
+const { findActiveUnlock } = require("../services/gradingUnlock.service");
+const { assertAtSchool } = require("../services/gradingPresence.service");
 // ⚠️ TOSHKENT KUNI. `new Date()` ni to'g'ridan-to'g'ri berib bo'lmaydi:
 // `teacherAccess` sanani FAQAT `getUTC*` bilan o'qiydi, jadval esa
 // `getCurrentDayUz()` (Toshkent devor-soati) bilan olinadi. Toshkentda
 // 00:00–05:00 orasida UTC hali KECHAGI kun bo'ladi va ikkalasi boshqa-boshqa
 // hafta kunini ko'rsatib qolardi.
-const { currentDayDate } = require("../helpers/month.helpers");
+const { currentDayDate, parseDayDate } = require("../helpers/month.helpers");
 const ExcelService = require("../services/excel.service");
 
 const {
   getDayNameUz,
   getCurrentDayUz,
   isSunday,
+  formatDateUz,
 } = require("../helpers/date.helpers");
+
+const HOUR_MS = 3600 * 1000;
+
+/** Instantning Toshkent kuni — UTC yarim tuni (`currentDayDate` bilan bir o'lchov). */
+const tashkentDayOf = (instant) => {
+  const shifted = new Date(new Date(instant).getTime() + 5 * HOUR_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+};
+
+/**
+ * BAHO KUNI — bugun yoki boshliq OCHIB BERGAN o'tgan kun.
+ *
+ * ⚠️ O'TGAN KUNGA FAQAT OCHIQ OYNA BILAN (`GradingUnlock`): boshliq kunlar
+ * oralig'ini hammaga yoki tanlangan o'qituvchilarga muddat bilan ochadi.
+ * Qo'yilgan baho darsni o'tilgan qiladi va soati oylikka yoziladi — shu
+ * sabab oynasiz orqaga sanab baho qo'yish yopiq qoladi.
+ *
+ * `date` berilmasa — bugun (eski xatti-harakat o'zgarmaydi).
+ *
+ * @param {object} user - req.user
+ * @param {string|undefined} dateInput - "YYYY-MM-DD"
+ * @returns {Promise<{date: Date, isPast: boolean, dayName: string|null, label: string}>}
+ */
+const resolveGradingDay = async (user, dateInput) => {
+  const today = currentDayDate();
+  const date = dateInput ? parseDayDate(dateInput, "Sana") : today;
+
+  if (date.getTime() > today.getTime()) {
+    throw new BadRequestError("Kelajakdagi darsga baho qo'yib bo'lmaydi");
+  }
+
+  const isPast = date.getTime() < today.getTime();
+  const label = formatDateUz(date, { utc: true });
+
+  if (isPast && !(await findActiveUnlock(user.id, date))) {
+    throw new ForbiddenError(
+      `${label} darslariga baho qo'yish ochilmagan — boshliqdan so'rang`,
+    );
+  }
+
+  return { date, isPast, dayName: scheduleDayOf(date), label };
+};
 
 // Get missing grades for today (Owner only)
 const getMissingGradesToday = asyncHandler(async (req, res) => {
@@ -179,7 +224,7 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
 
 // Create grade (Teacher only)
 const createGrade = asyncHandler(async (req, res) => {
-  const { studentId, subjectId, classId, grade, comment, lessonOrder } =
+  const { studentId, subjectId, classId, grade, comment, lessonOrder, date: dateInput } =
     req.body;
 
   // Validation
@@ -187,17 +232,25 @@ const createGrade = asyncHandler(async (req, res) => {
     throw new BadRequestError("Barcha majburiy maydonlarni to'ldiring");
   }
 
-  // Holiday check
-  const holidayCheck = await isHoliday(new Date());
-  if (holidayCheck.isHoliday) {
-    throw new ForbiddenError(
-      `Bugun dam olish kuni: ${holidayCheck.holiday.name}. Baho qo'yish mumkin emas.`,
-    );
-  }
-
   // Only teacher can add grades (ko'p rollilik — `hasRole`)
   if (!hasRole(req.user, ROLES.TEACHER)) {
     throw new ForbiddenError("Faqat o'qituvchilar baho qo'ya oladi");
+  }
+
+  // Bugun yoki ruxsat ochilgan o'tgan kun
+  const day = await resolveGradingDay(req.user, dateInput);
+  const dayText = day.isPast ? day.label : "Bugun";
+
+  // Bugungi darsga — faqat MAKTABDA ("Siz maktabda emassiz"). Ochib
+  // berilgan o'tgan kunga bu shart qo'yilmaydi (`gradingPresence.service.js`).
+  if (!day.isPast) await assertAtSchool(req.user);
+
+  // Holiday check — tanlangan kun bo'yicha (kun o'rtasi: server taymzonasidan qat'i nazar)
+  const holidayCheck = await isHoliday(day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date());
+  if (holidayCheck.isHoliday) {
+    throw new ForbiddenError(
+      `${dayText} dam olish kuni: ${holidayCheck.holiday.name}. Baho qo'yish mumkin emas.`,
+    );
   }
 
   // Check grade (must be between 1-5)
@@ -227,15 +280,15 @@ const createGrade = asyncHandler(async (req, res) => {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  // Check if teacher teaches this subject in this class TODAY
-  const todayDayName = getCurrentDayUz();
+  // Check if teacher teaches this subject in this class on that day
+  const todayDayName = day.isPast ? day.dayName : getCurrentDayUz();
 
   // Skip Sunday (yakshanba) - no lessons
-  if (isSunday()) {
+  if (day.isPast ? !day.dayName : isSunday()) {
     throw new ForbiddenError("Yakshanba kuni dars yo'q, baho qo'yib bo'lmaydi");
   }
 
-  // Find today's schedule for this class
+  // Find the day's schedule for this class
   const todaySchedule = await prisma.schedule.findFirst({
     where: { classId, day: todayDayName },
     include: { lessons: { orderBy: { position: "asc" } } },
@@ -243,7 +296,7 @@ const createGrade = asyncHandler(async (req, res) => {
 
   if (!todaySchedule) {
     throw new ForbiddenError(
-      `Bugun (${todayDayName}) ushbu sinfda dars jadvali topilmadi`,
+      `${dayText} (${todayDayName}) ushbu sinfda dars jadvali topilmadi`,
     );
   }
 
@@ -257,14 +310,14 @@ const createGrade = asyncHandler(async (req, res) => {
     actor: req.user,
     classId,
     subjectId,
-    date: currentDayDate(),
+    date: day.date,
     lessons: todaySchedule.lessons,
   });
 
   if (!access.allowed) {
     throw new ForbiddenError(
       access.message ||
-        `Bugun (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
+        `${dayText} (${todayDayName}) ushbu sinfda sizning bu fan darslaringiz yo'q`,
     );
   }
 
@@ -296,7 +349,9 @@ const createGrade = asyncHandler(async (req, res) => {
   // Check grading time window (only if enabled in config)
   const { GRADE_TIME_LIMIT_MINUTES, ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
 
-  if (ENABLE_SCHEDULE_TIME_VALIDATION) {
+  // Vaqt oynasi faqat BUGUNGI dars uchun — ochib berilgan o'tgan kunda dars
+  // allaqachon tugagan, oyna ruxsatning ma'nosini yo'qqa chiqarardi
+  if (ENABLE_SCHEDULE_TIME_VALIDATION && !day.isPast) {
     const { checkGradingTimeWindow } = require("../helpers/date.helpers");
 
     const lessonSchedule = todaySchedule.lessons.find(
@@ -324,11 +379,18 @@ const createGrade = asyncHandler(async (req, res) => {
     }
   }
 
-  // Date must be today
-  const todayDate = new Date();
-  todayDate.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(todayDate);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // Kun oralig'i: bugun — avvalgidek; o'tgan kun — Toshkent kunining instantlari
+  let todayDate;
+  let tomorrow;
+  if (day.isPast) {
+    todayDate = new Date(day.date.getTime() - 5 * HOUR_MS);
+    tomorrow = new Date(todayDate.getTime() + 24 * HOUR_MS);
+  } else {
+    todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+    tomorrow = new Date(todayDate);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+  }
 
   // Find existing grades for this student/subject/class in teacher's all today lesson orders
   const teacherLessonOrders = teacherLessons.map((l) => l.order);
@@ -356,8 +418,12 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  // Create grade records for all missing lesson orders of today
-  const now = new Date();
+  // Create grade records for all missing lesson orders of that day.
+  // ⚠️ O'tgan kun bahosi o'sha KUNNING o'rtasiga (12:00 Toshkent) yoziladi:
+  // `Grade.date` instant, soat hisobi esa uni Toshkent kuniga keltiradi —
+  // "qo'yilgan payt" yozilsa, baho bugungi kunga tushib, o'tilmagan dars
+  // o'tilgan bo'lmay qolardi.
+  const now = day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date();
   const gradesToCreate = missingLessonOrders.map((order) => ({
     studentId,
     subjectId,
@@ -416,21 +482,25 @@ const updateGrade = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Bu bahoni tahrirlash uchun ruxsatingiz yo'q");
   }
 
-  // Can only edit today's grades
-  const gradeDate = new Date(gradeDoc.date);
-  gradeDate.setHours(0, 0, 0, 0);
+  // Can only edit today's grades — yoki ruxsat ochilgan o'tgan kunnikini.
+  // Kun TOSHKENT bo'yicha: server taymzonasidagi `setHours` 00:00–05:00
+  // orasida kechagi bahoni "bugungi" deb o'qirdi.
+  const gradeDay = tashkentDayOf(gradeDoc.date);
+  const isTodayGrade = gradeDay.getTime() === currentDayDate().getTime();
+  const unlockedPast =
+    !isTodayGrade && Boolean(await findActiveUnlock(req.user.id, gradeDay));
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  if (gradeDate.getTime() !== today.getTime()) {
+  if (!isTodayGrade && !unlockedPast) {
     throw new ForbiddenError("Faqat bugungi baholarni tahrirlash mumkin");
   }
+
+  // Bugungi bahoni ham faqat maktabda turib o'zgartiradi
+  if (isTodayGrade) await assertAtSchool(req.user);
 
   // Check grading time window for updates (only if enabled in config)
   const { ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
 
-  if (ENABLE_SCHEDULE_TIME_VALIDATION) {
+  if (ENABLE_SCHEDULE_TIME_VALIDATION && !unlockedPast) {
     const { getCurrentDayUz } = require("../helpers/date.helpers");
 
     const dayName = getCurrentDayUz();
@@ -547,16 +617,17 @@ const deleteGrade = asyncHandler(async (req, res) => {
       throw new ForbiddenError("Bu bahoni o'chirish uchun ruxsatingiz yo'q");
     }
 
-    // Can only delete today's grades
-    const gradeDate = new Date(grade.date);
-    gradeDate.setHours(0, 0, 0, 0);
+    // Can only delete today's grades — yoki ruxsat ochilgan o'tgan kunnikini
+    // (kun TOSHKENT bo'yicha — `updateGrade` bilan bir xil)
+    const gradeDay = tashkentDayOf(grade.date);
+    const isTodayGrade = gradeDay.getTime() === currentDayDate().getTime();
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    if (gradeDate.getTime() !== today.getTime()) {
+    if (!isTodayGrade && !(await findActiveUnlock(req.user.id, gradeDay))) {
       throw new ForbiddenError("Faqat bugungi baholarni o'chirish mumkin");
     }
+
+    // Bugungi bahoni ham faqat maktabda turib o'chiradi
+    if (isTodayGrade) await assertAtSchool(req.user);
   }
 
   // Delete the grade (reytinglar grade jadvalidan jonli hisoblanadi — sync shart emas)
@@ -592,18 +663,10 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Faqat o'qituvchilar uchun");
   }
 
-  // Get today's day name in Uzbek
-  const daysUz = [
-    "yakshanba",
-    "dushanba",
-    "seshanba",
-    "chorshanba",
-    "payshanba",
-    "juma",
-    "shanba",
-  ];
-  const today = new Date();
-  const todayDayName = daysUz[today.getDay()];
+  // Bugun yoki ruxsat ochilgan o'tgan kun (`?date=YYYY-MM-DD`).
+  // Hafta kuni — TOSHKENT kunidan (`createGrade` bilan bir o'lchov).
+  const day = await resolveGradingDay(req.user, req.query.date);
+  const todayDayName = DAYS_UZ[day.date.getUTCDay()];
 
   // If Sunday, return empty array
   if (todayDayName === "yakshanba") {
@@ -640,7 +703,7 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   const access = await resolveLessonAccess({
     actor: req.user,
     classId,
-    date: currentDayDate(),
+    date: day.date,
     lessons: todaySchedule.lessons,
   });
 

@@ -76,8 +76,68 @@ const computeAllowances = (fixedAmount, allowances = []) => {
   return { total, breakdown };
 };
 
+/**
+ * OYLIKDAN USHLAB QOLISH — YALPI oylikdan (fiksa + soat + ustamalar).
+ *
+ * Qoidalar (biznes qarori):
+ *   · percent — YALPIDAN foiz; bir nechta foiz QO'SHILADI (kompaund emas:
+ *     10% + 5% = yalpining 15%), ustama foizlari bilan bir xil qoida;
+ *   · fixed   — qat'iy summa;
+ *   · hours   — dars soati × xodimning SOAT NARXI (toifa yoki qo'lda).
+ *     Narx yo'q (faqat fiksa) xodimdan USHLANMAYDI — `noRate: true` bilan
+ *     qaytadi: fiksadan "soat narxi" o'ylab topilsa, bu yangi siyosat bo'lardi;
+ *   · jami ushlab qolish YALPIDAN OSHMAYDI — oylik manfiy bo'lolmaydi.
+ *     Chegaraga urilgan qator `capped: true` bilan qaytadi: jim qolsa,
+ *     "10% yozgan edim, nega 3% ushlandi" degan savolga javob bo'lmasdi.
+ *
+ * ⚠️ Chegara YARATILISH TARTIBIDA qo'llanadi (chaqiruvchi `createdAt asc`
+ * beradi): avval yozilgan ushlab qolish avval to'liq olinadi.
+ *
+ * @param {Decimal|string|number} gross - yalpi oylik
+ * @param {Array<{id: string, reason: string, type: string, value: *}>} items
+ * @param {object} [options]
+ * @param {Decimal|string|number} [options.perHourRate] - `hours` uchun soat narxi
+ * @returns {{ total: Decimal, breakdown: Array<{id, reason, type, value, amount, capped, rate?, noRate?}> }}
+ */
+const computeDeductions = (gross, items = [], { perHourRate = 0 } = {}) => {
+  const base = Decimal.max(new Decimal(gross || 0), 0);
+  const rate = Decimal.max(new Decimal(perHourRate || 0), 0);
+  let remaining = base;
+  let total = new Decimal(0);
+  const breakdown = [];
+
+  for (const item of items) {
+    const value = new Decimal(item.value);
+    const raw = (
+      item.type === "percent"
+        ? base.times(value).div(100)
+        : item.type === "hours"
+          ? rate.times(value)
+          : value
+    ).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    const applied = Decimal.min(raw, remaining);
+
+    remaining = remaining.minus(applied);
+    total = total.plus(applied);
+    breakdown.push({
+      id: item.id,
+      reason: item.reason,
+      type: item.type,
+      value: Number(value),
+      amount: formatAmount(applied),
+      capped: applied.lessThan(raw),
+      ...(item.type === "hours"
+        ? { rate: formatAmount(rate), noRate: rate.isZero() }
+        : {}),
+    });
+  }
+
+  return { total, breakdown };
+};
+
 module.exports = {
   ALLOWANCE_TYPES,
   normalizeAllowances,
   computeAllowances,
+  computeDeductions,
 };

@@ -880,6 +880,8 @@ async function updateSettings(data, updatedBy) {
     "penaltyPaused",
     "pausedRoles",
     "pausedUsers",
+    // Bugungi darsga baho faqat maktabda (`gradingPresence.service.js`)
+    "gradingRequiresPresence",
   ];
 
   const update = {};
@@ -896,6 +898,11 @@ async function updateSettings(data, updatedBy) {
   }
   if (update.officeRadius !== undefined) {
     update.officeRadius = normalizeOfficeRadius(update.officeRadius);
+  }
+  if (update.gradingRequiresPresence !== undefined) {
+    if (typeof update.gradingRequiresPresence !== "boolean") {
+      throw new BadRequestError("Baho qo'yish sharti ha/yo'q qiymati bo'lishi kerak");
+    }
   }
 
   update.updatedBy = updatedBy;

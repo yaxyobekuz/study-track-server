@@ -360,6 +360,26 @@ enum PayrollStatus {
   cancelled
 }
 
+// Oylikdan ushlab qolish holati. O'chirilmaydi — bekor qilinadi (tarix qoladi).
+enum DeductionStatus {
+  active
+  cancelled
+}
+
+// Ushlab qolish turi. `AllowanceKind` dan ALOHIDA: `hours` faqat ushlab
+// qolishga tegishli — ustamaga oqib o'tmasligi kerak.
+enum DeductionKind {
+  fixed // qat'iy summa (so'm)
+  percent // yalpi oylikdan foiz
+  hours // dars soati × xodimning soat narxi
+}
+
+// Baho qo'yish oynasi kimga ochilgan
+enum GradingUnlockScope {
+  all // hamma o'qituvchi (keyin qo'shilgani ham)
+  selected // faqat `teacherIds`
+}
+
 // To'lov hisob-fakturaga QACHON tushdi. Depozit ALOHIDA mexanizm emas —
 // keyingi oy depozitdan yopilganda AYNAN shu jadvalga `deposit` manbali
 // yana bir qator yoziladi.
@@ -1159,6 +1179,9 @@ model AttendanceSettings {
   penaltyPaused               Boolean  @default(false) @map("penalty_paused")
   pausedRoles                 String[] @map("paused_roles")
   pausedUsers                 String[] @map("paused_users")
+  // Bugungi darsga baho faqat MAKTABDA (kelgan va ketmagan) qo'yiladi.
+  // O'chirish — "kelish" tugmasi ishlamay qolgan kun uchun zaxira yo'l.
+  gradingRequiresPresence     Boolean  @default(true) @map("grading_requires_presence")
   updatedBy                   String?  @map("updated_by") @db.Char(24)
   createdAt                   DateTime @default(now()) @map("created_at")
   updatedAt                   DateTime @updatedAt @map("updated_at")
@@ -3071,6 +3094,92 @@ model PayrollBonus {
   @@map("payroll_bonuses")
 }
 
+// OYLIKDAN USHLAB QOLISH — ustamaning (`PayrollBonus`) teskarisi.
+//
+// Summa `payrollEngine` da hisoblanadi (formula bitta joyda):
+//   yalpi   = fiksa + soat + ustamalar
+//   ushlab  = Σ (percent → yalpi × foiz/100, fixed → summa), YALPIDAN OSHMAYDI
+//   oylik   = yalpi − ushlab
+//
+// ⚠️ HAR XODIMGA ALOHIDA QATOR. "Hammaga" amali ham shu yerda har bir odam
+// uchun qator yozadi (`batchId` bilan guruhlanadi): kimdan ushlanishi
+// yaratilgan paytdagi qaror, keyin ishga kirgan xodimga jimgina yoyilmaydi.
+//
+// ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (sababi va aktyori bilan): muhrlangan
+// oyliklar unga tayanadi va "nega kam to'landi" degan savolga javob qolishi
+// kerak.
+model PayrollDeduction {
+  id      String @id @db.Char(24)
+  // soft ref → User (xodim). FK yo'q: arxivlansa ham tarix qoladi.
+  staffId String @map("staff_id") @db.Char(24)
+  // Bitta amalda yaratilganlar guruhi — birga ko'rish va bekor qilish uchun
+  batchId String @map("batch_id") @db.Char(24)
+
+  reason String
+  // fixed — so'm; percent — yalpi oylikdan foiz (fiksa + soat + ustamalar);
+  // hours — dars soati soni, summa = soat × soat narxi (toifa yoki qo'lda).
+  // Soat narxi yo'q xodimdan `hours` bo'yicha USHLANMAYDI (biznes qarori).
+  type   DeductionKind
+  value  Decimal       @db.Decimal(14, 2)
+
+  // Amal qilish davri (oy aniqligida). endMonth = null → muddatsiz.
+  startMonth Int  @map("start_month")
+  endMonth   Int? @map("end_month")
+
+  note String @default("")
+
+  status       DeductionStatus @default(active)
+  cancelReason String          @default("") @map("cancel_reason")
+  cancelledAt  DateTime?       @map("cancelled_at")
+  cancelledBy  String?         @map("cancelled_by") @db.Char(24)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([staffId, status, startMonth])
+  @@index([batchId])
+  @@index([status, startMonth])
+  @@map("payroll_deductions")
+}
+
+// O'TGAN KUNLAR DARSIGA BAHO QO'YISH OYNASI.
+//
+// Baho odatda faqat o'sha kuni va MAKTABDA turib qo'yiladi
+// (`grade.controller.js`). Platforma sababli baho qo'yilmay qolgan kunlar
+// uchun boshliq (`grades.unlock`) KUNLAR ORALIG'INI ochadi: hammaga
+// (`scope = all`) yoki tanlangan o'qituvchilarga (`teacherIds`), muddat bilan.
+//
+// ⚠️ OCHILGAN KUNDA BAHO BOR DARS — O'TILGAN, davomatdan qat'i nazar
+// (biznes qarori, `judgeLesson`). Davomat ham platforma sababli noto'g'ri
+// bo'lishi mumkin — oraliqni ochish "shu kunlar bahosiga ishonaman" degani.
+// ⚠️ YOPILGAN / MUDDATI O'TGAN oyna ham oylikda HISOBGA OLINADI: yopish
+// faqat baho qo'yishni to'xtatadi, qo'yilgan baholarni bekor qilmaydi.
+// ⚠️ O'CHIRILMAYDI — yopiladi (`revokedAt`): kim ochgani izi qoladi.
+model GradingUnlock {
+  id         String             @id @db.Char(24)
+  // Ochilgan kunlar — INKLYUZIV, Toshkent kunining UTC yarim tuni
+  dateFrom   DateTime           @map("date_from") @db.Date
+  dateTo     DateTime           @map("date_to") @db.Date
+  scope      GradingUnlockScope
+  // `scope = selected` bo'lsa — kimlarga (soft ref)
+  teacherIds String[]           @map("teacher_ids")
+  reason     String             @default("")
+  // Shu ONgacha baho qo'yish mumkin (admin tanlaydi: 3 kun / hafta / oy oxiri / sana)
+  expiresAt  DateTime           @map("expires_at")
+
+  grantedBy String    @map("granted_by") @db.Char(24)
+  revokedAt DateTime? @map("revoked_at")
+  revokedBy String?   @map("revoked_by") @db.Char(24)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([dateFrom, dateTo])
+  @@index([expiresAt])
+  @@map("grading_unlocks")
+}
+
 model PayrollRequest {
   id      String             @id @db.Char(24)
   staffId String             @map("staff_id") @db.Char(24) // so'rovchi
@@ -3180,7 +3289,7 @@ model PayrollEntry {
   salaryType SalaryType    @default(fixed) @map("salary_type")
 
   // Summa breakdown — MUHRLANGAN (generatsiya vaqtidagi qiymatlar).
-  // amount = fixedAmount + allowanceAmount + kpiAmount.
+  // amount = fixedAmount + allowanceAmount + kpiAmount − deductionAmount.
   //   allowanceAmount — ustamalar (foizlilar fiksadan) yig'indisi
   //   kpiAmount       — perHourRate × lessonHours (stavka toifadan yoki qo'lda)
   // Schedule/toifa keyin o'zgarsa bu qatorga tegilmaydi (hisob-faktura doktrinasi).
@@ -3191,6 +3300,12 @@ model PayrollEntry {
   perHourRate        Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
   // Ustama qoidalarining muhrlangan tafsiloti: [{label,type,value,amount}]
   allowanceBreakdown Json    @default("[]") @map("allowance_breakdown")
+  // Ushlab qolish (`PayrollDeduction`): jami va tafsiloti [{id,reason,type,value,amount}].
+  // ⚠️ Yagona istisno muhr qoidasidan: bir so'm ham to'lanmagan qatorda
+  // ushlab qolish qo'shilsa/bekor qilinsa, faqat shu ikki maydon va `amount`
+  // qayta yoziladi (yalpi qismlar tegilmaydi) — `payrollDeduction.service`.
+  deductionAmount    Decimal @default(0) @map("deduction_amount") @db.Decimal(14, 2)
+  deductionBreakdown Json    @default("[]") @map("deduction_breakdown")
   // Toifa / lavozim / bo'lim nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
   categoryName       String  @default("") @map("category_name")
   positionName       String  @default("") @map("position_name")

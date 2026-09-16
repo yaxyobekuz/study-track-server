@@ -1,6 +1,8 @@
 const asyncHandler = require("../middleware/async.middleware");
 const staffSalaryService = require("../services/staffSalary.service");
 const staffContractService = require("../services/staffContract.service");
+const { ROLES } = require("../utils/constants");
+const { ForbiddenError } = require("../utils/errors");
 
 const getSalaries = asyncHandler(async (req, res) => {
   const data = await staffSalaryService.getSalaries(req);
@@ -9,6 +11,20 @@ const getSalaries = asyncHandler(async (req, res) => {
 
 const getStaffHistory = asyncHandler(async (req, res) => {
   const data = await staffSalaryService.getStaffHistory(req.params.staffId);
+  res.json({ success: true, data });
+});
+
+// O'ZIMNING oylik qoidam — xodim panelidagi profil sahifasi.
+//
+// `payroll.view` talab qilinmaydi: u butun shtatning oyligini ochadi, bu
+// yerda esa faqat tokendagi odamning o'zi. O'quvchi rad etiladi — unga
+// oylik biriktirilmaydi, so'rovning o'zi ma'nosiz.
+const getMySalary = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Oylik faqat xodimlar uchun");
+  }
+
+  const data = await staffSalaryService.getStaffHistory(req.user.id);
   res.json({ success: true, data });
 });
 
@@ -67,6 +83,7 @@ const saveContract = asyncHandler(async (req, res) => {
 module.exports = {
   getSalaries,
   getStaffHistory,
+  getMySalary,
   getLessonHours,
   createSalary,
   updateSalary,
