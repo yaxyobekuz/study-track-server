@@ -56,7 +56,7 @@ const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) =
   const month = monthKeyOfInstant(occurredAt);
   const budget = await prisma.expenseBudget.findUnique({
     where: { month_categoryId: { month, categoryId } },
-    select: { limitAmount: true },
+    select: { limitKind: true, limitAmount: true, limitPercent: true },
   });
   if (!budget) return; // limit yo'q — cheklov yo'q
 
@@ -66,7 +66,15 @@ const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) =
     _sum: { amount: true },
   });
 
-  const limit = new Decimal(budget.limitAmount);
+  // Amaldagi limit — foiz rejimida joriy oy sof foydasidan hisoblanadi
+  // (`getBudgets` bilan bir manba: bir xil summani ko'rsatib, bir xil rad etadi)
+  const {
+    effectiveLimit,
+    computeMonthProfit,
+  } = require("./expenseBudget.service");
+  const profit =
+    budget.limitKind === "percentProfit" ? await computeMonthProfit(from, to) : null;
+  const limit = effectiveLimit(budget, profit);
   const spent = new Decimal(spentAgg._sum.amount ?? 0);
   const afterThis = spent.plus(amount);
 

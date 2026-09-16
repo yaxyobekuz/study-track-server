@@ -2619,8 +2619,18 @@ model ExpenseBudget {
   month      Int // YYYYMM
   categoryId String @map("category_id") @db.Char(24)
 
-  limitAmount Decimal @map("limit_amount") @db.Decimal(14, 2)
-  note        String  @default("")
+  // LIMIT IKKI XIL QO'LLANADI:
+  //   "money"         — qat'iy summa (`limitAmount` — so'm).
+  //   "percentProfit" — joriy oy SOF FOYDASINING foizi (`limitPercent`).
+  //                     Amaldagi limit JONLI hisoblanadi: foyda oy davomida
+  //                     o'zgaradi. `limitAmount` bu holda 0 (ishlatilmaydi) —
+  //                     foizni summaga muhrlab qo'ysak, foyda o'zgarganda
+  //                     eskirib qolardi.
+  limitKind String @default("money") @map("limit_kind") @db.VarChar(16)
+
+  limitAmount  Decimal  @map("limit_amount") @db.Decimal(14, 2)
+  limitPercent Decimal? @map("limit_percent") @db.Decimal(5, 2)
+  note         String   @default("")
 
   createdBy String   @map("created_by") @db.Char(24)
   updatedBy String?  @map("updated_by") @db.Char(24)
