@@ -53,6 +53,7 @@ const {
 const { startSeasonStatusCron } = require("./src/jobs/seasonStatus.job");
 const { startPremiumExpiryCron } = require("./src/jobs/premiumExpiry.job");
 const { startInvoiceGenerationCron } = require("./src/jobs/invoiceGeneration.job");
+const { runPayrollLegacyCleanup } = require("./src/jobs/payrollLegacyCleanup.job");
 const { startFinanceReconcileCron } = require("./src/jobs/financeReconcile.job");
 const { startInventoryReconcileCron } = require("./src/jobs/inventoryReconcile.job");
 const {
@@ -224,6 +225,12 @@ const bootstrap = async () => {
   startSecuritySweepCron();
   // Dars jadvali: Google Sheets manbasini avtomatik tekshirish (faqat sheet rejimida)
   startScheduleSheetSyncCron();
+
+  // Tizimga o'tishdan oldingi (sentabr, 2026 dan avvalgi) fantom oylik
+  // majburiyatlarini bir marta tozalaydi + polni o'rnatadi. Bloklamaydi.
+  runPayrollLegacyCleanup().catch((err) =>
+    logger.error("[PayrollCleanup] Startup tozalash xatosi:", err),
+  );
 
   // Navbatlar: modul yuklanganda filial konteksti yo'q, shuning uchun
   // "qotib qolgan" yozuvlarni tiklash va navbatni uyg'otish BOOTSTRAP'da,

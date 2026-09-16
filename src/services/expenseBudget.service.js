@@ -231,8 +231,15 @@ const getBudgets = async (query = {}) => {
       remaining: formatAmount(totalLimit.minus(totalSpent)),
       // KUTILAYOTGAN FOYDA — jami hisoblangan majburiyatdan limitlar
       // olib tashlanadi: "hamma majburiyat yig'ilib, hamma limit ishlatilsa,
-      // qancha foyda qoladi".
+      // qancha foyda qoladi". Foizlar hisoblangan majburiyatga nisbatan
+      // (limitlar 78% → foyda 22%).
       expectedProfit: formatAmount(accrued.minus(totalLimit)),
+      limitPercent: accrued.greaterThan(0)
+        ? Number(totalLimit.div(accrued).times(100).toFixed(1))
+        : null,
+      profitPercent: accrued.greaterThan(0)
+        ? Number(accrued.minus(totalLimit).div(accrued).times(100).toFixed(1))
+        : null,
       rate: totalRate,
       status: statusOf(totalRate),
       withLimit: items.filter((row) => row.limit != null).length,
