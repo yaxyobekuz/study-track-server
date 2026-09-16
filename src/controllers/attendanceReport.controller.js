@@ -17,6 +17,21 @@ const getStudentReport = asyncHandler(async (req, res) => {
   res.json({ success: true, ...report });
 });
 
+/**
+ * Bitta sinf hisoboti: `?period=day&date=YYYY-MM-DD`, `?period=month&month=&year=`
+ * yoki `?period=year&year=`. Tekshiruv service'da.
+ */
+const getClassReport = asyncHandler(async (req, res) => {
+  const report = await attendanceReportService.getClassReport(req.params.classId, {
+    period: req.query.period,
+    date: req.query.date,
+    month: req.query.month,
+    year: req.query.year,
+  });
+
+  res.json({ success: true, ...report });
+});
+
 const getStaffReport = asyncHandler(async (req, res) => {
   const month = req.query.month || new Date().getMonth() + 1;
   const year = req.query.year || new Date().getFullYear();
@@ -26,5 +41,6 @@ const getStaffReport = asyncHandler(async (req, res) => {
 
 module.exports = {
   getStudentReport,
+  getClassReport,
   getStaffReport,
 };

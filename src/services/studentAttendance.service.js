@@ -436,33 +436,66 @@ async function getMarkList({ date, status, search, classId } = {}) {
 
 /**
  * Hisobot uchun "KUTILGAN o'quvchilar" resolveri.
- * Bir marta faol o'quvchilarni (sinflari bilan) va dars-kun xaritasini
- * (`getLessonDayMap`) yuklaydi, so'ng hafta kuni bo'yicha kutilganlarni beradi:
+ * Bir marta faol o'quvchilarni (sinflari bilan), dars-kun xaritasini
+ * (`getLessonDayMap`) va o'qish davrlarini yuklaydi, so'ng KUN bo'yicha
+ * kutilganlarni beradi:
  * - jadval umuman kiritilmagan bo'lsa (`hasSchedule=false`) — dushanba–shanba
  *   har kuni HAMMA faol o'quvchi kutiladi (fallback); yakshanba jadval
  *   enum'ida yo'q, shuning uchun u har doim bo'sh;
  * - aks holda kun uchun kutilganlar = shu hafta kunida darsi bor sinf(lar)dagi
- *   o'quvchilar (bir o'quvchi bir marta). Sinfsiz o'quvchi kutilmaydi.
+ *   o'quvchilar (bir o'quvchi bir marta). Sinfsiz o'quvchi kutilmaydi;
+ * - ⚠️ ikkala holatda ham o'quvchi faqat O'QISH DAVRI shu kunni qamragan
+ *   bo'lsa kutiladi. "O'quvchi o'qiyaptimi" degan savolga faqat davr javob
+ *   beradi (`education.md` §3–4): davrsiz hisob avgustda kelgan o'quvchini
+ *   yillik hisobotda "yil bo'yi belgilanmagan" qilib ko'rsatar va sinfni
+ *   aynan o'sha bola hisobiga "eng past" deb chiqarardi. Davri butunlay
+ *   yo'q o'quvchi ham kutilmaydi (Davr yo'q = O'QIMAYDI).
+ *
+ * Sinf a'zoligi JORIY holat (`UserClass` sanasiz) — o'tgan kunlar uchun
+ * tarix yo'q. Shu kuni boshqa sinf nomidan belgilangan o'quvchini hisobot
+ * yozuvning o'zidan oladi (`attendanceReport.service.js`).
  *
  * ⚠️ FAQAT hisobot uchun. Kunlik sahifalar (`/today`, `/mark-list`) jadvalga
  * qaramaydi — ular "bugun nechta bola bor/yo'q" degan oddiy savolga javob beradi.
  * @returns {Promise<{
- *   forWeekday: (dow:number) => { ids: Set<string>, byClass: Map<string, Set<string>> },
+ *   forDate: (day: Date|string) => { ids: Set<string>, byClass: Map<string, Set<string>> },
+ *   classOn: (classId: string, day: Date|string) => Set<string>,
+ *   classMembers: (classId: string) => Set<string>,
  *   allStudentIds: Set<string>,
  *   hasSchedule: boolean,
  * }>}
  */
 async function buildExpectedResolver() {
-  const [students, lessonDays] = await Promise.all([
+  const [students, lessonDays, enrollments] = await Promise.all([
     prisma.user.findMany({
       where: ACTIVE_STUDENT_WHERE,
       select: { id: true, classes: { select: { classId: true } } },
     }),
     getLessonDayMap(),
+    prisma.studentEnrollment.findMany({
+      select: { studentId: true, startDate: true, endDate: true },
+    }),
   ]);
 
   const hasSchedule = lessonDays.size > 0;
   const allStudentIds = new Set(students.map((s) => s.id));
+
+  // O'quvchi → davrlar. Chegaralar "YYYY-MM-DD" kalitida: `@db.Date` UTC
+  // yarim tunida yotadi, kalitlar esa oddiy satr taqqoslash bilan solishtiriladi.
+  // `endDate` INKLYUZIV — oxirgi o'qigan kun.
+  const periods = new Map();
+  for (const { studentId, startDate, endDate } of enrollments) {
+    if (!allStudentIds.has(studentId)) continue;
+    if (!periods.has(studentId)) periods.set(studentId, []);
+    periods.get(studentId).push({
+      start: toDayKey(startDate),
+      end: endDate ? toDayKey(endDate) : null,
+    });
+  }
+  const isEnrolled = (studentId, key) =>
+    (periods.get(studentId) || []).some(
+      (p) => p.start <= key && (p.end === null || p.end >= key),
+    );
 
   // Sinf → o'quvchilar to'plami
   const classStudents = new Map();
@@ -473,32 +506,64 @@ async function buildExpectedResolver() {
     }
   }
 
+  const EMPTY = new Set();
+
+  // Shu kuni sinf darsga chiqadimi (0=Yakshanba ... 6=Shanba, getUTCDay)
+  const hasLessons = (classId, dow) =>
+    dow !== 0 && (!hasSchedule || lessonDays.has(`${classId}|${DAYS_UZ[dow]}`));
+
+  /** Sinfning shu kuni kutilgan a'zolari (jadval + o'qish davri). */
+  function classOn(classId, day) {
+    const key = toDayKey(day);
+    const members = classStudents.get(classId);
+    if (!members || !hasLessons(classId, weekdayOfKey(key))) return EMPTY;
+
+    const expected = new Set();
+    for (const id of members) if (isEnrolled(id, key)) expected.add(id);
+    return expected;
+  }
+
+  // ⚠️ Kesh kun bo'yicha: bitta hisobot oyning ~26 kunini qayta-qayta so'raydi.
+  // Yillik SINF hisoboti bu yerdan o'tmaydi (`classOn`), aks holda butun
+  // maktab to'plamlari 300 kun uchun xotirada turardi.
   const cache = new Map();
 
-  // 0=Yakshanba ... 6=Shanba (getUTCDay bilan bir xil)
-  function forWeekday(dow) {
-    if (cache.has(dow)) return cache.get(dow);
+  function forDate(day) {
+    const key = toDayKey(day);
+    if (cache.has(key)) return cache.get(key);
 
     const ids = new Set();
     const byClass = new Map();
-    const dayName = DAYS_UZ[dow];
 
-    if (dow !== 0) {
-      for (const [classId, members] of classStudents) {
-        if (hasSchedule && !lessonDays.has(`${classId}|${dayName}`)) continue;
-        byClass.set(classId, members);
-        for (const id of members) ids.add(id);
-      }
-      // Fallback (jadval yo'q): sinfsiz o'quvchilar ham kutiladi
-      if (!hasSchedule) for (const id of allStudentIds) ids.add(id);
+    for (const classId of classStudents.keys()) {
+      const expected = classOn(classId, key);
+      if (!expected.size) continue;
+      byClass.set(classId, expected);
+      for (const id of expected) ids.add(id);
+    }
+    // Fallback (jadval yo'q): sinfsiz o'quvchilar ham kutiladi
+    if (!hasSchedule && weekdayOfKey(key) !== 0) {
+      for (const id of allStudentIds) if (isEnrolled(id, key)) ids.add(id);
     }
 
     const result = { ids, byClass };
-    cache.set(dow, result);
+    cache.set(key, result);
     return result;
   }
 
-  return { forWeekday, allStudentIds, hasSchedule };
+  const classMembers = (classId) => classStudents.get(classId) || EMPTY;
+
+  return { forDate, classOn, classMembers, allStudentIds, hasSchedule };
+}
+
+// Date yoki "YYYY-MM-DD" → "YYYY-MM-DD" (UTC yarim tunidagi kun)
+function toDayKey(day) {
+  return typeof day === "string" ? day.slice(0, 10) : day.toISOString().slice(0, 10);
+}
+
+// "YYYY-MM-DD" → 0=Yakshanba ... 6=Shanba
+function weekdayOfKey(key) {
+  return new Date(`${key}T00:00:00Z`).getUTCDay();
 }
 
 async function getClassList() {

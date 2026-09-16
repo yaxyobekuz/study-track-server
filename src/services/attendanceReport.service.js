@@ -9,6 +9,8 @@ const { buildExpectedResolver } = require("./studentAttendance.service");
 // tunida yotadi, shuning uchun `{ utc: true }` MAJBURIY.
 const { formatDateUz } = require("../helpers/date.helpers");
 const { formatMonthKey } = require("../helpers/month.helpers");
+const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { isValidId } = require("../utils/objectId");
 
 // Xavfli guruh chegaralari: 3+ kun ketma-ket yoki oyda 5+ kun qoldirish
 const RISK_CONSECUTIVE_DAYS = 3;
@@ -102,7 +104,7 @@ function aggregateByDay(records, resolver) {
     day.recorded.add(rec.studentId);
   }
   for (const day of dayMap.values()) {
-    const { ids } = resolver.forWeekday(weekdayOf(day.date));
+    const { ids } = resolver.forDate(day.date);
     day.expected = unionSize(ids, day.recorded);
     finalizeCounts(day);
   }
@@ -120,25 +122,29 @@ function monthRange(month, year) {
   };
 }
 
+/** Bir kunning butun maktab bo'yicha yozuvlari (sinf kesimi uchun `classId` bilan). */
+function loadDayRecords(date) {
+  return prisma.studentAttendance.findMany({
+    where: { date },
+    select: { studentId: true, classId: true, status: true },
+  });
+}
+
 /**
- * Bir KUNNING davomati — taqqoslash kartalari uchun.
+ * Bir KUNNING davomati — kunlik karta va taqqoslash uchun.
  *
  * ⚠️ Kutilgan = jadval bo'yicha kutilganlar ∪ o'sha kuni belgilanganlar.
  * Yozuvi yo'q kun (yakshanba, bayram) uchun ham chaqirilishi mumkin —
  * u paytda `expected = 0` va foiz `null` ("ma'lumot yo'q", 0% emas).
  *
  * @param {Date} date - UTC yarim tunidagi kun
+ * @param {Array} records - `loadDayRecords(date)` natijasi
  * @param {object} resolver - `buildExpectedResolver()` natijasi
  */
-async function dayCounts(date, resolver) {
-  const records = await prisma.studentAttendance.findMany({
-    where: { date },
-    select: { studentId: true, status: true },
-  });
-
+function countDay(date, records, resolver) {
   const counts = countStatuses(records);
   counts.expected = unionSize(
-    resolver.forWeekday(date.getUTCDay()).ids,
+    resolver.forDate(date).ids,
     new Set(records.map((r) => r.studentId)),
   );
   finalizeCounts(counts);
@@ -147,6 +153,106 @@ async function dayCounts(date, resolver) {
   counts.dateLabel = formatDateUz(date, { utc: true });
 
   return counts;
+}
+
+async function dayCounts(date, resolver) {
+  return countDay(date, await loadDayRecords(date), resolver);
+}
+
+// ── Sinf kesimi ─────────────────────────────────────────────────────
+
+/**
+ * Kun yozuvlari indeksi: o'quvchi → yozuv, sinf → shu sinf nomidan
+ * belgilangan o'quvchilar.
+ */
+function indexDay(records) {
+  const byStudent = new Map();
+  const byClass = new Map();
+  for (const rec of records) {
+    byStudent.set(rec.studentId, rec);
+    const classId = String(rec.classId);
+    if (!byClass.has(classId)) byClass.set(classId, new Set());
+    byClass.get(classId).add(rec.studentId);
+  }
+  return { byStudent, byClass };
+}
+
+/**
+ * Sinfning bir kundagi KUTILGAN o'quvchilari va har birining yozuvi
+ * (`null` — belgilanmagan).
+ *
+ * Kutilgan = (shu kuni darsi bor va o'qiyotgan a'zolar) ∪ (shu sinf nomidan
+ * belgilanganlar — sinfdan chiqib ketgan bo'lsa ham).
+ *
+ * ⚠️ Yozuv O'QUVCHI bo'yicha olinadi, sinf bo'yicha EMAS — kunlik sahifa
+ * (`getTodayClassAttendance`) bilan AYNI qoida: o'quvchi kuniga bitta
+ * yozuvga ega va u boshqa sinf nomidan belgilangan bo'lishi mumkin. Sinf
+ * bo'yicha olinsa, ikki sinfda turgan o'quvchi ikkinchisida har kuni
+ * "belgilanmagan" bo'lib, o'sha sinfni jimgina "eng past" qilib qo'yardi.
+ *
+ * @returns {Array<[string, object|null]>}
+ */
+function classDayEntries(classId, key, resolver, dayIndex) {
+  const members = resolver.classOn(classId, key);
+  const recordedHere = dayIndex.byClass.get(classId) || EMPTY_SET;
+
+  const entries = [];
+  for (const id of members) {
+    entries.push([id, dayIndex.byStudent.get(id) || null]);
+  }
+  for (const id of recordedHere) {
+    if (!members.has(id)) entries.push([id, dayIndex.byStudent.get(id)]);
+  }
+  return entries;
+}
+
+// Bitta kutilgan o'quvchi-kunni yig'indiga qo'shadi
+function tallyEntry(counts, record) {
+  counts.expected++;
+  if (!record) return;
+  if (counts[record.status] !== undefined) counts[record.status]++;
+  counts.total++;
+}
+
+/**
+ * Tanlangan KUN uchun sinflar jadvali.
+ *
+ * ⚠️ Kun bo'yicha, oy bo'yicha EMAS: oy yig'indisi "Kutilgan 152, kelgan
+ * 151" kabi o'quvchi-kunlarni ko'rsatardi va "bugun sinfda nima bo'ldi"
+ * degan savolga javob bermasdi. Oy va yil kesimi sinf hisobotida
+ * (`getClassReport`).
+ */
+async function buildDailyByClass(date, records, resolver) {
+  const key = dayKey(date);
+  const dayIndex = indexDay(records);
+
+  const classIds = new Set([
+    ...resolver.forDate(key).byClass.keys(),
+    ...dayIndex.byClass.keys(),
+  ]);
+
+  const rows = [];
+  for (const classId of classIds) {
+    const counts = { classId, ...emptyCounts() };
+    for (const [, record] of classDayEntries(classId, key, resolver, dayIndex)) {
+      tallyEntry(counts, record);
+    }
+    if (counts.expected) rows.push(finalizeCounts(counts));
+  }
+
+  const classDocs = await prisma.class.findMany({
+    where: { id: { in: rows.map((r) => r.classId) } },
+    select: { id: true, name: true },
+  });
+  const classNameMap = new Map(classDocs.map((c) => [String(c.id), c.name]));
+
+  return rows
+    .map((row) => ({ ...row, className: classNameMap.get(row.classId) || "-" }))
+    .sort(
+      (a, b) =>
+        (b.percent ?? -1) - (a.percent ?? -1) ||
+        a.className.localeCompare(b.className, "uz"),
+    );
 }
 
 /**
@@ -249,8 +355,8 @@ async function getStudentReport(month, year, options = {}) {
     // Oyni o'zi bilan taqqoslash ma'nosiz — karta "0 p.p." bo'lib turardi
     !(compareMonthNumber === m && compareYearNumber === y);
 
-  const [dailyCounts, dailyCompare, monthlyCompare, monthRecords] = await Promise.all([
-    dayCounts(selectedDay, resolver),
+  const [selectedDayRecords, dailyCompare, monthlyCompare, monthRecords] = await Promise.all([
+    loadDayRecords(selectedDay),
     compareDay ? dayCounts(compareDay, resolver) : Promise.resolve(null),
     hasCompareMonth
       ? monthCounts(compareMonthNumber, compareYearNumber, resolver)
@@ -260,7 +366,6 @@ async function getStudentReport(month, year, options = {}) {
       where: { date: { gte: start, lt: end } },
       select: {
         studentId: true,
-        classId: true,
         status: true,
         date: true,
         absenceReason: true,
@@ -268,6 +373,8 @@ async function getStudentReport(month, year, options = {}) {
       orderBy: { date: "asc" },
     }),
   ]);
+
+  const dailyCounts = countDay(selectedDay, selectedDayRecords, resolver);
 
   // ── Kun bo'yicha hisob (oy) ───────────────────────────────────────
   const monthDayMap = aggregateByDay(monthRecords, resolver);
@@ -309,30 +416,8 @@ async function getStudentReport(month, year, options = {}) {
       };
     });
 
-  // ── Sinf kesimi ───────────────────────────────────────────────────
-  // Yozuvlar sinf bo'yicha; kutilgan esa o'quv kunlari × shu kuni darsi bor
-  // sinf o'quvchilari. Kutilgan-u umuman belgilanmagan sinf ham ro'yxatga kiradi.
-  const classMap = new Map();
-  const ensureClass = (classId) => {
-    if (!classMap.has(classId)) {
-      classMap.set(classId, { classId, ...emptyCounts() });
-    }
-    return classMap.get(classId);
-  };
-  // kun → sinf → belgilangan o'quvchilar
-  const dayClassRecorded = new Map();
-  for (const rec of monthRecords) {
-    const classId = String(rec.classId);
-    const cls = ensureClass(classId);
-    if (cls[rec.status] !== undefined) cls[rec.status]++;
-    cls.total++;
-
-    const key = dayKey(rec.date);
-    if (!dayClassRecorded.has(key)) dayClassRecorded.set(key, new Map());
-    const perClass = dayClassRecorded.get(key);
-    if (!perClass.has(classId)) perClass.set(classId, new Set());
-    perClass.get(classId).add(rec.studentId);
-  }
+  // ── Sinf kesimi — TANLANGAN KUN (kunlik karta bilan bir kun) ───────
+  const byClass = await buildDailyByClass(selectedDay, selectedDayRecords, resolver);
 
   // Har bir o'quvchi uchun kutilgan kunlar soni (eng yaxshilar foizi uchun)
   const perStudentExpected = new Map();
@@ -340,33 +425,10 @@ async function getStudentReport(month, year, options = {}) {
     perStudentExpected.set(id, (perStudentExpected.get(id) || 0) + 1);
 
   for (const day of monthDays) {
-    const { ids, byClass } = resolver.forWeekday(weekdayOf(day.date));
-    const recordedByClass = dayClassRecorded.get(day.date) || new Map();
-
-    const classIdsToday = new Set([...byClass.keys(), ...recordedByClass.keys()]);
-    for (const classId of classIdsToday) {
-      const scheduled = byClass.get(classId) || EMPTY_SET;
-      const recorded = recordedByClass.get(classId) || EMPTY_SET;
-      ensureClass(classId).expected += unionSize(scheduled, recorded);
-    }
-
+    const { ids } = resolver.forDate(day.date);
     for (const id of ids) bumpExpected(id);
     for (const id of day.recorded) if (!ids.has(id)) bumpExpected(id);
   }
-
-  const classDocs = await prisma.class.findMany({
-    where: { id: { in: [...classMap.keys()] } },
-    select: { id: true, name: true },
-  });
-  const classNameMap = Object.fromEntries(
-    classDocs.map((c) => [String(c.id), c.name]),
-  );
-  const byClass = [...classMap.values()]
-    .map((c) => ({
-      ...finalizeCounts(c),
-      className: classNameMap[c.classId] || "-",
-    }))
-    .sort((a, b) => (b.percent ?? -1) - (a.percent ?? -1));
 
   // ── Xavfli guruh + eng yaxshi o'quvchilar (bir yurishda) ──────────
   // Eslatma: ketma-ketlik faqat belgilangan (yozuvi bor) kunlar bo'yicha hisoblanadi
@@ -522,6 +584,335 @@ async function getStudentReport(month, year, options = {}) {
       consecutiveDays: RISK_CONSECUTIVE_DAYS,
       monthlyMissedDays: RISK_MONTHLY_MISSED_DAYS,
     },
+  };
+}
+
+// ── Sinf hisoboti (kunlik / oylik / yillik) ──────────────────────────
+
+const CLASS_REPORT_PERIODS = ["day", "month", "year"];
+
+// Kunlik ro'yxatda tartib: avval kelmaganlar (e'tibor talab qiladi), keyin kelganlar
+const DAY_STATUS_ORDER = { absent: 0, unmarked: 1, excused: 2, late: 3, present: 4 };
+
+const round1 = (value) => Math.round(value * 10) / 10;
+const shareOf = (part, whole) => (whole ? round1((part / whole) * 100) : null);
+
+/**
+ * Sinf hisoboti davrini aniqlaydi. Parametr berilmasa — joriy kun/oy/yil
+ * (Toshkent). Berilgan-u yaroqsiz bo'lsa 400: sahifa URL'dan o'qiydi va
+ * jimgina boshqa davrni ko'rsatish "noto'g'ri raqam"dan yomonroq.
+ */
+function resolveClassPeriod(period, options) {
+  const today = getTodayNormalized();
+
+  if (period === "day") {
+    const date = options.date ? parseDayParam(options.date) : today;
+    if (!date) throw new BadRequestError("Sana noto'g'ri (YYYY-MM-DD)");
+    return {
+      start: date,
+      end: new Date(date.getTime() + 86400000),
+      date: dayKey(date),
+      label: formatDateUz(date, { utc: true }),
+    };
+  }
+
+  const year = options.year ? Number(options.year) : today.getUTCFullYear();
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new BadRequestError("Yil noto'g'ri");
+  }
+
+  if (period === "month") {
+    const month = options.month ? Number(options.month) : today.getUTCMonth() + 1;
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      throw new BadRequestError("Oy noto'g'ri");
+    }
+    return {
+      ...monthRange(month, year),
+      month,
+      year,
+      label: formatMonthKey(year * 100 + month),
+    };
+  }
+
+  return {
+    start: new Date(Date.UTC(year, 0, 1)),
+    end: new Date(Date.UTC(year + 1, 0, 1)),
+    year,
+    label: `${year}-yil`,
+  };
+}
+
+/**
+ * O'quv kunlari: butun maktab bo'yicha kamida bitta yozuvi bor kunlar
+ * (`aggregateByDay` bilan AYNI ta'rif — bayram va yakshanba kirmaydi).
+ *
+ * ⚠️ `groupBy`, `distinct` EMAS: Prisma `distinct` ni xotirada bajaradi va
+ * yillik oraliqda butun maktab yozuvlarini yuklab olardi.
+ */
+async function loadSchoolDays(start, end) {
+  const rows = await prisma.studentAttendance.groupBy({
+    by: ["date"],
+    where: { date: { gte: start, lt: end } },
+  });
+  return rows.map((r) => dayKey(r.date)).sort();
+}
+
+/**
+ * Bitta sinf bo'yicha davomat hisoboti — "nega bu sinf past" degan savolga
+ * javob: sinf yig'indisi, qoldirishlar tarkibi va O'QUVCHILAR kesimi
+ * (eng past foizdagilar birinchi).
+ *
+ * Hisob asosiy hisobotdagi sinf jadvali bilan BIR XIL (`classDayEntries`):
+ * jadvaldagi kunlik qatorga bosib kirilganda raqamlar mos kelishi shart.
+ *
+ * @param {string} classId
+ * @param {{period?: "day"|"month"|"year", date?: string,
+ *          month?: number|string, year?: number|string}} [options]
+ *   `day`   — `date` ("YYYY-MM-DD", default bugun)
+ *   `month` — `month` + `year` (default joriy oy)
+ *   `year`  — `year` (kalendar yili: o'quv yili tushunchasi yo'q, `education.md` §1)
+ */
+async function getClassReport(classId, options = {}) {
+  if (!isValidId(classId)) throw new NotFoundError("Sinf topilmadi");
+
+  const period = options.period || "day";
+  if (!CLASS_REPORT_PERIODS.includes(period)) {
+    throw new BadRequestError(`Noto'g'ri davr: ${period}`);
+  }
+  const range = resolveClassPeriod(period, options);
+
+  const [classDoc, resolver] = await Promise.all([
+    prisma.class.findUnique({
+      where: { id: classId },
+      select: { id: true, name: true },
+    }),
+    buildExpectedResolver(),
+  ]);
+  if (!classDoc) throw new NotFoundError("Sinf topilmadi");
+
+  const memberIds = [...resolver.classMembers(classId)];
+
+  const [records, dayKeys] = await Promise.all([
+    // Faqat shu sinfga tegishli yozuvlar: a'zolarning (qaysi sinf nomidan
+    // bo'lmasin) va shu sinf nomidan belgilanganlarning
+    prisma.studentAttendance.findMany({
+      where: {
+        date: { gte: range.start, lt: range.end },
+        OR: [{ classId }, { studentId: { in: memberIds } }],
+      },
+      select: {
+        studentId: true,
+        classId: true,
+        status: true,
+        date: true,
+        absenceReason: true,
+        excuseReason: true,
+      },
+    }),
+    // Kunlik hisobot tanlangan kunni yozuvi bo'lmasa ham ko'rsatadi
+    // (kunlik karta bilan bir xil: hali belgilanmagan bugun — 0%)
+    period === "day"
+      ? Promise.resolve([range.date])
+      : loadSchoolDays(range.start, range.end),
+  ]);
+
+  const recordsByDay = new Map();
+  for (const rec of records) {
+    const key = dayKey(rec.date);
+    if (!recordsByDay.has(key)) recordsByDay.set(key, []);
+    recordsByDay.get(key).push(rec);
+  }
+
+  const summary = emptyCounts();
+  const perStudent = new Map();
+  // Kesim: oylikda kun, yillikda oy bo'yicha
+  const buckets = new Map();
+  let schoolDays = 0;
+
+  for (const key of dayKeys) {
+    const dayIndex = indexDay(recordsByDay.get(key) || []);
+    const entries = classDayEntries(classId, key, resolver, dayIndex);
+    if (!entries.length) continue;
+    schoolDays++;
+
+    let bucket = null;
+    if (period !== "day") {
+      const bucketKey = period === "month" ? key : key.slice(0, 7);
+      if (!buckets.has(bucketKey)) buckets.set(bucketKey, emptyCounts());
+      bucket = buckets.get(bucketKey);
+    }
+
+    for (const [studentId, record] of entries) {
+      tallyEntry(summary, record);
+      if (bucket) tallyEntry(bucket, record);
+
+      if (!perStudent.has(studentId)) {
+        perStudent.set(studentId, {
+          studentId,
+          ...emptyCounts(),
+          streak: 0,
+          maxStreak: 0,
+          record: null,
+        });
+      }
+      const s = perStudent.get(studentId);
+      tallyEntry(s, record);
+      s.record = record;
+
+      // Ketma-ketlik faqat shu o'quvchi KUTILGAN kunlar bo'yicha: darsi
+      // bo'lmagan kun zanjirni uzmaydi ham, cho'zmaydi ham
+      const came = record && (record.status === "present" || record.status === "late");
+      s.streak = came ? 0 : s.streak + 1;
+      if (s.streak > s.maxStreak) s.maxStreak = s.streak;
+    }
+  }
+
+  finalizeCounts(summary);
+  const missedTotal = summary.expected - summary.came;
+
+  // Ism-familiya (sinfdan chiqqan/arxivlangan bo'lsa ham) va sabab nomlari
+  const studentIds = [...perStudent.keys()];
+  const reasonIds = [
+    ...new Set(
+      period === "day"
+        ? [...perStudent.values()].map((s) => s.record?.absenceReason).filter(Boolean)
+        : [],
+    ),
+  ];
+  const [users, reasons] = await Promise.all([
+    studentIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: { id: true, firstName: true, lastName: true },
+        })
+      : [],
+    reasonIds.length
+      ? prisma.absenceReason.findMany({
+          where: { id: { in: reasonIds } },
+          select: { id: true, title: true },
+        })
+      : [],
+  ]);
+  const nameMap = new Map(
+    users.map((u) => [u.id, `${u.lastName || ""} ${u.firstName || ""}`.trim() || "-"]),
+  );
+  const reasonMap = new Map(reasons.map((r) => [r.id, r.title]));
+  const memberSet = resolver.classMembers(classId);
+
+  const students = [...perStudent.values()].map(({ streak, record, ...s }) => {
+    finalizeCounts(s);
+    const missed = s.expected - s.came;
+    const row = {
+      ...s,
+      name: nameMap.get(s.studentId) || "-",
+      // Joriy a'zo emas — shu sinf nomidan belgilangan, keyin chiqib ketgan
+      isMember: memberSet.has(s.studentId),
+      missed,
+      missedShare: shareOf(missed, missedTotal),
+    };
+    if (period === "day") {
+      row.status = record?.status || null;
+      row.reasonTitle = record?.absenceReason
+        ? reasonMap.get(record.absenceReason) || null
+        : null;
+      row.excuseReason = record?.excuseReason || null;
+    }
+    return row;
+  });
+
+  if (period === "day") {
+    students.sort(
+      (a, b) =>
+        DAY_STATUS_ORDER[a.status || "unmarked"] - DAY_STATUS_ORDER[b.status || "unmarked"] ||
+        a.name.localeCompare(b.name, "uz"),
+    );
+  } else {
+    // ⚠️ SINF FOIZIGA TA'SIR bo'yicha (qoldirgan kunlar soni), shaxsiy foiz
+    // bo'yicha EMAS: savol "sinf kimning hisobiga past". Oy oxirida kelib
+    // 6 kundan 3 kunini qoldirgan bola 50% bilan ro'yxat boshiga chiqardi,
+    // holbuki sinf foiziga ta'siri 40 kun qoldirgan boladan o'n barobar kam.
+    students.sort(
+      (a, b) =>
+        b.missed - a.missed ||
+        (a.percent ?? 101) - (b.percent ?? 101) ||
+        a.name.localeCompare(b.name, "uz"),
+    );
+  }
+
+  // Qoldirishlar jamlanishi: ro'yxat boshidagi nechta o'quvchi qoldirilgan
+  // kunlarning yarmini beradi va ularsiz sinf foizi qancha bo'lardi.
+  // "Sinf past" ko'pincha 2–3 bolaning hisobiga — raqam shuni ochib beradi.
+  let concentration = null;
+  if (period !== "day" && missedTotal > 0) {
+    const leaders = [];
+    let covered = 0;
+    for (const s of students) {
+      if (covered * 2 >= missedTotal || s.missed === 0) break;
+      covered += s.missed;
+      leaders.push(s);
+    }
+    const leadersExpected = leaders.reduce((sum, s) => sum + s.expected, 0);
+    const leadersCame = leaders.reduce((sum, s) => sum + s.came, 0);
+
+    concentration = {
+      students: leaders.length,
+      missedStudents: students.filter((s) => s.missed > 0).length,
+      share: shareOf(covered, missedTotal),
+      percentWithout: attendancePercent({
+        came: summary.came - leadersCame,
+        expected: summary.expected - leadersExpected,
+      }),
+    };
+  }
+
+  let byDay;
+  let byMonth;
+  if (period === "month") {
+    byDay = [...buckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, counts]) => ({ date, ...finalizeCounts(counts) }));
+  }
+  if (period === "year") {
+    // Kelajak oylar kiritilmaydi — ularda "ma'lumot yo'q" qatori shovqin
+    const today = getTodayNormalized();
+    const lastMonth =
+      range.year < today.getUTCFullYear()
+        ? 12
+        : range.year === today.getUTCFullYear()
+          ? today.getUTCMonth() + 1
+          : 0;
+    byMonth = Array.from({ length: lastMonth }, (_, i) => {
+      const bucketKey = `${range.year}-${String(i + 1).padStart(2, "0")}`;
+      const counts = finalizeCounts(buckets.get(bucketKey) || emptyCounts());
+      return {
+        month: i + 1,
+        monthLabel: formatMonthKey(range.year * 100 + i + 1),
+        ...counts,
+      };
+    });
+  }
+
+  return {
+    classInfo: { id: classDoc.id, name: classDoc.name },
+    period,
+    periodLabel: range.label,
+    date: range.date ?? null,
+    month: range.month ?? null,
+    year: range.year ?? null,
+    summary: {
+      ...summary,
+      schoolDays,
+      students: students.length,
+      missed: missedTotal,
+      // Qoldirishlar tarkibi — foiz nima hisobiga tushganini ko'rsatadi
+      absentShare: shareOf(summary.absent, missedTotal),
+      excusedShare: shareOf(summary.excused, missedTotal),
+      unmarkedShare: shareOf(summary.unmarked, missedTotal),
+    },
+    concentration,
+    students,
+    ...(byDay ? { byDay } : {}),
+    ...(byMonth ? { byMonth } : {}),
   };
 }
 
@@ -727,5 +1118,6 @@ async function getStaffReport(month, year) {
 
 module.exports = {
   getStudentReport,
+  getClassReport,
   getStaffReport,
 };
