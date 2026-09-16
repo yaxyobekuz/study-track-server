@@ -170,3 +170,17 @@ test("o'rinbosar kelmagan bo'lsa soat hech kimga yozilmaydi", async () => {
     db.attendance.pop();
   }
 });
+
+test("vedomost qatori: Oy = O'tildi + O'tilmadi + Qoldi", async () => {
+  const { buildRow } = require("../src/services/lessonHoursDashboard.service");
+  // Oy o'rtasida kesim: 15-avgustgacha "o'tildi", keyini "qoldi"
+  const map = await getTeachersHours(["t1"], 202608, { asOfDayOfMonth: 15 });
+  const hoursRow = map.get("t1");
+  const row = buildRow({ id: "t1", firstName: "T", lastName: "1" }, null, null, hoursRow, null);
+
+  assert.equal(row.plannedHours, row.taughtHours + row.missedHours + row.remainingHours);
+  // Reja — jadval (o'rinbosarlik hisobga olingan), pul esa faqat o'tilgan + qolgan
+  assert.equal(row.plannedHours, hoursRow.scheduledHours - hoursRow.substitutedOutHours + hoursRow.substitutedInHours);
+  assert.equal(row.hours, row.taughtHours + row.remainingHours);
+  assert.ok(row.remainingHours > 0 && row.taughtHours > 0 && row.missedHours > 0);
+});

@@ -325,6 +325,12 @@ function buildRow(person, projected, accrued, hoursRow, entry) {
     // Jadvalda bor, lekin o'tilmagan (kelmagan / baho qo'yilmagan) — `hours`
     // ga ALLAQACHON kirmagan, faqat ko'rsatish uchun
     missedHours: hoursRow?.missedHours ?? 0,
+    // ⚠️ OYLIK REJA — vedomostdagi "Oy" ustuni. Doim:
+    //   plannedHours = taughtHours + missedHours + remainingHours
+    // `hours` (pul yoziladigan soat) = taughtHours + remainingHours. Ilgari
+    // "Oy" ustunida `hours` turardi va "O'tildi + O'tilmadi" qo'shilganda
+    // hech narsa chiqmasdi — uchinchi qism ("Qoldi") ko'rinmasdi.
+    plannedHours: hours + (hoursRow?.missedHours ?? 0),
     missedByReason: hoursRow?.missedByReason ?? { absent: 0, excused: 0, noGrade: 0 },
     // Norma tushunchasi payroll-v2 da YO'Q (KPI stavkasi har soatga
     // to'lanadi, chegara yo'q) — maydon shakl uchun qoladi.
@@ -457,7 +463,8 @@ async function getOverview(month) {
   // soat oylik qoidasi biriktirilgan-biriktirilmaganiga bog'liq emas.
   const totalHours = rows.reduce((sum, r) => sum + r.hours, 0);
   const taughtHours = rows.reduce((sum, r) => sum + r.taughtHours, 0);
-  const teachingStaff = rows.filter((r) => r.hours > 0);
+  // "Dars beruvchi" — jadvalda darsi bor (o'tilmagani ham), pul yozilgani emas
+  const teachingStaff = rows.filter((r) => r.plannedHours > 0);
 
   const projectedTotal = sumAmounts(rows.map((r) => r.projectedAmount).filter(Boolean));
   const accruedTotal = sumAmounts(rows.map((r) => r.accruedAmount).filter(Boolean));
@@ -509,7 +516,7 @@ async function getOverview(month) {
       staffCount: rows.length,
       // "Dars beruvchi" = jadvalda soati bor. Oylik rejimi bilan aloqasi yo'q.
       hourlyStaffCount: teachingStaff.length,
-      unassignedCount: rows.filter((r) => r.hours > 0 && !r.hasRule).length,
+      unassignedCount: rows.filter((r) => r.plannedHours > 0 && !r.hasRule).length,
       totalHours,
       taughtHours,
       remainingHours: Math.max(0, totalHours - taughtHours),
@@ -551,15 +558,7 @@ async function getLedger(month, query = {}) {
 
   let rows = allRows;
 
-  // `type` filtri: "none" — oyligi belgilanmaganlar (ular uchun
-  // `salaryType` null, ya'ni oddiy tenglik ishlamaydi).
-  if (query.type) {
-    rows =
-      query.type === "none"
-        ? rows.filter((r) => !r.salaryType)
-        : rows.filter((r) => r.salaryType === query.type);
-  }
-  if (query.withHoursOnly === "true") rows = rows.filter((r) => r.hours > 0);
+  if (query.withHoursOnly === "true") rows = rows.filter((r) => r.plannedHours > 0);
 
   if (query.search) {
     const needle = String(query.search).trim().toLowerCase();
@@ -570,6 +569,29 @@ async function getLedger(month, query = {}) {
     );
   }
 
+  // ⚠️ REJIM SANOG'I `type` FILTRIDAN OLDIN. Panel tugmalar yonida son
+  // ko'rsatadi va xodimi yo'q rejimni yashiradi: bosilgach bo'sh ro'yxat
+  // chiqadigan "Aralash" tugmasi "filtr buzuq" deb o'qilardi. Sanoq
+  // qidiruvni hisobga oladi — tugmadagi son bosilgandagi ro'yxat bilan teng.
+  const typeCounts = { all: rows.length, kpi: 0, mixed: 0, fixed: 0, none: 0 };
+  for (const row of rows) typeCounts[row.salaryType ?? "none"] += 1;
+
+  // `type` filtri: "none" — oyligi belgilanmaganlar (ular uchun
+  // `salaryType` null, ya'ni oddiy tenglik ishlamaydi).
+  if (query.type) {
+    rows =
+      query.type === "none"
+        ? rows.filter((r) => !r.salaryType)
+        : rows.filter((r) => r.salaryType === query.type);
+  }
+
+  // Tartib "Oy" ustuni (reja) bo'yicha — ekranda ko'rinib turgan raqam.
+  // `buildLedger` ning o'zi `hours` bo'yicha saralaydi: yig'ma ko'rinishdagi
+  // reytingda aynan o'sha raqam chiziladi.
+  rows = [...rows].sort(
+    (a, b) => b.plannedHours - a.plannedHours || a.staffName.localeCompare(b.staffName),
+  );
+
   return {
     month,
     monthLabel: formatMonthKey(month),
@@ -578,12 +600,16 @@ async function getLedger(month, query = {}) {
     cutoffDay: cutoff,
     teachingDays: calendar.teachingDays,
     items: rows,
+    typeCounts,
     totals: {
       staffCount: rows.length,
       totalHours: rows.reduce((sum, r) => sum + r.hours, 0),
+      // plannedHours = taughtHours + missedHours + remainingHours (qatorlardagi kabi)
+      plannedHours: rows.reduce((sum, r) => sum + r.plannedHours, 0),
       taughtHours: rows.reduce((sum, r) => sum + r.taughtHours, 0),
       missedHours: rows.reduce((sum, r) => sum + r.missedHours, 0),
-      unassignedCount: rows.filter((r) => r.hours > 0 && !r.hasRule).length,
+      remainingHours: rows.reduce((sum, r) => sum + r.remainingHours, 0),
+      unassignedCount: rows.filter((r) => r.plannedHours > 0 && !r.hasRule).length,
       projectedAmount: formatAmount(
         sumAmounts(rows.map((r) => r.projectedAmount).filter(Boolean)),
       ),
@@ -767,7 +793,7 @@ async function exportLedgerToExcel(res, data) {
     { header: "Oylik rejimi", key: "salaryTypeLabel", width: 16 },
     { header: "Formula", key: "formulaLabel", width: 26 },
     { header: "Haftasiga", key: "weeklyHours", width: 11 },
-    { header: "Oyiga", key: "hours", width: 10 },
+    { header: "Oyiga", key: "plannedHours", width: 10 },
     { header: "O'tildi", key: "taughtHours", width: 10 },
     { header: "O'tilmadi", key: "missedHours", width: 11 },
     { header: "Qoldi", key: "remainingHours", width: 10 },
@@ -797,8 +823,9 @@ async function exportLedgerToExcel(res, data) {
     ? ` · Oyligi biriktirilmagan: ${data.totals.unassignedCount} ta`
     : "";
   subCell.value =
-    `Xodim: ${data.totals.staffCount} ta · Jami soat: ${data.totals.totalHours}` +
-    ` · O'tildi: ${data.totals.taughtHours}` +
+    `Xodim: ${data.totals.staffCount} ta · Oy (reja): ${data.totals.plannedHours}` +
+    ` = O'tildi ${data.totals.taughtHours} + O'tilmadi ${data.totals.missedHours}` +
+    ` + Qoldi ${data.totals.remainingHours}` +
     (data.isVacationMonth ? " · TA'TIL OYI" : "") +
     unassigned;
   subCell.font = { size: 11, color: { argb: "FF6B7280" } };
@@ -829,7 +856,7 @@ async function exportLedgerToExcel(res, data) {
   const moneyCols = new Set(["hourlyRate", "accruedAmount", "projectedAmount"]);
   const hourCols = new Set([
     "weeklyHours",
-    "hours",
+    "plannedHours",
     "taughtHours",
     "missedHours",
     "remainingHours",
@@ -885,7 +912,7 @@ async function exportLedgerToExcel(res, data) {
               : "left",
       };
       if (moneyCols.has(col.key)) cell.numFmt = MONEY_FMT;
-      if (col.key === "hours") cell.font = { bold: true };
+      if (col.key === "plannedHours") cell.font = { bold: true };
       if (col.key === "projectedAmount") {
         cell.font = { bold: true, color: { argb: "FF1F2937" } };
       }
@@ -904,8 +931,10 @@ async function exportLedgerToExcel(res, data) {
           return "JAMI:";
         case "weeklyHours":
           return data.items.reduce((sum, r) => sum + r.weeklyHours, 0);
-        case "hours":
-          return data.totals.totalHours;
+        case "plannedHours":
+          return data.totals.plannedHours;
+        case "remainingHours":
+          return data.totals.remainingHours;
         case "taughtHours":
           return data.totals.taughtHours;
         case "missedHours":
