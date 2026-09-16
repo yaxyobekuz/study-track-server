@@ -1186,6 +1186,8 @@ const getDashboard = async (query = {}, options = {}) => {
           change: changeOf(new Decimal(invoicedNow), new Decimal(invoicedPrev)),
           changeUnit: "percent",
           collected: accrual.totals.collected,
+          // Progress bar — hisoblangandan necha foizi yig'ildi
+          progressRate: accrual.totals.collectionRate ?? 0,
         };
       })(),
       expense: kpi("expense", current.expense),
@@ -1193,23 +1195,36 @@ const getDashboard = async (query = {}, options = {}) => {
       margin: kpi("margin", current.margin, { unit: "percent" }),
       cashBalance: kpi("cashBalance", cashBalance),
 
-      // KUTILAYOTGAN FOYDA — jami HISOBLANGAN majburiyat MINUS xarajat
-      // limitlari. "Agar hamma limitni ishlatib, hamma majburiyat yig'ilsa,
-      // qancha foyda qoladi" degan savolga javob. Limitlar foiz rejimida ham
-      // hisoblangandan olingani uchun ikkalasi bir bazadan.
-      expectedProfit: {
-        key: "expectedProfit",
-        unit: "money",
-        value: formatAmount(
-          new Decimal(accrual.totals.invoiced).minus(expenseBudget.totals.limit),
-        ),
-        plan: null,
-        planRate: null,
-        previous: null,
-        change: null,
-        changeUnit: "percent",
-        sub: "Hisoblangan − limitlar",
-      },
+      // FOYDA FOIZI — jami HISOBLANGAN majburiyatdan xarajat limitlari
+      // ayriladi. Summa + ulushi: limitlar kutilgan tushumning necha foizini
+      // yeydi, qolgani foyda foizi (limitlar 78% → foyda 22%). "Hamma
+      // majburiyat yig'ilib, hamma limit ishlatilsa qancha foyda qoladi".
+      expectedProfit: (() => {
+        const inc = new Decimal(accrual.totals.invoiced);
+        const lim = new Decimal(expenseBudget.totals.limit);
+        const profit = inc.minus(lim);
+        const has = inc.greaterThan(0);
+        const profitPct = has ? Number(profit.div(inc).times(100).toFixed(1)) : null;
+        const limitPct = has ? Number(lim.div(inc).times(100).toFixed(1)) : null;
+        return {
+          key: "expectedProfit",
+          unit: "money",
+          value: formatAmount(profit),
+          plan: null,
+          planRate: null,
+          previous: null,
+          change: null,
+          changeUnit: "percent",
+          profitPercent: profitPct,
+          limitPercent: limitPct,
+          // Bar — foyda ulushi (yashil), qolgani limitlar
+          progressRate: profitPct ?? 0,
+          sub:
+            limitPct != null
+              ? `Foyda ${profitPct}% · Limitlar ${limitPct}%`
+              : "Hisoblangan − limitlar",
+        };
+      })(),
 
       // "Qarzdorlar" sahifasidagi uchta karta — asosiy ekranga ko'chirildi.
       // Manba AYNI `buildDebt`: ikki ekran bir xil raqamni ko'rsatishi
