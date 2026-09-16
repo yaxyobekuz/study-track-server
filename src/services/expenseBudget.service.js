@@ -35,6 +35,13 @@ const WARNING_RATE = 100; // 100% gacha — sariq, undan yuqorisi qizil
 /** Foiz rejimi cheklovi — 0 dan katta, 1000% gacha (kirimning 10 barobari). */
 const MAX_LIMIT_PERCENT = 1000;
 
+// Foiz rejimlari — "percentProfit" eski nom (endi ham KIRIM foizi degani).
+// Migratsiya uni "percentIncome" ga o'tkazadi, lekin migratsiya ishlamay
+// qolgan bazadagi eski qator ham to'g'ri hisoblanishi uchun ikkalasi qabul
+// qilinadi.
+const PERCENT_KINDS = new Set(["percentIncome", "percentProfit"]);
+const isPercentKind = (kind) => PERCENT_KINDS.has(kind);
+
 /**
  * Bir oyning UMUMIY KIRIMI (tushum) — "% kirim" limiti uchun baza.
  *
@@ -60,7 +67,7 @@ const computeMonthIncome = async (from, to) => {
  * @returns {Decimal}
  */
 const effectiveLimit = (budget, base) => {
-  if (budget.limitKind === "percentIncome") {
+  if (isPercentKind(budget.limitKind)) {
     const pct = new Decimal(budget.limitPercent ?? 0);
     const b = base && base.greaterThan(0) ? base : new Decimal(0);
     return b.times(pct).div(100).toDecimalPlaces(2);
@@ -148,14 +155,16 @@ const getBudgets = async (query = {}) => {
     // oshdik" degan raqam aynan shu ustunda ko'rinishi kerak.
     const remaining = limit ? limit.minus(spent) : null;
 
-    const kind = budget?.limitKind ?? "money";
+    // Eski "percentProfit" ni yagona "percentIncome" ga normallashtiramiz —
+    // frontend faqat bitta qiymat bilan ishlaydi
+    const kind = isPercentKind(budget?.limitKind) ? "percentIncome" : "money";
 
     return {
       categoryId: category.id,
       name: category.name,
       isActive: category.isActive,
       excludeFromEbitda: category.excludeFromEbitda,
-      // `limit` — AMALDAGI so'm (foiz rejimida foydadan hisoblangan)
+      // `limit` — AMALDAGI so'm (foiz rejimida kirimdan hisoblangan)
       limit: limit ? formatAmount(limit) : null,
       // Rejim va uni tahrirlash uchun xom qiymatlar (modal shulardan to'ladi)
       limitKind: kind,

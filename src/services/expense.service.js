@@ -72,8 +72,10 @@ const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) =
     effectiveLimit,
     computeMonthIncome,
   } = require("./expenseBudget.service");
-  const base =
-    budget.limitKind === "percentIncome" ? await computeMonthIncome(from, to) : null;
+  // "percentProfit" — eski nom, u ham kirim foizi
+  const isPercent =
+    budget.limitKind === "percentIncome" || budget.limitKind === "percentProfit";
+  const base = isPercent ? await computeMonthIncome(from, to) : null;
   const limit = effectiveLimit(budget, base);
   const spent = new Decimal(spentAgg._sum.amount ?? 0);
   const afterThis = spent.plus(amount);
