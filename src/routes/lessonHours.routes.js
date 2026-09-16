@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getOverview,
   getLedger,
+  exportLedger,
   getTeacherDetail,
   getMyHours,
   getMySubstitutions,
@@ -117,6 +118,18 @@ router.post(
 );
 
 // ── Soat hisoboti (boshliq) ──────────────────
+// ⚠️ `/ledger/export` `/ledger` DAN OLDIN — Express yo'llarni tartib
+// bo'yicha sinaydi va aniqrog'i oldinda turishi kerak.
+//
+// Ruxsat ko'rish bilan AYNI (`payroll.hours`): fayl ekranda allaqachon
+// ochiq turgan ma'lumotning nusxasi, ya'ni u yangi huquq bermaydi.
+router.get(
+  "/ledger/export",
+  protect,
+  authorizePermission(PERMISSIONS.PAYROLL_HOURS),
+  exportLedger,
+);
+
 router.get(
   "/ledger",
   protect,

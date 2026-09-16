@@ -215,7 +215,11 @@ async function collectStaff(month) {
 function buildRow(person, projected, accrued, hoursRow, entry) {
   const hours = hoursRow?.hours ?? 0;
   const taught = hoursRow?.taughtHours ?? 0;
-  const perHourRate = projected?.perHourRate ?? null;
+  // ⚠️ `Decimal(0)` — TRUTHY obyekt. Oddiy `perHourRate ? ... : null`
+  // fiksa xodimda "0.00" stavka yozardi va u ekranda ham, Excel'da ham
+  // "soatiga 0 so'm" bo'lib ko'rinardi.
+  const rate = projected?.perHourRate ?? null;
+  const perHourRate = rate && rate.greaterThan(0) ? rate : null;
 
   return {
     staffId: person.id,
@@ -236,7 +240,7 @@ function buildRow(person, projected, accrued, hoursRow, entry) {
     positionName: projected?.positionName || null,
     // Soat PULGA aylanadimi — ustunni ko'rsatish sharti EMAS, faqat
     // "bu odamda soat pul hosil qiladi" belgisi (rang va jami uchun).
-    usesHours: Boolean(perHourRate && perHourRate.greaterThan(0)),
+    usesHours: Boolean(perHourRate),
 
     // ── Soat (QOIDADAN QAT'IY NAZAR) ──────
     weeklyHours: hoursRow?.weeklyHours ?? 0,
@@ -630,4 +634,208 @@ async function getTeacherDetail(teacherId, month) {
   };
 }
 
-module.exports = { buildRow, getOverview, getLedger, getTeacherDetail };
+/**
+ * VEDOMOST → EXCEL.
+ *
+ * ⚠️ QATORLAR TAYYOR HOLDA KELADI (`getLedger` natijasi) — bu yerda
+ * hech narsa qayta hisoblanmaydi. Excel ekranning NUSXASI bo'lishi
+ * kerak: ikkinchi yig'uvchi yozilsa, bir kuni faylda boshqa raqam
+ * chiqib, "qaysinisi to'g'ri" degan savolga javob qolmasdi.
+ *
+ * ⚠️ PUL MATN EMAS, SON bo'lib yoziladi (`Number(...)`): Excel'da
+ * ustunni yig'ish va saralash kerak bo'ladi, string esa buni
+ * imkonsiz qilardi. Ko'rinishi `numFmt` bilan beriladi.
+ *
+ * @param {import("express").Response} res
+ * @param {object} data - `getLedger` qaytargan obyekt
+ */
+async function exportLedgerToExcel(res, data) {
+  const ExcelService = require("./excel.service");
+
+  const columns = [
+    { header: "№", key: "no", width: 6 },
+    { header: "O'qituvchi", key: "staffName", width: 26 },
+    { header: "Login", key: "username", width: 16 },
+    { header: "Oylik rejimi", key: "salaryTypeLabel", width: 16 },
+    { header: "Formula", key: "formulaLabel", width: 26 },
+    { header: "Haftasiga", key: "weeklyHours", width: 11 },
+    { header: "Oyiga", key: "hours", width: 10 },
+    { header: "O'tildi", key: "taughtHours", width: 10 },
+    { header: "Qoldi", key: "remainingHours", width: 10 },
+    { header: "Berildi", key: "substitutedOutHours", width: 10 },
+    { header: "Olindi", key: "substitutedInHours", width: 10 },
+    { header: "Stavka", key: "hourlyRate", width: 14 },
+    { header: "Hisoblandi", key: "accruedAmount", width: 16 },
+    { header: "Oy oxirida", key: "projectedAmount", width: 16 },
+  ];
+
+  const workbook = ExcelService.createWorkbook();
+  const worksheet = ExcelService.addWorksheet(workbook, "Dars soatlari", {
+    freezeHeader: false,
+  });
+
+  // ── Sarlavha bloki (2 qator) ─────────────
+  worksheet.mergeCells(1, 1, 1, columns.length);
+  const titleCell = worksheet.getCell(1, 1);
+  titleCell.value = `Dars soatlari vedomosti — ${data.monthLabel}`;
+  titleCell.font = { bold: true, size: 14, color: { argb: "FF1F2937" } };
+  titleCell.alignment = { vertical: "middle", horizontal: "left" };
+  worksheet.getRow(1).height = 26;
+
+  worksheet.mergeCells(2, 1, 2, columns.length);
+  const subCell = worksheet.getCell(2, 1);
+  const unassigned = data.totals.unassignedCount
+    ? ` · Oyligi biriktirilmagan: ${data.totals.unassignedCount} ta`
+    : "";
+  subCell.value =
+    `Xodim: ${data.totals.staffCount} ta · Jami soat: ${data.totals.totalHours}` +
+    ` · O'tildi: ${data.totals.taughtHours}` +
+    (data.isVacationMonth ? " · TA'TIL OYI" : "") +
+    unassigned;
+  subCell.font = { size: 11, color: { argb: "FF6B7280" } };
+  worksheet.getRow(2).height = 20;
+
+  // ── Ustun sarlavhalari (4-qator, 3-si ajratgich) ──
+  const headerRowIndex = 4;
+  columns.forEach((c, i) => {
+    worksheet.getColumn(i + 1).width = c.width;
+  });
+
+  const headerRow = worksheet.getRow(headerRowIndex);
+  headerRow.values = columns.map((c) => c.header);
+  headerRow.height = 22;
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF4472C4" } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FFD0D0D0" } },
+      left: { style: "thin", color: { argb: "FFD0D0D0" } },
+      bottom: { style: "thin", color: { argb: "FFD0D0D0" } },
+      right: { style: "thin", color: { argb: "FFD0D0D0" } },
+    };
+  });
+
+  const MONEY_FMT = "#,##0";
+  const moneyCols = new Set(["hourlyRate", "accruedAmount", "projectedAmount"]);
+  const hourCols = new Set([
+    "weeklyHours",
+    "hours",
+    "taughtHours",
+    "remainingHours",
+    "substitutedOutHours",
+    "substitutedInHours",
+  ]);
+
+  // Bo'sh summa NOL EMAS, bo'sh katak: oyligi biriktirilmagan
+  // o'qituvchida "0 so'm" yozilsa, u "bepul ishlaydi" deb o'qilardi.
+  const money = (value) => (value == null ? null : Number(value));
+
+  data.items.forEach((row, index) => {
+    const excelRow = worksheet.addRow(
+      columns.map((c) => {
+        switch (c.key) {
+          case "no":
+            return index + 1;
+          case "username":
+            return row.staff?.username ?? "";
+          case "salaryTypeLabel":
+            return row.salaryTypeLabel ?? "Belgilanmagan";
+          case "formulaLabel":
+            return row.formulaLabel ?? "—";
+          case "hourlyRate":
+          case "accruedAmount":
+          case "projectedAmount":
+            return money(row[c.key]);
+          default:
+            return row[c.key];
+        }
+      }),
+    );
+
+    if (index % 2 === 0) {
+      excelRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF2F6FC" } };
+    }
+
+    excelRow.eachCell((cell, colNumber) => {
+      const col = columns[colNumber - 1];
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE5E7EB" } },
+        left: { style: "thin", color: { argb: "FFE5E7EB" } },
+        bottom: { style: "thin", color: { argb: "FFE5E7EB" } },
+        right: { style: "thin", color: { argb: "FFE5E7EB" } },
+      };
+      cell.alignment = {
+        vertical: "middle",
+        horizontal:
+          moneyCols.has(col.key) || hourCols.has(col.key)
+            ? "right"
+            : col.key === "no"
+              ? "center"
+              : "left",
+      };
+      if (moneyCols.has(col.key)) cell.numFmt = MONEY_FMT;
+      if (col.key === "hours") cell.font = { bold: true };
+      if (col.key === "projectedAmount") {
+        cell.font = { bold: true, color: { argb: "FF1F2937" } };
+      }
+      // Oyligi biriktirilmagan qator ko'zga tashlanib tursin
+      if (col.key === "salaryTypeLabel" && !row.hasRule) {
+        cell.font = { bold: true, color: { argb: "FFB91C1C" } };
+      }
+    });
+  });
+
+  // ── Jami qatori ──────────────────────────
+  const totalRow = worksheet.addRow(
+    columns.map((c) => {
+      switch (c.key) {
+        case "formulaLabel":
+          return "JAMI:";
+        case "weeklyHours":
+          return data.items.reduce((sum, r) => sum + r.weeklyHours, 0);
+        case "hours":
+          return data.totals.totalHours;
+        case "taughtHours":
+          return data.totals.taughtHours;
+        case "accruedAmount":
+          return money(data.totals.accruedAmount);
+        case "projectedAmount":
+          return money(data.totals.projectedAmount);
+        default:
+          return null;
+      }
+    }),
+  );
+
+  totalRow.eachCell((cell, colNumber) => {
+    const col = columns[colNumber - 1];
+    if (cell.value == null) return;
+    cell.font = { bold: true, color: { argb: "FF1F2937" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
+    cell.alignment = {
+      vertical: "middle",
+      horizontal: col.key === "formulaLabel" ? "right" : "right",
+    };
+    if (moneyCols.has(col.key)) cell.numFmt = MONEY_FMT;
+  });
+
+  worksheet.autoFilter = {
+    from: { row: headerRowIndex, column: 1 },
+    to: { row: headerRowIndex, column: columns.length },
+  };
+  worksheet.views = [{ state: "frozen", ySplit: headerRowIndex }];
+
+  // Fayl nomida OY turadi: bir nechta oy yuklab olinganda ular
+  // bir-birini almashtirmasligi kerak.
+  const filename = ExcelService.generateFileName(`dars-soatlari_${data.month}`);
+  await ExcelService.sendWorkbook(res, workbook, filename);
+}
+
+module.exports = {
+  buildRow,
+  getOverview,
+  getLedger,
+  getTeacherDetail,
+  exportLedgerToExcel,
+};

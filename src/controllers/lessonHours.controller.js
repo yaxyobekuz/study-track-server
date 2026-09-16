@@ -41,6 +41,25 @@ const getTeacherDetail = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+/**
+ * VEDOMOSTNI EXCEL'GA YUKLAB OLISH.
+ *
+ * ⚠️ FILTRLAR EKRANDAGIDEK QO'LLANADI. `req.query` o'zgarishsiz
+ * `getLedger` ga uzatiladi: foydalanuvchi "KPI" filtrini qo'yib Excel
+ * bossa, faylda ham aynan o'sha qatorlar bo'lishi kerak. Fayl ekrandan
+ * boshqa ma'lumot bersa, ikkalasiga ham ishonch yo'qolardi.
+ *
+ * ⚠️ MA'LUMOT QAYTA HISOBLANMAYDI — `getLedger` AYNI o'zi chaqiriladi.
+ * Ikkinchi yig'uvchi yozilsa, Excel va ekran vaqt o'tib bir-biridan
+ * uzoqlashardi (`lessonHoursDashboard.service.js` sarlavhasi bilan bir
+ * xil sabab).
+ */
+const exportLedger = asyncHandler(async (req, res) => {
+  const month = lessonHoursService.parseHoursMonth(req.query.month);
+  const data = await dashboardService.getLedger(month, req.query);
+  await dashboardService.exportLedgerToExcel(res, data);
+});
+
 // ── O'zimniki (o'qituvchi paneli) ────────────
 
 const getMyHours = asyncHandler(async (req, res) => {
@@ -61,6 +80,7 @@ const getMySubstitutions = asyncHandler(async (req, res) => {
 module.exports = {
   getOverview,
   getLedger,
+  exportLedger,
   getTeacherDetail,
   getMyHours,
   getMySubstitutions,
