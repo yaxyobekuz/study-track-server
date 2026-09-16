@@ -2621,10 +2621,10 @@ model ExpenseBudget {
 
   // LIMIT IKKI XIL QO'LLANADI:
   //   "money"         — qat'iy summa (`limitAmount` — so'm).
-  //   "percentProfit" — joriy oy SOF FOYDASINING foizi (`limitPercent`).
-  //                     Amaldagi limit JONLI hisoblanadi: foyda oy davomida
+  //   "percentIncome" — joriy oy UMUMIY KIRIMINING foizi (`limitPercent`).
+  //                     Amaldagi limit JONLI hisoblanadi: kirim oy davomida
   //                     o'zgaradi. `limitAmount` bu holda 0 (ishlatilmaydi) —
-  //                     foizni summaga muhrlab qo'ysak, foyda o'zgarganda
+  //                     foizni summaga muhrlab qo'ysak, kirim o'zgarganda
   //                     eskirib qolardi.
   limitKind String @default("money") @map("limit_kind") @db.VarChar(16)
 

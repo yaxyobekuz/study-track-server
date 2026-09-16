@@ -26,47 +26,44 @@ const {
   monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
-const { sumIncome, sumExpense } = require("./financeReport.service");
+const { sumIncome } = require("./financeReport.service");
 
 /** Limitning "sog'lomligi" — chegaralar biznes qarori. */
 const HEALTHY_RATE = 90; // shu foizgacha — yashil
 const WARNING_RATE = 100; // 100% gacha — sariq, undan yuqorisi qizil
 
-/** Foiz rejimi cheklovi — 0 dan katta, 1000% gacha (foydaning 10 barobari). */
+/** Foiz rejimi cheklovi — 0 dan katta, 1000% gacha (kirimning 10 barobari). */
 const MAX_LIMIT_PERCENT = 1000;
 
 /**
- * Bir oyning SOF FOYDASI (tushum − xarajat) — "% foyda" limiti uchun baza.
+ * Bir oyning UMUMIY KIRIMI (tushum) — "% kirim" limiti uchun baza.
  *
- * ⚠️ `financeDashboard` dagi `monthFigures.profit` bilan AYNAN bir manba
- * (`sumIncome`/`sumExpense`) — aks holda dashboarddagi "Sof foyda" bilan
- * limit bazasi bir-biriga to'g'ri kelmasdi.
+ * ⚠️ Baza SOF FOYDA emas, UMUMIY KIRIM: rahbar "kirimimizning 20% igacha
+ * ijaraga sarflaymiz" degan qoidani qo'yadi. Manba `sumIncome` —
+ * dashboarddagi "Yig'ilgan pul" bilan bir xil.
  *
  * @param {Date} from
  * @param {Date} to
  * @returns {Promise<Decimal>}
  */
-const computeMonthProfit = async (from, to) => {
-  const [income, expense] = await Promise.all([sumIncome(from, to), sumExpense(from, to)]);
-  return new Decimal(income).minus(expense.total);
+const computeMonthIncome = async (from, to) => {
+  return new Decimal(await sumIncome(from, to));
 };
 
 /**
  * Budjet qatorining AMALDAGI limiti (so'mda).
  *   money         → limitAmount.
- *   percentProfit → max(0, foyda) × foiz / 100. Foyda manfiy bo'lsa limit 0
- *     (yo'q foydadan foiz olib bo'lmaydi) — natijada har xarajat "oshgan"
- *     bo'lib ko'rinadi, bu ATAYLAB: zarar oyida yangi xarajatga ruxsat bermaslik.
+ *   percentIncome → max(0, kirim) × foiz / 100. Kirim yo'q oyda limit 0.
  *
  * @param {{limitKind: string, limitAmount: *, limitPercent: *}} budget
- * @param {Decimal|null} profit
+ * @param {Decimal|null} base - oyning umumiy kirimi (faqat foiz rejimida kerak)
  * @returns {Decimal}
  */
-const effectiveLimit = (budget, profit) => {
-  if (budget.limitKind === "percentProfit") {
+const effectiveLimit = (budget, base) => {
+  if (budget.limitKind === "percentIncome") {
     const pct = new Decimal(budget.limitPercent ?? 0);
-    const base = profit && profit.greaterThan(0) ? profit : new Decimal(0);
-    return base.times(pct).div(100).toDecimalPlaces(2);
+    const b = base && base.greaterThan(0) ? base : new Decimal(0);
+    return b.times(pct).div(100).toDecimalPlaces(2);
   }
   return new Decimal(budget.limitAmount);
 };
@@ -128,10 +125,10 @@ const getBudgets = async (query = {}) => {
     });
   }
 
-  // Sof foyda — "% foyda" limitining bazasi. DOIM hisoblanadi: modal foiz
+  // Umumiy kirim — "% kirim" limitining bazasi. DOIM hisoblanadi: modal foiz
   // rejimiga o'tkazganda amaldagi summani darhol ko'rsatishi kerak va
-  // kartada "Sof foyda: X" hint chiqadi.
-  const profit = await computeMonthProfit(from, to);
+  // kartada "Umumiy kirim: X" hint chiqadi.
+  const income = await computeMonthIncome(from, to);
 
   let totalLimit = new Decimal(0);
   let totalSpent = new Decimal(0);
@@ -140,7 +137,7 @@ const getBudgets = async (query = {}) => {
     const budget = limitByCategory.get(category.id);
     const spentRow = spentByCategory.get(category.id);
     const spent = spentRow?.amount ?? new Decimal(0);
-    const limit = budget ? effectiveLimit(budget, profit) : null;
+    const limit = budget ? effectiveLimit(budget, income) : null;
 
     if (limit) totalLimit = totalLimit.plus(limit);
     totalSpent = totalSpent.plus(spent);
@@ -163,7 +160,7 @@ const getBudgets = async (query = {}) => {
       // Rejim va uni tahrirlash uchun xom qiymatlar (modal shulardan to'ladi)
       limitKind: kind,
       limitPercent:
-        kind === "percentProfit" && budget?.limitPercent != null
+        kind === "percentIncome" && budget?.limitPercent != null
           ? Number(budget.limitPercent)
           : null,
       spent: formatAmount(spent),
@@ -202,8 +199,8 @@ const getBudgets = async (query = {}) => {
   return {
     month,
     monthLabel: formatMonthKey(month),
-    // "% foyda" limiti bazasi — UI "foydaning 20% i = X so'm" ni ko'rsatadi.
-    profit: formatAmount(profit),
+    // "% kirim" limiti bazasi — UI "kirimning 20% i = X so'm" ni ko'rsatadi.
+    income: formatAmount(income),
     items: all,
     // Limiti qo'yilganlar oldinda, ular ichida eng ko'p sarflangani tepada:
     // rahbar birinchi navbatda "qaysi limit yonyapti" ni ko'rishi kerak
@@ -264,10 +261,10 @@ const upsertBudgets = async (data = {}, userId) => {
     const name = known.get(item.categoryId);
     if (!name) throw new NotFoundError("Xarajat kategoriyasi topilmadi");
 
-    const kind = item.limitKind === "percentProfit" ? "percentProfit" : "money";
+    const kind = item.limitKind === "percentIncome" ? "percentIncome" : "money";
     const note = String(item.note ?? "").trim().slice(0, 300);
 
-    if (kind === "percentProfit") {
+    if (kind === "percentIncome") {
       // Foiz rejimi — qiymat `limitPercent` dan keladi
       const raw = item.limitPercent;
       if (raw == null || raw === "") {
@@ -352,7 +349,7 @@ module.exports = {
   getBudgets,
   upsertBudgets,
   loadBudgetSummary,
-  computeMonthProfit,
+  computeMonthIncome,
   effectiveLimit,
   HEALTHY_RATE,
   WARNING_RATE,
