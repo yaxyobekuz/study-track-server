@@ -54,11 +54,14 @@ const {
 } = require("../controllers/department.controller");
 
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──
-const { getStaffPayroll, getTeacherPayroll, getAllowancesView } = require("../controllers/payrollView.controller");
+const { getStaffPayroll, getTeacherPayroll, getAllowancesView, createBonus, deleteBonus } = require("../controllers/payrollView.controller");
 router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);
 router.get("/view/teachers", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getTeacherPayroll);
 // Ustama haq registri (Yo'nalish -> Ustama haq)
 router.get("/view/allowances", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getAllowancesView);
+// Admin ustama (PayrollBonus) — to'g'ridan-to'g'ri qo'shish/o'chirish
+router.post("/bonuses", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createBonus);
+router.delete("/bonuses/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), deleteBonus);
 
 // ── Bo'limlar (staff/teaching) ──
 router.get("/departments", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getDepartments);

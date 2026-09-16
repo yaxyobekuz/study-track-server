@@ -19,4 +19,25 @@ const getAllowancesView = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
-module.exports = { getStaffPayroll, getTeacherPayroll, getAllowancesView };
+// ── ADMIN USTAMA (PayrollBonus) ──────────────
+const payrollBonusService = require("../services/payrollBonus.service");
+
+/** Admin xodimga to'g'ridan-to'g'ri ustama qo'shadi. */
+const createBonus = asyncHandler(async (req, res) => {
+  const data = await payrollBonusService.createBonus(req.body, req.user.id);
+  res.status(201).json({ success: true, data });
+});
+
+/** Admin qo'shgan ustamani o'chiradi. */
+const deleteBonus = asyncHandler(async (req, res) => {
+  const result = await payrollBonusService.deleteBonus(req.params.id, req.user.id);
+  res.json({ success: true, ...result });
+});
+
+module.exports = {
+  getStaffPayroll,
+  getTeacherPayroll,
+  getAllowancesView,
+  createBonus,
+  deleteBonus,
+};
