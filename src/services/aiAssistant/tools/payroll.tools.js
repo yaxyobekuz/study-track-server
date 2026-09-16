@@ -431,7 +431,7 @@ const payrollProjection = defineTool({
       throw new AiToolError("departmentId yoki categoryId dan aynan bittasini bering");
     }
     const month = monthArg(args.month);
-    const query = { month, search: args.search, limit: 100 };
+    const query = { month, search: args.search, limit: 100, sort: "name" };
 
     const result = args.departmentId
       ? await payrollViewService.getStaffPayroll(reqLike(ctx, { ...query, departmentId: args.departmentId }))

@@ -7,6 +7,12 @@ const getStaffPayroll = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
+/** "Xodim qo'shish" tanlagichi — shu bo'limga hali biriktirilmaganlar. */
+const getAssignCandidates = asyncHandler(async (req, res) => {
+  const data = await payrollViewService.getAssignCandidates(req);
+  res.json({ success: true, data });
+});
+
 /** Toifa o'qituvchilari + hisoblangan oylik. */
 const getTeacherPayroll = asyncHandler(async (req, res) => {
   const data = await payrollViewService.getTeacherPayroll(req);
@@ -36,6 +42,7 @@ const deleteBonus = asyncHandler(async (req, res) => {
 
 module.exports = {
   getStaffPayroll,
+  getAssignCandidates,
   getTeacherPayroll,
   getAllowancesView,
   createBonus,

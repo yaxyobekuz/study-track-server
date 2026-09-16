@@ -147,6 +147,10 @@ const assignStaff = async (staffId, data, actorId) => {
     if (data.positionId) {
       const pos = await prisma.position.findUnique({ where: { id: data.positionId } });
       if (!pos) throw new NotFoundError("Lavozim topilmadi");
+      // Qayta tanlash hech narsa o'zgartirmaydi — jim "Biriktirildi" o'rniga aytamiz
+      if (staff.positionId === pos.id) {
+        throw new BadRequestError(`${fullName(staff)} allaqachon "${pos.name}" lavozimida`);
+      }
       payload.positionId = data.positionId;
       payload.salaryCategoryId = null; // lavozim va toifa birga bo'lmaydi
       label = `lavozim "${pos.name}"`;
@@ -160,6 +164,9 @@ const assignStaff = async (staffId, data, actorId) => {
     if (data.salaryCategoryId) {
       const cat = await prisma.salaryCategory.findUnique({ where: { id: data.salaryCategoryId } });
       if (!cat) throw new NotFoundError("Toifa topilmadi");
+      if (staff.salaryCategoryId === cat.id) {
+        throw new BadRequestError(`${fullName(staff)} allaqachon "${cat.name}" toifasida`);
+      }
       payload.salaryCategoryId = data.salaryCategoryId;
       payload.positionId = null;
       label = `toifa "${cat.name}"`;

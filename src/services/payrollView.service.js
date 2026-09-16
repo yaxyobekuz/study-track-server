@@ -67,6 +67,86 @@ const sumTotals = (rows) => {
 };
 
 /**
+ * Har xodimga oylik tuzilmasi OXIRGI marta qachon tegilgani: lavozim/toifa
+ * biriktirish, shartnoma sharti (audit) yoki oylik qoidasi (StaffSalary).
+ * Alohida ustun yo'q — audit har biriktirishda baribir yoziladi, shuning
+ * uchun eski biriktirishlar ham to'g'ri tartibga tushadi.
+ *
+ * @param {string[]} ids
+ * @returns {Promise<Map<string, number>>} id → ms
+ */
+const loadLastAssignedAt = async (ids) => {
+  if (ids.length === 0) return new Map();
+  const [audits, salaries] = await Promise.all([
+    prisma.payrollAudit.groupBy({
+      by: ["targetId"],
+      where: { targetType: "user", targetId: { in: ids } },
+      _max: { createdAt: true },
+    }),
+    prisma.staffSalary.groupBy({
+      by: ["staffId"],
+      where: { staffId: { in: ids } },
+      _max: { updatedAt: true },
+    }),
+  ]);
+  const map = new Map();
+  const bump = (id, date) => {
+    const ms = date ? date.getTime() : 0;
+    if (ms > (map.get(id) ?? 0)) map.set(id, ms);
+  };
+  audits.forEach((a) => bump(a.targetId, a._max.createdAt));
+  salaries.forEach((s) => bump(s.staffId, s._max.updatedAt));
+  return map;
+};
+
+const byName = (a, b) =>
+  `${a.firstName ?? ""} ${a.lastName ?? ""}`.localeCompare(`${b.firstName ?? ""} ${b.lastName ?? ""}`);
+
+/**
+ * SARALASH (ikkala ko'rinish uchun bitta qoida):
+ *   'recent' (sukut) — oxirgi biriktirilgan/o'zgargan tepada;
+ *   'amount'         — hisoblangan oylik bo'yicha;
+ *   'name'           — ism bo'yicha (DB darajasida sahifalanadi).
+ * 'recent' va 'amount' DB ustuni emas — butun ro'yxat xotirada saralanib
+ * sahifalanadi (bo'lim/toifa xodimlari soni kichik).
+ */
+const loadSortedPage = async ({ where, sort, month, skip, limit, withPosition }) => {
+  const toRow = (u, ctx) => ({
+    ...userInfo(u),
+    ...(withPosition ? { positionId: u.positionId } : {}),
+    ...payrollEngine.previewForStaff(u, month, ctx),
+  });
+
+  if (sort === "name") {
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        select: USER_SELECT,
+        orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+        skip,
+        take: limit,
+      }),
+      prisma.user.count({ where }),
+    ]);
+    const ctx = await payrollEngine.loadContext(month, users);
+    return { rows: users.map((u) => toRow(u, ctx)), total };
+  }
+
+  const users = await prisma.user.findMany({ where, select: USER_SELECT });
+  const ctx = await payrollEngine.loadContext(month, users);
+  let rows = users.map((u) => toRow(u, ctx));
+
+  if (sort === "amount") {
+    rows.sort((a, b) => Number(b.amount ?? 0) - Number(a.amount ?? 0));
+  } else {
+    const lastAt = await loadLastAssignedAt(users.map((u) => u.id));
+    rows.sort((a, b) => (lastAt.get(b.id) ?? 0) - (lastAt.get(a.id) ?? 0) || byName(a, b));
+  }
+
+  return { rows: rows.slice(skip, skip + limit), total: users.length };
+};
+
+/**
  * STAFF bo'lim → xodimlar + hisoblangan oylik (lavozim bazasi + ustama).
  */
 const getStaffPayroll = async (req) => {
@@ -91,36 +171,14 @@ const getStaffPayroll = async (req) => {
     ...searchWhere(search),
   };
 
-  // SARALASH: 'name' (sukut) — DB darajasida; 'amount' — hisoblangan oylik
-  // bo'yicha, u DB ustuni emas, shuning uchun butun ro'yxat xotirada
-  // saralanib sahifalanadi (bo'lim xodimlari soni kichik).
-  const sortByAmount = req.query.sort === "amount";
-
-  const [users, total] = await Promise.all([
-    sortByAmount
-      ? prisma.user.findMany({ where, select: USER_SELECT })
-      : prisma.user.findMany({
-          where,
-          select: USER_SELECT,
-          orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-          skip,
-          take: limit,
-        }),
-    prisma.user.count({ where }),
-  ]);
-
-  const ctx = await payrollEngine.loadContext(month, users);
-  let rows = users.map((u) => ({
-    ...userInfo(u),
-    positionId: u.positionId,
-    ...payrollEngine.previewForStaff(u, month, ctx),
-  }));
-
-  if (sortByAmount) {
-    rows = rows
-      .sort((a, b) => Number(b.amount ?? 0) - Number(a.amount ?? 0))
-      .slice(skip, skip + limit);
-  }
+  const { rows, total } = await loadSortedPage({
+    where,
+    sort: req.query.sort,
+    month,
+    skip,
+    limit,
+    withPosition: true,
+  });
 
   // Butun bo'lim bo'yicha yakuniy summa (sahifadan qat'i nazar)
   const allUsers = await prisma.user.findMany({ where, select: USER_SELECT });
@@ -159,22 +217,13 @@ const getTeacherPayroll = async (req) => {
     ...searchWhere(search),
   };
 
-  const [users, total] = await Promise.all([
-    prisma.user.findMany({
-      where,
-      select: USER_SELECT,
-      orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
-      skip,
-      take: limit,
-    }),
-    prisma.user.count({ where }),
-  ]);
-
-  const ctx = await payrollEngine.loadContext(month, users);
-  const rows = users.map((u) => ({
-    ...userInfo(u),
-    ...payrollEngine.previewForStaff(u, month, ctx),
-  }));
+  const { rows, total } = await loadSortedPage({
+    where,
+    sort: req.query.sort,
+    month,
+    skip,
+    limit,
+  });
 
   const allUsers = await prisma.user.findMany({ where, select: USER_SELECT });
   const allCtx = await payrollEngine.loadContext(month, allUsers);
@@ -428,8 +477,60 @@ const getAllowancesView = async (req) => {
   };
 };
 
+/**
+ * "Xodim qo'shish" tanlagichi uchun nomzodlar.
+ *
+ * ⚠️ SHU bo'limga allaqachon biriktirilganlar CHIQARIB TASHLANADI: xodimda
+ * bitta lavozim/toifa bo'ladi, qayta tanlash hech narsa o'zgartirmay
+ * "Biriktirildi" deb turardi. Boshqa bo'limdagilar qoladi (`currentLabel`
+ * bilan) — tanlansa ko'chiriladi, ikkinchi nusxa paydo bo'lmaydi.
+ * Lavozimni almashtirish — xodim qatoridagi tugma orqali.
+ *
+ * @param {object} req - query: { departmentId }
+ */
+const getAssignCandidates = async (req) => {
+  const { departmentId } = req.query;
+  if (!departmentId) throw new BadRequestError("Bo'lim tanlanmagan");
+
+  const dept = await prisma.department.findUnique({ where: { id: departmentId } });
+  if (!dept) throw new NotFoundError("Bo'lim topilmadi");
+  const isTeaching = dept.kind === "teaching";
+
+  const [positions, categories] = await Promise.all([
+    prisma.position.findMany({ select: { id: true, name: true, departmentId: true } }),
+    prisma.salaryCategory.findMany({ select: { id: true, name: true, departmentId: true } }),
+  ]);
+  const positionById = new Map(positions.map((p) => [p.id, p]));
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
+
+  // Teaching bo'limga faqat o'qituvchilar, staff bo'limga qolgan xodimlar
+  const users = await prisma.user.findMany({
+    where: {
+      isActive: true,
+      isArchived: false,
+      role: isTeaching ? "teacher" : { notIn: ["student", "teacher", "owner"] },
+    },
+    select: USER_SELECT,
+    orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
+  });
+
+  return users
+    .filter((u) => {
+      const own = isTeaching
+        ? categoryById.get(u.salaryCategoryId)
+        : positionById.get(u.positionId);
+      return own?.departmentId !== departmentId;
+    })
+    .map((u) => ({
+      ...userInfo(u),
+      currentLabel:
+        positionById.get(u.positionId)?.name ?? categoryById.get(u.salaryCategoryId)?.name ?? null,
+    }));
+};
+
 module.exports = {
   getStaffPayroll,
+  getAssignCandidates,
   getTeacherPayroll,
   getAllowancesView,
 };

@@ -71,8 +71,10 @@ router.post("/deductions/batch/:batchId/cancel", protect, validateObjectId("batc
 router.post("/deductions/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelDeduction);
 
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──
-const { getStaffPayroll, getTeacherPayroll, getAllowancesView, createBonus, deleteBonus } = require("../controllers/payrollView.controller");
+const { getStaffPayroll, getAssignCandidates, getTeacherPayroll, getAllowancesView, createBonus, deleteBonus } = require("../controllers/payrollView.controller");
 router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);
+// Biriktirish tanlagichi — `assign` bilan (`/users/all-short` ga `users.view` kerak edi)
+router.get("/view/assign-candidates", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), getAssignCandidates);
 router.get("/view/teachers", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getTeacherPayroll);
 // Ustama haq registri (Yo'nalish -> Ustama haq)
 router.get("/view/allowances", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getAllowancesView);
