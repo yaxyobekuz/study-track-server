@@ -1164,7 +1164,14 @@ const getDashboard = async (query = {}, options = {}) => {
     // tartibda o'qiydi — lekin REJA (`plan`) faqat birinchi beshtasida
     // bo'ladi: qarz va oylik uchun reja belgilanmaydi.
     kpi: {
-      income: kpi("income", current.income),
+      // "Qancha pul yig'ildi?" — kassaga kirgan pul. `collected` — shu oy
+      // FAKTURALARIGA yig'ilgani (depozitdan yopilgani bilan): rahbar
+      // "600 ming yig'ildi-ku, nega tushum 0" deb adashmasligi uchun
+      // ikkala raqam bitta kartada (frontend sub qatorida chizadi).
+      income: {
+        ...kpi("income", current.income),
+        collected: accrual.totals?.collected ?? "0.00",
+      },
       expense: kpi("expense", current.expense),
       profit: kpi("profit", current.profit),
       margin: kpi("margin", current.margin, { unit: "percent" }),
@@ -1231,6 +1238,69 @@ const getDashboard = async (query = {}, options = {}) => {
         change: payroll.assignedChange,
         changeUnit: "percent",
       },
+
+      // ── OYLIK UCH SAVOLDA (rahbar tili) ─────────────────────────────
+      // "Qancha tarqatishimiz kerak / qancha tarqatdik / qancha qoldi".
+      // KERAK = shakllantirilgan majburiyat (accrued); oy hali
+      // shakllanmagan bo'lsa qoidadan BELGILANGAN summa ko'rsatiladi —
+      // karta oy boshida nol turib yolg'on xulosa bermasligi uchun.
+      ...(() => {
+        const accruedD = new Decimal(payroll.accrued);
+        const paidD = new Decimal(payroll.paid);
+        const usingAccrued = accruedD.greaterThan(0);
+        const dueD = usingAccrued ? accruedD : new Decimal(payroll.assigned);
+        const prevDueD = new Decimal(
+          new Decimal(payroll.previousAccrued).greaterThan(0)
+            ? payroll.previousAccrued
+            : payroll.previousAssigned,
+        );
+        const prevPaidD = new Decimal(payroll.previousPaid);
+        const leftD = dueD.minus(paidD);
+        const prevLeftD = prevDueD.minus(prevPaidD);
+
+        return {
+          payrollDue: {
+            key: "payrollDue",
+            unit: "money",
+            value: formatAmount(dueD),
+            plan: null,
+            planRate: null,
+            previous: formatAmount(prevDueD),
+            change: changeOf(dueD, prevDueD),
+            changeUnit: "percent",
+            sub: usingAccrued
+              ? `${payroll.staffCount} ta xodimga shakllantirilgan`
+              : `Qoidadan belgilangan (hali shakllantirilmagan)`,
+          },
+          payrollPaid: {
+            key: "payrollPaid",
+            unit: "money",
+            value: payroll.paid,
+            plan: null,
+            planRate: null,
+            previous: payroll.previousPaid,
+            change: payroll.paidChange,
+            changeUnit: "percent",
+            sub: usingAccrued
+              ? `${payroll.staffCount - payroll.unpaidCount} ta xodim to'liq oldi`
+              : null,
+          },
+          payrollLeft: {
+            key: "payrollLeft",
+            unit: "money",
+            value: formatAmount(leftD.isNegative() ? new Decimal(0) : leftD),
+            plan: null,
+            planRate: null,
+            previous: formatAmount(prevLeftD.isNegative() ? new Decimal(0) : prevLeftD),
+            change: changeOf(
+              leftD.isNegative() ? new Decimal(0) : leftD,
+              prevLeftD.isNegative() ? new Decimal(0) : prevLeftD,
+            ),
+            changeUnit: "percent",
+            sub: usingAccrued ? `${payroll.unpaidCount} ta xodimga qoldi` : null,
+          },
+        };
+      })(),
     },
 
     // ── P&L (foyda va zarar) hisoboti ───────────────────────────────
