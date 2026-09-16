@@ -42,8 +42,20 @@ const {
   monthEndDate,
   daysInMonth,
   parseMonthKey,
+  monthInstantRange,
 } = require("../helpers/month.helpers");
-const { eachDayOfMonth, teachingDaysOfMonth } = require("../helpers/lessonHours");
+const { formatDateUz } = require("../helpers/date.helpers");
+const {
+  eachDayOfMonth,
+  teachingDaysOfMonth,
+  tashkentDayKey,
+  dayKey,
+  lessonGradeKey,
+  teacherDayKey,
+  judgedThroughDay,
+  judgeLesson,
+  LESSON_MISS_REASONS,
+} = require("../helpers/lessonHours");
 
 const TEACHER_SELECT = {
   id: true,
@@ -225,6 +237,58 @@ async function getMonthCalendar(month, { asOfDayOfMonth = null } = {}) {
 }
 
 /**
+ * DARS O'TILGANINI ISBOTLAYDIGAN FAKTLAR — baholar va o'qituvchi davomati.
+ *
+ * ⚠️ JADVAL — REJA, PUL ESA FAKTGA to'lanadi. Jadvalda turgan, lekin
+ * o'qituvchi kelmagan yoki hech kimga baho qo'yilmagan dars o'tilmagan
+ * hisoblanadi va uning soati yozilmaydi (`judgeLesson`).
+ *
+ * Ikkala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
+ *
+ * @param {number} month - YYYYMM
+ * @param {string[]} teacherIds
+ * @param {string[]} classIds - soati hisoblanadigan darslarning sinflari
+ * @returns {Promise<{gradedKeys: Set<string>, absences: Map<string, object>}>}
+ */
+async function loadLessonFacts(month, teacherIds, classIds) {
+  // `Grade.date` — instant, shuning uchun oy chegarasi ham TOSHKENT instanti
+  const { from, to } = monthInstantRange(month);
+
+  const [grades, absences] = await Promise.all([
+    classIds.length
+      ? prisma.grade.findMany({
+          where: { classId: { in: classIds }, date: { gte: from, lte: to } },
+          select: { classId: true, subjectId: true, lessonOrder: true, date: true },
+        })
+      : [],
+    // `Attendance.date` — Toshkent kunining UTC yarim tuni
+    // (`attendance.service.js` → `getTodayNormalized`)
+    prisma.attendance.findMany({
+      where: {
+        userId: { in: teacherIds },
+        date: { gte: monthStartDate(month), lte: monthEndDate(month) },
+        status: { in: ["absent", "excused"] },
+      },
+      select: { userId: true, date: true, status: true, autoMarked: true },
+    }),
+  ]);
+
+  return {
+    gradedKeys: new Set(
+      grades.map((g) =>
+        lessonGradeKey(g.classId, g.subjectId, g.lessonOrder, tashkentDayKey(g.date)),
+      ),
+    ),
+    absences: new Map(
+      absences.map((a) => [
+        teacherDayKey(a.userId, dayKey(a.date)),
+        { status: a.status, autoMarked: a.autoMarked },
+      ]),
+    ),
+  };
+}
+
+/**
  * OYLIK DARS SOATI — bir nechta o'qituvchi uchun, BITTA o'tishda.
  *
  * So'rovlar soni o'qituvchilar soniga BOG'LIQ EMAS: darslar, o'rinbosarlik,
@@ -294,6 +358,19 @@ async function getTeachersHours(teacherIds, month, options = {}) {
   const classMap = new Map(classes.map((c) => [c.id, c.name]));
   const subjectMap = new Map(subjects.map((s) => [s.id, s.name]));
 
+  // ── Qaysi kunlar tekshiriladi ─────────────
+  // Bugun va kelajak — REJA (prognozda turadi), kechagacha — FAKT.
+  const judgeLimit = judgedThroughDay(month, currentMonthKey(), currentDayOfMonth());
+  const judgedKeys = new Set(
+    days
+      .filter((day) => judgeLimit == null || day.dayOfMonth <= judgeLimit)
+      .map((day) => day.key),
+  );
+
+  const facts = judgedKeys.size
+    ? await loadLessonFacts(month, ids, [...classIds])
+    : { gradedKeys: new Set(), absences: new Map() };
+
   // O'qituvchi → o'z darslari
   const ownLessons = new Map(ids.map((id) => [id, []]));
   for (const lesson of lessons) {
@@ -334,14 +411,49 @@ async function getTeachersHours(teacherIds, month, options = {}) {
     let inbound = 0;
     let taught = 0;
     let taughtScheduled = 0;
+    const missedLessons = [];
+    const missedByReason = { absent: 0, excused: 0, noGrade: 0 };
 
     const bump = (map, id, name, field, delta) => {
       let row = map.get(id);
       if (!row) {
-        row = { id, name: name ?? "Noma'lum", hours: 0, substituted: 0, covered: 0 };
+        row = { id, name: name ?? "Noma'lum", hours: 0, substituted: 0, covered: 0, missed: 0 };
         map.set(id, row);
       }
       row[field] += delta;
+    };
+
+    /**
+     * Dars o'tilmagan bo'lsa QAYD qiladi va `true` qaytaradi — chaqiruvchi
+     * soatni qo'shmaydi. Bugun va kelajakdagi darslar tekshirilmaydi.
+     */
+    const missed = (day, lesson, substituted) => {
+      if (!judgedKeys.has(day.key)) return false;
+
+      // ⚠️ Tartib muhim: darsning o'z `day` maydoni HAFTA KUNI nomi
+      // ("dushanba") — u sana kalitini ustidan yozib yubormasligi kerak.
+      const miss = judgeLesson({ ...lesson, teacherId, day: day.key }, facts);
+      if (!miss) return false;
+
+      missedByReason[miss.reason] += 1;
+      bump(byClass, lesson.classId, classMap.get(lesson.classId), "missed", 1);
+      bump(bySubject, lesson.subjectId, subjectMap.get(lesson.subjectId), "missed", 1);
+      missedLessons.push({
+        date: day.date,
+        // ⚠️ Sana matni SERVERDA: `day.date` — UTC yarim tuni (`dates.md` §4)
+        dateLabel: formatDateUz(day.date, { utc: true }),
+        classId: lesson.classId,
+        className: classMap.get(lesson.classId) ?? "Noma'lum",
+        subjectName: subjectMap.get(lesson.subjectId) ?? "Noma'lum",
+        lessonOrder: lesson.lessonOrder,
+        reason: miss.reason,
+        reasonLabel: LESSON_MISS_REASONS[miss.reason],
+        // Davomat tizimi kun oxirida o'zi qo'ygan "kelmadi" — admin
+        // davomatni to'g'rilasa soat qaytadi
+        autoMarked: miss.autoMarked,
+        substituted,
+      });
+      return true;
     };
 
     for (const day of days) {
@@ -364,6 +476,8 @@ async function getTeachersHours(teacherIds, month, options = {}) {
           continue;
         }
 
+        if (missed(day, lesson, false)) continue;
+
         dayHours += 1;
         bump(byClass, lesson.classId, classMap.get(lesson.classId), "hours", 1);
         bump(bySubject, lesson.subjectId, subjectMap.get(lesson.subjectId), "hours", 1);
@@ -375,6 +489,8 @@ async function getTeachersHours(teacherIds, month, options = {}) {
         if (!withinWindow(day.date, entry)) continue;
 
         inbound += 1;
+        if (missed(day, entry, true)) continue;
+
         dayHours += 1;
         bump(byClass, entry.classId, classMap.get(entry.classId), "covered", 1);
         bump(byClass, entry.classId, classMap.get(entry.classId), "hours", 1);
@@ -414,7 +530,10 @@ async function getTeachersHours(teacherIds, month, options = {}) {
       });
     }
 
-    const hours = scheduled - out + inbound;
+    // O'tilmagan darslar REJADAN ayiriladi: `scheduled`/`inbound` jadval
+    // bo'yicha sanaladi, `missed` esa fakt tekshiruvidan chiqqani.
+    const missedHours = missedLessons.length;
+    const hours = scheduled - out + inbound - missedHours;
 
     // Haftalik yuklama — shablonning O'ZI (oy bo'ylab yoyilmagan). Panelda
     // "haftasiga 24 soat" deb ko'rsatiladi.
@@ -439,6 +558,12 @@ async function getTeachersHours(teacherIds, month, options = {}) {
       taughtScheduledHours: taughtScheduled,
       // Qolgan (rejalashtirilgan, hali o'tilmagan)
       remainingHours: hours - taught,
+      // Jadvalda bor, lekin O'TILMAGAN (kelmagan / baho qo'yilmagan) — pul yo'q
+      missedHours,
+      missedByReason,
+      missedLessons,
+      // Qaysi kungacha tekshirildi: `null` — oy to'liq, `0` — hali hech kun
+      judgedThroughDay: judgeLimit,
       weeklyHours,
       teachingDays: calendar.teachingDays,
       taughtDays: calendar.taughtDayCount,

@@ -107,7 +107,8 @@ const emptySummary = (month, reason) => ({
   fixedTotal: "0.00",
   kpiTotal: "0.00",
   // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
-  skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0 },
+  // monthOpen  — soatbay qismi bor, oy hali yopilmagan (pastdagi izoh)
+  skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0, monthOpen: 0 },
   durationMs: 0,
 });
 
@@ -191,6 +192,15 @@ const generateForMonth = async (monthInput, options = {}) => {
     const c = payrollEngine.computeForStaff(person, month, ctx);
     if (!c) {
       summary.skipped.noSalary += 1;
+      continue;
+    }
+    // ⚠️ SOATBAY QISM OY YOPILGANDAN KEYIN MUHRLANADI (`finance.md` §10).
+    // Soat endi FAKTDAN (baho + davomat) hisoblanadi, fakt esa faqat o'tgan
+    // kunlar uchun bor: oy o'rtasida muhrlansa, hali o'tilmagan darslar ham
+    // pulga aylanib qolardi. Oy yopilgach cron (`catchUpMonths`) yoki
+    // qo'lda shakllantirish uni yozadi. Faqat fiksa xodimga tegilmaydi.
+    if (month >= currentMonthKey() && c.perHourRate.greaterThan(0)) {
+      summary.skipped.monthOpen += 1;
       continue;
     }
     if (c.amount.lessThanOrEqualTo(0)) {

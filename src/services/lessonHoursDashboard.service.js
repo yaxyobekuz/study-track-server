@@ -202,6 +202,7 @@ function buildSubjects({ bySubject, weekly, assigned, names }) {
       hours: row?.hours ?? 0,
       weeklyHours,
       coveredHours,
+      missedHours: row?.missed ?? 0,
       source: weeklyHours > 0 ? "schedule" : coveredHours > 0 ? "substitution" : "profile",
       isAssigned: assignedMap.has(id),
     };
@@ -321,6 +322,10 @@ function buildRow(person, projected, accrued, hoursRow, entry) {
     hours,
     taughtHours: taught,
     remainingHours: hoursRow?.remainingHours ?? 0,
+    // Jadvalda bor, lekin o'tilmagan (kelmagan / baho qo'yilmagan) — `hours`
+    // ga ALLAQACHON kirmagan, faqat ko'rsatish uchun
+    missedHours: hoursRow?.missedHours ?? 0,
+    missedByReason: hoursRow?.missedByReason ?? { absent: 0, excused: 0, noGrade: 0 },
     // Norma tushunchasi payroll-v2 da YO'Q (KPI stavkasi har soatga
     // to'lanadi, chegara yo'q) — maydon shakl uchun qoladi.
     normProgress: null,
@@ -508,6 +513,7 @@ async function getOverview(month) {
       totalHours,
       taughtHours,
       remainingHours: Math.max(0, totalHours - taughtHours),
+      missedHours: rows.reduce((sum, r) => sum + r.missedHours, 0),
       substitutedHours: rows.reduce((sum, r) => sum + r.substitutedInHours, 0),
       // Jonli prognoz — muhrlangan qarz EMAS
       projectedAmount: formatAmount(projectedTotal),
@@ -576,6 +582,7 @@ async function getLedger(month, query = {}) {
       staffCount: rows.length,
       totalHours: rows.reduce((sum, r) => sum + r.hours, 0),
       taughtHours: rows.reduce((sum, r) => sum + r.taughtHours, 0),
+      missedHours: rows.reduce((sum, r) => sum + r.missedHours, 0),
       unassignedCount: rows.filter((r) => r.hours > 0 && !r.hasRule).length,
       projectedAmount: formatAmount(
         sumAmounts(rows.map((r) => r.projectedAmount).filter(Boolean)),
@@ -692,6 +699,9 @@ async function getTeacherDetail(teacherId, month) {
     byDay: hoursRow?.byDay ?? [],
     byClass: hoursRow?.byClass ?? [],
     bySubject,
+    // O'tilmagan darslar — "nega 61 emas, 60 soat" degan savolga javob
+    missedLessons: hoursRow?.missedLessons ?? [],
+    judgedThroughDay: hoursRow?.judgedThroughDay ?? null,
     subjects: buildSubjects({
       bySubject,
       weekly: weeklySubjects,
@@ -759,6 +769,7 @@ async function exportLedgerToExcel(res, data) {
     { header: "Haftasiga", key: "weeklyHours", width: 11 },
     { header: "Oyiga", key: "hours", width: 10 },
     { header: "O'tildi", key: "taughtHours", width: 10 },
+    { header: "O'tilmadi", key: "missedHours", width: 11 },
     { header: "Qoldi", key: "remainingHours", width: 10 },
     { header: "Berildi", key: "substitutedOutHours", width: 10 },
     { header: "Olindi", key: "substitutedInHours", width: 10 },
@@ -820,6 +831,7 @@ async function exportLedgerToExcel(res, data) {
     "weeklyHours",
     "hours",
     "taughtHours",
+    "missedHours",
     "remainingHours",
     "substitutedOutHours",
     "substitutedInHours",
@@ -896,6 +908,8 @@ async function exportLedgerToExcel(res, data) {
           return data.totals.totalHours;
         case "taughtHours":
           return data.totals.taughtHours;
+        case "missedHours":
+          return data.totals.missedHours;
         case "accruedAmount":
           return money(data.totals.accruedAmount);
         case "projectedAmount":

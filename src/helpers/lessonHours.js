@@ -49,6 +49,90 @@ function dayKey(date) {
 }
 
 /**
+ * INSTANT ning TOSHKENT kalendar kuni kaliti.
+ *
+ * ⚠️ `Grade.date` — `@db.Date` EMAS, baho qo'yilgan ONning o'zi
+ * (`grade.controller.js` → `date: now`). 08:00 Toshkentdagi baho UTC da
+ * 03:00 bo'ladi va `dayKey` bilan o'qilsa to'g'ri, lekin 00:30 Toshkent
+ * (UTC da kechagi 19:30) kechagi kunga tushib qolardi. Toshkentda DST yo'q —
+ * +5 soat doimiy (`education.md` §9).
+ *
+ * @param {Date} instant
+ * @returns {string} "YYYY-MM-DD"
+ */
+function tashkentDayKey(instant) {
+  return dayKey(new Date(instant.getTime() + 5 * 3600000));
+}
+
+/* ─────────────────────── DARS O'TILDIMI ─────────────────────── */
+
+/**
+ * O'TILMAGAN DARS SABABLARI — tartib MA'NOLI (birinchisi yutadi).
+ *
+ * Davomat bahodan OLDIN tekshiriladi: o'qituvchi kelmagan kuni "baho
+ * qo'yilmagan" deyish sababni yashirardi — admin baholarni emas,
+ * davomatni to'g'rilashi kerak bo'ladi.
+ */
+const LESSON_MISS_REASONS = {
+  absent: "Kelmagan",
+  excused: "Sababli kelmagan",
+  noGrade: "Baho qo'yilmagan",
+};
+
+/** Bitta darsning baho kaliti: sinf + fan + tartib + Toshkent kuni. */
+const lessonGradeKey = (classId, subjectId, lessonOrder, day) =>
+  `${classId}|${subjectId}|${lessonOrder}|${day}`;
+
+/** O'qituvchi + kun kaliti (davomat uchun). */
+const teacherDayKey = (teacherId, day) => `${teacherId}|${day}`;
+
+/**
+ * Qaysi kungacha darslar TEKSHIRILADI (INKLYUZIV kun raqami).
+ *
+ * ⚠️ BUGUN TEKSHIRILMAYDI. Baho faqat o'sha kuni qo'yiladi
+ * (`grade.controller.js`), davomat esa kun oxirida avtomat yopiladi —
+ * kunning o'rtasida "baho yo'q" degani hali "o'tilmagan" degani emas.
+ * Bugungi dars ertasiga yakuniy baholanadi.
+ *
+ * @param {number} month - YYYYMM
+ * @param {number} currentMonth - YYYYMM (Toshkent)
+ * @param {number} today - joriy oy kuni (Toshkent)
+ * @returns {number|null} `null` — oy to'liq tekshiriladi; `0` — hech kun
+ */
+function judgedThroughDay(month, currentMonth, today) {
+  if (month < currentMonth) return null;
+  if (month > currentMonth) return 0;
+  return today - 1;
+}
+
+/**
+ * Bitta dars O'TILDIMI — sof qaror.
+ *
+ * Qoida (biznes qarori): dars o'tilgan hisoblanadi, agar o'sha kuni darsga
+ * chiqishi kerak bo'lgan o'qituvchi "kelmadi" yoki "sababli" EMAS va shu
+ * darsga KAMIDA BITTA baho qo'yilgan bo'lsa. Istisno yo'q — baho jarimasidan
+ * ozod qilinganlar uchun ham shu qoida.
+ *
+ * @param {object} lesson - { teacherId, classId, subjectId, lessonOrder, day }
+ * @param {object} facts
+ * @param {Set<string>} facts.gradedKeys - `lessonGradeKey` to'plami
+ * @param {Map<string, {status: string, autoMarked: boolean}>} facts.absences -
+ *   `teacherDayKey` → davomat (faqat absent/excused)
+ * @returns {null | {reason: "absent"|"excused"|"noGrade", autoMarked: boolean}}
+ */
+function judgeLesson(lesson, { gradedKeys, absences }) {
+  const absence = absences.get(teacherDayKey(lesson.teacherId, lesson.day));
+  if (absence) {
+    return { reason: absence.status, autoMarked: Boolean(absence.autoMarked) };
+  }
+
+  const graded = gradedKeys.has(
+    lessonGradeKey(lesson.classId, lesson.subjectId, lesson.lessonOrder, lesson.day),
+  );
+  return graded ? null : { reason: "noGrade", autoMarked: false };
+}
+
+/**
  * Oyning barcha kunlari — UTC yarim tunidagi `Date` va hafta kuni raqami.
  *
  * Hafta kuni `getUTCDay()` bilan olinadi (0 = yakshanba), ya'ni
@@ -201,6 +285,12 @@ function normProgress(rule, hours) {
 
 module.exports = {
   dayKey,
+  tashkentDayKey,
+  LESSON_MISS_REASONS,
+  lessonGradeKey,
+  teacherDayKey,
+  judgedThroughDay,
+  judgeLesson,
   eachDayOfMonth,
   teachingDaysOfMonth,
   expandWeeklyHours,
