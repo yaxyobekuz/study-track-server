@@ -2621,11 +2621,13 @@ model ExpenseBudget {
 
   // LIMIT IKKI XIL QO'LLANADI:
   //   "money"         — qat'iy summa (`limitAmount` — so'm).
-  //   "percentIncome" — joriy oy UMUMIY KIRIMINING foizi (`limitPercent`).
-  //                     Amaldagi limit JONLI hisoblanadi: kirim oy davomida
-  //                     o'zgaradi. `limitAmount` bu holda 0 (ishlatilmaydi) —
-  //                     foizni summaga muhrlab qo'ysak, kirim o'zgarganda
-  //                     eskirib qolardi.
+  //   "percentIncome" — joriy oyning JAMI HISOBLANGAN MAJBURIYATI foizi
+  //                     (`limitPercent`). Baza — o'quvchilar to'lagan pul emas,
+  //                     ular berishi kerak bo'lgan majburiyat (tarif + xizmatlar,
+  //                     `MonthlyInvoice.amount`). Amaldagi limit JONLI
+  //                     hisoblanadi: majburiyat oy davomida o'zgaradi.
+  //                     `limitAmount` bu holda 0 (ishlatilmaydi). Kalit nomi
+  //                     "percentIncome" — tarixiy (baza avval kirim edi).
   limitKind String @default("money") @map("limit_kind") @db.VarChar(16)
 
   limitAmount  Decimal  @map("limit_amount") @db.Decimal(14, 2)

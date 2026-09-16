@@ -66,16 +66,16 @@ const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) =
     _sum: { amount: true },
   });
 
-  // Amaldagi limit — foiz rejimida joriy oy UMUMIY KIRIMIDAN hisoblanadi
-  // (`getBudgets` bilan bir manba: bir xil summani ko'rsatib, bir xil rad etadi)
+  // Amaldagi limit — foiz rejimida joriy oyning JAMI HISOBLANGAN MAJBURIYATIDAN
+  // hisoblanadi (`getBudgets` bilan bir manba: bir xil summa, bir xil rad etish)
   const {
     effectiveLimit,
-    computeMonthIncome,
+    computeMonthAccrued,
   } = require("./expenseBudget.service");
-  // "percentProfit" — eski nom, u ham kirim foizi
+  // "percentProfit" — eski nom, u ham majburiyat foizi
   const isPercent =
     budget.limitKind === "percentIncome" || budget.limitKind === "percentProfit";
-  const base = isPercent ? await computeMonthIncome(from, to) : null;
+  const base = isPercent ? await computeMonthAccrued(month) : null;
   const limit = effectiveLimit(budget, base);
   const spent = new Decimal(spentAgg._sum.amount ?? 0);
   const afterThis = spent.plus(amount);

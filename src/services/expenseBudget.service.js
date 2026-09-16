@@ -26,44 +26,49 @@ const {
   monthInstantRange,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
-const { sumIncome } = require("./financeReport.service");
 
 /** Limitning "sog'lomligi" — chegaralar biznes qarori. */
 const HEALTHY_RATE = 90; // shu foizgacha — yashil
 const WARNING_RATE = 100; // 100% gacha — sariq, undan yuqorisi qizil
 
-/** Foiz rejimi cheklovi — 0 dan katta, 1000% gacha (kirimning 10 barobari). */
+/** Foiz rejimi cheklovi — 0 dan katta, 1000% gacha (majburiyatning 10 barobari). */
 const MAX_LIMIT_PERCENT = 1000;
 
-// Foiz rejimlari — "percentProfit" eski nom (endi ham KIRIM foizi degani).
-// Migratsiya uni "percentIncome" ga o'tkazadi, lekin migratsiya ishlamay
-// qolgan bazadagi eski qator ham to'g'ri hisoblanishi uchun ikkalasi qabul
-// qilinadi.
+// Foiz rejimi. ⚠️ Baza — oyning JAMI HISOBLANGAN MAJBURIYATI (barcha
+// o'quvchining tarifi + qo'shimcha xizmatlari, `MonthlyInvoice.amount`
+// yig'indisi), o'quvchilar TO'LAGAN puli emas. Saqlanadigan kalit
+// tarixiy sabablarga ko'ra "percentIncome" (eski "percentProfit" ham qabul
+// qilinadi) — foydalanuvchi buni ko'rmaydi, ekranda "majburiyat foizi".
 const PERCENT_KINDS = new Set(["percentIncome", "percentProfit"]);
 const isPercentKind = (kind) => PERCENT_KINDS.has(kind);
 
 /**
- * Bir oyning UMUMIY KIRIMI (tushum) — "% kirim" limiti uchun baza.
+ * Bir oyning JAMI HISOBLANGAN MAJBURIYATI — "% majburiyat" limiti uchun baza.
  *
- * ⚠️ Baza SOF FOYDA emas, UMUMIY KIRIM: rahbar "kirimimizning 20% igacha
- * ijaraga sarflaymiz" degan qoidani qo'yadi. Manba `sumIncome` —
- * dashboarddagi "Yig'ilgan pul" bilan bir xil.
+ * ⚠️ Baza o'quvchilar TO'LAGAN puli (tushum) EMAS, balki ular berishi kerak
+ * bo'lgan JAMI MAJBURIYAT: barcha o'quvchining tarifi + qo'shimcha xizmatlari
+ * hisoblanganda chiqadigan summa. Bu — "Umumiy" tabidagi HISOBLANGAN raqami
+ * (`financeReport.sumRange().invoiced` bilan bir manba: `MonthlyInvoice.amount`,
+ * bekor qilinganlarsiz).
  *
- * @param {Date} from
- * @param {Date} to
+ * @param {number} month - YYYYMM
  * @returns {Promise<Decimal>}
  */
-const computeMonthIncome = async (from, to) => {
-  return new Decimal(await sumIncome(from, to));
+const computeMonthAccrued = async (month) => {
+  const agg = await prisma.monthlyInvoice.aggregate({
+    where: { month, status: { not: "cancelled" } },
+    _sum: { amount: true },
+  });
+  return new Decimal(agg._sum.amount ?? 0);
 };
 
 /**
  * Budjet qatorining AMALDAGI limiti (so'mda).
  *   money         → limitAmount.
- *   percentIncome → max(0, kirim) × foiz / 100. Kirim yo'q oyda limit 0.
+ *   percentIncome → max(0, majburiyat) × foiz / 100. Majburiyat 0 bo'lsa limit 0.
  *
  * @param {{limitKind: string, limitAmount: *, limitPercent: *}} budget
- * @param {Decimal|null} base - oyning umumiy kirimi (faqat foiz rejimida kerak)
+ * @param {Decimal|null} base - oyning jami hisoblangan majburiyati (foiz rejimida)
  * @returns {Decimal}
  */
 const effectiveLimit = (budget, base) => {
@@ -132,10 +137,10 @@ const getBudgets = async (query = {}) => {
     });
   }
 
-  // Umumiy kirim — "% kirim" limitining bazasi. DOIM hisoblanadi: modal foiz
-  // rejimiga o'tkazganda amaldagi summani darhol ko'rsatishi kerak va
-  // kartada "Umumiy kirim: X" hint chiqadi.
-  const income = await computeMonthIncome(from, to);
+  // Jami hisoblangan majburiyat — "% majburiyat" limitining bazasi. DOIM
+  // hisoblanadi: modal foiz rejimiga o'tkazganda amaldagi summani darhol
+  // ko'rsatishi kerak va kartada "Hisoblangan: X" hint chiqadi.
+  const accrued = await computeMonthAccrued(month);
 
   let totalLimit = new Decimal(0);
   let totalSpent = new Decimal(0);
@@ -144,7 +149,7 @@ const getBudgets = async (query = {}) => {
     const budget = limitByCategory.get(category.id);
     const spentRow = spentByCategory.get(category.id);
     const spent = spentRow?.amount ?? new Decimal(0);
-    const limit = budget ? effectiveLimit(budget, income) : null;
+    const limit = budget ? effectiveLimit(budget, accrued) : null;
 
     if (limit) totalLimit = totalLimit.plus(limit);
     totalSpent = totalSpent.plus(spent);
@@ -208,8 +213,9 @@ const getBudgets = async (query = {}) => {
   return {
     month,
     monthLabel: formatMonthKey(month),
-    // "% kirim" limiti bazasi — UI "kirimning 20% i = X so'm" ni ko'rsatadi.
-    income: formatAmount(income),
+    // "% majburiyat" limiti bazasi — UI "majburiyatning 20% i = X so'm" ni
+    // ko'rsatadi. Bu — "Umumiy" tabidagi HISOBLANGAN raqami.
+    accrued: formatAmount(accrued),
     items: all,
     // Limiti qo'yilganlar oldinda, ular ichida eng ko'p sarflangani tepada:
     // rahbar birinchi navbatda "qaysi limit yonyapti" ni ko'rishi kerak
@@ -358,7 +364,7 @@ module.exports = {
   getBudgets,
   upsertBudgets,
   loadBudgetSummary,
-  computeMonthIncome,
+  computeMonthAccrued,
   effectiveLimit,
   HEALTHY_RATE,
   WARNING_RATE,
