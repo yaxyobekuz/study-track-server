@@ -3,7 +3,21 @@ const {
   PutObjectCommand,
   DeleteObjectCommand,
 } = require("@aws-sdk/client-s3");
+const fs = require("fs");
+const path = require("path");
 const { config } = require("../config/env.config");
+
+// LOKAL REJIM — Spaces kalitlari yo'q yoki "dummy" bo'lsa fayllar LOKAL
+// DISKKA yoziladi (`uploads/`) va server o'zi tarqatadi. Bu FAQAT lokal
+// dev uchun: produksiyada haqiqiy kalitlar turadi va bu yo'l yoqilmaydi
+// ("uploads/ produksiyada tarqatilmaydi" qoidasi buzilmaydi).
+const isLocalStorage =
+  !config.doBucketName ||
+  config.doBucketName === "dummy" ||
+  !config.doAccessKey ||
+  config.doAccessKey === "dummy";
+
+const LOCAL_UPLOADS_DIR = path.join(__dirname, "../../uploads");
 
 const normalizedEndpoint = config.doEndpoint.startsWith("http")
   ? config.doEndpoint
@@ -40,6 +54,18 @@ const getPublicUrl = (key) => {
  * @returns {Promise<{key:string,url:string,size:number}>} Uploaded object info.
  */
 const uploadBuffer = async ({ key, buffer, contentType }) => {
+  // Lokal dev: diskka yozamiz, URL server o'zi tarqatadigan /uploads bo'ladi
+  if (isLocalStorage) {
+    const filePath = path.join(LOCAL_UPLOADS_DIR, key);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, buffer);
+    return {
+      key,
+      url: `http://localhost:${config.port}/uploads/${key}`,
+      size: buffer.length,
+    };
+  }
+
   await spacesClient.send(
     new PutObjectCommand({
       Bucket: config.doBucketName,
@@ -66,6 +92,14 @@ const uploadBuffer = async ({ key, buffer, contentType }) => {
 const deleteObject = async (key) => {
   if (!key) return;
 
+  if (isLocalStorage) {
+    // Lokal fayl bo'lmasa ham jim o'tamiz — o'chirish best-effort
+    await fs.promises
+      .unlink(path.join(LOCAL_UPLOADS_DIR, key))
+      .catch(() => {});
+    return;
+  }
+
   await spacesClient.send(
     new DeleteObjectCommand({
       Bucket: config.doBucketName,
@@ -78,4 +112,6 @@ module.exports = {
   uploadBuffer,
   deleteObject,
   getPublicUrl,
+  isLocalStorage,
+  LOCAL_UPLOADS_DIR,
 };

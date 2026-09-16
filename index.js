@@ -101,6 +101,14 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use(xss());
 
+// LOKAL DEV: Spaces kalitlari yo'q/dummy bo'lsa fayllar diskka yozilgan —
+// ularni server o'zi tarqatadi. Produksiyada (haqiqiy kalitlar bilan) bu
+// blok yoqilmaydi — "uploads/ produksiyada tarqatilmaydi" qoidasi kuchda.
+const fileStorage = require("./src/services/fileStorage.service");
+if (fileStorage.isLocalStorage) {
+  app.use("/uploads", express.static(fileStorage.LOCAL_UPLOADS_DIR));
+}
+
 // Rate limiting
 const limiter = rateLimit({
   max: 100,
