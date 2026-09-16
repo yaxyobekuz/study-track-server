@@ -214,11 +214,15 @@ const getAccounts = async (query = {}) => {
   );
 
   const total = items.reduce((acc, it) => acc.plus(new Decimal(it.balance)), new Decimal(0));
+  const totalIncome = items.reduce((acc, it) => acc.plus(new Decimal(it.periodIncome)), new Decimal(0));
+  const totalExpense = items.reduce((acc, it) => acc.plus(new Decimal(it.periodExpense)), new Decimal(0));
   return {
     items,
     totals: {
       count: items.length,
       totalBalance: formatAmount(total),
+      totalIncome: formatAmount(totalIncome),
+      totalExpense: formatAmount(totalExpense),
       periodFiltered: true,
     },
   };
