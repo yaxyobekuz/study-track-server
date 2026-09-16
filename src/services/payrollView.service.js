@@ -307,6 +307,7 @@ const getAllowancesView = async (req) => {
   const ctx = await payrollEngine.loadContext(month, users);
   const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+  // ── XODIM-GURUHLI qatorlar: har xodim BITTA qator, ustamalari items[] da ──
   const rows = [];
   let activeAmount = new Decimal(0);
   let activeCount = 0;
@@ -324,15 +325,18 @@ const getAllowancesView = async (req) => {
         ? round2(preBonus.times(value).div(100))
         : new Decimal(value);
 
+    const items = [];
+    let staffActive = new Decimal(0);
+    let pendingCount = 0;
+
     // 1) PayrollBonus (tasdiqlangan zayavka / admin bonusi)
     for (const b of bonuses.filter((x) => x.staffId === user.id)) {
       const amt = amountOf(b.type, b.value);
+      staffActive = staffActive.plus(amt);
       activeAmount = activeAmount.plus(amt);
       activeCount += 1;
-      rows.push({
+      items.push({
         key: `bonus-${b.id}`,
-        ...info,
-        departmentName: deptName,
         label: b.label || "Ustama",
         type: b.type,
         value: formatAmount(b.value),
@@ -350,12 +354,11 @@ const getAllowancesView = async (req) => {
     if (rule && Array.isArray(rule.allowances)) {
       rule.allowances.forEach((a, i) => {
         const amt = amountOf(a.type, a.value);
+        staffActive = staffActive.plus(amt);
         activeAmount = activeAmount.plus(amt);
         activeCount += 1;
-        rows.push({
+        items.push({
           key: `rule-${user.id}-${i}`,
-          ...info,
-          departmentName: deptName,
           label: a.label || "Ustama",
           type: a.type,
           value: formatAmount(a.value),
@@ -371,10 +374,9 @@ const getAllowancesView = async (req) => {
 
     // 3) Kutilayotgan zayavkalar — summaga QO'SHILMAYDI
     for (const r of pendingRequests.filter((x) => x.staffId === user.id)) {
-      rows.push({
+      pendingCount += 1;
+      items.push({
         key: `pending-${r.id}`,
-        ...info,
-        departmentName: deptName,
         label: r.bonusLabel || "Ustama",
         type: r.bonusType || "fixed",
         value: r.bonusValue != null ? formatAmount(r.bonusValue) : "0.00",
@@ -387,11 +389,25 @@ const getAllowancesView = async (req) => {
         periodLabel: "—",
       });
     }
+
+    if (items.length === 0) continue;
+
+    rows.push({
+      ...info,
+      departmentName: deptName,
+      items,
+      activeTotal: formatAmount(staffActive),
+      activeItemCount: items.filter((i) => i.status === "active").length,
+      pendingCount,
+    });
   }
 
-  // ── Holat filtri va sahifalash (xotirada — qatorlar komponent soni bilan
-  // chegaralangan, xodim emas) ──
-  const filtered = status ? rows.filter((r) => r.status === status) : rows;
+  // ── Holat filtri (xodim darajasida) va sahifalash ──
+  const filtered = status
+    ? rows.filter((r) =>
+        status === "pending" ? r.pendingCount > 0 : r.activeItemCount > 0,
+      )
+    : rows;
   const pageRows = filtered.slice(skip, skip + limit);
 
   return {
