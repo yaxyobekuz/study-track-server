@@ -2629,6 +2629,39 @@ model ExpenseBudget {
   @@map("expense_budgets")
 }
 
+// LIMIT OSHIRISH SO'ROVI — xarajat limitidan oshmoqchi bo'lgan xodim
+// adminga so'rov yuboradi. Admin tasdiqlasa limit yangi qiymatga oshadi
+// (ExpenseBudget upsert). PayrollRequest naqshi (kim/qachon/sabab/holat).
+model ExpenseLimitRequest {
+  id         String @id @db.Char(24)
+  month      Int // YYYYMM — qaysi oy limiti
+  categoryId String @map("category_id") @db.Char(24)
+
+  // So'ralayotgan YANGI limit (joriy limitdan katta bo'lishi kerak)
+  requestedLimit Decimal @map("requested_limit") @db.Decimal(14, 2)
+  // So'rov paytidagi limit va ishlatilgan (snapshot — hisobot uchun)
+  currentLimit   Decimal @default(0) @map("current_limit") @db.Decimal(14, 2)
+  spentAtRequest Decimal @default(0) @map("spent_at_request") @db.Decimal(14, 2)
+
+  reason String @default("")
+
+  status          ReviewStatus @default(pending)
+  requestedBy     String       @map("requested_by") @db.Char(24)
+  reviewedBy      String?      @map("reviewed_by") @db.Char(24)
+  reviewedAt      DateTime?    @map("reviewed_at")
+  rejectionReason String?      @map("rejection_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([month, categoryId])
+  @@index([requestedBy])
+  @@map("expense_limit_requests")
+}
+
 // Ta'til oyi — MAKTAB BO'YICHA. O'sha oyda hech kimga hisob-faktura
 // shakllanmaydi (o'quvchi bo'yicha to'xtatish — StudentFinanceStatus.frozen).
 //
@@ -3251,8 +3284,9 @@ model ExpenseCategory {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  expenses Expense[]
-  budgets  ExpenseBudget[]
+  expenses      Expense[]
+  budgets       ExpenseBudget[]
+  limitRequests ExpenseLimitRequest[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("expense_categories")

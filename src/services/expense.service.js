@@ -25,9 +25,61 @@ const { Decimal, parseAmount, formatAmount } = require("../helpers/money.helpers
 const {
   parseDayRangeFilter,
   parseRecordedAt,
+  monthInstantRange,
+  formatMonthKey,
 } = require("../helpers/month.helpers");
+
+/**
+ * Instant → Toshkent oyi (YYYYMM). `monthInstantRange` bilan izchil: u
+ * Toshkent oyini UTC oraliqqa aylantiradi, bu esa teskarisini qiladi
+ * (instant + 5 soat, so'ng UTC yil/oy). `currentMonthKey` bilan bir mantiq.
+ */
+const monthKeyOfInstant = (date) => {
+  const t = new Date(date.getTime() + 5 * 3600000);
+  return t.getUTCFullYear() * 100 + t.getUTCMonth() + 1;
+};
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
 const { assertActiveCategory } = require("./expenseCategory.service");
+
+/**
+ * XARAJAT LIMITI TEKSHIRUVI. Kategoriyaga o'sha OY uchun limit qo'yilgan
+ * bo'lsa va yangi xarajat bilan birga limitdan OSHSA — rad etiladi.
+ *
+ * ⚠️ Limit qo'yilmagan kategoriyaga TEKSHIRUV YO'Q (avvalgi xatti-harakat
+ * saqlanadi — limit ixtiyoriy). Bekor qilingan xarajatlar hisobga olinmaydi.
+ * Bu KASSA qoldig'i tekshiruvidan boshqa narsa: kassa manfiy bo'lishi mumkin,
+ * lekin admin qo'ygan kategoriya limiti majburiy.
+ *
+ * @throws {BadRequestError} limitdan oshsa (so'rov yuborishga chaqiradi)
+ */
+const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) => {
+  const month = monthKeyOfInstant(occurredAt);
+  const budget = await prisma.expenseBudget.findUnique({
+    where: { month_categoryId: { month, categoryId } },
+    select: { limitAmount: true },
+  });
+  if (!budget) return; // limit yo'q — cheklov yo'q
+
+  const { from, to } = monthInstantRange(month);
+  const spentAgg = await prisma.expense.aggregate({
+    where: { categoryId, isVoided: false, occurredAt: { gte: from, lte: to } },
+    _sum: { amount: true },
+  });
+
+  const limit = new Decimal(budget.limitAmount);
+  const spent = new Decimal(spentAgg._sum.amount ?? 0);
+  const afterThis = spent.plus(amount);
+
+  if (afterThis.greaterThan(limit)) {
+    const remaining = limit.minus(spent);
+    throw new BadRequestError(
+      `"${categoryName}" kategoriyasi limiti oshib ketadi. ` +
+        `${formatMonthKey(month)}: limit ${formatAmount(limit)} so'm, ` +
+        `ishlatilgan ${formatAmount(spent)} so'm, qolgan ${formatAmount(remaining)} so'm. ` +
+        `Ushbu xarajat (${formatAmount(amount)} so'm) sig'maydi — limit oshirish so'rovini yuboring.`,
+    );
+  }
+};
 
 const serializeExpense = (row, { category, account } = {}) => ({
   ...row,
@@ -60,6 +112,11 @@ const createExpense = async (data, userId) => {
   ]);
 
   const occurredAt = parseOccurredAt(data.occurredAt);
+
+  // ⚠️ KATEGORIYA LIMITI majburiy (admin qo'ygan bo'lsa). Kassa qoldig'idan
+  // farqli — u tekshirilmaydi (pastdagi izoh), lekin limit oshsa xarajat
+  // rad etiladi va foydalanuvchi limit oshirish so'rovi yuboradi.
+  await assertWithinLimit(category.id, category.name, amount, occurredAt);
 
   // ⚠️ Kassada yetarli pul bormi — TEKSHIRILMAYDI va bu ATAYLAB.
   // Qoldiq manfiy bo'lishi mumkin: kassa daftari haqiqatni yozadi, uni
