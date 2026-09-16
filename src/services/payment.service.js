@@ -516,6 +516,58 @@ const updatePaymentNote = async (id, note) => {
   return getPaymentById(id);
 };
 
+/**
+ * To'lovni TAHRIRLASH.
+ *
+ * ⚠️ Daftar APPEND-ONLY — "joyida o'zgartirish" yo'q. Shuning uchun tahrirlash =
+ * eski to'lovni BEKOR QILISH (taqsimotlar bo'shaydi, pul depozit/qarzga qaytadi,
+ * kassaga teskari qator) + tahrirlangan qiymatlar bilan YANGI to'lov yaratish.
+ * Ikkalasi ham auditda qoladi: eski — bekor qilingan, yangi — o'z chek raqami
+ * bilan. Shu yo'l reconcile invariantlarini buzmaydi (void va create alohida
+ * izchil).
+ *
+ * O'quvchi, summa, sana, to'lov turi va izoh — hammasi o'zgartirilishi mumkin.
+ *
+ * @param {string} id
+ * @param {object} data - { studentId?, accountId?, amount?, paidAt?, note?, reason? }
+ * @param {string} userId
+ * @returns {Promise<object>} yangi (tahrirlangan) to'lov
+ */
+const editPayment = async (id, data, userId) => {
+  const existing = await prisma.payment.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("To'lov topilmadi");
+  if (existing.isVoided) {
+    throw new BadRequestError("Bekor qilingan to'lovni tahrirlab bo'lmaydi");
+  }
+
+  const reason = data.reason?.trim() || "To'lov tahrirlandi (qayta kiritildi)";
+
+  // 1 ── Eski to'lovni bekor qilamiz: taqsimot/depozit/kassa qaytadi
+  await voidPayment(id, reason, userId);
+
+  // 2 ── Tahrirlangan qiymatlar bilan yangi to'lov (bo'sh maydonlar eskisidan)
+  const created = await createPayment(
+    {
+      studentId: data.studentId || existing.studentId,
+      accountId: data.accountId || existing.accountId,
+      amount:
+        data.amount != null && data.amount !== ""
+          ? String(data.amount)
+          : formatAmount(existing.amount),
+      paidAt: data.paidAt || existing.paidAt,
+      note: data.note != null ? data.note : existing.note,
+    },
+    userId,
+  );
+
+  logger.warn(
+    `[payment] To'lov tahrirlandi (bekor+qayta): eski=${id} → yangi=${created.id} ` +
+      `student=${created.studentId} summa=${created.amount} actor=${userId}`,
+  );
+
+  return created;
+};
+
 // ─────────────────────────────────────────────
 // O'qish
 // ─────────────────────────────────────────────
@@ -734,6 +786,7 @@ module.exports = {
   createPayment,
   voidPayment,
   updatePaymentNote,
+  editPayment,
   getPayments,
   getPaymentById,
   getStudentPayments,

@@ -53,6 +53,13 @@ const updatePayment = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// To'lovni to'liq tahrirlash — eski bekor qilinib, tahrirlangan yangi to'lov
+// yaratiladi (append-only daftar; o'quvchi/summa/sana/hisob o'zgarishi mumkin).
+const replacePayment = asyncHandler(async (req, res) => {
+  const data = await paymentService.editPayment(req.params.id, req.body, req.user.id);
+  res.json({ success: true, data });
+});
+
 // ── Depozit ──────────────────────────────────
 
 const getStudentAccount = asyncHandler(async (req, res) => {
@@ -115,6 +122,7 @@ module.exports = {
   createPayment,
   voidPayment,
   updatePayment,
+  replacePayment,
   getStudentAccount,
   getMovements,
   applyDeposit,

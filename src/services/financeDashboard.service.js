@@ -1319,6 +1319,11 @@ const getDashboard = async (query = {}, options = {}) => {
             previous: formatAmount(prevDueD),
             change: changeOf(dueD, prevDueD),
             changeUnit: "percent",
+            // Xodimlar soni va o'rtacha oylik — kartadagi "O'rtacha oylik" bloki
+            staffCount: payroll.staffCount,
+            average: formatAmount(
+              payroll.staffCount > 0 ? dueD.div(payroll.staffCount) : new Decimal(0),
+            ),
             sub: usingAccrued
               ? `${payroll.staffCount} ta xodimga shakllantirilgan`
               : `Qoidadan belgilangan (hali shakllantirilmagan)`,

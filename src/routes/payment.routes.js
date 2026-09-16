@@ -16,6 +16,7 @@ const {
   createPayment,
   voidPayment,
   updatePayment,
+  replacePayment,
 } = require("../controllers/payment.controller");
 
 // Aniq yo'llar `/:id` dan OLDIN
@@ -29,6 +30,10 @@ router.post("/", protect, authorizePermission(PERMISSIONS.FINANCE_PAY), createPa
 
 // Bekor qilish — ALOHIDA ruxsat: kassir o'z xatosini o'zi yashira olmasin
 router.post("/:id/void", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VOID), voidPayment);
+
+// Tahrirlash — eski to'lovni bekor qilib, tahrirlangan yangisini yaratadi.
+// `finance.void` ruxsati: tahrir bekor qilishni ham o'z ichiga oladi.
+router.post("/:id/replace", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VOID), replacePayment);
 
 router.get("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getPayment);
 // Faqat izoh — summa va sana o'zgarmas (append-only log)
