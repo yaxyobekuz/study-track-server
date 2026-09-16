@@ -615,8 +615,19 @@ const changeTariff = async (id, data, userId) => {
       "Yangi tarif joriy biriktirish davridan tashqarida boshlanmoqda",
     );
   }
+  // Tarif o'sha-o'sha bo'lsa ham qabul qilinadi, agar INDIVIDUAL NARX
+  // o'zgargan bo'lsa: "tarifi qoladi, narxi shu oydan boshqa" — xuddi
+  // almashtirish kabi davr bilan yoziladi, o'tgan oylar eski narxda qoladi.
+  // Ikkalasi ham o'zgarmasa — bo'sh yozuv yaratmaymiz.
   if (data.tariffId === assignment.tariffId) {
-    throw new BadRequestError("Yangi tarif joriy tarif bilan bir xil");
+    const nextCustom = parseCustomAmount(data.customAmount);
+    const sameAmount =
+      nextCustom == null
+        ? assignment.customAmount == null
+        : assignment.customAmount != null && nextCustom.equals(assignment.customAmount.toString());
+    if (sameAmount) {
+      throw new BadRequestError("Tarif ham, individual narx ham o'zgarmagan");
+    }
   }
 
   const [student, tariff] = await Promise.all([
