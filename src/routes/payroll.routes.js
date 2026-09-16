@@ -24,6 +24,7 @@ const {
 const {
   getEntries,
   getStaffEntries,
+  getMySalaryStats,
   generate,
   cancelEntry,
   previewPayment,
@@ -112,6 +113,9 @@ router.post("/payments", protect, authorizePermission(PERMISSIONS.PAYROLL_PAY), 
 router.post("/payments/:id/void", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_VOID), voidPayment);
 
 // ── Oylik majburiyatlari ─────────────────────
+// O'ZIMNING oylik statistikam (teacher panel dashboardi) — ruxsatsiz,
+// faqat rol tekshiruvi (controller ichida). `/staff/:staffId` dan OLDIN.
+router.get("/my-stats", protect, getMySalaryStats);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.PAYROLL_GENERATE), generate);
 router.get("/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffEntries);
 router.get("/", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getEntries);

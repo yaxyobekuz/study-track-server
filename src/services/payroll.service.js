@@ -22,6 +22,7 @@ const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const {
   currentMonthKey,
+  currentDayOfMonth,
   parseMonthKey,
   parseOptionalMonthKey,
   formatMonthKey,
@@ -33,6 +34,7 @@ const {
   STAFF_SELECT,
 } = require("./staffSalary.service");
 const payrollEngine = require("./payrollEngine.service");
+const { getTeacherHours } = require("./lessonHours.service");
 
 // Payroll uchun user maydonlari — biriktirmalar bilan
 const PAYROLL_USER_SELECT = {
@@ -441,6 +443,104 @@ const computeAssignedPayroll = async (month) => {
   return { amount };
 };
 
+/**
+ * XODIMNING O'Z OYLIK STATISTIKASI (teacher panel dashboardi).
+ *
+ * Uch qismdan iborat:
+ *   1. JORIY OY (jonli): oylik summasi = fiksa/soatbay + KPI + ustama; toifa,
+ *      stavka, dars soati (reja / o'tgan / qolgan). Muhrlanmagan bo'lsa ham
+ *      ko'rinadi — o'qituvchi kutgan summasini oldindan biladi.
+ *   2. JORIY OY MAJBURIYATI (agar shakllangan bo'lsa): to'langan / qarz.
+ *   3. UMUMIY: butun tarix bo'yicha hisoblangan / olingan / qarz.
+ *
+ * @param {string} userId - HAR DOIM req.user.id (o'zganing statini olib bo'lmaydi)
+ */
+const getMySalaryStats = async (userId) => {
+  const month = currentMonthKey();
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: PAYROLL_USER_SELECT,
+  });
+  if (!user) throw new NotFoundError("Xodim topilmadi");
+
+  // ── 1. Joriy oy jonli hisob ──────────────
+  const salaryRules = await resolveSalariesForMonth(month);
+  const ctx = await payrollEngine.loadContext(month, [user], { salaryRules });
+  const computed = payrollEngine.computeForStaff(user, month, ctx);
+
+  // ── Dars soati (reja / o'tgan / qolgan) — bugungacha kesim bilan ──
+  const day = currentDayOfMonth();
+  const hoursInfo = user.salaryCategoryId || computed?.kpiAmount
+    ? await getTeacherHours(userId, month, { asOfDayOfMonth: day })
+    : null;
+
+  // ── 2. Joriy oy majburiyati (shakllangan bo'lsa) ──
+  const currentEntry = await prisma.payrollEntry.findFirst({
+    where: { staffId: userId, month, status: { not: "cancelled" } },
+    select: { amount: true, paidAmount: true, status: true },
+  });
+
+  // ── 3. Umumiy tarix ──────────────────────
+  const totalsAgg = await prisma.payrollEntry.aggregate({
+    where: { staffId: userId, status: { not: "cancelled" } },
+    _sum: { amount: true, paidAmount: true },
+  });
+  const totalAccrued = new Decimal(totalsAgg._sum.amount ?? 0);
+  const totalPaid = new Decimal(totalsAgg._sum.paidAmount ?? 0);
+  const totalDebt = totalAccrued.minus(totalPaid);
+
+  // Joriy oy uchun ko'rsatiladigan summa: muhrlangan bo'lsa u, aks holda jonli
+  const currentAmount = currentEntry
+    ? new Decimal(currentEntry.amount)
+    : computed
+      ? computed.amount
+      : new Decimal(0);
+  const currentPaid = currentEntry ? new Decimal(currentEntry.paidAmount) : new Decimal(0);
+  const currentDebt = currentAmount.minus(currentPaid);
+
+  return {
+    month,
+    monthLabel: formatMonthKey(month),
+    hasSalary: Boolean(computed) || Boolean(currentEntry),
+    isSealed: Boolean(currentEntry), // majburiyat shakllanganmi
+
+    current: {
+      // Oylik tarkibi
+      amount: formatAmount(currentAmount),
+      fixedAmount: formatAmount(computed?.fixedAmount ?? 0),
+      kpiAmount: formatAmount(computed?.kpiAmount ?? 0),
+      allowanceAmount: formatAmount(computed?.allowanceAmount ?? 0),
+      salaryType: computed?.salaryType ?? null,
+      // Toifa va stavka
+      categoryName: computed?.categoryName || null,
+      positionName: computed?.positionName || null,
+      perHourRate: formatAmount(computed?.perHourRate ?? 0),
+      // To'lov holati (shu oy)
+      paid: formatAmount(currentPaid),
+      debt: formatAmount(currentDebt.isNegative() ? new Decimal(0) : currentDebt),
+      status: currentEntry?.status ?? "unpaid",
+    },
+
+    // Dars soati (o'qituvchi bo'lsa)
+    hours: hoursInfo
+      ? {
+          planned: hoursInfo.hours, // shu oy o'tishi kerak bo'lgan (jadval bo'yicha)
+          taught: hoursInfo.taughtHours, // bugungacha o'tilgani
+          remaining: hoursInfo.remainingHours, // qolgan
+          weekly: hoursInfo.weeklyHours, // haftalik yuklama
+        }
+      : null,
+
+    // Umumiy (butun tarix)
+    totals: {
+      accrued: formatAmount(totalAccrued),
+      paid: formatAmount(totalPaid),
+      debt: formatAmount(totalDebt.isNegative() ? new Decimal(0) : totalDebt),
+    },
+  };
+};
+
 module.exports = {
   STATUS_LABELS,
   serializeEntry,
@@ -449,4 +549,5 @@ module.exports = {
   getStaffEntries,
   cancelEntry,
   computeAssignedPayroll,
+  getMySalaryStats,
 };

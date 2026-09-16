@@ -27,6 +27,17 @@ const getMyEntries = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// O'ZIMNING oylik STATISTIKASI — teacher panel bosh sahifasi uchun:
+// joriy oy oyligi, dars soati (reja/o'tgan), stavka, toifa, umumiy qarz.
+const getMySalaryStats = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Oylik faqat xodimlar uchun");
+  }
+
+  const data = await payrollService.getMySalaryStats(req.user.id);
+  res.json({ success: true, data });
+});
+
 const generate = asyncHandler(async (req, res) => {
   const data = await payrollService.generateForMonth(req.body.month, {
     dryRun: req.body.dryRun === true,
@@ -89,6 +100,7 @@ module.exports = {
   getEntries,
   getStaffEntries,
   getMyEntries,
+  getMySalaryStats,
   generate,
   cancelEntry,
   previewPayment,
