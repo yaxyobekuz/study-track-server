@@ -106,7 +106,14 @@ app.use(xss());
 // blok yoqilmaydi — "uploads/ produksiyada tarqatilmaydi" qoidasi kuchda.
 const fileStorage = require("./src/services/fileStorage.service");
 if (fileStorage.isLocalStorage) {
-  app.use("/uploads", express.static(fileStorage.LOCAL_UPLOADS_DIR));
+  app.use(
+    "/uploads",
+    express.static(fileStorage.LOCAL_UPLOADS_DIR, {
+      // helmet CORP=same-origin admin (5173) dan rasm/pdf ochishni bloklaydi
+      setHeaders: (res) =>
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin"),
+    }),
+  );
 }
 
 // Rate limiting
