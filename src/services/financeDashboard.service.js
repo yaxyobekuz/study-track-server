@@ -1168,14 +1168,48 @@ const getDashboard = async (query = {}, options = {}) => {
       // FAKTURALARIGA yig'ilgani (depozitdan yopilgani bilan): rahbar
       // "600 ming yig'ildi-ku, nega tushum 0" deb adashmasligi uchun
       // ikkala raqam bitta kartada (frontend sub qatorida chizadi).
-      income: {
-        ...kpi("income", current.income),
-        collected: accrual.totals?.collected ?? "0.00",
-      },
+      // "Yig'ilishi kutilgan" — oyning JAMI HISOBLANGAN majburiyati (barcha
+      // o'quvchi tarifi + qo'shimcha xizmatlari). `collected` sub'da
+      // "shuncha yig'ildi" bo'lib chiqadi. Taqqoslash accrued-to-accrued:
+      // o'tgan oyning hisoblangani (accrual seriyasidan).
+      income: (() => {
+        const invoicedNow = accrual.totals.invoiced;
+        const invoicedPrev =
+          accrual.series.find((s) => s.month === compareMonth)?.invoiced ?? "0.00";
+        return {
+          key: "income",
+          unit: "money",
+          value: invoicedNow,
+          plan: null,
+          planRate: null,
+          previous: invoicedPrev,
+          change: changeOf(new Decimal(invoicedNow), new Decimal(invoicedPrev)),
+          changeUnit: "percent",
+          collected: accrual.totals.collected,
+        };
+      })(),
       expense: kpi("expense", current.expense),
       profit: kpi("profit", current.profit),
       margin: kpi("margin", current.margin, { unit: "percent" }),
       cashBalance: kpi("cashBalance", cashBalance),
+
+      // KUTILAYOTGAN FOYDA — jami HISOBLANGAN majburiyat MINUS xarajat
+      // limitlari. "Agar hamma limitni ishlatib, hamma majburiyat yig'ilsa,
+      // qancha foyda qoladi" degan savolga javob. Limitlar foiz rejimida ham
+      // hisoblangandan olingani uchun ikkalasi bir bazadan.
+      expectedProfit: {
+        key: "expectedProfit",
+        unit: "money",
+        value: formatAmount(
+          new Decimal(accrual.totals.invoiced).minus(expenseBudget.totals.limit),
+        ),
+        plan: null,
+        planRate: null,
+        previous: null,
+        change: null,
+        changeUnit: "percent",
+        sub: "Hisoblangan − limitlar",
+      },
 
       // "Qarzdorlar" sahifasidagi uchta karta — asosiy ekranga ko'chirildi.
       // Manba AYNI `buildDebt`: ikki ekran bir xil raqamni ko'rsatishi
@@ -1189,6 +1223,8 @@ const getDashboard = async (query = {}, options = {}) => {
         previous: debt.previousDebt,
         change: debt.debtChange,
         changeUnit: "percent",
+        // Nechta o'quvchi qarzdor — pastda kichik yozuvda
+        sub: `${debt.debtorCount} ta qarzdor`,
       },
       debtors: {
         key: "debtors",

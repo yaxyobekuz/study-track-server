@@ -229,6 +229,10 @@ const getBudgets = async (query = {}) => {
       limit: formatAmount(totalLimit),
       spent: formatAmount(totalSpent),
       remaining: formatAmount(totalLimit.minus(totalSpent)),
+      // KUTILAYOTGAN FOYDA — jami hisoblangan majburiyatdan limitlar
+      // olib tashlanadi: "hamma majburiyat yig'ilib, hamma limit ishlatilsa,
+      // qancha foyda qoladi".
+      expectedProfit: formatAmount(accrued.minus(totalLimit)),
       rate: totalRate,
       status: statusOf(totalRate),
       withLimit: items.filter((row) => row.limit != null).length,
