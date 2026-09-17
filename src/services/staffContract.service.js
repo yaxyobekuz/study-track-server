@@ -445,6 +445,11 @@ const previewContract = async (staffId, data) => {
     // yuborilmasa oynadagi qatorlar yig'indisi (yalpi) jamidan katta
     // chiqib, "jami noto'g'ri" bo'lib ko'rinardi.
     grossAmount: result ? formatAmount(result.grossAmount) : null,
+    // To'xtatilgan qismlar ham `amount` dan ayirilgan — oynada qatorlar
+    // yig'indisi jami bilan mos kelishi uchun yuboriladi
+    suspendedAmount: result ? formatAmount(result.suspendedAmount) : null,
+    suspensionBreakdown: result?.suspensionBreakdown ?? [],
+    payableGrossAmount: result ? formatAmount(result.payableGrossAmount) : null,
     deductionAmount: result ? formatAmount(result.deductionAmount) : null,
     deductionBreakdown: result?.deductionBreakdown ?? [],
     amount: result ? formatAmount(result.amount) : null,

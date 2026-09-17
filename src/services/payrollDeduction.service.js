@@ -53,9 +53,15 @@ const {
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount, sumAmounts } = require("../helpers/money.helpers");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
-const { computeDeductions } = require("../helpers/salaryRules.helpers");
+const { computeDeductions, computeSuspensions } = require("../helpers/salaryRules.helpers");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
-const { loadContext, computeForStaff, buildTutorLines } = require("./payrollEngine.service");
+const {
+  loadContext,
+  computeForStaff,
+  buildTutorLines,
+  loadSuspensionsForMonth,
+  suspensionsFor,
+} = require("./payrollEngine.service");
 const { resolveTutorIdsForMonth, loadGroupsForPayroll } = require("./tutorGroup.service");
 const payrollAudit = require("./payrollAudit.service");
 const logger = require("../utils/logger");
@@ -254,7 +260,8 @@ const getCandidates = async (monthInput) => {
   const items = [];
   for (const user of users) {
     const c = computeForStaff(user, month, ctx);
-    if (!c || c.grossAmount.lessThanOrEqualTo(0)) continue;
+    // To'xtatilgan oylikdan ushlab qolinmaydi — to'lanadigan yalpi bo'yicha
+    if (!c || c.payableGrossAmount.lessThanOrEqualTo(0)) continue;
 
     items.push({
       id: user.id,
@@ -264,7 +271,7 @@ const getCandidates = async (monthInput) => {
       departmentName: c.departmentName || null,
       positionName: c.positionName || null,
       categoryName: c.categoryName || null,
-      grossAmount: formatAmount(c.grossAmount),
+      grossAmount: formatAmount(c.payableGrossAmount),
       deductionAmount: formatAmount(c.deductionAmount),
       amount: formatAmount(c.amount),
       // Dars soati bo'yicha ushlab qolish shu narxdan hisoblanadi (0 — ushlanmaydi)
@@ -314,11 +321,11 @@ const previewDeductions = async (data) => {
     let perHourRate;
     if (sealState === "none") {
       const c = computeForStaff(user, month, ctx);
-      if (!c || c.grossAmount.lessThanOrEqualTo(0)) {
+      if (!c || c.payableGrossAmount.lessThanOrEqualTo(0)) {
         noSalary += 1;
         continue;
       }
-      gross = c.grossAmount;
+      gross = c.payableGrossAmount;
       perHourRate = c.perHourRate;
     } else {
       gross = sealedGrossOf(entry);
@@ -372,9 +379,15 @@ const previewDeductions = async (data) => {
 
 /* ─────────────────────── Muhrni qayta hisoblash ─────────────────────── */
 
-/** Muhrlangan YALPI — qismlar yig'indisi (ushlab qolishdan oldingi). */
+/**
+ * Muhrlangan TO'LANADIGAN YALPI — qismlar yig'indisidan to'xtatilgan qism
+ * ayirilgan (ushlab qolish shundan olinadi).
+ */
 const sealedGrossOf = (entry) =>
-  new Decimal(entry.fixedAmount).plus(entry.kpiAmount).plus(entry.allowanceAmount);
+  new Decimal(entry.fixedAmount)
+    .plus(entry.kpiAmount)
+    .plus(entry.allowanceAmount)
+    .minus(entry.suspendedAmount ?? 0);
 
 const breakdownKey = (list) =>
   JSON.stringify((Array.isArray(list) ? list : []).map((row) => [row.id, row.amount]));
@@ -425,27 +438,125 @@ const statusFor = (amount, paidAmount) => {
 };
 
 /**
+ * BITTA MUHRLANGAN QATORNI qayta hisoblaydi (sof, DB'siz) — `resyncSealedEntries`
+ * ham, to'xtatish oynasidagi oldindan hisob ham SHUNI chaqiradi: oynada
+ * ko'ringan raqam aynan yoziladigan raqam.
+ *
+ *   yalpi         = fixed + kpi + allowance (tyutor qatorlari yangilangan)
+ *   to'xtatilgan  = computeSuspensions(yalpi qismlari)
+ *   ushlab qolish = computeDeductions(yalpi − to'xtatilgan)
+ *   amount        = yalpi − to'xtatilgan − ushlab qolish
+ *
+ * @param {object} entry - PayrollEntry
+ * @param {{ groups: Array, studentCounts: Map, deductions: Array, suspensions: Array }} sources
+ * @returns {{ changed: boolean, structural: boolean, amount: Decimal, data: object }}
+ */
+const recomputeSealedEntry = (entry, { groups, studentCounts, deductions, suspensions }) => {
+  const reseal = resealTutorLines(entry, groups || [], studentCounts);
+  const parts = {
+    fixedAmount: entry.fixedAmount,
+    kpiAmount: entry.kpiAmount,
+    allowanceBreakdown: reseal.allowanceBreakdown,
+  };
+  const gross = new Decimal(entry.fixedAmount).plus(entry.kpiAmount).plus(reseal.allowanceAmount);
+
+  const suspension = computeSuspensions(parts, suspensions || []);
+  const payable = gross.minus(suspension.total);
+
+  // Foizli ushlab qolish TO'LANADIGAN yalpidan olinadi
+  const deduction = computeDeductions(payable, deductions || [], {
+    perHourRate: entry.perHourRate,
+  });
+
+  const suspensionChanged =
+    !new Decimal(entry.suspendedAmount ?? 0).equals(suspension.total) ||
+    breakdownKey(entry.suspensionBreakdown) !== breakdownKey(suspension.breakdown);
+  const deductionChanged =
+    !new Decimal(entry.deductionAmount).equals(deduction.total) ||
+    breakdownKey(entry.deductionBreakdown) !== breakdownKey(deduction.breakdown);
+
+  const amount = payable.minus(deduction.total);
+
+  return {
+    changed: reseal.changed || suspensionChanged || deductionChanged,
+    // Oylik TARKIBI o'zgardi (tyutor yoki to'xtatish) — faqat ushlab qolish emas
+    structural: reseal.changed || suspensionChanged,
+    amount,
+    data: {
+      amount,
+      ...(reseal.changed
+        ? { allowanceAmount: reseal.allowanceAmount, allowanceBreakdown: reseal.allowanceBreakdown }
+        : {}),
+      suspendedAmount: suspension.total,
+      suspensionBreakdown: suspension.breakdown,
+      deductionAmount: deduction.total,
+      deductionBreakdown: deduction.breakdown,
+      status: statusFor(amount, new Decimal(entry.paidAmount)),
+    },
+  };
+};
+
+/**
+ * Qator TO'LOV TUFAYLI yangilanmaydimi (`locked`):
+ *   - to'lov tushmagan — har doim yangilanadi;
+ *   - faqat ushlab qolish o'zgargan — yo'q (pul haqiqatan ushlangan);
+ *   - tarkib (tyutor / to'xtatish) o'zgargan — faqat yangi summa to'langanidan
+ *     kam bo'lmasa (aks holda ortiqcha to'lov paydo bo'lardi).
+ */
+const isResyncBlocked = (entry, result) =>
+  sealStateOf(entry) === "locked" &&
+  (!result.structural || result.amount.lessThan(new Decimal(entry.paidAmount)));
+
+/**
+ * Oy uchun qayta hisob manbalari: ushlab qolishlar, tyutor guruhlari va
+ * to'xtatishlar — bir marta, xodimlar bo'yicha.
+ */
+const loadResyncSources = async (month, staffIds) => {
+  const [deductions, tutor, suspensions] = await Promise.all([
+    prisma.payrollDeduction.findMany({
+      where: {
+        staffId: { in: staffIds },
+        status: "active",
+        startMonth: { lte: month },
+        OR: [{ endMonth: null }, { endMonth: { gte: month } }],
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    }),
+    loadGroupsForPayroll(month, staffIds),
+    loadSuspensionsForMonth(month, staffIds),
+  ]);
+  const deductionMap = new Map();
+  for (const d of deductions) {
+    if (!deductionMap.has(d.staffId)) deductionMap.set(d.staffId, []);
+    deductionMap.get(d.staffId).push(d);
+  }
+  return {
+    forStaff: (staffId) => ({
+      groups: tutor.groupMap.get(staffId) || [],
+      studentCounts: tutor.studentCounts,
+      deductions: deductionMap.get(staffId) || [],
+      suspensions: suspensionsFor(suspensions, staffId),
+    }),
+  };
+};
+
+/**
  * MUHRLANGAN OYLIKNING O'ZGARUVCHAN QISMLARINI qayta hisoblaydi (`finance.md`
- * §10): TYUTOR QATORLARI va USHLAB QOLISH, ulardan kelib chiqib `amount`.
- * Lavozim maoshi va dars soati (`fixedAmount`, `kpiAmount`) muhrdagicha qoladi.
+ * §10): TYUTOR QATORLARI, TO'XTATISH va USHLAB QOLISH, ulardan kelib chiqib
+ * `amount`. Lavozim maoshi va dars soati (`fixedAmount`, `kpiAmount`) muhrdagicha.
  *
- * Chaqiriladi: ushlab qolish qo'shilganda/bekor qilinganda, tyutor guruhi
- * biriktirilganda/o'zgarganda/olib tashlanganda va oylik shakllantirishda
- * (kunlik cron va "Shakllantirish" tugmasi) zaxira sifatida.
+ * Chaqiriladi: ushlab qolish / to'xtatish qo'shilganda yoki bekor qilinganda,
+ * tyutor guruhi biriktirilganda/o'zgarganda/olib tashlanganda va oylik
+ * shakllantirishda (kunlik cron va "Shakllantirish" tugmasi) zaxira sifatida.
  *
- * TO'LOV TUSHGAN qator:
- *   - faqat ushlab qolish o'zgarsa — TEGILMAYDI (`locked`): pul haqiqatan
- *     ushlangan;
- *   - TYUTOR qatorlari o'zgarsa — yangilanadi, agar yangi summa to'langanidan
- *     kam bo'lmasa (holat `paid` → `partial` bo'lishi mumkin: tyutor puli
- *     hali to'lanmagan). Kam bo'lsa ortiqcha to'lov paydo bo'lardi — `locked`.
- *   Sabab (biznes qarori, 2026-09-17): sinf biriktirilgan tyutorning puli
- *   moliyada ko'rinmay, faqat vedomostda turardi.
+ * TO'LOV TUSHGAN qator — `isResyncBlocked`. Sabab (biznes qarori, 2026-09-17):
+ * sinf biriktirilgan tyutorning puli moliyada ko'rinmay, faqat vedomostda
+ * turardi; to'xtatish esa to'langan pulni qaytarib ololmaydi.
  *
  * Har qator ALOHIDA compare-and-swap: bittasi shu orada to'langan bo'lsa,
  * qolganlari baribir yangilanadi, u esa `conflicts` da qaytadi.
  *
- * @param {string[]} staffIds
+ * @param {string[]|null} staffIds - null → shu oydagi BARCHA majburiyatlar
  * @param {number[]} months
  * @returns {Promise<{updated: number, locked: Array, conflicts: number}>}
  */
@@ -456,53 +567,22 @@ const resyncSealedEntries = async (staffIds, months) => {
   // Kelajak oyda muhr bo'lmaydi (shakllantirish uni rad etadi)
   for (const month of months.filter((m) => m <= current)) {
     const entries = await prisma.payrollEntry.findMany({
-      where: { month, staffId: { in: staffIds }, status: { not: "cancelled" } },
+      where: {
+        month,
+        ...(staffIds ? { staffId: { in: staffIds } } : {}),
+        status: { not: "cancelled" },
+      },
       orderBy: [{ month: "asc" }, { id: "asc" }],
     });
     if (entries.length === 0) continue;
 
-    const deductions = await prisma.payrollDeduction.findMany({
-      where: {
-        staffId: { in: entries.map((e) => e.staffId) },
-        status: "active",
-        startMonth: { lte: month },
-        OR: [{ endMonth: null }, { endMonth: { gte: month } }],
-      },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    });
-    const byStaff = new Map();
-    for (const d of deductions) {
-      if (!byStaff.has(d.staffId)) byStaff.set(d.staffId, []);
-      byStaff.get(d.staffId).push(d);
-    }
-    const tutor = await loadGroupsForPayroll(month, entries.map((e) => e.staffId));
+    const sources = await loadResyncSources(month, [...new Set(entries.map((e) => e.staffId))]);
 
     for (const entry of entries) {
-      const reseal = resealTutorLines(
-        entry,
-        tutor.groupMap.get(entry.staffId) || [],
-        tutor.studentCounts,
-      );
-      // Yalpi tyutor qatorlari YANGILANGANidan keyin: foizli ushlab qolish
-      // yangi yalpidan olinadi
-      const gross = new Decimal(entry.fixedAmount)
-        .plus(entry.kpiAmount)
-        .plus(reseal.allowanceAmount);
-      const { total, breakdown } = computeDeductions(gross, byStaff.get(entry.staffId) || [], {
-        perHourRate: entry.perHourRate,
-      });
+      const next = recomputeSealedEntry(entry, sources.forStaff(entry.staffId));
+      if (!next.changed) continue;
 
-      const unchanged =
-        !reseal.changed &&
-        new Decimal(entry.deductionAmount).equals(total) &&
-        breakdownKey(entry.deductionBreakdown) === breakdownKey(breakdown);
-      if (unchanged) continue;
-
-      const amount = gross.minus(total);
-      const paid = new Decimal(entry.paidAmount);
-      const blocked =
-        sealStateOf(entry) === "locked" && (!reseal.changed || amount.lessThan(paid));
-      if (blocked) {
+      if (isResyncBlocked(entry, next)) {
         result.locked.push({
           staffId: entry.staffId,
           staffName: fullName(entry.staffSnapshot),
@@ -520,20 +600,7 @@ const resyncSealedEntries = async (staffIds, months) => {
           paidAmount: entry.paidAmount,
           status: entry.status,
         },
-        data: {
-          amount,
-          ...(reseal.changed
-            ? {
-                allowanceAmount: reseal.allowanceAmount,
-                allowanceBreakdown: reseal.allowanceBreakdown,
-              }
-            : {}),
-          deductionAmount: total,
-          deductionBreakdown: breakdown,
-          // To'liq ushlab qolingan — to'lanadigan narsa yo'q; bekor qilinsa
-          // yana qarzga qaytadi
-          status: statusFor(amount, paid),
-        },
+        data: next.data,
       });
 
       if (updated.count === 1) result.updated += 1;
@@ -1216,4 +1283,8 @@ module.exports = {
   listDeductions,
   listMyDeductions,
   resyncSealedEntries,
+  recomputeSealedEntry,
+  isResyncBlocked,
+  loadResyncSources,
+  sealStateOf,
 };

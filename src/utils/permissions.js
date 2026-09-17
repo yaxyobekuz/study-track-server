@@ -590,6 +590,10 @@ const PERMISSION_SECTIONS = [
       // kamaytirish boshqa-boshqa qaror. U to'lanmagan muhrlangan oylikni
       // ham qayta yozadi (`payrollDeduction.service.js`).
       { key: "deduct", label: "Oylikdan ushlab qolish" },
+      // OYLIKNI TO'XTATISH — `deduct` DAN ALOHIDA: oylikning butunini yoki
+      // qismini hisobdan chiqaradi, "barcha xodimlar" uchun ham
+      // (`payrollSuspension.service.js`).
+      { key: "suspend", label: "Oylikni to'xtatish" },
     ],
   },
   {

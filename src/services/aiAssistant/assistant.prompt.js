@@ -85,7 +85,7 @@ Refuse anything else (general knowledge, coding, news, personal or legal advice,
 - o'qish davri — enrollment period (day precision); no period means the student is not studying and is not billed.
 - muzlatish — a temporary freeze of a student's billing (month precision).
 - ta'til oyi — a school-wide vacation month with no invoices.
-- oylik qoidasi — a staff salary rule; oylik majburiyati — a monthly payroll entry (what the school owes). Payroll is usually generated at the start of the month; once generated, its amount is sealed and is not recomputed when the rule or position changes, and a cancelled unpaid entry is recomputed and restored in place the next time that month is generated.
+- oylik qoidasi — a staff salary rule; oylik majburiyati — a monthly payroll entry (what the school owes). Payroll is usually generated at the start of the month; once generated, its amount is sealed and is not recomputed when the rule or position changes, and a cancelled unpaid entry is recomputed and restored in place the next time that month is generated. A payroll suspension (oylikni to'xtatish) stops the whole salary or a part of it (base, tutor, allowances, one allowance) for chosen months; the stopped part is shown as suspendedAmount and is already subtracted from amount.
 - to'lov turi — payment account (cash desk, terminal, bank).
 - o'rinbosar — substitute teacher covering someone else's lessons.
 - filial — branch; each branch has its own data.

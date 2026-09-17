@@ -160,10 +160,138 @@ const computeTutorGroupAmount = (group, studentCount) =>
     .plus(new Decimal(group.perStudentAmount || 0).times(Math.max(0, Number(studentCount) || 0)))
     .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+/* ─────────────────────── Oylikni to'xtatish ─────────────────────── */
+
+const SUSPENSION_COMPONENTS = ["all", "base", "tutor", "allowances", "item"];
+
+const SUSPENSION_COMPONENT_LABELS = {
+  all: "Butun oylik",
+  base: "Asosiy oylik",
+  tutor: "Tyutorlik",
+  allowances: "Barcha qo'shimchalar",
+  item: "Qo'shimcha",
+};
+
+/**
+ * Ustama qatorining BARQAROR kaliti — aniq bitta qo'shimchani to'xtatish uchun.
+ *
+ *   tutor  → `tutor:<classId>` (guruh id si summa o'zgarganda almashadi, sinf esa
+ *            bir oyda bir tyutorda bitta — `finance.md` §10)
+ *   bonus  → `bonus:<PayrollBonus.id>`
+ *   qoida  → `rule:<label>` (StaffSalary.allowances da id yo'q)
+ *   eski muhrdagi manbasiz qator → `label:<label>`
+ */
+const payUnitKeyOf = (line) => {
+  if (line?.type === "tutor" && line.classId) return `tutor:${line.classId}`;
+  if (line?.bonusId) return `bonus:${line.bonusId}`;
+  if (line?.source === "rule") return `rule:${line.label ?? ""}`;
+  return `label:${line?.label ?? ""}`;
+};
+
+/**
+ * Oylik BIRLIKLARI — to'xtatish nimani nishonga olishi mumkin:
+ * asosiy oylik (lavozim maoshi + dars soati) va har bir ustama qatori.
+ *
+ * @param {{fixedAmount:*, kpiAmount:*, allowanceBreakdown:Array}} parts
+ * @returns {Array<{key:string, kind:"base"|"tutor"|"allowance", label:string, amount:Decimal}>}
+ */
+const buildPayUnits = ({ fixedAmount, kpiAmount, allowanceBreakdown }) => [
+  {
+    key: "base",
+    kind: "base",
+    label: SUSPENSION_COMPONENT_LABELS.base,
+    amount: new Decimal(fixedAmount || 0).plus(kpiAmount || 0),
+  },
+  ...(Array.isArray(allowanceBreakdown) ? allowanceBreakdown : []).map((line) => ({
+    key: payUnitKeyOf(line),
+    kind: line?.type === "tutor" ? "tutor" : "allowance",
+    label: line?.label ?? "",
+    amount: new Decimal(line?.amount || 0),
+  })),
+];
+
+const suspensionTargets = (suspension, unit) => {
+  switch (suspension.component) {
+    case "all":
+      return true;
+    case "base":
+      return unit.kind === "base";
+    case "tutor":
+      return unit.kind === "tutor";
+    case "allowances":
+      return unit.kind === "allowance";
+    case "item":
+      if (unit.kind === "base") return false;
+      if (unit.key === suspension.itemKey) return true;
+      // Eski muhrda manba yo'q — nomi bo'yicha (faqat tyutor bo'lmagan qator)
+      return unit.key.startsWith("label:") && Boolean(suspension.itemLabel) &&
+        unit.label === suspension.itemLabel && !String(suspension.itemKey).startsWith("tutor:");
+    default:
+      return false;
+  }
+};
+
+/**
+ * OYLIKNI TO'XTATISH — qaysi qismlar hisoblanmaydi va qancha.
+ *
+ * ⚠️ FORMULA FAQAT SHU YERDA: dvigatel (jonli hisob va muhrlash) ham, muhrlangan
+ * oylikni qayta hisoblash ham shuni chaqiradi.
+ *
+ *   to'xtatilgan = Σ nishonlangan birliklar (har birlik BIR MARTA sanaladi)
+ *   to'lanadigan yalpi = yalpi − to'xtatilgan
+ *
+ * Qoidalar:
+ *   · qismlar MUSTAQIL: foizli ustama (masalan "asosiy oylikdan 60%") asosiy
+ *     oylikdan hisoblanadi va asosiy oylik to'xtatilsa ham o'zi to'xtamaydi —
+ *     uni alohida to'xtatish kerak (qaysi qism to'xtashini admin tanlaydi);
+ *   · bir birlikni ikki to'xtatish qamrasa, u yaratilish tartibida BIRINCHISIGA
+ *     yoziladi — summa ikki marta ayirilmaydi;
+ *   · ushlab qolish TO'LANADIGAN yalpidan olinadi (`computeDeductions`).
+ *
+ * @param {{fixedAmount:*, kpiAmount:*, allowanceBreakdown:Array}} parts
+ * @param {Array<{id, component, itemKey, itemLabel, reason}>} suspensions - yaratilish tartibida
+ * @returns {{ total: Decimal, breakdown: Array<{id, component, itemKey, label, reason, amount}> }}
+ */
+const computeSuspensions = (parts, suspensions = []) => {
+  const units = buildPayUnits(parts);
+  const covered = new Set();
+  let total = new Decimal(0);
+  const breakdown = [];
+
+  for (const suspension of suspensions) {
+    let amount = new Decimal(0);
+    units.forEach((unit, index) => {
+      if (covered.has(index) || !suspensionTargets(suspension, unit)) return;
+      covered.add(index);
+      amount = amount.plus(unit.amount);
+    });
+    amount = Decimal.max(amount, 0).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+    total = total.plus(amount);
+    breakdown.push({
+      id: suspension.id,
+      component: suspension.component,
+      itemKey: suspension.itemKey || "",
+      label:
+        suspension.component === "item"
+          ? suspension.itemLabel || SUSPENSION_COMPONENT_LABELS.item
+          : SUSPENSION_COMPONENT_LABELS[suspension.component] ?? suspension.component,
+      reason: suspension.reason ?? "",
+      amount: formatAmount(amount),
+    });
+  }
+
+  return { total, breakdown };
+};
+
 module.exports = {
   ALLOWANCE_TYPES,
   normalizeAllowances,
   computeAllowances,
   computeDeductions,
   computeTutorGroupAmount,
+  SUSPENSION_COMPONENTS,
+  SUSPENSION_COMPONENT_LABELS,
+  payUnitKeyOf,
+  buildPayUnits,
+  computeSuspensions,
 };

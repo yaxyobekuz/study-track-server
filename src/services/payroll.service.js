@@ -76,7 +76,10 @@ const serializeEntry = (row, { staff } = {}) => {
     fixedAmount: formatAmount(row.fixedAmount ?? 0),
     allowanceAmount: formatAmount(row.allowanceAmount ?? 0),
     allowanceBreakdown: Array.isArray(row.allowanceBreakdown) ? row.allowanceBreakdown : [],
-    // Ushlab qolish — `amount` dan ALLAQACHON ayirilgan, faqat tushuntirish
+    // To'xtatilgan qism va ushlab qolish — `amount` dan ALLAQACHON ayirilgan,
+    // faqat tushuntirish
+    suspendedAmount: formatAmount(row.suspendedAmount ?? 0),
+    suspensionBreakdown: Array.isArray(row.suspensionBreakdown) ? row.suspensionBreakdown : [],
     deductionAmount: formatAmount(row.deductionAmount ?? 0),
     deductionBreakdown: Array.isArray(row.deductionBreakdown) ? row.deductionBreakdown : [],
     kpiAmount: formatAmount(row.kpiAmount ?? 0),
@@ -252,9 +255,10 @@ const generateForMonth = async (monthInput, options = {}) => {
       summary.skipped.monthOpen += 1;
       continue;
     }
-    // ⚠️ YALPI tekshiriladi, sof emas: oylik bor-u ushlab qolish uni to'liq
-    // yopgan xodimga ham qator yoziladi (0 so'm, "to'langan") — aks holda
-    // "shu oy 3 000 000 ushlab qolindi" degan fakt registrdan yo'qolardi.
+    // ⚠️ YALPI tekshiriladi, sof emas: oylik bor-u ushlab qolish yoki
+    // to'xtatish uni to'liq yopgan xodimga ham qator yoziladi (0 so'm) — aks
+    // holda "shu oy oyligi to'xtatildi / ushlab qolindi" degan fakt registrdan
+    // yo'qolardi, to'xtatish bekor qilinsa esa qator shu yerda tiklanadi.
     if (c.grossAmount.lessThanOrEqualTo(0)) {
       summary.skipped.zeroAmount += 1;
       continue;
@@ -270,9 +274,11 @@ const generateForMonth = async (monthInput, options = {}) => {
       fixedAmount: c.fixedAmount,
       allowanceAmount: c.allowanceAmount,
       allowanceBreakdown: c.allowanceBreakdown,
+      suspendedAmount: c.suspendedAmount,
+      suspensionBreakdown: c.suspensionBreakdown,
       deductionAmount: c.deductionAmount,
       deductionBreakdown: c.deductionBreakdown,
-      // To'liq ushlab qolingan oylik — to'lanadigan narsa yo'q
+      // To'liq to'xtatilgan / ushlab qolingan oylik — to'lanadigan narsa yo'q
       status: c.amount.lessThanOrEqualTo(0) ? "paid" : "unpaid",
       kpiAmount: c.kpiAmount,
       lessonHours: c.lessonHours,
@@ -641,6 +647,8 @@ const getMySalaryStats = async (userId) => {
       kpiAmount: true,
       allowanceAmount: true,
       allowanceBreakdown: true,
+      suspendedAmount: true,
+      suspensionBreakdown: true,
       deductionAmount: true,
       deductionBreakdown: true,
     },
@@ -707,6 +715,15 @@ const getMySalaryStats = async (userId) => {
           ? currentEntry.allowanceBreakdown
           : []
         : computed?.allowanceBreakdown ?? [],
+      // To'xtatilgan qism — muhrlangan bo'lsa muhrdan, aks holda jonli
+      suspendedAmount: formatAmount(
+        currentEntry ? currentEntry.suspendedAmount : computed?.suspendedAmount ?? 0,
+      ),
+      suspensions: currentEntry
+        ? Array.isArray(currentEntry.suspensionBreakdown)
+          ? currentEntry.suspensionBreakdown
+          : []
+        : computed?.suspensionBreakdown ?? [],
       // Ushlab qolingan (summa `amount` dan allaqachon ayirilgan)
       deductionAmount: formatAmount(currentDeduction),
       deductions: deductionRows.map((row) => ({

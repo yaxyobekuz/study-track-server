@@ -72,6 +72,20 @@ router.post("/deductions/batch/:batchId/cancel", protect, validateObjectId("batc
 router.post("/deductions/batch/:batchId/apply-all", protect, validateObjectId("batchId"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.applyBatchToAll);
 router.post("/deductions/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_DEDUCT), deductionController.cancelDeduction);
 
+// ── Oylikni to'xtatish ──
+// ⚠️ `suspend` ALOHIDA HUQUQ: oylikning butunini yoki qismini hisobdan
+// chiqaradi va muhrlangan oylikni qayta yozadi. Ro'yxat — `view` bilan.
+// `/suspensions/...` `/:id` dan OLDIN turadi.
+const suspensionController = require("../controllers/payrollSuspension.controller");
+router.get("/suspensions/my", protect, suspensionController.getMySuspensions);
+router.get("/suspensions", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), suspensionController.getSuspensions);
+router.get("/suspensions/candidates", protect, authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.getCandidates);
+router.get("/suspensions/units", protect, authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.getUnits);
+router.post("/suspensions/preview", protect, authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.previewSuspension);
+router.post("/suspensions", protect, authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.createSuspension);
+router.post("/suspensions/batch/:batchId/cancel", protect, validateObjectId("batchId"), authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.cancelBatch);
+router.post("/suspensions/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_SUSPEND), suspensionController.cancelSuspension);
+
 // ── Hisoblangan oyliklar (admin ko'rinishlari) ──
 const { getStaffPayroll, getAssignCandidates, getTeacherPayroll, getAllowancesView, createBonus, deleteBonus } = require("../controllers/payrollView.controller");
 router.get("/view/staff", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffPayroll);

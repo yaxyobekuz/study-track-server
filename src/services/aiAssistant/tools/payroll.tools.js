@@ -156,6 +156,9 @@ const compactPreview = (preview) =>
         perHourRate: preview.perHourRate,
         allowanceAmount: preview.allowanceAmount,
         allowances: preview.allowanceBreakdown,
+        // Oylikni to'xtatish — `amount` dan allaqachon ayirilgan
+        suspendedAmount: preview.suspendedAmount,
+        suspensions: preview.suspensionBreakdown,
         amount: preview.amount,
         amountLabel: formatMoneyUz(preview.amount),
         positionName: preview.positionName || null,
@@ -466,6 +469,7 @@ const payrollProjection = defineTool({
         kpiAmount: row.kpiAmount ?? null,
         lessonHours: row.lessonHours ?? null,
         allowanceAmount: row.allowanceAmount ?? null,
+        suspendedAmount: row.suspendedAmount ?? null,
         amount: row.amount ?? null,
       })),
     };

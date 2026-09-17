@@ -366,6 +366,15 @@ enum DeductionStatus {
   cancelled
 }
 
+// OYLIKNI TO'XTATISH — qaysi qism hisoblanmaydi.
+enum PayrollSuspensionComponent {
+  all // butun oylik
+  base // asosiy oylik: lavozim maoshi + dars soati
+  tutor // barcha tyutor sinflari
+  allowances // tyutordan boshqa barcha qo'shimchalar
+  item // bitta aniq qo'shimcha (`itemKey`)
+}
+
 // Ushlab qolish turi. `AllowanceKind` dan ALOHIDA: `hours` faqat ushlab
 // qolishga tegishli — ustamaga oqib o'tmasligi kerak.
 enum DeductionKind {
@@ -3226,6 +3235,46 @@ model PayrollDeduction {
   @@map("payroll_deductions")
 }
 
+// OYLIKNI TO'XTATISH — tanlangan oy(lar)da oylikning butuni yoki bir qismi
+// HISOBLANMAYDI (`payrollSuspension.service.js`, `finance.md` §10).
+// O'chirilmaydi — bekor qilinadi (sabab + aktyor), audit yoziladi.
+model PayrollSuspension {
+  id      String  @id @db.Char(24)
+  // soft ref → User. null → BARCHA xodimlar (keyin oyligi belgilanganlar ham):
+  // bitta qator, alohida yoyish mexanizmi kerak emas.
+  staffId String? @map("staff_id") @db.Char(24)
+  // Bitta amalda yaratilganlar guruhi
+  batchId String  @map("batch_id") @db.Char(24)
+
+  component PayrollSuspensionComponent
+  // component = item: `tutor:<classId>` | `bonus:<bonusId>` | `rule:<label>`
+  itemKey   String @default("") @map("item_key")
+  // Qo'shimcha nomi (yaratilgan paytdagi) — ro'yxat va eski muhr uchun
+  itemLabel String @default("") @map("item_label")
+
+  // Davr — IKKALASI HAM MAJBURIY: muddatsiz to'xtatish jimgina oylikni
+  // abadiy o'chirib qo'yardi.
+  startMonth Int @map("start_month")
+  endMonth   Int @map("end_month")
+
+  reason String
+  note   String @default("")
+
+  status       DeductionStatus @default(active)
+  cancelReason String          @default("") @map("cancel_reason")
+  cancelledAt  DateTime?       @map("cancelled_at")
+  cancelledBy  String?         @map("cancelled_by") @db.Char(24)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([staffId, status, startMonth])
+  @@index([status, startMonth])
+  @@index([batchId])
+  @@map("payroll_suspensions")
+}
+
 // O'TGAN KUNLAR DARSIGA BAHO QO'YISH OYNASI.
 //
 // Baho odatda faqat o'sha kuni va MAKTABDA turib qo'yiladi
@@ -3389,6 +3438,12 @@ model PayrollEntry {
   // qayta yoziladi (yalpi qismlar tegilmaydi) — `payrollDeduction.service`.
   deductionAmount    Decimal @default(0) @map("deduction_amount") @db.Decimal(14, 2)
   deductionBreakdown Json    @default("[]") @map("deduction_breakdown")
+  // To'xtatilgan oylik (`PayrollSuspension`): hisoblanmaydigan qismlar jami va
+  // tafsiloti [{id,component,itemKey,label,reason,amount}]. Yalpi qismlar
+  // (fixed/kpi/allowance) O'ZGARMAYDI — to'xtatish bekor qilinsa oylik to'liq
+  // tiklanishi uchun. amount = fixed + kpi + allowance − suspended − deduction.
+  suspendedAmount     Decimal @default(0) @map("suspended_amount") @db.Decimal(14, 2)
+  suspensionBreakdown Json    @default("[]") @map("suspension_breakdown")
   // Toifa / lavozim / bo'lim nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
   categoryName       String  @default("") @map("category_name")
   positionName       String  @default("") @map("position_name")

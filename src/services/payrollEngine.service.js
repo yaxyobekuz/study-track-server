@@ -2,7 +2,9 @@
  * PAYROLL ENGINE — bitta xodim/o'qituvchi uchun oylik komponentlarini hisoblaydi.
  *
  * FINAL = BASE (lavozim) + FIXED (ixtiyoriy) + TEACHING (toifa × dars soati)
- *         + APPROVED BONUSES + TUTOR GROUPS − DEDUCTIONS (ushlab qolish, yalpidan oshmaydi)
+ *         + APPROVED BONUSES + TUTOR GROUPS
+ *         − SUSPENDED (to'xtatilgan qismlar, `computeSuspensions`)
+ *         − DEDUCTIONS (ushlab qolish, to'lanadigan yalpidan, undan oshmaydi)
  *
  *   staff (Texnik/Boshqaruv):  base = position.baseSalary
  *                              (yoki xodimning shaxsiy maoshi — `customBaseSalary`)
@@ -20,7 +22,11 @@ const prisma = require("../config/prisma");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { ROLES } = require("../utils/constants");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
-const { computeDeductions, computeTutorGroupAmount } = require("../helpers/salaryRules.helpers");
+const {
+  computeDeductions,
+  computeTutorGroupAmount,
+  computeSuspensions,
+} = require("../helpers/salaryRules.helpers");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
 const { loadGroupsForPayroll } = require("./tutorGroup.service");
 
@@ -64,7 +70,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     )
     .map((u) => u.id);
 
-  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -105,6 +111,9 @@ const loadContext = async (month, users, preloaded = {}) => {
       : [],
     // TYUTOR GURUHLARI — o'quvchilar soni bilan, bir marta
     loadGroupsForPayroll(month, staffIds),
+    // OYLIKNI TO'XTATISH — shaxsiy va "barcha xodimlar" (`staffId: null`),
+    // YARATILISH TARTIBIDA (bir qism ikki marta ayirilmasin)
+    staffIds.length ? loadSuspensionsForMonth(month, staffIds) : [],
   ]);
 
   // Faqat O'SHA lavozimda amal qiladi: taxminiy (hypothetical) lavozim
@@ -139,8 +148,31 @@ const loadContext = async (month, users, preloaded = {}) => {
     customBaseMap,
     tutorGroupMap: tutor.groupMap,
     classStudentCounts: tutor.studentCounts,
+    suspensions: suspensionRows,
   };
 };
+
+/**
+ * Oyni qamragan FAOL to'xtatishlar — berilgan xodimlarniki va "barcha
+ * xodimlar" niki, yaratilish tartibida.
+ *
+ * @param {number} month
+ * @param {string[]} staffIds
+ */
+const loadSuspensionsForMonth = (month, staffIds) =>
+  prisma.payrollSuspension.findMany({
+    where: {
+      status: "active",
+      startMonth: { lte: month },
+      endMonth: { gte: month },
+      OR: [{ staffId: { in: staffIds } }, { staffId: null }],
+    },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+
+/** Xodimga tegishli to'xtatishlar (shaxsiy + "barcha xodimlar"), tartib saqlanadi. */
+const suspensionsFor = (list, staffId) =>
+  (list || []).filter((row) => row.staffId == null || row.staffId === staffId);
 
 /**
  * Lavozim bazasi: shaxsiy maosh bo'lsa — u, aks holda lavozim maoshi.
@@ -219,14 +251,20 @@ const computeForStaff = (user, month, ctx) => {
 
   const preBonus = fixedAmount.plus(kpiAmount);
 
-  // Ustamalar: tasdiqlangan PayrollBonus + eski StaffSalary.allowances
+  // Ustamalar: tasdiqlangan PayrollBonus + eski StaffSalary.allowances.
+  // Manba (`bonusId` / `source: "rule"`) qatorga yoziladi — aniq bitta
+  // qo'shimchani to'xtatish uning kalitiga tayanadi (`payUnitKeyOf`).
   const rawBonuses = [
     ...(ctx.bonusMap.get(user.id) || []).map((b) => ({
       label: b.label || "Ustama",
       type: b.type,
       value: Number(b.value),
+      bonusId: b.id,
     })),
-    ...(rule && Array.isArray(rule.allowances) ? rule.allowances : []),
+    ...(rule && Array.isArray(rule.allowances) ? rule.allowances : []).map((a) => ({
+      ...a,
+      source: "rule",
+    })),
   ];
 
   let allowanceAmount = new Decimal(0);
@@ -237,7 +275,14 @@ const computeForStaff = (user, month, ctx) => {
         ? round2(preBonus.times(b.value).div(100))
         : round2(new Decimal(b.value));
     allowanceAmount = allowanceAmount.plus(amt);
-    allowanceBreakdown.push({ label: b.label, type: b.type, value: b.value, amount: formatAmount(amt) });
+    allowanceBreakdown.push({
+      label: b.label,
+      type: b.type,
+      value: b.value,
+      amount: formatAmount(amt),
+      ...(b.bonusId ? { bonusId: b.bonusId } : {}),
+      ...(b.source ? { source: b.source } : {}),
+    });
   }
 
   // TYUTOR GURUHLARI — foizli ustama bazasiga (`preBonus`) KIRMAYDI, ustiga
@@ -251,14 +296,21 @@ const computeForStaff = (user, month, ctx) => {
 
   const grossAmount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
 
-  // Ushlab qolish — YALPIDAN, oylik manfiy bo'lolmaydi
+  // To'xtatilgan qismlar — yalpi qismlar O'ZGARMAYDI, alohida ayiriladi
+  const { total: suspendedAmount, breakdown: suspensionBreakdown } = computeSuspensions(
+    { fixedAmount, kpiAmount, allowanceBreakdown },
+    suspensionsFor(ctx.suspensions, user.id),
+  );
+  const payableGrossAmount = grossAmount.minus(suspendedAmount);
+
+  // Ushlab qolish — TO'LANADIGAN yalpidan, oylik manfiy bo'lolmaydi
   const { total: deductionAmount, breakdown: deductionBreakdown } = computeDeductions(
-    grossAmount,
+    payableGrossAmount,
     ctx.deductionMap?.get(user.id) || [],
     { perHourRate },
   );
 
-  const amount = grossAmount.minus(deductionAmount);
+  const amount = payableGrossAmount.minus(deductionAmount);
 
   const hasFixed = fixedAmount.greaterThan(0);
   const hasKpi = kpiAmount.greaterThan(0) || Boolean(category);
@@ -281,6 +333,9 @@ const computeForStaff = (user, month, ctx) => {
     amount,
     allowanceBreakdown,
     grossAmount,
+    suspendedAmount,
+    suspensionBreakdown,
+    payableGrossAmount,
     deductionAmount,
     deductionBreakdown,
     categoryName: category?.name ?? "",
@@ -306,6 +361,9 @@ const previewForStaff = (user, month, ctx) => {
     amount: formatAmount(c.amount),
     allowanceBreakdown: c.allowanceBreakdown,
     grossAmount: formatAmount(c.grossAmount),
+    suspendedAmount: formatAmount(c.suspendedAmount),
+    suspensionBreakdown: c.suspensionBreakdown,
+    payableGrossAmount: formatAmount(c.payableGrossAmount),
     deductionAmount: formatAmount(c.deductionAmount),
     deductionBreakdown: c.deductionBreakdown,
     categoryName: c.categoryName,
@@ -316,6 +374,8 @@ const previewForStaff = (user, month, ctx) => {
 
 module.exports = {
   loadContext,
+  loadSuspensionsForMonth,
+  suspensionsFor,
   buildTutorLines,
   resolvePositionBase,
   computeForStaff,
