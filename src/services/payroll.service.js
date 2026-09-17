@@ -9,6 +9,12 @@
  * yo'li — `cancelled` holati, sababi bilan; to'lov tushgan majburiyat esa
  * umuman bekor qilinmaydi.
  *
+ * ⚠️ BEKOR QILINGAN MAJBURIYAT SHAKLLANTIRISHNI TO'SMAYDI (`finance.md` §10).
+ * U bo'sh o'rin: shakllantirish uni O'SHA QATORNING O'ZIDA qayta hisoblab
+ * tiklaydi (`restored`). Aks holda xato muhrlangan oylikni tuzatishning
+ * hujjatdagi yagona yo'li — "bekor qilish → qayta shakllantirish" — ishlamasdi:
+ * bir marta bekor qilingan oy o'sha xodimga hech qachon qaytmasdi.
+ *
  * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida.
  */
 
@@ -107,6 +113,8 @@ const emptySummary = (month, reason) => ({
   dryRun: false,
   eligible: 0,
   created: 0,
+  // Bekordan tiklangani — yangi qator emas, lekin registrda qayta paydo bo'ladi
+  restored: 0,
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
@@ -123,8 +131,8 @@ const emptySummary = (month, reason) => ({
  * IDEMPOTENT: `@@unique([staffId, month])` va oldindan tekshiruv tufayli
  * ikki marta chaqirish ikkinchi qator yaratmaydi.
  *
- * ⚠️ Bekor qilingan majburiyat ham "mavjud" hisoblanadi — u QAROR, bo'shliq
- * emas. Aks holda cron ertasiga uni qaytadan yozib qo'yardi.
+ * ⚠️ Bekor qilingan majburiyat (`paidAmount = 0`) TIKLANADI — fayl
+ * sarlavhasiga qarang. Amaldagisi (unpaid/partial/paid) tegilmaydi.
  *
  * @param {number|string} monthInput
  * @param {object} options - { dryRun, staffIds, actorId }
@@ -185,17 +193,36 @@ const generateForMonth = async (monthInput, options = {}) => {
   }
 
   // 2 ── Allaqachon shakllantirilganlari
+  //
+  // ⚠️ IKKI XIL "mavjud" bor va ular BOSHQACHA ishlanadi:
+  //   amaldagi (unpaid/partial/paid) → TEGILMAYDI, summa muhrlangan;
+  //   bekor qilingani                → TIKLANADI (`restorable`).
+  // `paidAmount` himoya qavati: `cancelEntry` to'lov tushganini bekor
+  // qilmaydi, lekin pul tushgan qatorning summasini qayta yozish taqsimotni
+  // yolg'onga aylantirardi.
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
-    select: { staffId: true },
+    select: { id: true, staffId: true, status: true, paidAmount: true },
   });
-  const existingIds = new Set(existing.map((e) => e.staffId));
+  const restorable = new Map();
+  const existingIds = new Set();
+  for (const row of existing) {
+    if (row.status === "cancelled" && !new Decimal(row.paidAmount).greaterThan(0)) {
+      restorable.set(row.staffId, row);
+    } else {
+      existingIds.add(row.staffId);
+    }
+  }
 
   // 3 ── Kontekst (lavozim/toifa/soat/ustama) — bir marta
   const ctx = await payrollEngine.loadContext(month, staff, { salaryRules });
 
   // 4 ── Qatorlarni yig'ish (engine bilan hisoblab, MUHRLAB)
+  //
+  // Ikki savat: YANGI qatorlar (`createMany`) va TIKLANADIGANLARI (mavjud
+  // qatorni JOYIDA yangilash). Summa va snapshot ikkalasiga AYNI shaklda.
   const rows = [];
+  const restores = [];
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
   let kpiTotal = new Decimal(0);
@@ -234,9 +261,7 @@ const generateForMonth = async (monthInput, options = {}) => {
     kpiTotal = kpiTotal.plus(c.kpiAmount);
     deductionTotal = deductionTotal.plus(c.deductionAmount);
 
-    rows.push({
-      staffId: person.id,
-      month,
+    const facts = {
       amount: c.amount,
       fixedAmount: c.fixedAmount,
       allowanceAmount: c.allowanceAmount,
@@ -244,7 +269,7 @@ const generateForMonth = async (monthInput, options = {}) => {
       deductionAmount: c.deductionAmount,
       deductionBreakdown: c.deductionBreakdown,
       // To'liq ushlab qolingan oylik — to'lanadigan narsa yo'q
-      ...(c.amount.lessThanOrEqualTo(0) ? { status: "paid" } : {}),
+      status: c.amount.lessThanOrEqualTo(0) ? "paid" : "unpaid",
       kpiAmount: c.kpiAmount,
       lessonHours: c.lessonHours,
       perHourRate: c.perHourRate,
@@ -258,12 +283,30 @@ const generateForMonth = async (monthInput, options = {}) => {
         username: person.username,
         role: person.role,
       },
-      // Cron (actor yo'q) — tizim sentineli: NOT NULL ustun buzilmaydi
-      createdBy: actorId ?? SYSTEM_ACTOR_ID,
-    });
+    };
+
+    const cancelled = restorable.get(person.id);
+    if (cancelled) {
+      // ⚠️ TIKLASH — bekor qilish izi TOZALANADI: qator endi amaldagi
+      // majburiyat. `createdBy` tegilmaydi — qatorni birinchi kim
+      // shakllantirgani haqidagi fakt.
+      restores.push({
+        id: cancelled.id,
+        data: { ...facts, paidAt: null, cancelReason: "", cancelledAt: null, cancelledBy: null },
+      });
+    } else {
+      rows.push({
+        staffId: person.id,
+        month,
+        ...facts,
+        // Cron (actor yo'q) — tizim sentineli: NOT NULL ustun buzilmaydi
+        createdBy: actorId ?? SYSTEM_ACTOR_ID,
+      });
+    }
   }
 
   summary.created = rows.length;
+  summary.restored = restores.length;
   summary.totalAmount = formatAmount(total);
   summary.fixedTotal = formatAmount(fixedTotal);
   summary.kpiTotal = formatAmount(kpiTotal);
@@ -271,10 +314,34 @@ const generateForMonth = async (monthInput, options = {}) => {
   summary.dryRun = dryRun;
 
   if (!dryRun && rows.length > 0) {
-    await prisma.payrollEntry.createMany({ data: rows, skipDuplicates: true });
+    // Sanoq natijadan: parallel ishga tushgan ikkinchi jarayon yozolmagan
+    // qatorni "yaratdim" deb aytmasin
+    const result = await prisma.payrollEntry.createMany({ data: rows, skipDuplicates: true });
+    summary.created = result.count;
+    summary.skipped.alreadyExists += rows.length - result.count;
+  }
+
+  if (!dryRun && restores.length > 0) {
+    // ⚠️ COMPARE-AND-SWAP (`finance.md` §8): cron va qo'lda bosilgan tugma
+    // bir vaqtda ishlasa, ikkinchisi hech narsa yozmaydi (`count` 0).
+    const results = await prisma.$transaction(
+      restores.map((row) =>
+        prisma.payrollEntry.updateMany({
+          where: { id: row.id, status: "cancelled", paidAmount: 0 },
+          data: row.data,
+        }),
+      ),
+    );
+    const restored = results.reduce((sum, r) => sum + r.count, 0);
+    summary.restored = restored;
+    summary.skipped.alreadyExists += restores.length - restored;
+  }
+
+  if (!dryRun && summary.created + summary.restored > 0) {
     logger.info(
-      `[payroll] ${formatMonthKey(month)}: ${rows.length} ta oylik majburiyati, ` +
-        `jami ${formatAmount(total)}`,
+      `[payroll] ${formatMonthKey(month)}: ${summary.created} ta oylik majburiyati` +
+        (summary.restored > 0 ? `, ${summary.restored} tasi bekordan qaytarildi` : "") +
+        `, jami ${formatAmount(total)}`,
     );
   }
 
@@ -306,6 +373,26 @@ const getEntries = async (req) => {
   }
 
   if (query.staffId) where.staffId = query.staffId;
+
+  // Xodim bo'yicha qidiruv: har bir so'z ism, familiya yoki login'dan biriga
+  // mos kelishi kerak — "Robiya Nuriddinova" ham topiladi. Arxivlangan xodim
+  // ham qidiriladi: uning majburiyati registrda qoladi.
+  const tokens = String(query.search ?? "").trim().split(/\s+/).filter(Boolean).slice(0, 5);
+  if (tokens.length > 0) {
+    const matched = await prisma.user.findMany({
+      where: {
+        AND: tokens.map((token) => ({
+          OR: [
+            { firstName: { contains: token, mode: "insensitive" } },
+            { lastName: { contains: token, mode: "insensitive" } },
+            { username: { contains: token, mode: "insensitive" } },
+          ],
+        })),
+      },
+      select: { id: true },
+    });
+    where.AND = [{ staffId: { in: matched.map((u) => u.id) } }];
+  }
 
   if (query.status) {
     if (!STATUS_LABELS[query.status]) throw new BadRequestError("Holat noto'g'ri");

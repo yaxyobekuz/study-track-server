@@ -2913,6 +2913,15 @@ model MonthlyInvoice {
   // To'liq yopilgan payt
   paidAt DateTime? @map("paid_at")
 
+  // DEPOZITDAN AVTOMAT YECHISH TO'XTATILGAN. Admin shu oydan yechilgan pulni
+  // qo'lda olib qo'ysa ("Hisob-fakturaga yechildi" qatorini o'chirish yoki
+  // summasini kamaytirish) qo'yiladi. Busiz avtomat qoida ("qarz va depozit
+  // birga turmaydi") pulni DARHOL o'sha oyga qaytarib yechardi va o'chirish
+  // hech narsani o'zgartirmagandek ko'rinardi.
+  // Faqat DEPOZITGA ta'sir qiladi: kassir to'lovi (FIFO) bu oyni ham yopadi.
+  // Tozalanadi: depozitdagi "Qarzlarga qo'llash" tugmasi (qo'lda qo'llash).
+  depositHold Boolean @default(false) @map("deposit_hold")
+
   // null = tizim (cron); qiymat bo'lsa — qo'lda shakllantirgan admin
   createdBy String?  @map("created_by") @db.Char(24)
   createdAt DateTime @default(now()) @map("created_at")
@@ -3716,6 +3725,11 @@ model PaymentAllocation {
 
   isVoided  Boolean   @default(false) @map("is_voided")
   voidedAt  DateTime? @map("voided_at")
+  // Faqat yechim ALOHIDA bekor qilinganda / tahrirlanganda to'ldiriladi
+  // (`studentAccount.reworkAllocation`). Chek yoki hisob-faktura bilan birga
+  // bekor qilinganda sabab o'sha qatorning o'zida — bu yerda bo'sh qoladi.
+  voidedBy   String? @map("voided_by") @db.Char(24)
+  voidReason String  @default("") @map("void_reason")
   createdAt DateTime  @default(now()) @map("created_at")
 
   payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)

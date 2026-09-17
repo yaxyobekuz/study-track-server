@@ -185,6 +185,32 @@ async function runInvoiceRealignmentPass() {
 }
 
 /**
+ * DEPOZIT ZAXIRA PASSI — "qarz va depozit birga turmaydi".
+ *
+ * Asosiy mexanizm bu EMAS: har bir pul amali (to'lov, bekor qilish, qayta
+ * shakllantirish, tiklash...) depozitni o'z tranzaksiyasi ichida yechadi
+ * (`depositSettlement.service.js`). Bu pass kelajakda yangi yo'l qo'shilib,
+ * yechishni unutib qoldirsa ham ertasi kuni tekislaydi. Idempotent: ochiq
+ * qarz yoki depozit bo'lmasa hech narsa yozmaydi. "Avtomat yechish
+ * to'xtatilgan" oylar (`depositHold`) chetda qoladi.
+ */
+async function runDepositSettlementPass() {
+  const settings = await getFinanceSettings();
+  if (!settings.depositAutoApply) return null;
+
+  const { applyDepositsForStudents } = require("../services/studentAccount.service");
+  const result = await applyDepositsForStudents();
+
+  if (result.students > 0 || result.failed.length > 0) {
+    logger.info(
+      `[DepositSettle] Depozit ochiq qarzlarga yechildi: ${result.students} ta o'quvchi, ` +
+        `summa ${result.applied}, xato ${result.failed.length}`,
+    );
+  }
+  return result;
+}
+
+/**
  * Cron jobni belgilaydi. Har kuni 06:00 (Asia/Tashkent).
  */
 function startInvoiceGenerationCron() {
@@ -198,6 +224,13 @@ function startInvoiceGenerationCron() {
         await runInvoiceRealignmentPass();
       } catch (error) {
         logger.error("[InvoiceCron] Cron xatosi:", error);
+      }
+
+      // Generatsiya yiqilsa ham depozit tekislanadi — mustaqil qadam
+      try {
+        await runDepositSettlementPass();
+      } catch (error) {
+        logger.error(`[DepositSettle] Cron xatosi: ${error.message}`);
       }
     }),
     {
@@ -225,6 +258,7 @@ function startInvoiceGenerationCron() {
       await runInvoiceGenerationPass();
       // Server ishga tushishi bilan barcha qarzlar joriy tarif narxiga tekislanadi
       await runInvoiceRealignmentPass();
+      await runDepositSettlementPass();
     })().catch((error) =>
       logger.error(`[InvoiceCron] Startup pass xatosi: ${error.message}`),
     );
@@ -236,4 +270,5 @@ module.exports = {
   startInvoiceGenerationCron,
   runInvoiceGenerationPass,
   runInvoiceRealignmentPass,
+  runDepositSettlementPass,
 };

@@ -338,6 +338,8 @@ const generateForMonth = async (monthInput, options = {}) => {
 
       restores.push({
         id: cancelled.id,
+        // Faqat 7-qadam uchun (depozit) — yozuvga kirmaydi
+        studentId: student.id,
         data: {
           ...facts,
           note: cancelled.note,
@@ -415,10 +417,18 @@ const generateForMonth = async (monthInput, options = {}) => {
   // yopiladi. ALOHIDA va IDEMPOTENT qadam: yarim bajarilgan pass qayta
   // ishga tushirilsa ham dublikat bermaydi, chunki sharti "qoldiq > 0 va
   // ochiq hisob-faktura bor".
-  if (!dryRun && summary.created > 0 && settings.depositAutoApply) {
-    const deposits = await applyDepositsForStudents(
-      rows.map((row) => row.studentId),
-    );
+  // ⚠️ Bekordan TIKLANGAN qatorlar ham qamraladi: ilgari faqat `created > 0`
+  // tekshirilardi va tiklangan oy depozitda pul turgan holda qarz bo'lib
+  // qolardi.
+  if (
+    !dryRun &&
+    summary.created + summary.restored > 0 &&
+    settings.depositAutoApply
+  ) {
+    const deposits = await applyDepositsForStudents([
+      ...rows.map((row) => row.studentId),
+      ...restores.map((item) => item.studentId),
+    ]);
     summary.depositApplied = deposits.applied;
     summary.depositStudents = deposits.students;
     if (deposits.failed.length) summary.depositFailed = deposits.failed;

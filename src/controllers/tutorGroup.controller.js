@@ -9,11 +9,12 @@ const getStaffGroups = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-/** Biriktirish oynasi: sinflar, o'quvchilar soni va kimga biriktirilgani. */
+/** Biriktirish oynasi: sinflar, o'quvchilar soni va tanlangan davrda kimga biriktirilgani. */
 const getClassOptions = asyncHandler(async (req, res) => {
   const data = await tutorGroupService.getClassOptions({
     tutorId: req.query.tutorId,
     month: req.query.month,
+    endMonth: req.query.endMonth,
   });
   res.json({ success: true, data });
 });

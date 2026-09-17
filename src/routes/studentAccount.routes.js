@@ -20,7 +20,8 @@ const {
 router.get("/:studentId", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getStudentAccount);
 router.get("/:studentId/movements", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_VIEW), getMovements);
 
-// Depozitni qo'llash — pul yaratmaydi, faqat ichki taqsimot
+// Depozitni qo'llash — pul yaratmaydi, faqat ichki taqsimot. QO'LDA qo'llash:
+// "avtomat yechish to'xtatilgan" oylar ham qamraladi va belgi tozalanadi.
 router.post("/:studentId/apply", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_PAY), applyDeposit);
 // Qaytarish — pul to'lov turidan chiqadi
 router.post("/:studentId/refund", protect, validateObjectId("studentId"), authorizePermission(PERMISSIONS.FINANCE_REFUND), refundDeposit);

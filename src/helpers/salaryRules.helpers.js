@@ -125,6 +125,10 @@ const computeDeductions = (gross, items = [], { perHourRate = 0 } = {}) => {
       type: item.type,
       value: Number(value),
       amount: formatAmount(applied),
+      // Shu ushlab qolishdan KEYIN qolgan oylik — oynada "qoldi" qatori.
+      // Panelda qayta hisoblanmasligi uchun shu yerda (tartib va chegara
+      // aynan shu tsiklda).
+      remainingAfter: formatAmount(remaining),
       capped: applied.lessThan(raw),
       ...(item.type === "hours"
         ? { rate: formatAmount(rate), noRate: rate.isZero() }

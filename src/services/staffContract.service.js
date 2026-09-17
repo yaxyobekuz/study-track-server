@@ -431,11 +431,22 @@ const previewContract = async (staffId, data) => {
     hasSalary: Boolean(result),
     salaryType: result?.salaryType ?? null,
     salaryTypeLabel: result ? (TYPE_LABELS[result.salaryType] ?? result.salaryType) : null,
+    // Lavozim bazasi dvigatel hal qilgani: shaxsiy maosh bo'lsa — u.
+    // Oyna lavozim katalogidagi maoshni ko'rsatsa, qatorlar jami bilan
+    // mos kelmay qolardi.
+    baseAmount: result ? formatAmount(result.baseAmount) : null,
+    baseIsCustom: result?.baseIsCustom ?? false,
     fixedAmount: result ? formatAmount(result.fixedAmount) : null,
     perHourRate: result ? formatAmount(result.perHourRate) : null,
     kpiAmount: result ? formatAmount(result.kpiAmount) : null,
     allowanceAmount: result ? formatAmount(result.allowanceAmount) : null,
     allowanceBreakdown: result?.allowanceBreakdown ?? [],
+    // ⚠️ `amount` — USHLAB QOLISHDAN KEYIN. Ushlab qolish qatorlari
+    // yuborilmasa oynadagi qatorlar yig'indisi (yalpi) jamidan katta
+    // chiqib, "jami noto'g'ri" bo'lib ko'rinardi.
+    grossAmount: result ? formatAmount(result.grossAmount) : null,
+    deductionAmount: result ? formatAmount(result.deductionAmount) : null,
+    deductionBreakdown: result?.deductionBreakdown ?? [],
     amount: result ? formatAmount(result.amount) : null,
     positionName: result?.positionName || null,
 

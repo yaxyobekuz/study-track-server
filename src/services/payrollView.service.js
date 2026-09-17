@@ -483,11 +483,16 @@ const getAllowancesView = async (req) => {
 /**
  * "Xodim qo'shish" tanlagichi uchun nomzodlar.
  *
- * ⚠️ SHU bo'limga allaqachon biriktirilganlar CHIQARIB TASHLANADI: xodimda
- * bitta lavozim/toifa bo'ladi, qayta tanlash hech narsa o'zgartirmay
- * "Biriktirildi" deb turardi. Boshqa bo'limdagilar qoladi (`currentLabel`
- * bilan) — tanlansa ko'chiriladi, ikkinchi nusxa paydo bo'lmaydi.
- * Lavozimni almashtirish — xodim qatoridagi tugma orqali.
+ * ⚠️ FAQAT OYLIGI BELGILANMAGANLAR (biznes qarori, 2026-09-17): lavozimi,
+ * toifasi yoki amaldagi oylik qoidasi (`StaffSalary`) bor xodim — qaysi
+ * bo'limda bo'lishidan qat'i nazar — ro'yxatga CHIQMAYDI. "Qo'shish" yangi
+ * odamni biriktirish uchun; oyligi bor xodimni boshqa lavozim/bo'limga
+ * o'tkazish — uning qatoridagi "Lavozim va oylik" tugmasi orqali. Ilgari
+ * boshqa bo'limdagilar ham chiqardi va ro'yxat belgilanganlar bilan to'lib,
+ * yangi xodimni topish qiyin edi.
+ *
+ * ⚠️ Tyutor guruhi oylik BELGILASH hisoblanmaydi — u ustama: faqat guruhi
+ * bor tyutor ro'yxatda qoladi, unga asosiy oylik hali berilmagan.
  *
  * ⚠️ `isActive` bo'yicha FILTRLANMAYDI — u login bayrog'i. Oylik
  * shakllantirish ham faqat `isArchived` ni filtrlaydi, "Xodimlar" sahifasi
@@ -496,9 +501,6 @@ const getAllowancesView = async (req) => {
  * tanlagichda yo'q edi — "Biriktirilmagan xodim topilmadi".
  * Istisno — FILIALDAN CHIQARILGAN xodim (`detachFromBranch` ham
  * `isActive: false` yozadi): unda shu filialga ruxsat qatori yo'q.
- *
- * Tartib: OYLIGI BELGILANMAGANLAR TEPADA (lavozim/toifa ham, amaldagi
- * StaffSalary qoidasi ham yo'q) — tanlagich aynan shular uchun ochiladi.
  *
  * @param {object} req - query: { departmentId }
  */
@@ -512,8 +514,8 @@ const getAssignCandidates = async (req) => {
 
   // Teaching bo'limga faqat o'qituvchilar, staff bo'limga qolgan xodimlar
   const [positions, categories, salaryRules, users] = await Promise.all([
-    prisma.position.findMany({ select: { id: true, name: true, departmentId: true } }),
-    prisma.salaryCategory.findMany({ select: { id: true, name: true, departmentId: true } }),
+    prisma.position.findMany({ select: { id: true } }),
+    prisma.salaryCategory.findMany({ select: { id: true } }),
     resolveSalariesForMonth(currentMonthKey()),
     prisma.user.findMany({
       where: {
@@ -524,8 +526,10 @@ const getAssignCandidates = async (req) => {
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
     }),
   ]);
-  const positionById = new Map(positions.map((p) => [p.id, p]));
-  const categoryById = new Map(categories.map((c) => [c.id, c]));
+  // ⚠️ Mavjud yozuvga qarab: o'chirilgan lavozimga ishora qolgan bo'lsa,
+  // dvigatel ham unga oylik hisoblamaydi — xodim belgilanmagan hisoblanadi
+  const positionIds = new Set(positions.map((p) => p.id));
+  const categoryIds = new Set(categories.map((c) => c.id));
 
   const inactiveIds = users.filter((u) => !u.isActive).map((u) => u.id);
   const stillAttached = new Set();
@@ -537,27 +541,14 @@ const getAssignCandidates = async (req) => {
     access.forEach((a) => stillAttached.add(a.userId));
   }
 
-  const rows = users
-    .filter((u) => u.isActive || stillAttached.has(u.id))
-    .filter((u) => {
-      const own = isTeaching
-        ? categoryById.get(u.salaryCategoryId)
-        : positionById.get(u.positionId);
-      return own?.departmentId !== departmentId;
-    })
-    .map((u) => {
-      const currentLabel =
-        positionById.get(u.positionId)?.name ?? categoryById.get(u.salaryCategoryId)?.name ?? null;
-      return {
-        ...userInfo(u),
-        currentLabel,
-        hasSalary: Boolean(currentLabel) || salaryRules.has(u.id),
-        loginDisabled: !u.isActive,
-      };
-    });
+  const hasSalary = (u) =>
+    positionIds.has(u.positionId) || categoryIds.has(u.salaryCategoryId) || salaryRules.has(u.id);
 
-  // Barqaror saralash — guruh ichida ism tartibi saqlanadi
-  return rows.sort((a, b) => Number(a.hasSalary) - Number(b.hasSalary));
+  // Ism tartibi so'rovdan keladi
+  return users
+    .filter((u) => u.isActive || stillAttached.has(u.id))
+    .filter((u) => !hasSalary(u))
+    .map((u) => ({ ...userInfo(u), loginDisabled: !u.isActive }));
 };
 
 module.exports = {

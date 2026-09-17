@@ -28,13 +28,18 @@ const {
   formatAmount,
   sumAmounts,
 } = require("../helpers/money.helpers");
-const { allocateFifo } = require("../helpers/allocation.helpers");
+const { deriveStatus } = require("../helpers/allocation.helpers");
 const {
   formatMonthKey,
   parseRecordedAt,
 } = require("../helpers/month.helpers");
 const { postEntry, assertActiveAccount } = require("./paymentAccount.service");
-const { TX_OPTIONS, ensureStudentAccount } = require("./payment.service");
+const {
+  TX_OPTIONS,
+  SOURCE_LABELS,
+  ensureStudentAccount,
+} = require("./payment.service");
+const { settleDepositInTx } = require("./depositSettlement.service");
 
 const MOVEMENT_LABELS = {
   payment: "To'lov qabul qilindi",
@@ -78,152 +83,32 @@ const getBalances = async (studentIds = []) => {
  *
  * MUSTAQIL VA IDEMPOTENT: sharti faqat "qoldiq > 0 va ochiq hisob-faktura
  * bor". Ikki marta ishlashi zararsiz — ikkinchisi hech narsa topmaydi.
- * Shuning uchun uni generatsiya ham, cron ham, admin tugmasi ham bir xil
- * chaqira oladi.
+ * Hisobning o'zi `depositSettlement.service.js` da — pul amallari uni o'z
+ * tranzaksiyasi ichida chaqiradi, bu esa tashqaridan (cron, admin tugmasi)
+ * chaqirish uchun lock'li o'ram.
  *
  * ⚠️ Bu yerda DAFTAR YOZUVI YOZILMAYDI. Pul to'lov turiga qabul qilinganda
  * kirgan; bu faqat ICHKI taqsimot. Yozilsa daromad ikki marta hisoblanardi.
  *
- * Pul ham FIFO sarflanadi (eng eski to'lovning qoldig'i birinchi), shunda
- * to'lovni bekor qilish natijasi oldindan aytiladigan bo'ladi.
- *
  * @param {string} studentId
+ * @param {{manual?: boolean}} [options] - `manual` — admin tugmasi: sozlamaga
+ *   qaramaydi va "avtomat yechish to'xtatilgan" oylarni ham qamraydi
  * @returns {Promise<{applied: string, allocations: object[]}>}
  */
-const applyDepositsForStudent = async (studentId) => {
+const applyDepositsForStudent = async (studentId, { manual = false } = {}) => {
   await ensureStudentAccount(studentId);
 
-  return prisma.$transaction(async (tx) => {
-    // 1 ── LOCK
-    const account = await tx.studentAccount.update({
+  const result = await prisma.$transaction(async (tx) => {
+    // LOCK — hisobdan OLDIN
+    await tx.studentAccount.update({
       where: { studentId },
       data: { version: { increment: 1 } },
     });
 
-    const balance = new Decimal(account.balance);
-    if (balance.lessThanOrEqualTo(0)) return { applied: "0.00", allocations: [] };
-
-    // 2 ── Ochiq hisob-fakturalar (lock ostida)
-    const invoices = await tx.monthlyInvoice.findMany({
-      where: { studentId, status: { in: ["unpaid", "partial"] } },
-      orderBy: [{ month: "asc" }, { id: "asc" }],
-    });
-    if (invoices.length === 0) return { applied: "0.00", allocations: [] };
-
-    const appliedAt = new Date();
-    const { allocations, allocated } = allocateFifo(invoices, balance, appliedAt);
-    if (allocations.length === 0) return { applied: "0.00", allocations: [] };
-
-    // 3 ── Pul manbai: qoldig'i bor to'lovlar, eng eskisidan
-    const payments = await tx.payment.findMany({
-      where: { studentId, isVoided: false, depositAmount: { gt: 0 } },
-      orderBy: [{ paidAt: "asc" }, { receiptNo: "asc" }],
-    });
-
-    const available = sumAmounts(payments.map((p) => p.depositAmount));
-    if (available.lessThan(allocated)) {
-      // Balans va to'lov qoldiqlari bir-biriga mos emas — reconciler ishi
-      throw new ConflictError(
-        "Depozit qoldig'i to'lovlar bilan mos kelmadi. Moliya bo'limiga murojaat qiling.",
-      );
-    }
-
-    // 4 ── Ikki ko'rsatkichli yurish: to'lov qoldig'i → hisob-faktura ulushi
-    const rows = [];
-    const spentByPayment = new Map();
-    let paymentIndex = 0;
-    let paymentLeft = new Decimal(payments[0]?.depositAmount ?? 0);
-
-    for (const allocation of allocations) {
-      let need = allocation.amount;
-
-      while (need.greaterThan(0)) {
-        while (paymentLeft.lessThanOrEqualTo(0)) {
-          paymentIndex += 1;
-          // 3-qadamdagi `available >= allocated` tekshiruvi bu holatni
-          // imkonsiz qiladi — lekin bu yerda ro'yxatdan chiqib ketish
-          // `undefined.depositAmount` bo'lib TypeError bilan yiqilardi.
-          // Pul mantig'idagi xato tushunarli xabar bilan chiqsin.
-          if (paymentIndex >= payments.length) {
-            throw new ConflictError(
-              "Depozit qoldig'i to'lovlar bilan mos kelmadi. Moliya bo'limiga murojaat qiling.",
-            );
-          }
-          paymentLeft = new Decimal(payments[paymentIndex].depositAmount);
-        }
-
-        const take = Decimal.min(need, paymentLeft);
-        const payment = payments[paymentIndex];
-
-        rows.push({
-          paymentId: payment.id,
-          invoiceId: allocation.invoiceId,
-          studentId,
-          amount: take,
-          source: "deposit",
-          appliedAt,
-        });
-
-        spentByPayment.set(
-          payment.id,
-          (spentByPayment.get(payment.id) ?? new Decimal(0)).plus(take),
-        );
-
-        need = need.minus(take);
-        paymentLeft = paymentLeft.minus(take);
-      }
-    }
-
-    await tx.paymentAllocation.createMany({ data: rows });
-
-    // 5 ── Hisob-fakturalar: COMPARE-AND-SWAP
-    for (const allocation of allocations) {
-      const updated = await tx.monthlyInvoice.updateMany({
-        where: {
-          id: allocation.invoiceId,
-          paidAmount: allocation.previousPaidAmount,
-          status: { in: ["unpaid", "partial"] },
-        },
-        data: {
-          paidAmount: allocation.newPaidAmount,
-          status: allocation.status,
-          paidAt: allocation.paidAt,
-        },
-      });
-
-      if (updated.count !== 1) {
-        throw new ConflictError("Hisob-faktura holati o'zgardi. Qayta urinib ko'ring.");
-      }
-    }
-
-    // 6 ── To'lovlarning hosila summalari
-    for (const [paymentId, spent] of spentByPayment) {
-      await tx.payment.update({
-        where: { id: paymentId },
-        data: {
-          allocatedAmount: { increment: spent },
-          depositAmount: { decrement: spent },
-        },
-      });
-    }
-
-    // 7 ── Qoldiqni kamaytirish (to'lov turiga TEGILMAYDI)
-    await tx.studentAccount.update({
-      where: { studentId },
-      data: { balance: { decrement: allocated } },
-    });
-
-    return {
-      applied: formatAmount(allocated),
-      allocations: allocations.map((a) => ({
-        invoiceId: a.invoiceId,
-        month: a.month,
-        monthLabel: formatMonthKey(a.month),
-        amount: formatAmount(a.amount),
-        status: a.status,
-      })),
-    };
+    return settleDepositInTx(tx, studentId, { manual });
   }, TX_OPTIONS);
+
+  return { applied: formatAmount(result.applied), allocations: result.allocations };
 };
 
 /**
@@ -330,6 +215,276 @@ const releaseInvoiceAllocations = async (tx, invoice) => {
 
   return total;
 };
+
+// ─────────────────────────────────────────────
+// Yechimni qo'lda o'zgartirish ("Hisob-fakturaga yechildi" qatori)
+// ─────────────────────────────────────────────
+
+/**
+ * Bitta yechimni (chekning bitta oyga tushgan ulushini) qo'lda o'zgartiradi:
+ * summasini KAMAYTIRADI, boshqa ochiq oyga KO'CHIRADI yoki butunlay OLIB
+ * TASHLAYDI (`amount = 0`).
+ *
+ * ── NIMA BO'LADI ──
+ *  - Eski qator bekor qilinadi (sabab + aktyor), kerak bo'lsa yangi summa /
+ *    yangi oy bilan O'SHA chekka, O'SHA manba va sana bilan yangi qator
+ *    yoziladi. Taqsimot tarixi o'chirilmaydi.
+ *  - Oydan olingan, lekin boshqa oyga ko'chirilmagan pul (`released`) chekning
+ *    depozit qoldig'iga qaytadi va oyga `depositHold` belgisi qo'yiladi.
+ *  - Tranzaksiya oxirida depozit BOSHQA ochiq qarzlarga avtomat yechiladi;
+ *    qolgani depozitda turadi.
+ *
+ * ⚠️ `depositHold` NIMA UCHUN: avtomat qoida ("qarz va depozit birga
+ * turmaydi") pulni darhol o'sha oyga qaytarib yechardi — o'chirish hech
+ * narsani o'zgartirmagandek ko'rinardi. Belgi faqat DEPOZITGA ta'sir qiladi,
+ * "Qarzlarga qo'llash" tugmasi uni tozalaydi.
+ *
+ * ⚠️ Pul kassaga kirmaydi ham, chiqmaydi ham — DAFTAR YOZUVI YO'Q. Shuning
+ * uchun ruxsat `finance.adjust` ("amaldagi yozuvni to'g'rilash").
+ *
+ * @param {string} allocationId
+ * @param {object} params
+ * @param {Prisma.Decimal} params.amount - yangi summa, 0..joriy
+ * @param {string|null} params.targetInvoiceId - boshqa oyga ko'chirish (yoki null)
+ * @param {string} params.reason
+ * @param {string} params.userId
+ * @returns {Promise<object>}
+ */
+const reworkAllocation = async (allocationId, { amount, targetInvoiceId, reason, userId }) => {
+  const trimmed = reason?.trim();
+  if (!trimmed) throw new BadRequestError("Sabab majburiy");
+
+  const allocation = await prisma.paymentAllocation.findUnique({
+    where: { id: allocationId },
+  });
+  if (!allocation) throw new NotFoundError("Yechim topilmadi");
+  if (allocation.isVoided) {
+    throw new BadRequestError("Bu yechim allaqachon bekor qilingan — sahifani yangilang");
+  }
+
+  const { studentId } = allocation;
+  await ensureStudentAccount(studentId);
+
+  const result = await prisma.$transaction(async (tx) => {
+    // 1 ── LOCK
+    await tx.studentAccount.update({
+      where: { studentId },
+      data: { version: { increment: 1 } },
+    });
+
+    // 2 ── Lock ostida qayta o'qish
+    const fresh = await tx.paymentAllocation.findUnique({
+      where: { id: allocationId },
+      include: { payment: { select: { id: true, receiptNo: true, isVoided: true } } },
+    });
+    if (!fresh || fresh.isVoided || fresh.payment.isVoided) {
+      throw new ConflictError("Yechim shu orada o'zgardi — sahifani yangilang");
+    }
+
+    const current = new Decimal(fresh.amount);
+    const source = await tx.monthlyInvoice.findUnique({ where: { id: fresh.invoiceId } });
+    if (!source || source.status === "cancelled") {
+      throw new ConflictError("Hisob-faktura shu orada bekor qilingan — sahifani yangilang");
+    }
+
+    const moving = Boolean(targetInvoiceId) && targetInvoiceId !== source.id;
+    let target = source;
+
+    if (moving) {
+      target = await tx.monthlyInvoice.findUnique({ where: { id: targetInvoiceId } });
+      if (!target || target.studentId !== studentId) {
+        throw new BadRequestError("Ko'chiriladigan oy topilmadi");
+      }
+      if (!["unpaid", "partial"].includes(target.status)) {
+        throw new BadRequestError(
+          `${formatMonthKey(target.month)} — ochiq qarz emas, unga ko'chirib bo'lmaydi`,
+        );
+      }
+    }
+
+    // 3 ── Summa chegaralari
+    if (amount.greaterThan(current)) {
+      throw new BadRequestError(
+        `Yechim summasini faqat kamaytirish mumkin (hozir ${formatAmount(current)} so'm). ` +
+          "Depozitdan ko'proq yechish uchun \"Qarzlarga qo'llash\" tugmasidan foydalaning.",
+      );
+    }
+    if (moving) {
+      if (amount.lessThanOrEqualTo(0)) {
+        throw new BadRequestError("Ko'chiriladigan summa noldan katta bo'lishi kerak");
+      }
+      const room = new Decimal(target.amount).minus(target.paidAmount);
+      if (amount.greaterThan(room)) {
+        throw new BadRequestError(
+          `${formatMonthKey(target.month)} oyida qarz ${formatAmount(room)} so'm — ` +
+            "bundan ko'pini ko'chirib bo'lmaydi",
+        );
+      }
+    } else if (amount.equals(current)) {
+      throw new BadRequestError("Hech narsa o'zgarmadi");
+    }
+
+    const released = current.minus(amount);
+    const now = new Date();
+
+    // 4 ── Eski qator — CAS (ikki admin bir vaqtda bosgan poyga)
+    const voided = await tx.paymentAllocation.updateMany({
+      where: { id: fresh.id, isVoided: false },
+      data: { isVoided: true, voidedAt: now, voidedBy: userId, voidReason: trimmed },
+    });
+    if (voided.count !== 1) {
+      throw new ConflictError("Yechim shu orada o'zgardi — sahifani yangilang");
+    }
+
+    // 5 ── O'rnini bosuvchi qator: o'sha chek, o'sha manba, o'sha sana
+    if (amount.greaterThan(0)) {
+      await tx.paymentAllocation.create({
+        data: {
+          paymentId: fresh.paymentId,
+          invoiceId: target.id,
+          studentId,
+          amount,
+          source: fresh.source,
+          appliedAt: fresh.appliedAt,
+        },
+      });
+    }
+
+    // 6 ── Oylar: har biri BIR MARTA, month asc / id asc, COMPARE-AND-SWAP
+    const writes = [
+      {
+        invoice: source,
+        paid: new Decimal(source.paidAmount).minus(current).plus(moving ? 0 : amount),
+        hold: released.greaterThan(0),
+      },
+    ];
+    if (moving) {
+      writes.push({
+        invoice: target,
+        paid: new Decimal(target.paidAmount).plus(amount),
+        hold: false,
+      });
+    }
+    writes.sort(
+      (a, b) =>
+        a.invoice.month - b.invoice.month ||
+        (a.invoice.id < b.invoice.id ? -1 : a.invoice.id > b.invoice.id ? 1 : 0),
+    );
+
+    for (const write of writes) {
+      if (write.paid.isNegative()) {
+        throw new ConflictError("Hisob-faktura holati o'zgardi. Qayta urinib ko'ring.");
+      }
+
+      const status = deriveStatus(new Decimal(write.invoice.amount), write.paid);
+      const updated = await tx.monthlyInvoice.updateMany({
+        where: {
+          id: write.invoice.id,
+          paidAmount: write.invoice.paidAmount,
+          status: write.invoice.status,
+        },
+        data: {
+          paidAmount: write.paid,
+          status,
+          paidAt: status === "paid" ? (write.invoice.paidAt ?? fresh.appliedAt) : null,
+          ...(write.hold ? { depositHold: true } : {}),
+        },
+      });
+
+      if (updated.count !== 1) {
+        throw new ConflictError("Hisob-faktura holati o'zgardi. Qayta urinib ko'ring.");
+      }
+    }
+
+    // 7 ── Oydan olingan pul chekning depozit qoldig'iga qaytadi
+    if (released.greaterThan(0)) {
+      await tx.payment.update({
+        where: { id: fresh.paymentId },
+        data: {
+          allocatedAmount: { decrement: released },
+          depositAmount: { increment: released },
+        },
+      });
+
+      await tx.studentAccount.update({
+        where: { studentId },
+        data: { balance: { increment: released } },
+      });
+    }
+
+    // 8 ── Boshqa ochiq qarzlar depozitdan yopiladi (to'xtatilgan oy — yo'q)
+    const settled = await settleDepositInTx(tx, studentId);
+
+    return {
+      receiptNo: fresh.payment.receiptNo,
+      current,
+      source,
+      target,
+      moving,
+      released,
+      settled,
+    };
+  }, TX_OPTIONS);
+
+  const balance = await getBalance(studentId);
+
+  // AUDIT — tranzaksiyadan KEYIN (rad etilgan urinish logda bajarilgan
+  // bo'lib qolmasin, modul bo'ylab bitta tartib)
+  logger.warn(
+    `[deposit] Yechim qo'lda o'zgartirildi: allocation=${allocationId} ` +
+      `chek=#${result.receiptNo} student=${studentId} ` +
+      `${formatMonthKey(result.source.month)} ${formatAmount(result.current)} → ` +
+      `${result.moving ? `${formatMonthKey(result.target.month)} ` : ""}${formatAmount(amount)} ` +
+      `depozitga=${formatAmount(result.released)} ` +
+      `boshqa oylarga=${formatAmount(result.settled.applied)} ` +
+      `actor=${userId} sabab="${trimmed}"`,
+  );
+
+  return {
+    sourceMonth: result.source.month,
+    sourceMonthLabel: formatMonthKey(result.source.month),
+    targetMonth: result.target.month,
+    targetMonthLabel: formatMonthKey(result.target.month),
+    moved: result.moving,
+    amount: formatAmount(amount),
+    releasedToDeposit: formatAmount(result.released),
+    // Qaytgan pulning boshqa ochiq oylarga darhol yechilgan qismi
+    appliedToOthers: formatAmount(result.settled.applied),
+    appliedAllocations: result.settled.allocations,
+    depositHold: result.released.greaterThan(0),
+    balance: formatAmount(balance),
+  };
+};
+
+/**
+ * Yechimni butunlay olib tashlaydi ("Hisob-fakturaga yechildi" → o'chirish).
+ *
+ * @param {string} allocationId
+ * @param {{reason: string}} data
+ * @param {string} userId
+ */
+const releaseAllocation = (allocationId, data, userId) =>
+  reworkAllocation(allocationId, {
+    amount: new Decimal(0),
+    targetInvoiceId: null,
+    reason: data?.reason,
+    userId,
+  });
+
+/**
+ * Yechimni tahrirlaydi: summani kamaytirish va/yoki boshqa ochiq oyga ko'chirish.
+ *
+ * @param {string} allocationId
+ * @param {{amount: string, invoiceId?: string, reason: string}} data
+ * @param {string} userId
+ */
+const editAllocation = (allocationId, data, userId) =>
+  reworkAllocation(allocationId, {
+    amount: parseAmount(data?.amount, "Yechim summasi"),
+    targetInvoiceId: data?.invoiceId || null,
+    reason: data?.reason,
+    userId,
+  });
 
 // ─────────────────────────────────────────────
 // Qaytarish va to'g'rilash
@@ -523,11 +678,26 @@ const getMovements = async (studentId) => {
     prisma.studentAccount.findUnique({ where: { studentId } }),
     prisma.payment.findMany({
       where: { studentId, isVoided: false },
-      select: { id: true, amount: true, paidAt: true, receiptNo: true, note: true },
+      select: {
+        id: true,
+        studentId: true,
+        accountId: true,
+        amount: true,
+        paidAt: true,
+        receiptNo: true,
+        note: true,
+      },
     }),
     prisma.paymentAllocation.findMany({
       where: { studentId, isVoided: false },
-      select: { id: true, amount: true, appliedAt: true, invoiceId: true, source: true },
+      select: {
+        id: true,
+        amount: true,
+        appliedAt: true,
+        invoiceId: true,
+        paymentId: true,
+        source: true,
+      },
     }),
     prisma.refund.findMany({
       where: { studentId, isVoided: false },
@@ -547,18 +717,39 @@ const getMovements = async (studentId) => {
       })
     : [];
   const monthById = new Map(invoices.map((i) => [i.id, i.month]));
+  // Faol yechim faqat faol chekka tegishli (chek bekor qilinsa yechimlari
+  // ham bekor bo'ladi), shuning uchun chek raqami shu ro'yxatdan topiladi
+  const receiptByPayment = new Map(
+    payments.map((p) => [p.id, `#${String(p.receiptNo).padStart(6, "0")}`]),
+  );
 
   const items = [
-    ...payments.map((p) => ({
-      id: `payment:${p.id}`,
-      type: "payment",
-      amount: formatAmount(p.amount),
-      direction: "in",
-      occurredAt: p.paidAt,
-      label: MOVEMENT_LABELS.payment,
-      description: `Chek #${String(p.receiptNo).padStart(6, "0")}`,
-      note: p.note,
-    })),
+    ...payments.map((p) => {
+      const receiptLabel = receiptByPayment.get(p.id);
+      return {
+        id: `payment:${p.id}`,
+        type: "payment",
+        amount: formatAmount(p.amount),
+        direction: "in",
+        occurredAt: p.paidAt,
+        label: MOVEMENT_LABELS.payment,
+        description: `Chek ${receiptLabel}`,
+        note: p.note,
+        // Qatordagi "Tahrirlash" / "Bekor qilish" — to'lovlar registridagi
+        // AYNI oynalar, shuning uchun chekning xom maydonlari
+        paymentId: p.id,
+        receiptLabel,
+        payment: {
+          id: p.id,
+          studentId: p.studentId,
+          accountId: p.accountId,
+          amount: formatAmount(p.amount),
+          paidAt: p.paidAt,
+          note: p.note,
+          receiptLabel,
+        },
+      };
+    }),
     ...allocations.map((a) => {
       const month = monthById.get(a.invoiceId);
       return {
@@ -570,6 +761,13 @@ const getMovements = async (studentId) => {
         label: MOVEMENT_LABELS.allocation,
         description: month != null ? formatMonthKey(month) : "",
         source: a.source,
+        sourceLabel: SOURCE_LABELS[a.source] ?? a.source,
+        // Qatordagi "Tahrirlash" / "O'chirish" uchun
+        allocationId: a.id,
+        paymentId: a.paymentId,
+        invoiceId: a.invoiceId,
+        month: month ?? null,
+        receiptLabel: receiptByPayment.get(a.paymentId) ?? null,
       };
     }),
     ...refunds.map((r) => ({
@@ -635,6 +833,8 @@ module.exports = {
   applyDepositsForStudent,
   applyDepositsForStudents,
   releaseInvoiceAllocations,
+  releaseAllocation,
+  editAllocation,
   refundDeposit,
   adjustBalance,
   getMovements,

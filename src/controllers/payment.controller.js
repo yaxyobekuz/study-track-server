@@ -72,9 +72,32 @@ const getMovements = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// Admin tugmasi — QO'LDA qo'llash: "avtomat yechish to'xtatilgan" oylar ham
+// qamraladi va belgi tozalanadi (`depositSettlement.service.js`)
 const applyDeposit = asyncHandler(async (req, res) => {
   const data = await studentAccountService.applyDepositsForStudent(
     req.params.studentId,
+    { manual: true },
+  );
+  res.json({ success: true, data });
+});
+
+// ── Yechim ("Hisob-fakturaga yechildi" qatori) ──
+
+const editAllocation = asyncHandler(async (req, res) => {
+  const data = await studentAccountService.editAllocation(
+    req.params.allocationId,
+    req.body,
+    req.user.id,
+  );
+  res.json({ success: true, data });
+});
+
+const releaseAllocation = asyncHandler(async (req, res) => {
+  const data = await studentAccountService.releaseAllocation(
+    req.params.allocationId,
+    req.body,
+    req.user.id,
   );
   res.json({ success: true, data });
 });
@@ -126,6 +149,8 @@ module.exports = {
   getStudentAccount,
   getMovements,
   applyDeposit,
+  editAllocation,
+  releaseAllocation,
   refundDeposit,
   adjustBalance,
   getVacationMonths,

@@ -42,6 +42,28 @@ const record = async (entry, client = prisma) => {
   });
 };
 
+/**
+ * Bir nechta audit qaydi BITTA so'rovda (ommaviy amal: har qatorga o'z qaydi).
+ * Maydonlar `record()` bilan AYNI.
+ *
+ * @param {object[]} entries - `record()` dagi `entry` lar
+ * @param {object} [client] - tranzaksiya client'i (ixtiyoriy)
+ */
+const recordMany = async (entries, client = prisma) => {
+  if (!entries.length) return { count: 0 };
+  return client.payrollAudit.createMany({
+    data: entries.map((entry) => ({
+      actorId: entry.actorId,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      summary: entry.summary ?? "",
+      oldValue: entry.oldValue ?? undefined,
+      newValue: entry.newValue ?? undefined,
+    })),
+  });
+};
+
 const serialize = (row, actorMap = new Map()) => {
   const actor = actorMap.get(row.actorId);
   return {
@@ -107,4 +129,4 @@ const list = async (query = {}) => {
   };
 };
 
-module.exports = { record, list };
+module.exports = { record, recordMany, list };

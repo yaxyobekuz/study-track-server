@@ -20,6 +20,13 @@
  * biriktirishning summasi o'zgarsa, eski qator oldingi oyda yopiladi va joriy
  * oydan yangi qator ochiladi — o'tgan oylar eski summada qoladi. Muhrlangan
  * majburiyatga TEGILMAYDI, faqat ogohlantiriladi.
+ *
+ * ⚠️ BIR NECHTA SINF BIRDANIGA biriktiriladi (`classIds`), lekin HAR SINFGA
+ * ALOHIDA QATOR yoziladi: keyin har biri o'zicha tahrirlanadi, olib
+ * tashlanadi va oylikda alohida ustama qatori bo'ladi. Ommaviy biriktirish
+ * HAMMASI YOKI HECH NARSA: bitta sinf band bo'lsa hech qaysi yozilmaydi va
+ * band sinflarning HAMMASI bitta xabarda aytiladi — "10 tadan 8 tasi
+ * biriktirildi" degan yarim holat bo'lmaydi.
  */
 
 const prisma = require("../config/prisma");
@@ -52,6 +59,12 @@ const {
 const payrollAudit = require("./payrollAudit.service");
 
 const NOTE_MAX = 500;
+
+// Bitta so'rovda biriktiriladigan sinflar chegarasi ("hammasi" ham shunga sig'adi)
+const MAX_CLASSES_PER_REQUEST = 200;
+
+// Ko'p sinf: har biriga qulf + qator + audit — standart 5 soniya yetmasligi mumkin
+const CREATE_TX_OPTIONS = { timeout: 30000, maxWait: 10000 };
 
 const CLASS_SELECT = { select: { id: true, name: true, isActive: true } };
 
@@ -214,6 +227,28 @@ const parseNote = (value) => {
   return note;
 };
 
+/**
+ * Sinflar ro'yxati: `classIds` (massiv) yoki eski `classId` (bitta).
+ * Takrorlar olib tashlanadi — bitta sinf ikki marta kelsa ikki qator yozilmasin.
+ *
+ * @param {{ classIds?: string[], classId?: string }} data
+ * @returns {string[]}
+ */
+const parseClassIds = (data) => {
+  const raw = data.classIds !== undefined ? data.classIds : data.classId ? [data.classId] : [];
+  if (!Array.isArray(raw)) throw new BadRequestError("Sinflar ro'yxati noto'g'ri");
+
+  const ids = [...new Set(raw.map((id) => String(id ?? "").trim()).filter(Boolean))];
+  if (ids.length === 0) throw new BadRequestError("Kamida bitta sinfni tanlang");
+  if (ids.length > MAX_CLASSES_PER_REQUEST) {
+    throw new BadRequestError(`Bir martada ${MAX_CLASSES_PER_REQUEST} tadan ko'p sinf biriktirib bo'lmaydi`);
+  }
+  ids.forEach((id) => assertId(id, "Sinf"));
+  return ids;
+};
+
+const byClassName = (a, b) => (a.className ?? "").localeCompare(b.className ?? "", "uz");
+
 /** Tyutor: mavjud, xodim, arxivlanmagan va tyutor roli bor. */
 const loadTutor = async (tutorId) => {
   assertId(tutorId, "Tyutor");
@@ -250,36 +285,83 @@ const lockClass = (tx, classId) =>
   tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tutor_group:${classId}`}))`;
 
 /**
- * Sinf shu davrda boshqa (yoki shu) tyutorga biriktirilmaganini tekshiradi.
- * Qulf ICHIDA va `tx` bilan chaqiriladi.
+ * Bir nechta sinf qulfi — HAR DOIM `id` bo'yicha o'sish tartibida: ikki
+ * parallel ommaviy biriktirish kesishgan sinflarni teskari tartibda olsa,
+ * bir-birini kutib deadlock bo'lardi.
  */
-const assertNoOverlap = async (tx, { classId, tutorId, startMonth, endMonth, excludeIds = [] }) => {
-  const clash = await tx.tutorGroup.findFirst({
+const lockClasses = async (tx, classIds) => {
+  for (const classId of [...classIds].sort()) {
+    await lockClass(tx, classId);
+  }
+};
+
+/**
+ * Sinf(lar) shu davrda boshqa (yoki shu) tyutorga biriktirilmaganini
+ * tekshiradi. Qulf ICHIDA va `tx` bilan chaqiriladi.
+ *
+ * Band sinflarning HAMMASI bitta xabarda aytiladi: birinchisida to'xtasa,
+ * odam har safar bitta sinfni olib tashlab qayta urinardi.
+ */
+const assertNoOverlap = async (tx, { classIds, tutorId, startMonth, endMonth, excludeIds = [] }) => {
+  const clashes = await tx.tutorGroup.findMany({
     where: {
-      classId,
+      classId: { in: classIds },
       ...(excludeIds.length ? { id: { notIn: excludeIds } } : {}),
       ...overlappingPeriodWhere(startMonth, endMonth),
     },
     include: { class: CLASS_SELECT },
-    orderBy: { startMonth: "asc" },
+    orderBy: [{ startMonth: "asc" }, { id: "asc" }],
   });
-  if (!clash) return;
+  if (clashes.length === 0) return;
 
-  const className = clash.class?.name ?? "Sinf";
-  const period = formatMonthRange(clash.startMonth, clash.endMonth);
+  // Har sinf uchun eng erta to'qnashuv yetadi
+  const firstByClass = new Map();
+  for (const clash of clashes) {
+    if (!firstByClass.has(clash.classId)) firstByClass.set(clash.classId, clash);
+  }
+  const busy = [...firstByClass.values()]
+    .map((clash) => ({ ...clash, className: clash.class?.name ?? "Sinf" }))
+    .sort(byClassName);
 
-  if (clash.tutorId === tutorId) {
-    throw new ConflictError(`${className} sinfi bu tyutorga allaqachon biriktirilgan (${period})`);
+  const otherIds = [...new Set(busy.filter((c) => c.tutorId !== tutorId).map((c) => c.tutorId))];
+  const others = otherIds.length
+    ? await tx.user.findMany({
+        where: { id: { in: otherIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const otherMap = new Map(others.map((u) => [u.id, u]));
+  const details = { reason: "tutor_group_overlap", classIds: busy.map((c) => c.classId) };
+
+  if (busy.length === 1) {
+    const [clash] = busy;
+    const period = formatMonthRange(clash.startMonth, clash.endMonth);
+    if (clash.tutorId === tutorId) {
+      throw new ConflictError(
+        `${clash.className} sinfi bu tyutorga allaqachon biriktirilgan (${period})`,
+        details,
+      );
+    }
+    throw new ConflictError(
+      `${clash.className} sinfi ${period} davrida ` +
+        `${fullName(otherMap.get(clash.tutorId)) || "boshqa tyutor"} ga biriktirilgan. ` +
+        `Bir oyda bir sinfga bitta tyutor — boshqa oydan boshlang yoki avval u yerdan olib tashlang`,
+      details,
+    );
   }
 
-  const other = await tx.user.findUnique({
-    where: { id: clash.tutorId },
-    select: { firstName: true, lastName: true },
+  const lines = busy.map((clash) => {
+    const holder =
+      clash.tutorId === tutorId
+        ? "shu tyutorda"
+        : fullName(otherMap.get(clash.tutorId)) || "boshqa tyutor";
+    return `${clash.className} (${holder}, ${formatMonthRange(clash.startMonth, clash.endMonth)})`;
   });
   throw new ConflictError(
-    `${className} sinfi ${period} davrida ${fullName(other) || "boshqa tyutor"} ga ` +
-      `biriktirilgan. Bir oyda bir sinfga bitta tyutor — boshqa oydan boshlang ` +
-      `yoki avval u yerdan olib tashlang`,
+    `${busy.length} ta sinf bu davrda band: ${lines.join("; ")}. Bir oyda bir sinfga ` +
+      `bitta tyutor — ularni tanlovdan olib tashlang yoki boshqa oydan boshlang. ` +
+      `Hech qaysi sinf biriktirilmadi`,
+    details,
   );
 };
 
@@ -370,13 +452,21 @@ const getStaffGroups = async (staffId) => {
 };
 
 /**
- * Biriktirish oynasi uchun sinflar: o'quvchilar soni va shu oydan boshlab
+ * Biriktirish oynasi uchun sinflar: o'quvchilar soni va tanlangan davrda
  * kimga biriktirilgani (band bo'lsa oldindan ko'rinsin).
  *
- * @param {{ tutorId?: string, month?: string|number }} query
+ * `isAvailable` — `assertNoOverlap` bilan AYNI shart (faol sinf + davrda
+ * hech kimda yo'q): oyna shu bayroq bo'yicha belgilashga ruxsat beradi,
+ * server esa baribir qulf ichida qayta tekshiradi.
+ *
+ * @param {{ tutorId?: string, month?: string|number, endMonth?: string|number }} query
  */
-const getClassOptions = async ({ tutorId, month } = {}) => {
+const getClassOptions = async ({ tutorId, month, endMonth } = {}) => {
   const fromMonth = month ? parseMonthKey(month, "Oy") : currentMonthKey();
+  // Tugash oyi hali yozilayotgan bo'lishi mumkin — boshlanishdan oldingisi
+  // e'tiborga olinmaydi (saqlashda `createGroup` baribir rad etadi)
+  const requestedEnd = parseOptionalMonthKey(endMonth, "Tugash oyi");
+  const toMonth = requestedEnd != null && requestedEnd >= fromMonth ? requestedEnd : null;
 
   const [classes, holders] = await Promise.all([
     prisma.class.findMany({
@@ -384,7 +474,7 @@ const getClassOptions = async ({ tutorId, month } = {}) => {
       orderBy: { name: "asc" },
     }),
     prisma.tutorGroup.findMany({
-      where: overlappingPeriodWhere(fromMonth, null),
+      where: overlappingPeriodWhere(fromMonth, toMonth),
       select: { classId: true, tutorId: true, startMonth: true, endMonth: true },
       orderBy: { startMonth: "asc" },
     }),
@@ -415,13 +505,19 @@ const getClassOptions = async ({ tutorId, month } = {}) => {
   return {
     month: fromMonth,
     monthLabel: formatMonthKey(fromMonth),
-    items: classes.map((c) => ({
-      id: c.id,
-      name: c.name,
-      isActive: c.isActive,
-      studentCount: counts.get(c.id) ?? 0,
-      holders: holdersByClass.get(c.id) ?? [],
-    })),
+    endMonth: toMonth,
+    periodLabel: formatMonthRange(fromMonth, toMonth),
+    items: classes.map((c) => {
+      const classHolders = holdersByClass.get(c.id) ?? [];
+      return {
+        id: c.id,
+        name: c.name,
+        isActive: c.isActive,
+        studentCount: counts.get(c.id) ?? 0,
+        holders: classHolders,
+        isAvailable: c.isActive && classHolders.length === 0,
+      };
+    }),
   };
 };
 
@@ -625,10 +721,14 @@ const getGroupOverview = async (groupId, { month } = {}, viewer) => {
  * JONLI HISOB — biriktirish oynasi uchun, hech narsa yozilmaydi. Summa
  * frontendda hisoblanmasligi uchun (formula bitta joyda).
  *
- * @param {{ classId: string, perStudentAmount?: *, groupAmount?: * }} data
+ * Bir nechta sinf tanlansa har sinf ALOHIDA hisoblanadi (oylikda ham alohida
+ * ustama qatori bo'ladi) va jami — ularning yig'indisi:
+ *   jami = Σ (groupAmount + perStudentAmount × sinf o'quvchilari)
+ *
+ * @param {{ classIds?: string[], classId?: string, perStudentAmount?: *, groupAmount?: * }} data
  */
 const previewAmount = async (data = {}) => {
-  assertId(data.classId, "Sinf");
+  const classIds = parseClassIds(data);
   const perStudentAmount = parseAmount(
     data.perStudentAmount === "" || data.perStudentAmount == null ? 0 : data.perStudentAmount,
     "Bitta o'quvchi uchun summa",
@@ -637,15 +737,40 @@ const previewAmount = async (data = {}) => {
     data.groupAmount === "" || data.groupAmount == null ? 0 : data.groupAmount,
     "Guruh uchun summa",
   );
-  const counts = await countStudentsByClass([data.classId]);
-  const studentCount = counts.get(data.classId) ?? 0;
+
+  const [classes, counts] = await Promise.all([
+    prisma.class.findMany({ where: { id: { in: classIds } }, select: { id: true, name: true } }),
+    countStudentsByClass(classIds),
+  ]);
+
+  const lines = classes
+    .map((c) => {
+      const studentCount = counts.get(c.id) ?? 0;
+      return {
+        classId: c.id,
+        className: c.name,
+        studentCount,
+        studentsAmount: computeTutorGroupAmount({ perStudentAmount, groupAmount: 0 }, studentCount),
+        groupAmount: computeTutorGroupAmount({ perStudentAmount: 0, groupAmount }, studentCount),
+        amount: computeTutorGroupAmount({ perStudentAmount, groupAmount }, studentCount),
+      };
+    })
+    .sort(byClassName);
 
   return {
-    studentCount,
+    classCount: lines.length,
+    studentCount: lines.reduce((sum, line) => sum + line.studentCount, 0),
     perStudentAmount: formatAmount(perStudentAmount),
     groupAmount: formatAmount(groupAmount),
-    studentsAmount: formatAmount(computeTutorGroupAmount({ perStudentAmount, groupAmount: 0 }, studentCount)),
-    amount: formatAmount(computeTutorGroupAmount({ perStudentAmount, groupAmount }, studentCount)),
+    studentsAmount: formatAmount(sumAmounts(lines.map((line) => line.studentsAmount))),
+    groupsAmount: formatAmount(sumAmounts(lines.map((line) => line.groupAmount))),
+    amount: formatAmount(sumAmounts(lines.map((line) => line.amount))),
+    items: lines.map((line) => ({
+      classId: line.classId,
+      className: line.className,
+      studentCount: line.studentCount,
+      amount: formatAmount(line.amount),
+    })),
   };
 };
 
@@ -665,14 +790,19 @@ const getMyGroups = async (userId) => {
 // ─────────────────────────────────────────────
 
 /**
- * Tyutorga guruh (sinf) biriktiradi.
- * @param {object} data - { tutorId, classId, perStudentAmount, groupAmount, startMonth?, endMonth?, note? }
+ * Tyutorga bitta yoki bir nechta guruh (sinf) biriktiradi — AYNI stavka va
+ * davr bilan, har sinfga alohida qator.
+ *
+ * ⚠️ HAMMASI YOKI HECH NARSA: bitta tranzaksiya, sinflar `id` tartibida
+ * qulflanadi, band sinflarning hammasi bitta xabarda qaytadi.
+ *
+ * @param {object} data - { tutorId, classIds (yoki classId), perStudentAmount, groupAmount, startMonth?, endMonth?, note? }
  * @param {string} actorId
  */
 const createGroup = async (data = {}, actorId) => {
   const current = currentMonthKey();
 
-  assertId(data.classId, "Sinf");
+  const classIds = parseClassIds(data);
   const perStudentAmount = parseAmount(data.perStudentAmount ?? 0, "Bitta o'quvchi uchun summa");
   const groupAmount = parseAmount(data.groupAmount ?? 0, "Guruh uchun summa");
   const startMonth = data.startMonth ? parseMonthKey(data.startMonth, "Boshlanish oyi") : current;
@@ -688,58 +818,95 @@ const createGroup = async (data = {}, actorId) => {
   const note = parseNote(data.note);
 
   const tutor = await loadTutor(data.tutorId);
-  const cls = await prisma.class.findUnique({ where: { id: data.classId }, select: { id: true, name: true, isActive: true } });
-  if (!cls) throw new NotFoundError("Sinf topilmadi");
-  if (!cls.isActive) throw new BadRequestError("Faol bo'lmagan sinfni biriktirib bo'lmaydi");
+  const classes = await prisma.class.findMany({
+    where: { id: { in: classIds } },
+    select: { id: true, name: true, isActive: true },
+    orderBy: { name: "asc" },
+  });
+  if (classes.length !== classIds.length) {
+    throw new NotFoundError(
+      classIds.length === 1
+        ? "Sinf topilmadi"
+        : `Tanlangan sinflardan ${classIds.length - classes.length} tasi topilmadi — oynani yangilang`,
+    );
+  }
+  const inactive = classes.filter((c) => !c.isActive);
+  if (inactive.length > 0) {
+    throw new BadRequestError(
+      classIds.length === 1
+        ? "Faol bo'lmagan sinfni biriktirib bo'lmaydi"
+        : `Faol bo'lmagan sinfni biriktirib bo'lmaydi: ${inactive.map((c) => c.name).join(", ")}`,
+    );
+  }
 
-  const row = await prisma.$transaction(async (tx) => {
-    await lockClass(tx, cls.id);
-    await assertNoOverlap(tx, { classId: cls.id, tutorId: tutor.id, startMonth, endMonth });
+  const rows = await prisma.$transaction(async (tx) => {
+    await lockClasses(tx, classIds);
+    await assertNoOverlap(tx, { classIds, tutorId: tutor.id, startMonth, endMonth });
 
-    const created = await tx.tutorGroup.create({
-      data: {
-        tutorId: tutor.id,
-        classId: cls.id,
-        perStudentAmount,
-        groupAmount,
-        startMonth,
-        endMonth,
-        note,
-        createdBy: actorId,
-      },
-      include: { class: CLASS_SELECT },
-    });
+    const created = [];
+    for (const cls of classes) {
+      created.push(
+        await tx.tutorGroup.create({
+          data: {
+            tutorId: tutor.id,
+            classId: cls.id,
+            perStudentAmount,
+            groupAmount,
+            startMonth,
+            endMonth,
+            note,
+            createdBy: actorId,
+          },
+          include: { class: CLASS_SELECT },
+        }),
+      );
+    }
 
-    await payrollAudit.record(
-      {
+    // Har qatorga o'z audit yozuvi: keyingi tahrir/olib tashlash ham qator bo'yicha
+    await payrollAudit.recordMany(
+      created.map((row) => ({
         actorId,
         action: "tutorGroup.create",
         targetType: "tutorGroup",
-        targetId: created.id,
+        targetId: row.id,
         summary:
-          `${fullName(tutor)} — ${cls.name} guruhi biriktirildi ` +
+          `${fullName(tutor)} — ${row.class?.name ?? "Sinf"} guruhi biriktirildi ` +
           `(o'quvchiga ${formatAmount(perStudentAmount)}, guruhga ${formatAmount(groupAmount)})`,
-        newValue: auditSnapshot(created),
-      },
+        newValue: auditSnapshot(row),
+      })),
       tx,
     );
     return created;
-  });
+  }, CREATE_TX_OPTIONS);
 
   logger.info(
-    `[tutor] Guruh biriktirildi: tutor=${tutor.id} class=${cls.id} ` +
+    `[tutor] Guruh biriktirildi: tutor=${tutor.id} classes=${classIds.join(",")} ` +
       `perStudent=${formatAmount(perStudentAmount)} group=${formatAmount(groupAmount)} ` +
-      `start=${startMonth} actor=${actorId}`,
+      `start=${startMonth} end=${endMonth ?? "-"} actor=${actorId}`,
   );
 
+  // Faqat guruhi bor tyutor shu biriktirish bilan oylik oladiganga aylanadi —
+  // "hammaga" ushlab qolish unga ham yoyilsin (`finance.md` §10). Xato
+  // tashlamaydi: biriktirish allaqachon saqlangan.
+  await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([tutor.id]);
+
   const [counts, warnings] = await Promise.all([
-    countStudentsByClass([cls.id]),
+    countStudentsByClass(classIds),
     sealedWarnings(tutor.id, startMonth),
   ]);
 
+  const groups = rows
+    .map((row) => serializeGroup(row, { studentCount: counts.get(row.classId) ?? 0, current }))
+    .sort(byClassName);
+
   return {
-    group: serializeGroup(row, { studentCount: counts.get(cls.id) ?? 0, current }),
+    groups,
+    count: groups.length,
     warnings,
+    message:
+      groups.length === 1
+        ? `${groups[0].className} guruhi biriktirildi`
+        : `${groups.length} ta guruh biriktirildi`,
   };
 };
 
@@ -827,7 +994,7 @@ const updateGroup = async (id, data = {}, actorId) => {
     let result;
     if (split) {
       await assertNoOverlap(tx, {
-        classId: row.classId,
+        classIds: [row.classId],
         tutorId: row.tutorId,
         startMonth: current,
         endMonth,
@@ -850,7 +1017,7 @@ const updateGroup = async (id, data = {}, actorId) => {
     } else {
       if (periodChanged) {
         await assertNoOverlap(tx, {
-          classId: row.classId,
+          classIds: [row.classId],
           tutorId: row.tutorId,
           startMonth,
           endMonth,

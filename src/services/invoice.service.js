@@ -56,6 +56,7 @@ const {
 } = require("./service.service");
 const { getVacationSet } = require("./vacationMonth.service");
 const { getInvoiceAllocations, TX_OPTIONS } = require("./payment.service");
+const { settleDepositInTx } = require("./depositSettlement.service");
 const {
   getPeriodsForStudent,
   resolveEnrollmentsForStudents,
@@ -76,7 +77,6 @@ const {
 } = require("../helpers/enrollment.helpers");
 const {
   releaseInvoiceAllocations,
-  applyDepositsForStudents,
   getBalance,
   getBalances,
   getMovements,
@@ -817,7 +817,11 @@ const getMyFinance = async (studentId, options = {}) => {
       : null,
     tariffReason: resolved.reason,
     enrollment: describeEnrollmentForStudent(periods),
-    movements: movements.items,
+    // Admin qatoridagi tahrirlash tugmalari uchun xom maydonlar (to'lov turi
+    // id'si va h.k.) o'quvchi paneliga kerak emas — faqat ko'rinadiganlari
+    movements: movements.items.map(
+      ({ payment: _payment, allocationId: _a, paymentId: _p, invoiceId: _i, ...item }) => item,
+    ),
     ...data,
   };
 };
@@ -1798,7 +1802,12 @@ const cancelInvoice = async (id, reason, userId) => {
       },
     });
 
-    return amount;
+    // Qaytgan pul BOSHQA ochiq oylarga darhol yechiladi (qarz va depozit
+    // birga turmaydi); ochiq oy bo'lmasa depozitda qoladi. Bekor qilingan
+    // oy nomzod emas — `status` filtri uni chetlaydi.
+    const settled = await settleDepositInTx(tx, invoice.studentId);
+
+    return { amount, settled: settled.applied };
   }, TX_OPTIONS);
 
   // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN: poyga tufayli rad etilgan urinish
@@ -1809,20 +1818,29 @@ const cancelInvoice = async (id, reason, userId) => {
     logger.warn(
       `[invoices] O'tgan oy hisob-fakturasi bekor qilindi: invoice=${id} ` +
         `student=${invoice.studentId} month=${invoice.month} ` +
-        `depozitga=${formatAmount(released)} actor=${userId} sabab="${trimmed}"`,
+        `depozitga=${formatAmount(released.amount)} ` +
+        `boshqa oylarga=${formatAmount(released.settled)} actor=${userId} sabab="${trimmed}"`,
     );
   }
 
   const result = await getInvoiceById(id);
+  const stayed = released.amount.minus(released.settled);
 
   return {
     ...result,
-    releasedToDeposit: formatAmount(released),
-    ...(released.greaterThan(0)
+    releasedToDeposit: formatAmount(released.amount),
+    appliedToOthers: formatAmount(released.settled),
+    ...(released.amount.greaterThan(0)
       ? {
           warnings: [
-            `${formatAmount(released)} so'm o'quvchining depozitiga qaytarildi — ` +
-              "u keyingi oyga o'tadi yoki ota-onaga qaytariladi",
+            released.settled.greaterThan(0)
+              ? `${formatAmount(released.amount)} so'm depozitga qaytdi, shundan ` +
+                `${formatAmount(released.settled)} so'm boshqa ochiq oylarga yechildi` +
+                (stayed.greaterThan(0)
+                  ? ` — ${formatAmount(stayed)} so'm depozitda qoldi`
+                  : "")
+              : `${formatAmount(released.amount)} so'm o'quvchining depozitiga qaytarildi — ` +
+                "u keyingi oyga o'tadi yoki ota-onaga qaytariladi",
           ],
         }
       : {}),
@@ -1934,13 +1952,15 @@ const amendPaidInvoice = async (invoice, reason, userId) => {
           paidAt: null,
         },
       });
-    }, TX_OPTIONS);
 
-    // Depozitni qayta qo'llaymiz (avtomat qo'llash yoqilgan bo'lsa) — yangi
-    // arzon faktura yopiladi, ortiqchasi depozitda qoladi.
-    if (settings.depositAutoApply) {
-      await applyDepositsForStudents([invoice.studentId]);
-    }
+      // Depozitni SHU tranzaksiyada qayta qo'llaymiz — yangi arzon faktura
+      // yopiladi, ortiqchasi depozitda qoladi. Ilgari bu tranzaksiyadan
+      // keyin alohida chaqirilardi va orada yiqilsa faktura to'lovsiz,
+      // pul esa depozitda osilib qolardi.
+      // ⚠️ `ignoreHoldFor`: bu oy o'z pulini qaytarib OLGAN — "avtomat yechish
+      // to'xtatilgan" belgisi bo'lsa ham shu pul unga qaytishi kerak.
+      await settleDepositInTx(tx, invoice.studentId, { ignoreHoldFor: [invoice.id] });
+    }, TX_OPTIONS);
 
     logger.warn(
       `[invoices] To'langan faktura narxi tushdi — depozit orqali qayta ` +
@@ -1956,30 +1976,42 @@ const amendPaidInvoice = async (invoice, reason, userId) => {
   // COMPARE-AND-SWAP: paidAmount o'qilgan qiymatda qolgan bo'lsagina yozamiz —
   // shu orada to'lov tushsa (paidAmount o'zgarsa) yozuv rad etiladi.
   const status = deriveStatus(newAmount, paid);
-  const updated = await prisma.monthlyInvoice.updateMany({
-    where: { id: invoice.id, paidAmount: invoice.paidAmount },
-    data: {
-      baseAmount: row.baseAmount,
-      billableDays: row.billableDays,
-      monthDays: row.monthDays,
-      roundingUnit: row.roundingUnit,
-      proratedAmount: row.proratedAmount,
-      discountAmount: row.discountAmount,
-      discountSnapshot: row.discountSnapshot,
-      servicesAmount: row.servicesAmount,
-      servicesSnapshot: row.servicesSnapshot,
-      amount: newAmount,
-      status,
-      // To'liq yopilmagan bo'lsa "to'langan payt" bekor qilinadi
-      paidAt: status === "paid" ? invoice.paidAt : null,
-    },
-  });
+  await prisma.$transaction(async (tx) => {
+    // Lock tartibi: StudentAccount birinchi (moliya moduli invarianti)
+    await tx.studentAccount.upsert({
+      where: { studentId: invoice.studentId },
+      create: { studentId: invoice.studentId, balance: 0 },
+      update: { version: { increment: 1 } },
+    });
 
-  if (updated.count !== 1) {
-    throw new ConflictError(
-      "Hisob-fakturaga shu orada to'lov tushdi — qayta urinib ko'ring.",
-    );
-  }
+    const updated = await tx.monthlyInvoice.updateMany({
+      where: { id: invoice.id, paidAmount: invoice.paidAmount },
+      data: {
+        baseAmount: row.baseAmount,
+        billableDays: row.billableDays,
+        monthDays: row.monthDays,
+        roundingUnit: row.roundingUnit,
+        proratedAmount: row.proratedAmount,
+        discountAmount: row.discountAmount,
+        discountSnapshot: row.discountSnapshot,
+        servicesAmount: row.servicesAmount,
+        servicesSnapshot: row.servicesSnapshot,
+        amount: newAmount,
+        status,
+        // To'liq yopilmagan bo'lsa "to'langan payt" bekor qilinadi
+        paidAt: status === "paid" ? invoice.paidAt : null,
+      },
+    });
+
+    if (updated.count !== 1) {
+      throw new ConflictError(
+        "Hisob-fakturaga shu orada to'lov tushdi — qayta urinib ko'ring.",
+      );
+    }
+
+    // Summa oshib qarz paydo bo'ldi — depozitda pul bo'lsa darhol yopiladi
+    await settleDepositInTx(tx, invoice.studentId);
+  }, TX_OPTIONS);
 
   logger.warn(
     `[invoices] To'langan faktura JOYIDA tuzatildi (xizmat/narx qo'shildi): ` +
@@ -2078,6 +2110,13 @@ const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false }
   }
 
   const created = await prisma.$transaction(async (tx) => {
+    // Lock tartibi: StudentAccount birinchi — oxirida depozit yechiladi
+    await tx.studentAccount.upsert({
+      where: { studentId: invoice.studentId },
+      create: { studentId: invoice.studentId, balance: 0 },
+      update: { version: { increment: 1 } },
+    });
+
     // ⚠️ COMPARE-AND-SWAP O'CHIRISH. `paidAmount` tekshiruvi tranzaksiyadan
     // TASHQARIDA bo'lgani uchun, tekshiruv bilan o'chirish orasida kassir
     // to'lov kiritib ulgursa, `delete` uning taqsimotlarini ham kaskad
@@ -2096,13 +2135,21 @@ const regenerateInvoice = async (id, reason, userId, { skipIfUnchanged = false }
       );
     }
 
-    return tx.monthlyInvoice.create({
+    const fresh = await tx.monthlyInvoice.create({
       data: {
         ...row,
         note: invoice.note,
         replacesInvoiceId: invoice.id,
+        // Adminning "shu oyga depozitdan avtomat yechilmasin" qarori qayta
+        // shakllantirishda yo'qolmasin (qator o'chirib qayta yaratiladi)
+        depositHold: invoice.depositHold,
       },
     });
+
+    // Yangi (to'lanmagan) oy depozitda pul bo'lsa darhol yopiladi
+    await settleDepositInTx(tx, invoice.studentId);
+
+    return fresh;
   }, TX_OPTIONS);
 
   // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN: yuqoridagi CAS o'chirish rad
@@ -2618,10 +2665,26 @@ const restoreInvoice = async (id, userId) => {
     new Decimal(invoice.paidAmount),
   );
 
-  await prisma.monthlyInvoice.update({
-    where: { id },
-    data: { status, cancelReason: "", cancelledAt: null, cancelledBy: null },
-  });
+  await prisma.$transaction(async (tx) => {
+    await tx.studentAccount.upsert({
+      where: { studentId: invoice.studentId },
+      create: { studentId: invoice.studentId, balance: 0 },
+      update: { version: { increment: 1 } },
+    });
+
+    // CAS: shu orada boshqa admin qaytargan / oylik pass tiklagan bo'lsa
+    // ikkinchi marta yozilmaydi
+    const updated = await tx.monthlyInvoice.updateMany({
+      where: { id, status: "cancelled", paidAmount: invoice.paidAmount },
+      data: { status, cancelReason: "", cancelledAt: null, cancelledBy: null },
+    });
+    if (updated.count !== 1) {
+      throw new ConflictError("Hisob-faktura shu orada o'zgardi — sahifani yangilang");
+    }
+
+    // Qaytgan qarz depozitda pul bo'lsa darhol yopiladi
+    await settleDepositInTx(tx, invoice.studentId);
+  }, TX_OPTIONS);
 
   // AUDIT YOZUVI YOZUVDAN KEYIN (modul bo'ylab bitta tartib)
   logger.warn(

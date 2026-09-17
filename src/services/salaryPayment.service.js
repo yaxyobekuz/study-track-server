@@ -362,8 +362,8 @@ const voidPayment = async (id, reason, userId) => {
  * yoziladi. Ikkalasi ham registrda qoladi. Faqat izoh o'zgarsa — pulga
  * tegmagani uchun joyida yangilanadi.
  *
- * ⚠️ BITTA TRANZAKSIYADA. O'quvchi tomonidagi `editPayment` void va create
- * ni ketma-ket chaqiradi; bu yerda shunday qilinsa, qarzdan ko'p yangi summa
+ * ⚠️ BITTA TRANZAKSIYADA (o'quvchi tomonidagi `payment.editPayment` ham
+ * endi shunday). Void va create ketma-ket chaqirilsa, qarzdan ko'p yangi summa
  * rad etilganda eski to'lov bekor bo'lib, yangisi yozilmay qolardi — xodim
  * jimgina "to'lanmagan" bo'lib, kassa qoldig'i o'zgarib ketardi.
  *

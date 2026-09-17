@@ -8,9 +8,9 @@
  * `generateForMonth({ dryRun: true })` dan olinadi.
  *
  * ⚠️ ATAYLAB YO'Q amallar (`design.md` §3.2.6 va xarita D3):
- *   - oylik majburiyatini bekor qilish — bekor qilingan oy o'sha xodim uchun
- *     HECH QACHON qayta shakllanmaydi (`generateForMonth` uni "mavjud" deb
- *     sanaydi), ya'ni amal qaytarilmaydi;
+ *   - oylik majburiyatini bekor qilish — keyingi shakllantirish uni o'sha
+ *     qatorda qayta hisoblab tiklaydi (`generateForMonth`, `restored`), lekin
+ *     oraliqda xodimning qarzi registrdan yo'qoladi; bu qaror admin panelda;
  *   - oylik to'lovini va xarajatni bekor qilish (void) — pulni teskari
  *     harakatlantiradi, faqat admin paneldan.
  *
@@ -144,14 +144,14 @@ const loadStaff = async (staffId) => {
 };
 
 /**
- * Xodimning majburiyati bor oylari (HAR QANDAY holat, `cancelled` ham).
- * ⚠️ Bekor qilingan qator ham oyni to'sadi: `generateForMonth` uni "mavjud"
- * deb o'tkazib yuboradi va `@@unique([staffId, month])` yangi qatorga yo'l
- * qo'ymaydi (xarita D3).
+ * Xodimning AMALDAGI majburiyati bor (muhrlangan) oylari.
+ * ⚠️ Bekor qilingan qator oyni TO'SMAYDI: `generateForMonth` uni o'sha
+ * qatorda joriy qoida bilan qayta hisoblab tiklaydi (`restored`), ya'ni
+ * o'zgarish o'sha oyga ham yetib boradi.
  */
 const loadSealedMonths = async (staffIds) => {
   const rows = await prisma.payrollEntry.findMany({
-    where: { staffId: { in: staffIds } },
+    where: { staffId: { in: staffIds }, status: { not: "cancelled" } },
     select: { staffId: true, month: true, status: true },
   });
   const byStaff = new Map(staffIds.map((id) => [id, new Map()]));
@@ -1040,32 +1040,27 @@ const generatePayroll = defineAction({
     }
     const staffIds = args.staffIds ? [...new Set(args.staffIds.map((id) => requireId(id, "Xodim id")))].sort() : null;
 
-    const [dry, cancelledCount] = await Promise.all([
-      asToolError(() =>
-        payrollService.generateForMonth(month, {
-          dryRun: true,
-          staffIds: staffIds ?? undefined,
-          actorId: ctx.user.id,
-        }),
-      ),
-      prisma.payrollEntry.count({
-        where: { month, status: "cancelled", ...(staffIds ? { staffId: { in: staffIds } } : {}) },
+    const dry = await asToolError(() =>
+      payrollService.generateForMonth(month, {
+        dryRun: true,
+        staffIds: staffIds ?? undefined,
+        actorId: ctx.user.id,
       }),
-    ]);
+    );
 
     const skippedText =
       `allaqachon shakllangan: ${dry.skipped.alreadyExists}, oylik belgilanmagan: ${dry.skipped.noSalary}, ` +
       `summasi nol: ${dry.skipped.zeroAmount}`;
-    if (dry.created === 0) {
+    if (dry.created + dry.restored === 0) {
       throw new AiToolError(
         `${monthLabel(month)} uchun yangi yoziladigan oylik majburiyati yo'q (${dry.eligible} ta xodim tekshirildi; ${skippedText}).`,
       );
     }
 
     const warnings = [];
-    if (cancelledCount > 0) {
+    if (dry.restored > 0) {
       warnings.push(
-        `${cancelledCount} ta xodimda ${monthLabel(month)} majburiyati bekor qilingan — ular qayta shakllantirilmaydi (bekor qilish qaytarilmaydi).`,
+        `${dry.restored} ta xodimning ${monthLabel(month)} uchun bekor qilingan majburiyati joriy qoida bo'yicha qayta hisoblanib tiklanadi.`,
       );
     }
     if (dry.skipped.zeroAmount > 0) {
@@ -1084,18 +1079,19 @@ const generatePayroll = defineAction({
     return {
       params: { month, staffIds, created: dry.created, totalAmount: dry.totalAmount },
       preview: {
-        summary: `${monthLabel(month)} uchun ${dry.created} ta xodimga jami ${formatMoneyUz(dry.totalAmount)} oylik shakllantiriladi`,
+        summary: `${monthLabel(month)} uchun ${dry.created + dry.restored} ta xodimga jami ${formatMoneyUz(dry.totalAmount)} oylik shakllantiriladi`,
         target: staffIds ? `${staffIds.length} ta tanlangan xodim` : "Oylik oladigan barcha xodimlar",
         fields: [
           { label: "Yoziladigan majburiyatlar", before: "—", after: String(dry.created) },
+          ...(dry.restored > 0 ? [{ label: "Bekordan tiklanadi", before: "—", after: String(dry.restored) }] : []),
           { label: "Jami summa", before: "—", after: formatMoneyUz(dry.totalAmount) },
           { label: "Qat'iy qism va ustamalar", before: "—", after: formatMoneyUz(dry.fixedTotal) },
           { label: "Soatbay qism", before: "—", after: formatMoneyUz(dry.kpiTotal) },
         ],
         effects: [
-          `${dry.created} ta majburiyat muhrlanadi va xodimlarga qarz sifatida ko'rinadi`,
+          `${dry.created + dry.restored} ta majburiyat muhrlanadi va xodimlarga qarz sifatida ko'rinadi`,
           "Muhrlangan summa keyin o'zgartirilmaydi — tuzatish faqat keyingi oydan",
-          ...(dry.eligible > dry.created ? [`O'tkazib yuboriladi — ${skippedText}`] : []),
+          ...(dry.eligible > dry.created + dry.restored ? [`O'tkazib yuboriladi — ${skippedText}`] : []),
         ],
         warnings,
       },
@@ -1113,6 +1109,7 @@ const generatePayroll = defineAction({
       summary: `${result.monthLabel} uchun ${result.created} ta oylik majburiyati shakllantirildi (jami ${formatMoneyUz(result.totalAmount)})`,
       details: [
         { label: "Yozildi", value: String(result.created) },
+        { label: "Bekordan tiklandi", value: String(result.restored) },
         { label: "Allaqachon bor edi", value: String(result.skipped.alreadyExists) },
         { label: "Oylik belgilanmagan", value: String(result.skipped.noSalary) },
         { label: "Summasi nol", value: String(result.skipped.zeroAmount) },

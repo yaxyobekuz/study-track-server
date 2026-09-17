@@ -175,8 +175,8 @@ const payrollOverview = defineTool({
   description:
     "Payroll summary for one month, exactly as the finance dashboard shows it: sealed payroll (accrued, paid, debt, " +
     "unpaid count), the live ASSIGNED total computed from current salary rules/positions/categories by the payroll " +
-    "engine, month-over-month changes versus the previous month, the number of cancelled entries (a cancelled entry " +
-    "permanently blocks that month for that person) and the per-staff list of sealed entries (top 30 by amount). " +
+    "engine, month-over-month changes versus the previous month, the number of cancelled entries (the next generation " +
+    "of that month recomputes and restores them) and the per-staff list of sealed entries (top 30 by amount). " +
     "Use it first for questions like 'how much do we pay staff this month' or 'is payroll generated'. Money is 2-decimal " +
     "strings in so'm; month is YYYYMM.",
   parameters: {
@@ -306,7 +306,7 @@ const payrollStaff = defineTool({
   description:
     "Full payroll picture for ONE staff member (resolve the id with search_people first): position/category assignment, " +
     "live engine preview of this month's pay (fixed + KPI hours × rate + allowances), salary rule history (periods), " +
-    "sealed payroll entries with debt (last 12), cancelled months (these months can never be regenerated), and the " +
+    "sealed payroll entries with debt (last 12), cancelled months (the next generation of that month recomputes and restores them), and the " +
     "last 10 salary payments. Use it before proposing any salary change or payment for that person.",
   parameters: {
     type: "object",

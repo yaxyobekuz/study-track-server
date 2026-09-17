@@ -9,12 +9,16 @@
  *   3. MonthlyInvoice.paidAmount  = Σ (isVoided=false) PaymentAllocation.amount
  *   4. MonthlyInvoice.amount      = proratedAmount − discountAmount
  *                                   (va proratedAmount <= baseAmount)
+ *   2b. Qarz va depozit birga turmaydi: chekka bog'langan depozit bor
+ *       o'quvchida "avtomat yechish to'xtatilmagan" ochiq qarz bo'lmasligi
+ *       kerak (`depositAutoApply` yoqilgan bo'lsa)
  *
  * CHIQIM tomoni ham AYNAN shu ikki shaklga ega (`finance.md` §10 — har bir
  * tushunchaning ko'zgusi bor), lekin tekshiruvsiz qolgan edi:
  *
  *   5. PayrollEntry.paidAmount    = Σ (isVoided=false) SalaryAllocation.amount
- *   6. PayrollEntry.amount        = baseAmount + hoursAmount
+ *   6. PayrollEntry.amount        = fixedAmount + kpiAmount + allowanceAmount
+ *                                   − deductionAmount
  *
  * Kirim tomonida yo'qolgan yangilanish ertasi kuni topilar, chiqim tomonida
  * esa oylik qayta to'lanib ketishi mumkin edi va buni hech kim aytmasdi.
@@ -121,6 +125,52 @@ async function runFinanceReconcilePass() {
     }
   }
 
+  // ── 2b. Qarz va depozit birga turmaydi ────
+  // Har bir pul amali depozitni o'z tranzaksiyasida yechadi
+  // (`depositSettlement.service.js`). Bu tekshiruv yechishni UNUTGAN yo'lni
+  // ertasi kuni topadi. Byudjet — o'sha hisobning o'zidagi kabi
+  // min(balans, cheklar qoldig'i): chekka bog'lanmagan to'g'rilash pulini
+  // yechib bo'lmaydi va u xato emas.
+  const financeSettings = await prisma.financeSettings.findFirst({
+    select: { depositAutoApply: true },
+  });
+
+  if (!financeSettings || financeSettings.depositAutoApply) {
+    const withBudget = new Map();
+    for (const account of studentAccounts) {
+      const budget = Decimal.min(
+        new Decimal(account.balance),
+        depositByStudent.get(account.studentId) ?? new Decimal(0),
+      );
+      if (budget.greaterThan(0)) withBudget.set(account.studentId, budget);
+    }
+
+    if (withBudget.size > 0) {
+      const openDebts = await prisma.monthlyInvoice.groupBy({
+        by: ["studentId"],
+        where: {
+          studentId: { in: [...withBudget.keys()] },
+          status: { in: ["unpaid", "partial"] },
+          depositHold: false,
+        },
+        _sum: { amount: true, paidAmount: true },
+      });
+
+      for (const row of openDebts) {
+        const debt = new Decimal(row._sum.amount ?? 0).minus(row._sum.paidAmount ?? 0);
+        if (debt.lessThanOrEqualTo(0)) continue;
+
+        problems.push({
+          kind: "deposit_unapplied",
+          id: row.studentId,
+          label: `student=${row.studentId}`,
+          stored: `depozit ${formatAmount(withBudget.get(row.studentId))}, ochiq qarz ${formatAmount(debt)}`,
+          expected: "depozit ochiq qarzga yechilgan bo'lishi kerak",
+        });
+      }
+    }
+  }
+
   // ── 3. Hisob-faktura to'langan summasi ────
   // Faqat qiymati bor qatorlar tekshiriladi: nol/nol juftligi ko'p va
   // ular hech qachon buzilmaydi.
@@ -221,8 +271,10 @@ async function runFinanceReconcilePass() {
       staffId: true,
       amount: true,
       paidAmount: true,
-      baseAmount: true,
-      hoursAmount: true,
+      fixedAmount: true,
+      kpiAmount: true,
+      allowanceAmount: true,
+      deductionAmount: true,
     },
   });
 
@@ -250,9 +302,17 @@ async function runFinanceReconcilePass() {
         });
       }
 
-      // `computeSalary()` uchala rejimda ham shu tenglikni beradi
-      // (fixed → hoursAmount 0, hourly → baseAmount 0).
-      const expectedAmount = new Decimal(entry.baseAmount).plus(entry.hoursAmount);
+      // Oylik dvigateli (`payrollEngine`: yalpi = fiksa + KPI + ustama,
+      // `amount` = yalpi − ushlab qolish) va muhrni qayta hisoblash
+      // (`payrollDeduction.sealedGrossOf`) AYNI tenglikni yozadi.
+      // ⚠️ Ilgari bu yerda `baseAmount + hoursAmount` turardi: oylik v2 da
+      // ular Prisma sxemasidan olib tashlangan va `select` validatsiya xatosi
+      // bilan BUTUN passni yiqitardi — birorta invariant (kassa, depozit,
+      // hisob-faktura) kechalari umuman tekshirilmay qolgan edi.
+      const expectedAmount = new Decimal(entry.fixedAmount)
+        .plus(entry.kpiAmount)
+        .plus(entry.allowanceAmount)
+        .minus(entry.deductionAmount);
       if (!expectedAmount.equals(entry.amount)) {
         problems.push({
           kind: "payroll_amount",

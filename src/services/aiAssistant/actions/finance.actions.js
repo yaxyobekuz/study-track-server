@@ -1679,8 +1679,8 @@ const generateInvoices = defineAction({
     const effects = [];
     if (wouldCreate.length) effects.push(`Yangi: ${namesText(wouldCreate)}`);
     if (wouldRestore.length) effects.push(`Bekor qilingandan tiklanadi: ${namesText(wouldRestore)}`);
-    if (summary.created > 0 && settings.depositAutoApply) {
-      effects.push("Depozitida puli bor o'quvchilarning yangi hisob-fakturalari depozitdan avtomatik yopiladi");
+    if (summary.created + summary.restored > 0 && settings.depositAutoApply) {
+      effects.push("Depozitida puli bor o'quvchilarning yangi va tiklangan hisob-fakturalari depozitdan avtomatik yopiladi");
     }
 
     const warnings = [];
@@ -2304,14 +2304,18 @@ const applyStudentDeposit = defineAction({
     if (balance.lessThanOrEqualTo(0)) throw new AiToolError("O'quvchi depozitida pul yo'q");
     if (invoices.length === 0) throw new AiToolError("O'quvchida ochiq hisob-faktura yo'q — depozit qo'llanmaydi");
 
-    // `applyDepositsForStudent` bilan AYNI FIFO helper; sana faqat "to'liq
+    // `depositSettlement.settleDepositInTx` (manual) bilan AYNI hisob:
+    // byudjet = min(balans, cheklar qoldig'i) — chekka bog'lanmagan to'g'rilash
+    // pulini yechib bo'lmaydi; "avtomat yechish to'xtatilgan" oylar ham
+    // qamraladi (qo'lda qo'llash belgini tozalaydi). Sana faqat "to'liq
     // yopilgan payt" uchun kerak va ko'rinishga kirmaydi.
-    const { allocations, allocated } = allocateFifo(invoices, balance, new Date());
+    const budget = Decimal.min(balance, new Decimal(remainders._sum.depositAmount ?? 0));
+    if (budget.lessThanOrEqualTo(0)) {
+      throw new AiToolError("Depozitdagi pul hech qaysi chekka bog'lanmagan (qo'lda to'g'rilash) — qarzga yechib bo'lmaydi");
+    }
+    const { allocations, allocated } = allocateFifo(invoices, budget, new Date());
     if (allocations.length === 0) {
       throw new AiToolError("Ochiq hisob-fakturalarda qoldiq qarz yo'q — depozit qo'llanmaydi");
-    }
-    if (new Decimal(remainders._sum.depositAmount ?? 0).lessThan(allocated)) {
-      throw new AiToolError("Depozit qoldig'i to'lovlar bilan mos kelmaydi — moliya bo'limi tekshirishi kerak");
     }
 
     const debt = sumAmounts(invoices.map((i) => new Decimal(i.amount).minus(i.paidAmount)));
@@ -2333,9 +2337,11 @@ const applyStudentDeposit = defineAction({
       },
     };
   },
-  // Mirrors payment.controller.applyDeposit: applyDepositsForStudent(req.params.studentId).
+  // Mirrors payment.controller.applyDeposit: applyDepositsForStudent(studentId, { manual: true }).
   async execute(params) {
-    const result = await studentAccountService.applyDepositsForStudent(params.studentId);
+    const result = await studentAccountService.applyDepositsForStudent(params.studentId, {
+      manual: true,
+    });
 
     return {
       summary: `Depozitdan ${formatMoneyUz(result.applied)} qo'llandi`,

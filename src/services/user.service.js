@@ -303,6 +303,7 @@ async function getStats() {
 // ga tayanadi. Massivga ko'chirilsa: (a) indekslar ishlamay qolardi,
 // (b) bitta unutilgan joyda jimgina ruxsat ochilardi. `extraRoles` esa
 // FAQAT AVTORIZATSIYA uchun (`hasRole`) — bitta ham filtr o'zgarmaydi.
+// Yagona istisno — ro'yxatning rol filtri (`roleFilterWhere`).
 //
 // ⚠️ FILIALGA XOS. `permissions` bilan bir xil qoida: odam Chilonzorda
 // o'qituvchi + kassir, Yunusobodda esa faqat o'qituvchi bo'lishi
@@ -508,6 +509,26 @@ async function assertCanManageUser(targetId, actor) {
 }
 
 /**
+ * Ro'yxatning ROL FILTRI — asosiy YOKI qo'shimcha rol bo'yicha.
+ *
+ * ⚠️ Yuqoridagi "extraRoles faqat avtorizatsiya uchun" qoidasining yagona
+ * ISTISNOSI (biznes qarori, 2026-09-17): "Xodimlar → Tyutor" filtri tyutor
+ * roli IKKINCHI yoki keyingi rol bo'lgan odamni ham ko'rsatishi kerak — rol
+ * nechanchi o'rinda turgani ahamiyatsiz (`hasRole` bilan AYNI ma'no).
+ *
+ * ⚠️ `student` SKALYAR qoladi: "bu odam o'quvchimi" degan savol butun
+ * kodbazada `role === "student"` bilan o'qiladi. Qo'shimcha "student" roli
+ * bor xodim o'quvchilar ro'yxatiga tushsa, unga o'quvchi amallari ochilardi.
+ *
+ * @param {string} role
+ * @returns {object} Prisma `where` bo'lagi
+ */
+function roleFilterWhere(role) {
+  if (role === "student") return { role };
+  return { AND: [{ OR: [{ role }, { extraRoles: { has: role } }] }] };
+}
+
+/**
  * Barcha foydalanuvchilarni sahifalangan holda olish.
  */
 async function getAllUsers(query, actor = null) {
@@ -536,7 +557,7 @@ async function getAllUsers(query, actor = null) {
   // "Xodimlar" tabi shu bilan ishlaydi). Owner ham xodim — ro'yxatdan
   // yo'qolmasligi uchun chiqarib tashlanmaydi.
   if (role === "staff") where.role = { not: "student" };
-  else if (role) where.role = role;
+  else if (role) Object.assign(where, roleFilterWhere(role));
   if (classId) where.classes = { some: { classId } };
 
   // Arxivlangan tab faqat arxivlanganlarni, Asosiy tab esa qolganlarni ko'rsatadi
@@ -548,10 +569,16 @@ async function getAllUsers(query, actor = null) {
 
   if (search && search.trim()) {
     const s = search.trim();
-    where.OR = [
-      { firstName: { contains: s, mode: "insensitive" } },
-      { lastName: { contains: s, mode: "insensitive" } },
-      { username: { contains: s, mode: "insensitive" } },
+    // `AND` ichida: rol filtri ham `OR` bo'lishi mumkin, ustidan yozilmasin
+    where.AND = [
+      ...(where.AND ?? []),
+      {
+        OR: [
+          { firstName: { contains: s, mode: "insensitive" } },
+          { lastName: { contains: s, mode: "insensitive" } },
+          { username: { contains: s, mode: "insensitive" } },
+        ],
+      },
     ];
   }
 
@@ -1319,7 +1346,7 @@ async function getUsersForExport(role) {
   if (role === "staff") {
     where.role = { notIn: ["student", "owner"] };
   } else if (role && role !== "all") {
-    where.role = role;
+    Object.assign(where, roleFilterWhere(role));
   } else {
     where.role = { not: "owner" };
   }
