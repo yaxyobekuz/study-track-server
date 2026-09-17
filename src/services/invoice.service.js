@@ -476,23 +476,27 @@ const getStudentInvoices = async (studentId, options = {}) => {
   // ketadi), summasi esa qolaveradi — ya'ni butun summa qarzga qo'shilardi.
   const liveWhere = { studentId, status: { not: "cancelled" } };
 
-  const [rows, agg, statusInfo, vacationSet, balance, periods] = await Promise.all([
-    prisma.monthlyInvoice.findMany({ where, orderBy: { month: "desc" } }),
-    prisma.monthlyInvoice.aggregate({
-      where: liveWhere,
-      _sum: {
-        amount: true,
-        paidAmount: true,
-        baseAmount: true,
-        proratedAmount: true,
-        discountAmount: true,
-      },
-    }),
-    resolveStatusForStudent(studentId, month),
-    getVacationSet(),
-    getBalance(studentId),
-    getPeriodsForStudent(studentId),
-  ]);
+  const [rows, agg, statusInfo, vacationSet, balance, periods, currentServices] =
+    await Promise.all([
+      prisma.monthlyInvoice.findMany({ where, orderBy: { month: "desc" } }),
+      prisma.monthlyInvoice.aggregate({
+        where: liveWhere,
+        _sum: {
+          amount: true,
+          paidAmount: true,
+          baseAmount: true,
+          proratedAmount: true,
+          discountAmount: true,
+        },
+      }),
+      resolveStatusForStudent(studentId, month),
+      getVacationSet(),
+      getBalance(studentId),
+      getPeriodsForStudent(studentId),
+      // Joriy oydagi faol xizmatlar (nom + oylik summa) — "Qo'shimcha
+      // xizmatlar" bo'limi shu ro'yxatdan chiqadi
+      resolveServicesForStudent(studentId, month),
+    ]);
 
   // To'lovlar chek raqami bilan — har bir hisob-faktura uchun alohida
   // so'rov emas, bittasida
@@ -535,6 +539,10 @@ const getStudentInvoices = async (studentId, options = {}) => {
   // (tarif = qolgan − xizmat, yaxlitlash farqi tarifga tushadi).
   let servicesDebt = new Decimal(0);
   let hasServices = false;
+  // Per-XIZMAT qarz: serviceId → { name, debt }. Bir fakturaning xizmat
+  // ulushini snapshot summalari NISBATIDA aynan qaysi xizmatga tegishli
+  // ekaniga bo'lamiz (yig'indi shu fakturaning xizmat ulushiga teng).
+  const serviceDebtMap = new Map();
   for (const row of rows) {
     if (row.status === "cancelled") continue;
     const rowAmount = new Decimal(row.amount);
@@ -545,9 +553,21 @@ const getStudentInvoices = async (studentId, options = {}) => {
     if (remaining.lessThanOrEqualTo(0) || rowBase.lessThanOrEqualTo(0)) continue;
     if (rowServices.lessThanOrEqualTo(0)) continue;
     // remaining × servicesAmount / baseAmount
-    servicesDebt = servicesDebt.plus(
-      remaining.times(rowServices).div(rowBase),
-    );
+    const rowServicesDebt = remaining.times(rowServices).div(rowBase);
+    servicesDebt = servicesDebt.plus(rowServicesDebt);
+
+    for (const svc of row.servicesSnapshot ?? []) {
+      const svcAmount = new Decimal(svc.amount ?? 0);
+      if (svcAmount.lessThanOrEqualTo(0)) continue;
+      const svcDebt = rowServicesDebt.times(svcAmount).div(rowServices);
+      const prev = serviceDebtMap.get(svc.serviceId) ?? {
+        name: svc.name,
+        debt: new Decimal(0),
+      };
+      prev.debt = prev.debt.plus(svcDebt);
+      prev.name = svc.name; // eng so'nggi nom
+      serviceDebtMap.set(svc.serviceId, prev);
+    }
   }
   servicesDebt = servicesDebt.toDecimalPlaces(2);
   const positiveDebt = debt.isNegative() ? new Decimal(0) : debt;
@@ -614,6 +634,34 @@ const getStudentInvoices = async (studentId, options = {}) => {
   const dueMonthCount = dueIndex;
   const paidMonths = rows.filter((r) => r.status === "paid").length;
 
+  // ── QO'SHIMCHA XIZMATLAR bo'limi: joriy faol xizmatlar (nom + oylik summa)
+  // + har biriga to'plangan qarz. Faol emas-u qarzi qolgan xizmat ham
+  // ko'rinadi (o'tgan oylardan), aks holda qarz "yo'qolgan" bo'lardi.
+  const serviceList = [];
+  const seenServiceIds = new Set();
+  for (const s of currentServices) {
+    const d = serviceDebtMap.get(s.id);
+    serviceList.push({
+      serviceId: s.id,
+      name: s.name,
+      amount: s.amount,
+      debt: formatAmount(d?.debt ?? 0),
+      isActive: true,
+    });
+    seenServiceIds.add(s.id);
+  }
+  for (const [serviceId, d] of serviceDebtMap) {
+    if (seenServiceIds.has(serviceId)) continue;
+    if (d.debt.lessThanOrEqualTo(0)) continue;
+    serviceList.push({
+      serviceId,
+      name: d.name,
+      amount: null, // endi biriktirilmagan — oylik summa yo'q, faqat qarz
+      debt: formatAmount(d.debt),
+      isActive: false,
+    });
+  }
+
   return {
     // Oyna — o'quvchi kelgan oyidan oxirgi tegishli oygacha
     fromMonth: window.fromMonth,
@@ -667,6 +715,9 @@ const getStudentInvoices = async (studentId, options = {}) => {
       dueMonths: dueMonthCount,
     },
     timeline,
+    // Qo'shimcha xizmatlar — nom, oylik summa va per-xizmat qarz. Yig'ilgan
+    // qarzi `totals.debtServices` bilan bir xil (ikkalasi bir manbadan).
+    services: serviceList,
     invoices: rows.map((row) =>
       serializeInvoice(row, { payments: paymentsByInvoice.get(row.id) ?? [] }),
     ),
