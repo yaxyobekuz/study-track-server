@@ -121,7 +121,11 @@ const toEngineHours = (hoursMap, field) => {
   const out = new Map();
   for (const [teacherId, info] of hoursMap) {
     out.set(String(teacherId), {
-      hours: info[field] ?? 0,
+      // "planned" — dars qoldirilmaganda: pul soati + o'tilmagan darslar
+      hours:
+        field === "planned"
+          ? (info.hours ?? 0) + (info.missedHours ?? 0)
+          : info[field] ?? 0,
       weeklyHours: info.weeklyHours ?? 0,
       weeklyLessons: info.weeklyHours ?? 0,
       monthlyLessons: info.teachingDays ?? 0,
@@ -281,8 +285,10 @@ async function collectStaff(month) {
  * @param {object|null} accrued - dvigatel natijasi, BUGUNGACHA o'tilgan soat bo'yicha
  * @param {object|null} hoursRow - `lessonHours.service` natijasi
  * @param {object|null} entry - o'sha oyning MUHRLANGAN majburiyati
+ * @param {object|null} [planned] - dvigatel natijasi, dars QOLDIRILMAGANDA
+ *   (o'tildi + o'tilmadi + qoldi) — "dars qoldirmaganda qancha olardi"
  */
-function buildRow(person, projected, accrued, hoursRow, entry) {
+function buildRow(person, projected, accrued, hoursRow, entry, planned = null) {
   const hours = hoursRow?.hours ?? 0;
   const taught = hoursRow?.taughtHours ?? 0;
   // ⚠️ `Decimal(0)` — TRUTHY obyekt. Oddiy `perHourRate ? ... : null`
@@ -341,6 +347,12 @@ function buildRow(person, projected, accrued, hoursRow, entry) {
     // ── Pul (JONLI, muhrlanmagan) ─────────
     accruedAmount: accrued ? formatAmount(accrued.amount) : null,
     projectedAmount: projected ? formatAmount(projected.amount) : null,
+    // Dars qoldirilmaganda va o'tilmagan darslar uchun ayrilgan summa
+    plannedAmount: planned ? formatAmount(planned.amount) : null,
+    missedAmount:
+      planned && projected
+        ? formatAmount(Decimal.max(planned.amount.minus(projected.amount), 0))
+        : null,
     projectedHoursAmount: projected ? formatAmount(projected.kpiAmount) : null,
     fixedAmount: projected ? formatAmount(projected.fixedAmount) : null,
     allowanceAmount: projected ? formatAmount(projected.allowanceAmount) : null,
@@ -384,6 +396,7 @@ async function buildLedger(month) {
     hoursMap: toEngineHours(hoursMap, "hours"),
   });
   const accruedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "taughtHours") };
+  const plannedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "planned") };
 
   // ⚠️ TARTIB REJA (`plannedHours`) BO'YICHA, pul soati (`hours`) EMAS.
   // `hours` dan o'tilmagan darslar ayirilgan: ilgari yig'ma ko'rinishdagi
@@ -399,6 +412,7 @@ async function buildLedger(month) {
         computeForStaff(person, month, accruedCtx),
         hoursMap.get(person.id),
         entryMap.get(person.id),
+        computeForStaff(person, month, plannedCtx),
       ),
     )
     .sort(
@@ -698,6 +712,7 @@ async function getTeacherDetail(teacherId, month) {
     hoursMap: toEngineHours(hoursMap, "hours"),
   });
   const accruedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "taughtHours") };
+  const plannedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "planned") };
 
   const row = buildRow(
     teacher,
@@ -705,6 +720,7 @@ async function getTeacherDetail(teacherId, month) {
     computeForStaff(teacher, month, accruedCtx),
     hoursRow,
     entry,
+    computeForStaff(teacher, month, plannedCtx),
   );
 
   // Baho qo'yish oynalari (shu o'qituvchini qamragan) — "O'tilmagan darslar"
