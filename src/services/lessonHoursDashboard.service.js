@@ -385,6 +385,12 @@ async function buildLedger(month) {
   });
   const accruedCtx = { ...ctx, hoursMap: toEngineHours(hoursMap, "taughtHours") };
 
+  // ⚠️ TARTIB REJA (`plannedHours`) BO'YICHA, pul soati (`hours`) EMAS.
+  // `hours` dan o'tilmagan darslar ayirilgan: ilgari yig'ma ko'rinishdagi
+  // "Yuklama reytingi" shu bilan saralanardi va haftasiga 30 soatli, lekin
+  // bahosi qo'yilmagan o'qituvchi 27 soatlidan pastga tushib, o'ntalikdan
+  // umuman chiqib ketishi mumkin edi. Yuklama — jadvaldagi reja; vedomostning
+  // "Oy" ustuni va o'qituvchi oynasi ham shu raqamni ko'rsatadi.
   const rows = staff
     .map((person) =>
       buildRow(
@@ -395,7 +401,12 @@ async function buildLedger(month) {
         entryMap.get(person.id),
       ),
     )
-    .sort((a, b) => b.hours - a.hours || a.staffName.localeCompare(b.staffName));
+    .sort(
+      (a, b) =>
+        b.plannedHours - a.plannedHours ||
+        b.weeklyHours - a.weeklyHours ||
+        a.staffName.localeCompare(b.staffName),
+    );
 
   return { rows, calendar, cutoff, entries, hoursMap };
 }
@@ -539,7 +550,8 @@ async function getOverview(month) {
     },
     modes,
     series,
-    // Eng ko'p yuklamali o'nlik — butun ro'yxat vedomost sahifasida
+    // Eng ko'p yuklamali o'nlik (reja bo'yicha, `buildLedger` tartibi) —
+    // butun ro'yxat vedomost sahifasida
     topTeachers: teachingStaff.slice(0, 10),
   };
 }
@@ -586,12 +598,8 @@ async function getLedger(month, query = {}) {
         : rows.filter((r) => r.salaryType === query.type);
   }
 
-  // Tartib "Oy" ustuni (reja) bo'yicha — ekranda ko'rinib turgan raqam.
-  // `buildLedger` ning o'zi `hours` bo'yicha saralaydi: yig'ma ko'rinishdagi
-  // reytingda aynan o'sha raqam chiziladi.
-  rows = [...rows].sort(
-    (a, b) => b.plannedHours - a.plannedHours || a.staffName.localeCompare(b.staffName),
-  );
+  // Tartib `buildLedger` dan — "Oy" ustuni (reja) bo'yicha, yig'ma
+  // ko'rinishdagi reyting bilan bir xil. Filtrlar tartibni buzmaydi.
 
   return {
     month,
