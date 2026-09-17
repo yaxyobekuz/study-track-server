@@ -1390,11 +1390,47 @@ model Task {
   @@map("tasks")
 }
 
+// Topshiriq qoidalari (filial singleton). Getter — `settings.service.js` dagi
+// `getTaskSettings()`. Qoidalar HAM yaratishda, HAM yakunlashda SERVERDA
+// tekshiriladi: frontend faqat oldindan ogohlantiradi.
+model TaskSettings {
+  id                       String   @id @default("singleton") @db.VarChar(24)
+  // ── Yaratish ──
+  minTitleLength           Int      @default(3) @map("min_title_length")
+  minDescriptionLength     Int      @default(10) @map("min_description_length")
+  requireCreateAttachments Boolean  @default(false) @map("require_create_attachments")
+  minLeadHours             Int      @default(1) @map("min_lead_hours")
+  defaultPenaltyPoints     Int      @default(1) @map("default_penalty_points")
+  maxPenaltyPoints         Int      @default(10) @map("max_penalty_points")
+  // ── Yakunlash (ijrochi) ──
+  // ⚠️ Kamida 1: fayl yuklamasdan topshiriqni yakunlab bo'lmaydi (biznes qoidasi).
+  minCompletionFiles       Int      @default(1) @map("min_completion_files")
+  maxCompletionFiles       Int      @default(5) @map("max_completion_files")
+  requireCompletionNote    Boolean  @default(false) @map("require_completion_note")
+  minCompletionNoteLength  Int      @default(0) @map("min_completion_note_length")
+  // "image" | "video" | "document"
+  completionFileTypes      String[] @default(["image", "video", "document"]) @map("completion_file_types")
+  allowLateSubmission      Boolean  @default(true) @map("allow_late_submission")
+  // ── Ko'rib chiqish va jarima ──
+  requireApproveReason     Boolean  @default(false) @map("require_approve_reason")
+  autoPenaltyEnabled       Boolean  @default(true) @map("auto_penalty_enabled")
+  dueSoonHours             Int      @default(24) @map("due_soon_hours")
+  updatedBy                String?  @map("updated_by") @db.Char(24)
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  @@map("task_settings")
+}
+
 model TaskStatusHistory {
   id        String     @id @db.Char(24)
   taskId    String     @map("task_id") @db.Char(24)
   status    TaskStatus
   reason    String
+  // "status" | "edit" | "deadline" | "penalty" — vaqt chizig'ida belgisi shunga qarab tanlanadi
+  kind      String     @default("status") @db.VarChar(16)
+  // Tahrirda: [{ field, label, from, to }]
+  meta      Json?
   changedBy String?    @map("changed_by") @db.Char(24)
   changedAt DateTime   @default(now()) @map("changed_at")
   position  Int
