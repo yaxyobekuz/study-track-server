@@ -334,54 +334,44 @@ const resolveTrendRange = (query = {}) => {
 /**
  * CASH FLOW SERIYASI — KUNLIK / OYLIK / YILLIK yoki sanadan-sanagacha.
  *
- * `buildTrend` (oylik, dashboard payload'i) bilan bir MANBA (payments,
- * external_incomes, damage_payments — kirim; salary_payments, expenses —
- * chiqim; qoldiq esa `account_entries` daftaridan). Farqi: bucket
- * granulyatsiyasi (`to_char` formati) va oraliq parametrlanadi.
+ * Uch ko'rsatkich, hodisa sanasi bo'yicha bucket'lanadi:
+ *   • Kirim  = payments + external_incomes + damage_payments
+ *   • Chiqim = salary_payments + expenses
+ *   • Foyda  = kirim − chiqim (o'sha davr ichida)
+ *
+ * ⚠️ Ataylab SODDA va bitta so'rov: ilgari qo'shilgan "kassa qoldig'i"
+ * chizig'i `account_entries` daftaridan running-balance hisoblardi (ochilish
+ * qoldig'i + oldingi barcha yozuvlar) — bu og'ir va mo'rt qism edi. Rahbarga
+ * kerak bo'lgani "davr ichida qancha kirdi, chiqdi va sof foyda" — shuning
+ * uchun qoldiq olib tashlandi, o'rniga foyda ko'rsatiladi.
  *
  * @param {object} query - { granularity: "day"|"month"|"year", from, to }
  */
 const getCashflowSeries = async (query = {}) => {
   const { granularity, fromStr, toStr, from, to, fmt, buckets } = resolveTrendRange(query);
-  const TASHKENT = TASHKENT_TZ;
 
-  const [rows, deltas, opening, before] = await Promise.all([
-    prisma.$queryRawUnsafe(
-      `SELECT bucket, kind, SUM(amount)::text AS amount
-         FROM (
-           SELECT to_char(paid_at ${TASHKENT}, '${fmt}') AS bucket, 'income' AS kind, amount
-             FROM payments            WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
-           UNION ALL
-           SELECT to_char(occurred_at ${TASHKENT}, '${fmt}'), 'income', amount
-             FROM external_incomes    WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
-           UNION ALL
-           SELECT to_char(paid_at ${TASHKENT}, '${fmt}'), 'income', amount
-             FROM damage_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
-           UNION ALL
-           SELECT to_char(paid_at ${TASHKENT}, '${fmt}'), 'expense', amount
-             FROM salary_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
-           UNION ALL
-           SELECT to_char(occurred_at ${TASHKENT}, '${fmt}'), 'expense', amount
-             FROM expenses            WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
-         ) AS combined
-        GROUP BY 1, 2`,
-      from,
-      to,
-    ),
-    prisma.$queryRawUnsafe(
-      `SELECT to_char(occurred_at ${TASHKENT}, '${fmt}') AS bucket, SUM(amount)::text AS delta
-         FROM account_entries
-        WHERE occurred_at >= $1 AND occurred_at <= $2
-        GROUP BY 1`,
-      from,
-      to,
-    ),
-    prisma.paymentAccount.aggregate({ _sum: { openingBalance: true } }),
-    prisma.accountEntry.aggregate({
-      where: { occurredAt: { lt: from } },
-      _sum: { amount: true },
-    }),
-  ]);
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT bucket, kind, SUM(amount)::text AS amount
+       FROM (
+         SELECT to_char(paid_at ${TASHKENT_TZ}, '${fmt}') AS bucket, 'income' AS kind, amount
+           FROM payments            WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+         UNION ALL
+         SELECT to_char(occurred_at ${TASHKENT_TZ}, '${fmt}'), 'income', amount
+           FROM external_incomes    WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+         UNION ALL
+         SELECT to_char(paid_at ${TASHKENT_TZ}, '${fmt}'), 'income', amount
+           FROM damage_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+         UNION ALL
+         SELECT to_char(paid_at ${TASHKENT_TZ}, '${fmt}'), 'expense', amount
+           FROM salary_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+         UNION ALL
+         SELECT to_char(occurred_at ${TASHKENT_TZ}, '${fmt}'), 'expense', amount
+           FROM expenses            WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+       ) AS combined
+      GROUP BY 1, 2`,
+    from,
+    to,
+  );
 
   const byBucket = new Map();
   for (const row of rows) {
@@ -389,20 +379,15 @@ const getCashflowSeries = async (query = {}) => {
     entry[row.kind] = entry[row.kind].plus(row.amount ?? 0);
     byBucket.set(row.bucket, entry);
   }
-  const deltaByBucket = new Map(deltas.map((r) => [r.bucket, new Decimal(r.delta ?? 0)]));
-
-  let running = new Decimal(opening._sum.openingBalance ?? 0).plus(before._sum.amount ?? 0);
 
   const series = buckets.map((b) => {
     const row = byBucket.get(b.key) ?? { income: new Decimal(0), expense: new Decimal(0) };
-    running = running.plus(deltaByBucket.get(b.key) ?? 0);
     return {
       key: b.key,
       label: b.label,
       income: formatAmount(row.income),
       expense: formatAmount(row.expense),
       profit: formatAmount(row.income.minus(row.expense)),
-      balance: formatAmount(running),
     };
   });
 
@@ -417,7 +402,7 @@ const getCashflowSeries = async (query = {}) => {
     totals: {
       income: formatAmount(totalIncome),
       expense: formatAmount(totalExpense),
-      balance: series.length ? series[series.length - 1].balance : formatAmount(running),
+      profit: formatAmount(totalIncome.minus(totalExpense)),
     },
   };
 };
