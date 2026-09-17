@@ -257,17 +257,23 @@ const tashkentTodayParts = () => {
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
+// Toshkent devor-soati SQL ifodasi — instant ustunini Toshkent kuniga o'giradi
+const TASHKENT_TZ = `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent'`;
+
 /**
- * CASH FLOW SERIYASI — KUNLIK / OYLIK / YILLIK yoki sanadan-sanagacha.
+ * DAVR VA BUCKET'LARNI ANIQLAYDI — cash flow va hisoblangan/yig'ilgan
+ * seriyalari uchun umumiy.
  *
- * `buildTrend` (oylik, dashboard payload'i) bilan bir MANBA (payments,
- * external_incomes, damage_payments — kirim; salary_payments, expenses —
- * chiqim; qoldiq esa `account_entries` daftaridan). Farqi: bucket
- * granulyatsiyasi (`to_char` formati) va oraliq parametrlanadi.
+ * Ikkala grafik ham bir xil vaqt o'qidan foydalanadi: granulyatsiya
+ * (`day`/`month`/`year`) `to_char` formatini beradi, oraliq esa ixtiyoriy
+ * (`from`/`to`) yoki granulyatsiyaga mos standart (30 kun / 12 oy / 5 yil).
+ * Bo'sh bucket'lar ham to'ldiriladi (grafikda "tishli" bo'shliq bo'lmasin).
  *
- * @param {object} query - { granularity: "day"|"month"|"year", from, to }
+ * @param {object} query - { granularity, from, to }
+ * @returns {{granularity, fromStr, toStr, from: Date, to: Date, fmt: string,
+ *   buckets: Array<{key: string, label: string}>}}
  */
-const getCashflowSeries = async (query = {}) => {
+const resolveTrendRange = (query = {}) => {
   const granularity = CF_GRANULARITY.has(query.granularity) ? query.granularity : "month";
 
   // ── Oraliqni aniqlash (Toshkent kalendari) ──────────────────────────────
@@ -299,7 +305,45 @@ const getCashflowSeries = async (query = {}) => {
   const to = new Date(`${toStr}T23:59:59.999+05:00`);
 
   const fmt = granularity === "day" ? "YYYY-MM-DD" : granularity === "year" ? "YYYY" : "YYYY-MM";
-  const TASHKENT = `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent'`;
+
+  // ── Barcha bucket'larni tartib bilan generatsiya qilish (bo'sh ham) ──────
+  const [fy, fm, fd] = fromStr.split("-").map(Number);
+  const [ty, tm, td] = toStr.split("-").map(Number);
+  const buckets = [];
+  if (granularity === "day") {
+    let cur = new Date(Date.UTC(fy, fm - 1, fd));
+    const end = new Date(Date.UTC(ty, tm - 1, td));
+    while (cur <= end) {
+      const y = cur.getUTCFullYear(), m = cur.getUTCMonth() + 1, d = cur.getUTCDate();
+      buckets.push({ key: `${y}-${pad2(m)}-${pad2(d)}`, label: `${d}-${MON3[m - 1]}` });
+      cur = new Date(cur.getTime() + 86400000);
+    }
+  } else if (granularity === "year") {
+    for (let y = fy; y <= ty; y += 1) buckets.push({ key: `${y}`, label: `${y}` });
+  } else {
+    let y = fy, m = fm;
+    while (y < ty || (y === ty && m <= tm)) {
+      buckets.push({ key: `${y}-${pad2(m)}`, label: formatMonthShort(y * 100 + m) });
+      m += 1; if (m > 12) { m = 1; y += 1; }
+    }
+  }
+
+  return { granularity, fromStr, toStr, from, to, fmt, buckets };
+};
+
+/**
+ * CASH FLOW SERIYASI — KUNLIK / OYLIK / YILLIK yoki sanadan-sanagacha.
+ *
+ * `buildTrend` (oylik, dashboard payload'i) bilan bir MANBA (payments,
+ * external_incomes, damage_payments — kirim; salary_payments, expenses —
+ * chiqim; qoldiq esa `account_entries` daftaridan). Farqi: bucket
+ * granulyatsiyasi (`to_char` formati) va oraliq parametrlanadi.
+ *
+ * @param {object} query - { granularity: "day"|"month"|"year", from, to }
+ */
+const getCashflowSeries = async (query = {}) => {
+  const { granularity, fromStr, toStr, from, to, fmt, buckets } = resolveTrendRange(query);
+  const TASHKENT = TASHKENT_TZ;
 
   const [rows, deltas, opening, before] = await Promise.all([
     prisma.$queryRawUnsafe(
@@ -347,28 +391,6 @@ const getCashflowSeries = async (query = {}) => {
   }
   const deltaByBucket = new Map(deltas.map((r) => [r.bucket, new Decimal(r.delta ?? 0)]));
 
-  // ── Barcha bucket'larni tartib bilan generatsiya qilish (bo'sh ham) ──────
-  const [fy, fm, fd] = fromStr.split("-").map(Number);
-  const [ty, tm, td] = toStr.split("-").map(Number);
-  const buckets = [];
-  if (granularity === "day") {
-    let cur = new Date(Date.UTC(fy, fm - 1, fd));
-    const end = new Date(Date.UTC(ty, tm - 1, td));
-    while (cur <= end) {
-      const y = cur.getUTCFullYear(), m = cur.getUTCMonth() + 1, d = cur.getUTCDate();
-      buckets.push({ key: `${y}-${pad2(m)}-${pad2(d)}`, label: `${d}-${MON3[m - 1]}` });
-      cur = new Date(cur.getTime() + 86400000);
-    }
-  } else if (granularity === "year") {
-    for (let y = fy; y <= ty; y += 1) buckets.push({ key: `${y}`, label: `${y}` });
-  } else {
-    let y = fy, m = fm;
-    while (y < ty || (y === ty && m <= tm)) {
-      buckets.push({ key: `${y}-${pad2(m)}`, label: formatMonthShort(y * 100 + m) });
-      m += 1; if (m > 12) { m = 1; y += 1; }
-    }
-  }
-
   let running = new Decimal(opening._sum.openingBalance ?? 0).plus(before._sum.amount ?? 0);
 
   const series = buckets.map((b) => {
@@ -396,6 +418,92 @@ const getCashflowSeries = async (query = {}) => {
       income: formatAmount(totalIncome),
       expense: formatAmount(totalExpense),
       balance: series.length ? series[series.length - 1].balance : formatAmount(running),
+    },
+  };
+};
+
+/**
+ * HISOBLANGAN VA YIG'ILGAN SERIYASI — KUNLIK / OYLIK / YILLIK yoki oraliq.
+ *
+ * ⚠️ `buildAccrual` (dashboard payload'idagi 12 oylik grafik) OBLIGATSIYA
+ * OYI kesimida ishlaydi: "shu oyning hisob-fakturasidan qancha yig'ildi"
+ * (o'q = `invoice.month`, yig'ilgan = `paidAmount` snapshot). Bu esa
+ * mumkin emas kunlik qilib bo'lishi — hisob-faktura OYLIK (kun koordinatasi
+ * yo'q).
+ *
+ * Shuning uchun filtrli variant HODISA sanasi bo'yicha yig'adi — aynan cash
+ * flow bilan bir xil vaqt o'qi:
+ *   • Hisoblangan = hisob-faktura QACHON chiqarilgani (`createdAt`).
+ *   • Yig'ilgan   = pul QACHON taqsimlangani (`payment_allocations.appliedAt`,
+ *     bekor qilinmagan — `paidAmount` invariantining aynan manbai).
+ * Hisob-faktura oylik bo'lsa-da, u aniq bir kunda tuziladi va pul aniq bir
+ * kunda taqsimlanadi, shuning uchun kunlik kesim ham ma'noli chiqadi.
+ *
+ * Undirish foizi bucket ichida: yig'ilgan / hisoblangan (o'sha davrda).
+ *
+ * @param {object} query - { granularity: "day"|"month"|"year", from, to }
+ */
+const getAccrualSeries = async (query = {}) => {
+  const { granularity, fromStr, toStr, from, to, fmt, buckets } = resolveTrendRange(query);
+
+  const [accruedRows, collectedRows] = await Promise.all([
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(created_at ${TASHKENT_TZ}, '${fmt}') AS bucket,
+              SUM(amount)::text          AS invoiced,
+              SUM(discount_amount)::text AS discount,
+              SUM(base_amount - prorated_amount)::text AS proration
+         FROM monthly_invoices
+        WHERE status <> 'cancelled' AND created_at >= $1 AND created_at <= $2
+        GROUP BY 1`,
+      from,
+      to,
+    ),
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(applied_at ${TASHKENT_TZ}, '${fmt}') AS bucket, SUM(amount)::text AS collected
+         FROM payment_allocations
+        WHERE is_voided = false AND applied_at >= $1 AND applied_at <= $2
+        GROUP BY 1`,
+      from,
+      to,
+    ),
+  ]);
+
+  const accByBucket = new Map(accruedRows.map((r) => [r.bucket, r]));
+  const colByBucket = new Map(collectedRows.map((r) => [r.bucket, new Decimal(r.collected ?? 0)]));
+
+  const series = buckets.map((b) => {
+    const a = accByBucket.get(b.key);
+    const invoiced = new Decimal(a?.invoiced ?? 0);
+    const collected = colByBucket.get(b.key) ?? new Decimal(0);
+    return {
+      key: b.key,
+      label: b.label,
+      invoiced: formatAmount(invoiced),
+      collected: formatAmount(collected),
+      collectionRate: rateOf(collected, invoiced) ?? 0,
+    };
+  });
+
+  const totalInvoiced = series.reduce((s, r) => s.plus(r.invoiced), new Decimal(0));
+  const totalCollected = series.reduce((s, r) => s.plus(r.collected), new Decimal(0));
+  const totalDiscount = accruedRows.reduce((s, r) => s.plus(r.discount ?? 0), new Decimal(0));
+  // Proratsiya manfiy bo'lmaydi (prorated ≤ base), lekin ehtiyot uchun kesamiz
+  const totalProration = accruedRows.reduce((s, r) => {
+    const p = new Decimal(r.proration ?? 0);
+    return s.plus(p.isNegative() ? new Decimal(0) : p);
+  }, new Decimal(0));
+
+  return {
+    granularity,
+    from: fromStr,
+    to: toStr,
+    series,
+    totals: {
+      invoiced: formatAmount(totalInvoiced),
+      collected: formatAmount(totalCollected),
+      collectionRate: rateOf(totalCollected, totalInvoiced),
+      discount: formatAmount(totalDiscount),
+      proration: formatAmount(totalProration),
     },
   };
 };
@@ -1831,6 +1939,7 @@ module.exports = {
   getDashboard,
   getKpiScorecard,
   getCashflowSeries,
+  getAccrualSeries,
   // Sinov uchun ochiladi
   monthInstantRange,
   balanceAt,

@@ -15,6 +15,7 @@ const {
   getDashboard,
   getKpiScorecard,
   getCashflowTrend,
+  getAccrualTrend,
   getTargets,
   saveTargets,
   getOverview,
@@ -34,6 +35,7 @@ const {
 router.get("/dashboard", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getDashboard);
 router.get("/kpi", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getKpiScorecard);
 router.get("/cashflow-trend", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getCashflowTrend);
+router.get("/accrual-trend", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getAccrualTrend);
 
 // REJA (byudjet). Ko'rish — dashboard bilan bir xil huquq (raqam baribir
 // ekranda turadi), YOZISH esa alohida: reja qo'yish rahbarning qarori va
