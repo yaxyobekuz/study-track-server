@@ -55,8 +55,8 @@ const { Decimal, formatAmount, parseAmount, sumAmounts } = require("../helpers/m
 const { formatDateTimeUz } = require("../helpers/date.helpers");
 const { computeDeductions } = require("../helpers/salaryRules.helpers");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
-const { loadContext, computeForStaff } = require("./payrollEngine.service");
-const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
+const { loadContext, computeForStaff, buildTutorLines } = require("./payrollEngine.service");
+const { resolveTutorIdsForMonth, loadGroupsForPayroll } = require("./tutorGroup.service");
 const payrollAudit = require("./payrollAudit.service");
 const logger = require("../utils/logger");
 
@@ -379,9 +379,68 @@ const sealedGrossOf = (entry) =>
 const breakdownKey = (list) =>
   JSON.stringify((Array.isArray(list) ? list : []).map((row) => [row.id, row.amount]));
 
+// Tyutor qatorining KIMLIGI: guruh va stavkalar. O'quvchilar soni kalitga
+// KIRMAYDI — u muhrlanadi, sinf tarkibi o'zgargani qatorni qayta yozmaydi.
+const tutorLineKey = (line) =>
+  `${line.tutorGroupId}|${line.perStudentAmount}|${line.groupAmount}`;
+
 /**
- * TO'LANMAGAN MUHRLANGAN OYLIKNI qayta hisoblaydi — ushlab qolish qo'shilgan
- * yoki bekor qilingandan keyin.
+ * Muhrdagi tyutor qatorlarini amaldagi guruhlarga moslaydi.
+ *
+ * Guruhi va stavkasi o'zgarmagan qator MUHRDAGICHA qoladi (o'quvchilar soni
+ * bilan): aks holda har kunlik pass sinfga bitta o'quvchi qo'shilganda
+ * o'tgan oylikni ham o'zgartirib yurardi. Faqat guruh qo'shilsa, olib
+ * tashlansa yoki stavkasi o'zgarsa qatorlar qayta yoziladi. Tyutor bo'lmagan
+ * ustamalarga (bonus, qoida) tegilmaydi.
+ *
+ * @returns {{ changed: boolean, allowanceAmount: Decimal, allowanceBreakdown: Array }}
+ */
+const resealTutorLines = (entry, groups, studentCounts) => {
+  const sealed = Array.isArray(entry.allowanceBreakdown) ? entry.allowanceBreakdown : [];
+  const oldLines = sealed.filter((line) => line?.type === "tutor");
+  const sealedByKey = new Map(oldLines.map((line) => [tutorLineKey(line), line]));
+
+  const lines = buildTutorLines(groups, studentCounts).lines.map(
+    (line) => sealedByKey.get(tutorLineKey(line)) ?? line,
+  );
+
+  const keysOf = (list) => list.map(tutorLineKey).sort().join(",");
+  const changed = keysOf(oldLines) !== keysOf(lines);
+
+  const allowanceAmount = new Decimal(entry.allowanceAmount)
+    .minus(sumAmounts(oldLines.map((line) => line.amount ?? 0)))
+    .plus(sumAmounts(lines.map((line) => line.amount)));
+
+  return {
+    changed,
+    allowanceAmount,
+    allowanceBreakdown: [...sealed.filter((line) => line?.type !== "tutor"), ...lines],
+  };
+};
+
+/** To'langan qismga qarab holat (`salaryPayment.deriveStatus` bilan AYNI qoida). */
+const statusFor = (amount, paidAmount) => {
+  if (amount.lessThanOrEqualTo(0) || paidAmount.greaterThanOrEqualTo(amount)) return "paid";
+  return paidAmount.greaterThan(0) ? "partial" : "unpaid";
+};
+
+/**
+ * MUHRLANGAN OYLIKNING O'ZGARUVCHAN QISMLARINI qayta hisoblaydi (`finance.md`
+ * §10): TYUTOR QATORLARI va USHLAB QOLISH, ulardan kelib chiqib `amount`.
+ * Lavozim maoshi va dars soati (`fixedAmount`, `kpiAmount`) muhrdagicha qoladi.
+ *
+ * Chaqiriladi: ushlab qolish qo'shilganda/bekor qilinganda, tyutor guruhi
+ * biriktirilganda/o'zgarganda/olib tashlanganda va oylik shakllantirishda
+ * (kunlik cron va "Shakllantirish" tugmasi) zaxira sifatida.
+ *
+ * TO'LOV TUSHGAN qator:
+ *   - faqat ushlab qolish o'zgarsa — TEGILMAYDI (`locked`): pul haqiqatan
+ *     ushlangan;
+ *   - TYUTOR qatorlari o'zgarsa — yangilanadi, agar yangi summa to'langanidan
+ *     kam bo'lmasa (holat `paid` → `partial` bo'lishi mumkin: tyutor puli
+ *     hali to'lanmagan). Kam bo'lsa ortiqcha to'lov paydo bo'lardi — `locked`.
+ *   Sabab (biznes qarori, 2026-09-17): sinf biriktirilgan tyutorning puli
+ *   moliyada ko'rinmay, faqat vedomostda turardi.
  *
  * Har qator ALOHIDA compare-and-swap: bittasi shu orada to'langan bo'lsa,
  * qolganlari baribir yangilanadi, u esa `conflicts` da qaytadi.
@@ -416,19 +475,34 @@ const resyncSealedEntries = async (staffIds, months) => {
       if (!byStaff.has(d.staffId)) byStaff.set(d.staffId, []);
       byStaff.get(d.staffId).push(d);
     }
+    const tutor = await loadGroupsForPayroll(month, entries.map((e) => e.staffId));
 
     for (const entry of entries) {
-      const gross = sealedGrossOf(entry);
+      const reseal = resealTutorLines(
+        entry,
+        tutor.groupMap.get(entry.staffId) || [],
+        tutor.studentCounts,
+      );
+      // Yalpi tyutor qatorlari YANGILANGANidan keyin: foizli ushlab qolish
+      // yangi yalpidan olinadi
+      const gross = new Decimal(entry.fixedAmount)
+        .plus(entry.kpiAmount)
+        .plus(reseal.allowanceAmount);
       const { total, breakdown } = computeDeductions(gross, byStaff.get(entry.staffId) || [], {
         perHourRate: entry.perHourRate,
       });
 
       const unchanged =
+        !reseal.changed &&
         new Decimal(entry.deductionAmount).equals(total) &&
         breakdownKey(entry.deductionBreakdown) === breakdownKey(breakdown);
       if (unchanged) continue;
 
-      if (sealStateOf(entry) === "locked") {
+      const amount = gross.minus(total);
+      const paid = new Decimal(entry.paidAmount);
+      const blocked =
+        sealStateOf(entry) === "locked" && (!reseal.changed || amount.lessThan(paid));
+      if (blocked) {
         result.locked.push({
           staffId: entry.staffId,
           staffName: fullName(entry.staffSnapshot),
@@ -439,21 +513,26 @@ const resyncSealedEntries = async (staffIds, months) => {
         continue;
       }
 
-      const amount = gross.minus(total);
       const updated = await prisma.payrollEntry.updateMany({
         where: {
           id: entry.id,
           amount: entry.amount,
-          paidAmount: 0,
+          paidAmount: entry.paidAmount,
           status: entry.status,
         },
         data: {
           amount,
+          ...(reseal.changed
+            ? {
+                allowanceAmount: reseal.allowanceAmount,
+                allowanceBreakdown: reseal.allowanceBreakdown,
+              }
+            : {}),
           deductionAmount: total,
           deductionBreakdown: breakdown,
           // To'liq ushlab qolingan — to'lanadigan narsa yo'q; bekor qilinsa
           // yana qarzga qaytadi
-          status: amount.greaterThan(0) ? "unpaid" : "paid",
+          status: statusFor(amount, paid),
         },
       });
 

@@ -156,6 +156,42 @@ const resolvePositionBase = (user, position, ctx) => {
 };
 
 /**
+ * TYUTOR GURUHLARI → ustama qatorlari. BITTA joy: dvigatel ham, muhrlangan
+ * oylikni qayta hisoblash ham (`payrollDeduction.resyncSealedEntries`) shuni
+ * chaqiradi — qator shakli ikki xil bo'lib qolmasin.
+ *
+ * Qatorda sinf va o'quvchilar soni MUHRLANADI: keyin sinf tarkibi o'zgarsa
+ * ham "nega shuncha" degan savolga javob qoladi.
+ *
+ * @param {Array} groups - `TutorGroup` qatorlari (`class` bilan)
+ * @param {Map<string, number>} studentCounts - classId → o'quvchilar soni
+ * @returns {{ total: Decimal, lines: Array }}
+ */
+const buildTutorLines = (groups, studentCounts) => {
+  let total = new Decimal(0);
+  const lines = [];
+  for (const g of groups) {
+    const studentCount = studentCounts?.get(g.classId) ?? 0;
+    const amt = computeTutorGroupAmount(g, studentCount);
+    const className = g.class?.name ?? "";
+    total = total.plus(amt);
+    lines.push({
+      label: `Tyutor: ${className || "sinf"}`,
+      type: "tutor",
+      value: Number(amt),
+      amount: formatAmount(amt),
+      tutorGroupId: g.id,
+      classId: g.classId,
+      className,
+      studentCount,
+      perStudentAmount: formatAmount(g.perStudentAmount),
+      groupAmount: formatAmount(g.groupAmount),
+    });
+  }
+  return { total, lines };
+};
+
+/**
  * Bitta xodim uchun komponentlarni hisoblaydi.
  * @returns {{ eligible, salaryType, fixedAmount, kpiAmount, allowanceAmount,
  *   lessonHours, perHourRate, amount, allowanceBreakdown, categoryName,
@@ -205,27 +241,12 @@ const computeForStaff = (user, month, ctx) => {
   }
 
   // TYUTOR GURUHLARI — foizli ustama bazasiga (`preBonus`) KIRMAYDI, ustiga
-  // qo'shiladi. Qatorda sinf va o'quvchilar soni MUHRLANADI: keyin sinf
-  // tarkibi o'zgarsa ham "nega shuncha" degan savolga javob qoladi.
-  let tutorAmount = new Decimal(0);
-  for (const g of tutorGroups) {
-    const studentCount = ctx.classStudentCounts?.get(g.classId) ?? 0;
-    const amt = computeTutorGroupAmount(g, studentCount);
-    const className = g.class?.name ?? "";
-    tutorAmount = tutorAmount.plus(amt);
-    allowanceBreakdown.push({
-      label: `Tyutor: ${className || "sinf"}`,
-      type: "tutor",
-      value: Number(amt),
-      amount: formatAmount(amt),
-      tutorGroupId: g.id,
-      classId: g.classId,
-      className,
-      studentCount,
-      perStudentAmount: formatAmount(g.perStudentAmount),
-      groupAmount: formatAmount(g.groupAmount),
-    });
-  }
+  // qo'shiladi
+  const { total: tutorAmount, lines: tutorLines } = buildTutorLines(
+    tutorGroups,
+    ctx.classStudentCounts,
+  );
+  allowanceBreakdown.push(...tutorLines);
   allowanceAmount = allowanceAmount.plus(tutorAmount);
 
   const grossAmount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
@@ -295,6 +316,7 @@ const previewForStaff = (user, month, ctx) => {
 
 module.exports = {
   loadContext,
+  buildTutorLines,
   resolvePositionBase,
   computeForStaff,
   previewForStaff,

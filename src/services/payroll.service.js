@@ -115,6 +115,10 @@ const emptySummary = (month, reason) => ({
   created: 0,
   // Bekordan tiklangani — yangi qator emas, lekin registrda qayta paydo bo'ladi
   restored: 0,
+  // Mavjud qatorda tyutor/ushlab qolish qismi yangilangani va to'lov
+  // tufayli yangilab bo'lmagani
+  resynced: 0,
+  resyncLocked: 0,
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
@@ -335,6 +339,19 @@ const generateForMonth = async (monthInput, options = {}) => {
     const restored = results.reduce((sum, r) => sum + r.count, 0);
     summary.restored = restored;
     summary.skipped.alreadyExists += restores.length - restored;
+  }
+
+  // 5 ── MAVJUD majburiyatlar: tyutor qatorlari va ushlab qolish amaldagi
+  // holatga moslanadi (`resyncSealedEntries`). Guruh biriktirish nuqtasi buni
+  // o'zi qiladi — bu yer undan oldin muhrlangan yoki o'shanda yiqilgan qatorlar
+  // uchun: tugma bosilsa tyutor puli moliyaga albatta tushadi.
+  if (!dryRun && existingIds.size > 0) {
+    const resync = await require("./payrollDeduction.service").resyncSealedEntries(
+      [...existingIds],
+      [month],
+    );
+    summary.resynced = resync.updated;
+    summary.resyncLocked = resync.locked.length;
   }
 
   if (!dryRun && summary.created + summary.restored > 0) {

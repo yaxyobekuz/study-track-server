@@ -18,8 +18,12 @@
  *
  * ⚠️ DAVR QOIDASI (`staffContract` bilan bir xil): o'tgan oydan boshlangan
  * biriktirishning summasi o'zgarsa, eski qator oldingi oyda yopiladi va joriy
- * oydan yangi qator ochiladi — o'tgan oylar eski summada qoladi. Muhrlangan
- * majburiyatga TEGILMAYDI, faqat ogohlantiriladi.
+ * oydan yangi qator ochiladi — o'tgan oylar eski summada qoladi.
+ *
+ * ⚠️ MOLIYAGA DARHOL TUSHADI: biriktirish/tahrir/olib tashlashdan keyin joriy
+ * oyning shakllangan majburiyatidagi tyutor qatorlari qayta hisoblanadi
+ * (`resyncTutorPayroll`). Ilgari faqat ogohlantirilardi va tyutor puli
+ * vedomostda bor-u, moliyada yo'q edi.
  *
  * ⚠️ BIR NECHTA SINF BIRDANIGA biriktiriladi (`classIds`), lekin HAR SINFGA
  * ALOHIDA QATOR yoziladi: keyin har biri o'zicha tahrirlanadi, olib
@@ -366,22 +370,52 @@ const assertNoOverlap = async (tx, { classIds, tutorId, startMonth, endMonth, ex
 };
 
 /**
- * Muhrlangan oylik ogohlantirishi: o'zgarish allaqachon shakllangan
- * majburiyatga qo'shilmaydi (hisob-faktura doktrinasi).
+ * JORIY OY MUHRLANGAN OYLIGINI guruh o'zgarishiga moslaydi (`finance.md` §10):
+ * tyutor qatorlari, ushlab qolish va jami qayta hisoblanadi
+ * (`payrollDeduction.resyncSealedEntries`). Ilgari faqat ogohlantirilardi va
+ * vedomost tyutor summasini ko'rsatib, moliya ko'rsatmay turardi.
+ *
+ * Faqat JORIY oy: guruhni o'tgan oyga biriktirib ham, o'tgan oydan olib
+ * tashlab ham bo'lmaydi. Kelajak oyda majburiyat yo'q.
+ *
+ * Xato TASHLAMAYDI — guruh allaqachon saqlangan; qolgani oylik
+ * shakllantirishda (zaxira pass) yana urinadi.
+ *
+ * @param {string} tutorId
+ * @returns {Promise<{ updated: number, warnings: string[] }>}
  */
-const sealedWarnings = async (tutorId, fromMonth) => {
-  const entries = await prisma.payrollEntry.findMany({
-    where: { staffId: tutorId, month: { gte: fromMonth }, status: { not: "cancelled" } },
-    select: { month: true },
-    orderBy: { month: "asc" },
-  });
-  if (entries.length === 0) return [];
-  return [
-    `${entries.map((e) => formatMonthKey(e.month)).join(", ")} oyligi allaqachon ` +
-      `shakllangan — o'zgarish unga qo'shilmaydi. Kerak bo'lsa majburiyat bekor ` +
-      `qilinib, oy qayta shakllantiriladi.`,
-  ];
+const resyncTutorPayroll = async (tutorId) => {
+  const current = currentMonthKey();
+  try {
+    const { resyncSealedEntries } = require("./payrollDeduction.service");
+    const resync = await resyncSealedEntries([tutorId], [current]);
+    const warnings = [];
+    if (resync.locked.length > 0) {
+      warnings.push(
+        `${formatMonthKey(current)} oyligiga to'langan pul yangi summadan ko'p bo'lib qoladi — ` +
+          `o'zgarish qo'shilmadi. Ortiqcha to'lovni bekor qilib, qaytadan saqlang.`,
+      );
+    }
+    if (resync.conflicts > 0) {
+      warnings.push(
+        `${formatMonthKey(current)} oyligi shu payt boshqa amal bilan o'zgardi — ` +
+          `"Shakllantirish" tugmasi uni qayta hisoblaydi.`,
+      );
+    }
+    return { updated: resync.updated, warnings };
+  } catch (error) {
+    logger.error(`[tutor] Muhrlangan oylikni yangilab bo'lmadi: tutor=${tutorId} ${error.message}`);
+    return {
+      updated: 0,
+      warnings: [
+        `${formatMonthKey(current)} oyligini yangilab bo'lmadi — "Shakllantirish" tugmasi uni qayta hisoblaydi.`,
+      ],
+    };
+  }
 };
+
+const payrollUpdatedNote = (updated) =>
+  updated > 0 ? ` · ${formatMonthKey(currentMonthKey())} oyligi qayta hisoblandi` : "";
 
 const auditSnapshot = (row) => ({
   classId: row.classId,
@@ -890,10 +924,10 @@ const createGroup = async (data = {}, actorId) => {
   // tashlamaydi: biriktirish allaqachon saqlangan.
   await require("./payrollDeduction.service").extendAllScopeDeductionsSafe([tutor.id]);
 
-  const [counts, warnings] = await Promise.all([
-    countStudentsByClass(classIds),
-    sealedWarnings(tutor.id, startMonth),
-  ]);
+  // Ushlab qolish yoyilgandan KEYIN: yangi qatorlar ham hisobga tushsin
+  const payroll =
+    startMonth <= current ? await resyncTutorPayroll(tutor.id) : { updated: 0, warnings: [] };
+  const counts = await countStudentsByClass(classIds);
 
   const groups = rows
     .map((row) => serializeGroup(row, { studentCount: counts.get(row.classId) ?? 0, current }))
@@ -902,11 +936,12 @@ const createGroup = async (data = {}, actorId) => {
   return {
     groups,
     count: groups.length,
-    warnings,
+    warnings: payroll.warnings,
+    payrollUpdated: payroll.updated,
     message:
-      groups.length === 1
+      (groups.length === 1
         ? `${groups[0].className} guruhi biriktirildi`
-        : `${groups.length} ta guruh biriktirildi`,
+        : `${groups.length} ta guruh biriktirildi`) + payrollUpdatedNote(payroll.updated),
   };
 };
 
@@ -1048,18 +1083,20 @@ const updateGroup = async (id, data = {}, actorId) => {
     return result;
   });
 
-  const warnings =
+  const payroll =
     amountsChanged || periodChanged
-      ? await sealedWarnings(row.tutorId, Math.max(startMonth, current))
-      : [];
+      ? await resyncTutorPayroll(row.tutorId)
+      : { updated: 0, warnings: [] };
 
   return {
     group: serializeGroup(updated, { studentCount, current }),
-    warnings,
+    warnings: payroll.warnings,
+    payrollUpdated: payroll.updated,
     split,
-    message: split
-      ? `Yangi summa ${formatMonthKey(current)} dan amal qiladi — o'tgan oylar eski summada qoladi`
-      : "Saqlandi",
+    message:
+      (split
+        ? `Yangi summa ${formatMonthKey(current)} dan amal qiladi — o'tgan oylar eski summada qoladi`
+        : "Saqlandi") + payrollUpdatedNote(payroll.updated),
   };
 };
 
@@ -1128,19 +1165,22 @@ const removeGroup = async (id, { effective = "next" } = {}, actorId) => {
       `class=${row.classId} effective=${effective} deleted=${deleteRow} actor=${actorId}`,
   );
 
-  // Joriy oy muhrlangan va shu oydan to'xtatilgan bo'lsa — ogohlantirish
-  const warnings =
-    effective === "current" ? await sealedWarnings(row.tutorId, current) : [];
+  // Joriy oydan olib tashlangan bo'lsa — shu oy muhri ham yangilanadi.
+  // "Keyingi oydan" joriy oyga tegmaydi, reja qatori esa hali kuchga kirmagan.
+  const payroll =
+    effective === "current" ? await resyncTutorPayroll(row.tutorId) : { updated: 0, warnings: [] };
 
   return {
     deleted: deleteRow,
-    warnings,
-    message: deleteRow
+    warnings: payroll.warnings,
+    payrollUpdated: payroll.updated,
+    message: (deleteRow
       ? "Guruh olib tashlandi"
       : effective === "current"
         ? `Guruh olib tashlandi: ${formatMonthKey(current)} dan qo'shimcha oylik hisoblanmaydi`
         : `Guruh ${formatMonthKey(current)} oxirigacha amal qiladi, ` +
-          `${formatMonthKey(nextMonth(current))} dan hisoblanmaydi`,
+          `${formatMonthKey(nextMonth(current))} dan hisoblanmaydi`) +
+      payrollUpdatedNote(payroll.updated),
   };
 };
 

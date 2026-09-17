@@ -12,10 +12,16 @@ const {
   getPaginationParams,
   formatPaginationResponse,
 } = require("../utils/pagination");
-const { currentMonthKey, parseMonthKey, formatMonthKey } = require("../helpers/month.helpers");
+const {
+  currentMonthKey,
+  parseMonthKey,
+  formatMonthKey,
+  formatMonthRange,
+} = require("../helpers/month.helpers");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const payrollEngine = require("./payrollEngine.service");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
+const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
 
 const USER_SELECT = {
   id: true,
@@ -255,13 +261,16 @@ const getTeacherPayroll = async (req) => {
  * USTAMA HAQ ko'rinishi — "Yo'nalish → Ustama haq" tanlanganda.
  *
  * Har bir USTAMA KOMPONENTI alohida qator: kimga, nomi, turi (so'm/foiz),
- * shu oydagi hisoblangan summasi, MANBASI va HOLATI. Uch manba:
+ * shu oydagi hisoblangan summasi, MANBASI va HOLATI. To'rt manba:
  *   1. PayrollBonus  — tasdiqlangan zayavka (sourceRequestId bor) yoki
  *      admin yaratgan bonus. Holat: faol / muddati tugagan / o'chirilgan.
  *   2. StaffSalary.allowances — adminning oylik qoidasidagi ustamalar.
  *   3. PayrollRequest (kind=bonus, pending) — KUTILAYOTGAN zayavka:
  *      ko'rinadi, lekin summaga QO'SHILMAYDI (tasdiqlanmagan ustama
  *      payrollga ta'sir qilmaydi — biznes qoida).
+ *   4. TutorGroup — tyutorga biriktirilgan sinflar (dvigateldagi `type:
+ *      "tutor"` qatorlari). Ilgari bu yerda yo'q edi: tyutor puli oylikka
+ *      qo'shilardi-yu, ustamalar ro'yxatida ko'rinmasdi.
  *
  * Foizli ustama summasi engine bilan bir xil qoidada: boshlang'ich oylik
  * (lavozim bazasi + fiksa + KPI) dan olinadi.
@@ -279,7 +288,7 @@ const getAllowancesView = async (req) => {
   };
 
   // ── Manbalar ────────────────────────────────
-  const [bonuses, pendingRequests] = await Promise.all([
+  const [bonuses, pendingRequests, tutorIds] = await Promise.all([
     prisma.payrollBonus.findMany({ where: { isActive: true, ...coveringMonth } }),
     prisma.payrollRequest.findMany({
       where: { kind: "bonus", status: "pending" },
@@ -292,6 +301,7 @@ const getAllowancesView = async (req) => {
         createdAt: true,
       },
     }),
+    resolveTutorIdsForMonth(month),
   ]);
 
   // Nomzod xodimlar: bonusi borlar + kutilayotgan zayavka egalari.
@@ -308,6 +318,7 @@ const getAllowancesView = async (req) => {
       ...bonuses.map((b) => b.staffId),
       ...pendingRequests.map((r) => r.staffId),
       ...ruleRows.map((r) => r.staffId),
+      ...tutorIds,
     ]),
   ];
 
@@ -424,7 +435,31 @@ const getAllowancesView = async (req) => {
       });
     }
 
-    // 3) Kutilayotgan zayavkalar — summaga QO'SHILMAYDI
+    // 3) Tyutor guruhlari — summa dvigatel qatoridan (formula bitta joyda)
+    const tutorGroups = ctx.tutorGroupMap?.get(user.id) || [];
+    const { lines: tutorLines } = payrollEngine.buildTutorLines(tutorGroups, ctx.classStudentCounts);
+    tutorLines.forEach((line, i) => {
+      const group = tutorGroups[i];
+      const amt = new Decimal(line.amount);
+      staffActive = staffActive.plus(amt);
+      activeAmount = activeAmount.plus(amt);
+      activeCount += 1;
+      items.push({
+        key: `tutor-${line.tutorGroupId}`,
+        label: line.label,
+        type: "tutor",
+        value: line.amount,
+        amount: line.amount,
+        studentCount: line.studentCount,
+        source: "tutor",
+        sourceLabel: `Tyutor guruhi: ${line.studentCount} o'quvchi`,
+        status: "active",
+        statusLabel: "Faol",
+        periodLabel: formatMonthRange(group.startMonth, group.endMonth),
+      });
+    });
+
+    // 4) Kutilayotgan zayavkalar — summaga QO'SHILMAYDI
     for (const r of pendingRequests.filter((x) => x.staffId === user.id)) {
       pendingCount += 1;
       items.push({
