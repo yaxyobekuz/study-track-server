@@ -245,6 +245,161 @@ const buildTrend = async (months) => {
   });
 };
 
+// Qisqa oy nomlari (kunlik yorliqlar uchun, masalan "21-apr")
+const MON3 = ["yan","fev","mar","apr","may","iyn","iyl","avg","sen","okt","noy","dek"];
+const CF_GRANULARITY = new Set(["day", "month", "year"]);
+
+/** Toshkent devor-soati bo'yicha bugungi {y,m,d}. */
+const tashkentTodayParts = () => {
+  const t = new Date(Date.now() + 5 * 3600 * 1000);
+  return { y: t.getUTCFullYear(), m: t.getUTCMonth() + 1, d: t.getUTCDate() };
+};
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+/**
+ * CASH FLOW SERIYASI — KUNLIK / OYLIK / YILLIK yoki sanadan-sanagacha.
+ *
+ * `buildTrend` (oylik, dashboard payload'i) bilan bir MANBA (payments,
+ * external_incomes, damage_payments — kirim; salary_payments, expenses —
+ * chiqim; qoldiq esa `account_entries` daftaridan). Farqi: bucket
+ * granulyatsiyasi (`to_char` formati) va oraliq parametrlanadi.
+ *
+ * @param {object} query - { granularity: "day"|"month"|"year", from, to }
+ */
+const getCashflowSeries = async (query = {}) => {
+  const granularity = CF_GRANULARITY.has(query.granularity) ? query.granularity : "month";
+
+  // ── Oraliqni aniqlash (Toshkent kalendari) ──────────────────────────────
+  const t = tashkentTodayParts();
+  let fromStr; // "YYYY-MM-DD"
+  let toStr;
+  const custom = /^\d{4}-\d{2}-\d{2}$/;
+  if (custom.test(query.from ?? "") && custom.test(query.to ?? "")) {
+    fromStr = query.from;
+    toStr = query.to;
+  } else if (granularity === "day") {
+    // Oxirgi 30 kun
+    const end = new Date(Date.UTC(t.y, t.m - 1, t.d));
+    const start = new Date(end.getTime() - 29 * 86400000);
+    fromStr = `${start.getUTCFullYear()}-${pad2(start.getUTCMonth() + 1)}-${pad2(start.getUTCDate())}`;
+    toStr = `${t.y}-${pad2(t.m)}-${pad2(t.d)}`;
+  } else if (granularity === "year") {
+    fromStr = `${t.y - 4}-01-01`;
+    toStr = `${t.y}-12-31`;
+  } else {
+    // Oxirgi 12 oy
+    const start = new Date(Date.UTC(t.y, t.m - 1 - 11, 1));
+    fromStr = `${start.getUTCFullYear()}-${pad2(start.getUTCMonth() + 1)}-01`;
+    toStr = `${t.y}-${pad2(t.m)}-${pad2(t.d)}`;
+  }
+
+  // Toshkent kunini UTC instantga (JS Date `+05:00` offsetni tushunadi)
+  const from = new Date(`${fromStr}T00:00:00.000+05:00`);
+  const to = new Date(`${toStr}T23:59:59.999+05:00`);
+
+  const fmt = granularity === "day" ? "YYYY-MM-DD" : granularity === "year" ? "YYYY" : "YYYY-MM";
+  const TASHKENT = `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Tashkent'`;
+
+  const [rows, deltas, opening, before] = await Promise.all([
+    prisma.$queryRawUnsafe(
+      `SELECT bucket, kind, SUM(amount)::text AS amount
+         FROM (
+           SELECT to_char(paid_at ${TASHKENT}, '${fmt}') AS bucket, 'income' AS kind, amount
+             FROM payments            WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+           UNION ALL
+           SELECT to_char(occurred_at ${TASHKENT}, '${fmt}'), 'income', amount
+             FROM external_incomes    WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+           UNION ALL
+           SELECT to_char(paid_at ${TASHKENT}, '${fmt}'), 'income', amount
+             FROM damage_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+           UNION ALL
+           SELECT to_char(paid_at ${TASHKENT}, '${fmt}'), 'expense', amount
+             FROM salary_payments     WHERE is_voided = false AND paid_at     >= $1 AND paid_at     <= $2
+           UNION ALL
+           SELECT to_char(occurred_at ${TASHKENT}, '${fmt}'), 'expense', amount
+             FROM expenses            WHERE is_voided = false AND occurred_at >= $1 AND occurred_at <= $2
+         ) AS combined
+        GROUP BY 1, 2`,
+      from,
+      to,
+    ),
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(occurred_at ${TASHKENT}, '${fmt}') AS bucket, SUM(amount)::text AS delta
+         FROM account_entries
+        WHERE occurred_at >= $1 AND occurred_at <= $2
+        GROUP BY 1`,
+      from,
+      to,
+    ),
+    prisma.paymentAccount.aggregate({ _sum: { openingBalance: true } }),
+    prisma.accountEntry.aggregate({
+      where: { occurredAt: { lt: from } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const byBucket = new Map();
+  for (const row of rows) {
+    const entry = byBucket.get(row.bucket) ?? { income: new Decimal(0), expense: new Decimal(0) };
+    entry[row.kind] = entry[row.kind].plus(row.amount ?? 0);
+    byBucket.set(row.bucket, entry);
+  }
+  const deltaByBucket = new Map(deltas.map((r) => [r.bucket, new Decimal(r.delta ?? 0)]));
+
+  // ── Barcha bucket'larni tartib bilan generatsiya qilish (bo'sh ham) ──────
+  const [fy, fm, fd] = fromStr.split("-").map(Number);
+  const [ty, tm, td] = toStr.split("-").map(Number);
+  const buckets = [];
+  if (granularity === "day") {
+    let cur = new Date(Date.UTC(fy, fm - 1, fd));
+    const end = new Date(Date.UTC(ty, tm - 1, td));
+    while (cur <= end) {
+      const y = cur.getUTCFullYear(), m = cur.getUTCMonth() + 1, d = cur.getUTCDate();
+      buckets.push({ key: `${y}-${pad2(m)}-${pad2(d)}`, label: `${d}-${MON3[m - 1]}` });
+      cur = new Date(cur.getTime() + 86400000);
+    }
+  } else if (granularity === "year") {
+    for (let y = fy; y <= ty; y += 1) buckets.push({ key: `${y}`, label: `${y}` });
+  } else {
+    let y = fy, m = fm;
+    while (y < ty || (y === ty && m <= tm)) {
+      buckets.push({ key: `${y}-${pad2(m)}`, label: formatMonthShort(y * 100 + m) });
+      m += 1; if (m > 12) { m = 1; y += 1; }
+    }
+  }
+
+  let running = new Decimal(opening._sum.openingBalance ?? 0).plus(before._sum.amount ?? 0);
+
+  const series = buckets.map((b) => {
+    const row = byBucket.get(b.key) ?? { income: new Decimal(0), expense: new Decimal(0) };
+    running = running.plus(deltaByBucket.get(b.key) ?? 0);
+    return {
+      key: b.key,
+      label: b.label,
+      income: formatAmount(row.income),
+      expense: formatAmount(row.expense),
+      profit: formatAmount(row.income.minus(row.expense)),
+      balance: formatAmount(running),
+    };
+  });
+
+  const totalIncome = series.reduce((s, r) => s.plus(r.income), new Decimal(0));
+  const totalExpense = series.reduce((s, r) => s.plus(r.expense), new Decimal(0));
+
+  return {
+    granularity,
+    from: fromStr,
+    to: toStr,
+    series,
+    totals: {
+      income: formatAmount(totalIncome),
+      expense: formatAmount(totalExpense),
+      balance: series.length ? series[series.length - 1].balance : formatAmount(running),
+    },
+  };
+};
+
 /**
  * XARAJATLAR TUZILMASI — oylik alohida ulush, qolgani kategoriya kesimida.
  *
@@ -1658,6 +1813,7 @@ const getKpiScorecard = async (query = {}) => {
 module.exports = {
   getDashboard,
   getKpiScorecard,
+  getCashflowSeries,
   // Sinov uchun ochiladi
   monthInstantRange,
   balanceAt,
