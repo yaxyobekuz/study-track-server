@@ -64,12 +64,6 @@ const getKpiScorecard = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-// Cash flow seriyasi — kunlik / oylik / yillik yoki sanadan-sanagacha
-const getCashflowTrend = asyncHandler(async (req, res) => {
-  const data = await financeDashboardService.getCashflowSeries(req.query);
-  res.json({ success: true, data });
-});
-
 // Hisoblangan/yig'ilgan seriyasi — kunlik / oylik / yillik yoki oraliq
 const getAccrualTrend = asyncHandler(async (req, res) => {
   const data = await financeDashboardService.getAccrualSeries(req.query);
@@ -113,7 +107,6 @@ module.exports = {
   saveExpenseBudgets,
   getDashboard,
   getKpiScorecard,
-  getCashflowTrend,
   getAccrualTrend,
   getTargets,
   saveTargets,
