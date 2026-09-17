@@ -122,6 +122,8 @@ const emptySummary = (month, reason) => ({
   // tufayli yangilab bo'lmagani
   resynced: 0,
   resyncLocked: 0,
+  // Ochiq oyda eski qoida bilan muhrlangan soatbay oylik — bekor qilindi
+  unsealedOpenMonth: 0,
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
@@ -197,6 +199,39 @@ const generateForMonth = async (monthInput, options = {}) => {
   if (staff.length === 0) {
     summary.durationMs = Date.now() - startedAt;
     return summary;
+  }
+
+  // 1b ── OCHIQ OYDA MUHRLANGAN SOATBAY OYLIK (eski qoida). Soatbay qism oy
+  // yopilgandan keyin FAKTDAN muhrlanadi (pastdagi `monthOpen`); undan oldin
+  // yozilgan qatorda o'tilmagan va hali o'tilmagan darslar ham pulga aylangan —
+  // vedomost bir summa, o'qituvchi profili va moliya boshqa summa ko'rsatardi.
+  // Bunday TO'LANMAGAN qator bekor qilinadi: soatbay xodimga oy yopilgach
+  // faktdan qayta yoziladi, soatbaydan fiksaga o'tgan xodimga esa shu passda
+  // darhol (pastdagi tiklash). To'lov tushganiga TEGILMAYDI.
+  if (!dryRun && month >= currentMonthKey()) {
+    const unsealed = await prisma.payrollEntry.updateMany({
+      where: {
+        month,
+        staffId: { in: staff.map((s) => s.id) },
+        status: { in: ["unpaid", "paid"] },
+        paidAmount: 0,
+        perHourRate: { gt: 0 },
+      },
+      data: {
+        status: "cancelled",
+        cancelReason:
+          "Ochiq oyda dars soati bo'yicha muhrlangan edi — oy yopilgach o'tilgan darslar bo'yicha qayta hisoblanadi",
+        cancelledAt: new Date(),
+        cancelledBy: actorId ?? SYSTEM_ACTOR_ID,
+      },
+    });
+    summary.unsealedOpenMonth = unsealed.count;
+    if (unsealed.count > 0) {
+      logger.warn(
+        `[payroll] ${formatMonthKey(month)}: ochiq oyda muhrlangan ${unsealed.count} ta soatbay ` +
+          `oylik bekor qilindi (oy yopilgach faktdan yoziladi)`,
+      );
+    }
   }
 
   // 2 ── Allaqachon shakllantirilganlari
@@ -636,6 +671,55 @@ const getMySalaryStats = async (userId) => {
     ? await getTeacherHours(userId, month, { asOfDayOfMonth: day })
     : null;
 
+  // ── JORIY OY HISOBI — vedomost bilan AYNI dvigatel va AYNI soat ──
+  // O'qituvchi "dars qoldirmaganda qancha olardim" va "o'tilmagan darslar
+  // uchun qancha ayrildi" degan savolga shu yerda javob oladi. Uchala summa
+  // bitta kontekstdan, faqat soat boshqa:
+  //   rejadagi   = o'tildi + o'tilmadi + qoldi   (dars qoldirmaganda)
+  //   oy oxirida = o'tildi + qoldi                (vedomost "Oy oxirida")
+  //   hozirgacha = o'tildi                        (vedomost "Hisoblandi")
+  let live = null;
+  if (computed && hoursInfo) {
+    const withHours = (hours) => ({
+      ...ctx,
+      hoursMap: new Map([
+        [
+          String(user.id),
+          {
+            hours,
+            weeklyHours: hoursInfo.weeklyHours ?? 0,
+            weeklyLessons: hoursInfo.weeklyHours ?? 0,
+            monthlyLessons: hoursInfo.teachingDays ?? 0,
+          },
+        ],
+      ]),
+    });
+    const missedHours = hoursInfo.missedHours ?? 0;
+    const planned = payrollEngine.computeForStaff(
+      user,
+      month,
+      withHours((hoursInfo.hours ?? 0) + missedHours),
+    );
+    const projected = payrollEngine.computeForStaff(user, month, withHours(hoursInfo.hours ?? 0));
+    const accrued = payrollEngine.computeForStaff(user, month, withHours(hoursInfo.taughtHours ?? 0));
+    const missedAmount = planned.amount.minus(projected.amount);
+
+    live = {
+      plannedHours: (hoursInfo.hours ?? 0) + missedHours,
+      taughtHours: hoursInfo.taughtHours ?? 0,
+      missedHours,
+      remainingHours: hoursInfo.remainingHours ?? 0,
+      missedByReason: hoursInfo.missedByReason ?? { absent: 0, excused: 0, noGrade: 0 },
+      perHourRate: formatAmount(projected.perHourRate),
+      // Soat narxi yo'q (faqat fiksa) — o'tilmagan dars pulga ta'sir qilmaydi
+      paysByHours: projected.perHourRate.greaterThan(0),
+      plannedAmount: formatAmount(planned.amount),
+      projectedAmount: formatAmount(projected.amount),
+      accruedAmount: formatAmount(accrued.amount),
+      missedAmount: formatAmount(missedAmount.isNegative() ? new Decimal(0) : missedAmount),
+    };
+  }
+
   // ── 2. Joriy oy majburiyati (shakllangan bo'lsa) ──
   const currentEntry = await prisma.payrollEntry.findFirst({
     where: { staffId: userId, month, status: { not: "cancelled" } },
@@ -744,6 +828,9 @@ const getMySalaryStats = async (userId) => {
       debt: formatAmount(currentDebt.isNegative() ? new Decimal(0) : currentDebt),
       status: currentEntry?.status ?? "unpaid",
     },
+
+    // Joriy oy jonli hisobi — vedomost bilan bir xil (o'qituvchi bo'lsa)
+    live,
 
     // Dars soati (o'qituvchi bo'lsa)
     hours: hoursInfo
