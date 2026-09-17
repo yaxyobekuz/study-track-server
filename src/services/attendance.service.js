@@ -805,6 +805,86 @@ async function markStaffAttendance({ date, records }, markedBy) {
   return results;
 }
 
+/**
+ * XODIM DAVOMATINI QO'LDA TAHRIRLASH — kelish/ketish vaqtini o'zgartirish
+ * yoki O'CHIRISH (null yoki bo'sh).
+ *
+ * ⚠️ Asosiy holat: xodim "ketdim" ni bexosdan bosib qo'ygan va endi bugungi
+ * darsga baho qo'yolmayapti. Ketish vaqti o'chirilsa u yana "maktabda"
+ * hisoblanadi va baho qo'yish ochiladi (`gradingPresence.service.js` faqat
+ * `checkOut` mavjudligini tekshiradi).
+ *
+ * ⚠️ Vaqt "HH:mm" — TOSHKENT devor-soati; server o'sha kun bilan birlashtirib
+ * UTC instant qiladi (mijoz taymzonasiga bog'lanmaydi).
+ *
+ * @param {string} userId
+ * @param {string|Date} dateInput - qaysi kun
+ * @param {{checkIn?: string|null, checkOut?: string|null}} times
+ * @param {string} adminUserId
+ */
+async function updateTimes(userId, dateInput, times = {}, adminUserId) {
+  const date = normalizeDateTashkent(dateInput);
+
+  const record = await prisma.attendance.findUnique({
+    where: { userId_date: { userId, date } },
+  });
+  if (!record) throw new NotFoundError("Davomat yozuvi topilmadi");
+
+  // "HH:mm" (Toshkent) → o'sha kunning UTC instanti. Bo'sh/null → o'chirish.
+  const toInstant = (hhmm) => {
+    if (hhmm == null || hhmm === "") return null;
+    const [hStr, mStr] = String(hhmm).split(":");
+    const h = Number(hStr);
+    const m = Number(mStr);
+    if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+      throw new BadRequestError("Vaqt HH:mm ko'rinishida bo'lishi kerak");
+    }
+    // Toshkent = UTC+5 → devor-soatidan 5 soat ayiramiz
+    return new Date(date.getTime() + (h * 60 + m - 5 * 60) * 60000);
+  };
+
+  const data = { lastModifiedBy: adminUserId, autoMarked: false };
+
+  if (times.checkIn !== undefined) data.checkIn = toInstant(times.checkIn);
+
+  if (times.checkOut !== undefined) {
+    data.checkOut = toInstant(times.checkOut);
+    // Ketish o'chirilsa — erta ketish jarimasi va joylashuvi ham bekor
+    if (data.checkOut === null) {
+      data.earlyOutMinutes = 0;
+      data.checkOutLocation = null;
+      data.checkOutLocationStatus = null;
+      data.checkOutDistance = null;
+    }
+  }
+
+  // Ketish kelishdan oldin bo'lmasin
+  const finalIn = data.checkIn !== undefined ? data.checkIn : record.checkIn;
+  const finalOut = data.checkOut !== undefined ? data.checkOut : record.checkOut;
+  if (finalIn && finalOut && finalOut < finalIn) {
+    throw new BadRequestError("Ketish vaqti kelish vaqtidan oldin bo'la olmaydi");
+  }
+
+  const updated = await prisma.attendance.update({
+    where: { userId_date: { userId, date } },
+    data,
+  });
+
+  logger.info(
+    `[attendance] Davomat vaqti tahrirlandi: user=${userId} ` +
+      `date=${date.toISOString().slice(0, 10)} actor=${adminUserId} ` +
+      `checkOut=${
+        times.checkOut === undefined
+          ? "tegilmadi"
+          : data.checkOut === null
+            ? "O'CHIRILDI"
+            : "yangilandi"
+      }`,
+  );
+
+  return updated;
+}
+
 async function getSettings() {
   return getAttendanceSettings();
 }
@@ -1206,6 +1286,7 @@ async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
 module.exports = {
   checkIn,
   checkOut,
+  updateTimes,
   getTodayRecord,
   getTodayAllRecords,
   markStaffAttendance,

@@ -48,6 +48,18 @@ const checkOut = asyncHandler(async (req, res) => {
   res.json({ success: true, data: record });
 });
 
+// Xodim davomatini qo'lda tahrirlash — kelish/ketish vaqtini o'zgartirish
+// yoki o'chirish (ketishni o'chirsa baho qo'yish ochiladi).
+const updateTimes = asyncHandler(async (req, res) => {
+  const record = await attendanceService.updateTimes(
+    req.params.userId,
+    req.body.date,
+    { checkIn: req.body.checkIn, checkOut: req.body.checkOut },
+    req.user.id,
+  );
+  res.json({ success: true, data: record });
+});
+
 const getMySchedule = asyncHandler(async (req, res) => {
   const schedule = await attendanceService.getScheduleForUser(req.user.id);
   res.json({ success: true, data: schedule });
@@ -248,6 +260,7 @@ module.exports = {
   markStaff,
   checkIn,
   checkOut,
+  updateTimes,
   getMySchedule,
   getUserSchedule,
   getMyHistory,

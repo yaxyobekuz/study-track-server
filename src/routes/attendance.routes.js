@@ -8,6 +8,7 @@ const {
   markStaff,
   checkIn,
   checkOut,
+  updateTimes,
   getMySchedule,
   getUserSchedule,
   getMyHistory,
@@ -35,6 +36,8 @@ router.get("/lesson-absentees", protect, authorizePermission(PERMISSIONS.ATTENDA
 router.get("/today", protect, getToday);
 router.get("/today/all", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIEW), getTodayAll);
 router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), markStaff);
+// Kelish/ketish vaqtini qo'lda tahrirlash (ketishni o'chirsa baho ochiladi)
+router.patch("/user/:userId/times", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), updateTimes);
 router.get("/my", protect, getMyHistory);
 router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);
