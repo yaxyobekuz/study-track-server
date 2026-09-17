@@ -1125,9 +1125,22 @@ async function deleteUser(id) {
  * davomati, baholari va moliyaviy tarixi hisobotlarda qolaveradi. Arxivlangan
  * foydalanuvchi tizimga kira olmaydi (`auth.service` va `auth.middleware`
  * `isArchived` ni tekshiradi).
+ *
+ * `note` — nega arxivlangani (ixtiyoriy). `resetDebt` — o'quvchining oylik
+ * to'lov qarzini 0 ga tushirish (`invoice.service.writeOffStudentDebt`);
+ * ruxsatini controller tekshiradi (`finance.cancel` + `finance.adjust`).
+ *
+ * @returns {Promise<object>} foydalanuvchi; qarz tushirilgan bo'lsa
+ *   `debtWriteOff` bilan (nechta oy, qancha, qaysilari yiqildi)
  */
 async function archiveUser(id, options = {}) {
-  const { resetCoins = false, resetPenalties = false } = options;
+  const {
+    resetCoins = false,
+    resetPenalties = false,
+    resetDebt = false,
+    note = "",
+    actorId = null,
+  } = options;
 
   const user = await prisma.user.findUnique({ where: { id } });
   if (!user) {
@@ -1152,6 +1165,7 @@ async function archiveUser(id, options = {}) {
     },
     isArchived: true,
     archivedAt: new Date(),
+    archiveNote: note || null,
   };
   if (resetCoins) update.coinBalance = 0;
   if (resetPenalties) update.penaltyPoints = 0;
@@ -1188,7 +1202,9 @@ async function archiveUser(id, options = {}) {
         data: {
           endDate,
           endReason: ARCHIVE_END_REASON,
-          reason: "O'quvchi arxivlanganda avtomatik yopildi",
+          reason: note
+            ? `O'quvchi arxivlanganda avtomatik yopildi: ${note}`
+            : "O'quvchi arxivlanganda avtomatik yopildi",
         },
       });
     }
@@ -1204,7 +1220,20 @@ async function archiveUser(id, options = {}) {
   // bilishi kerak (yig'ma sanoqlar arxivlanganlarni chiqarib tashlaydi).
   await syncDirectory(id);
 
-  return loadUser(id);
+  // ⚠️ QARZ ARXIVLASHDAN KEYIN tushiriladi, oldin emas: oylik pass
+  // arxivlanmagan o'quvchining bekor qilingan oyini qayta tiklaydi, ya'ni
+  // tartib teskari bo'lsa oraliqda kechirilgan qarz qaytib kelishi mumkin edi.
+  // Har oy o'z tranzaksiyasida — yiqilgani arxivlashni orqaga qaytarmaydi,
+  // `debtWriteOff.failed` bilan aytiladi.
+  let debtWriteOff = null;
+  if (resetDebt && user.role === ROLES.STUDENT) {
+    // Lazy require: invoice.service katta bog'liqlik daraxtini yuklaydi
+    const { writeOffStudentDebt } = require("./invoice.service");
+    debtWriteOff = await writeOffStudentDebt(id, { note, userId: actorId });
+  }
+
+  const archived = await loadUser(id);
+  return debtWriteOff ? { ...archived, debtWriteOff } : archived;
 }
 
 /**
@@ -1231,7 +1260,7 @@ async function restoreUser(id) {
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id },
-      data: { isArchived: false, archivedAt: null },
+      data: { isArchived: false, archivedAt: null, archiveNote: null },
     });
 
     if (user.role !== ROLES.STUDENT) return;
@@ -1283,7 +1312,8 @@ async function restoreUser(id) {
  * Excel eksport uchun foydalanuvchilar ma'lumotlarini tayyorlash.
  */
 async function getUsersForExport(role) {
-  const where = {};
+  // Arxivlanganlar eksportga ham tushmaydi — ro'yxat sahifasi bilan bir xil
+  const where = { isArchived: false };
   // `getAllUsers` bilan bir xil qoida — "staff" guruhi ham eksport qilinadi.
   // "all" — filtr yo'qligini bildiradi (UI shu qiymatni yuboradi).
   if (role === "staff") {

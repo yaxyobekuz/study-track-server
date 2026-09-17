@@ -40,6 +40,11 @@ const MEMBER_STUDENT_SELECT = {
   classes: { select: { class: { select: { id: true, name: true } } } },
 };
 
+// ⚠️ Arxivlangan o'quvchi to'garak ro'yxatida ham, a'zolar sonida ham
+// ko'rinmaydi: arxivlash a'zolikni yopmaydi (tarix qoladi), shuning uchun
+// filtr o'qishda qo'yiladi. Arxivdan qaytsa a'zoligi o'zi qaytib chiqadi.
+const ACTIVE_STUDENT_MEMBERS = { where: { student: { isArchived: false } } };
+
 /** Hozir faol a'zolik sharti (bugungi kunga). */
 const activeMemberWhere = (day = currentDayDate()) => ({
   startDate: { lte: day },
@@ -183,7 +188,7 @@ const getClubs = async (query = {}) => {
       where,
       include: {
         subject: { select: { id: true, name: true } },
-        _count: { select: { members: true } },
+        _count: { select: { members: ACTIVE_STUDENT_MEMBERS } },
       },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
       skip,
@@ -203,8 +208,9 @@ const getClub = async (id) => {
     where: { id },
     include: {
       subject: { select: { id: true, name: true } },
-      _count: { select: { members: true } },
+      _count: { select: { members: ACTIVE_STUDENT_MEMBERS } },
       members: {
+        ...ACTIVE_STUDENT_MEMBERS,
         include: { student: { select: MEMBER_STUDENT_SELECT } },
         orderBy: [{ endDate: "asc" }, { startDate: "desc" }],
       },
@@ -318,11 +324,13 @@ const addMembers = async (clubId, data = {}, userId) => {
   const startDate = data.startDate ? parseDayDate(data.startDate, "Boshlanish sanasi") : currentDayDate();
 
   const students = await prisma.user.findMany({
-    where: { id: { in: ids }, role: ROLES.STUDENT },
+    where: { id: { in: ids }, role: ROLES.STUDENT, isArchived: false },
     select: { id: true },
   });
   if (students.length !== ids.length) {
-    throw new BadRequestError("Ba'zi tanlangan foydalanuvchilar o'quvchi emas");
+    throw new BadRequestError(
+      "Ba'zi tanlangan foydalanuvchilar o'quvchi emas yoki arxivlangan",
+    );
   }
 
   const existing = await prisma.clubMember.findMany({

@@ -1,10 +1,14 @@
 const asyncHandler = require("../middleware/async.middleware");
-const { NotFoundError, BadRequestError } = require("../utils/errors");
+const {
+  NotFoundError,
+  BadRequestError,
+  ForbiddenError,
+} = require("../utils/errors");
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 const staffReportService = require("../services/staffReport.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
-const { PERMISSIONS, hasPermission } = require("../utils/permissions");
+const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const {
   monthKeyOfDate,
@@ -204,13 +208,41 @@ const deleteUser = asyncHandler(async (req, res) => {
   });
 });
 
+const ARCHIVE_NOTE_MAX = 500;
+
 // Archive user — student or staff (Owner only)
 const archiveUser = asyncHandler(async (req, res) => {
-  const { resetCoins, resetPenalties } = req.body;
+  const { resetCoins, resetPenalties, resetDebt } = req.body;
+  const note = typeof req.body.note === "string" ? req.body.note.trim() : "";
+
+  if (note.length > ARCHIVE_NOTE_MAX) {
+    throw new BadRequestError(
+      `Izoh ${ARCHIVE_NOTE_MAX} belgidan oshmasligi kerak`,
+    );
+  }
+
+  // ⚠️ QARZNI 0 GA TUSHIRISH — MOLIYA AMALI, arxivlash huquqi yetmaydi.
+  // Bittalik yo'l bilan AYNI shart: bekor qilish — `finance.cancel`, o'tgan
+  // oy va oy summasini o'zgartirish — `finance.adjust` (qarz deyarli doim
+  // o'tgan oylarda). Yumshoqroq bo'lsa, arxivlash tugmasi orqali pulni
+  // harakatlantirish huquqi oshirib olinardi (`finance.md` §5).
+  if (resetDebt && !hasRole(req.user, ROLES.OWNER)) {
+    const canWriteOff =
+      hasPermission(req.user.permissions, PERMISSIONS.FINANCE_CANCEL) &&
+      hasPermission(req.user.permissions, PERMISSIONS.FINANCE_ADJUST);
+    if (!canWriteOff) {
+      throw new ForbiddenError(
+        "Qarzdorlikni 0 ga tushirish uchun moliya ruxsatingiz yo'q",
+      );
+    }
+  }
 
   const user = await userService.archiveUser(req.params.id, {
     resetCoins: Boolean(resetCoins),
     resetPenalties: Boolean(resetPenalties),
+    resetDebt: Boolean(resetDebt),
+    note,
+    actorId: req.user.id,
   });
 
   res.json({

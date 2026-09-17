@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { loadArchivedStudentScope } = require("./archivedStudentScope.service");
 const { getTodayNormalized, normalizeDateTashkent } = require("./attendance.service");
 const { getLessonDayMap } = require("./schedule.service");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
@@ -608,6 +609,7 @@ async function getClassMonthRecords(classId, month, year) {
     where: {
       classId,
       date: { gte: startDate, lt: endDate },
+      ...(await loadArchivedStudentScope()),
     },
   });
 
@@ -730,6 +732,7 @@ async function getAllRecords(req) {
   const filter = {};
   if (classId) filter.classId = classId;
   if (status) filter.status = status;
+  Object.assign(filter, await loadArchivedStudentScope());
 
   if (month && year) {
     const m = parseInt(month, 10);

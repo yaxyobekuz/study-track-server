@@ -36,6 +36,7 @@ const { formatDateUz } = require("../helpers/date.helpers");
 const { BadRequestError } = require("../utils/errors");
 const { buildInsights } = require("../helpers/academicInsights");
 const { loadTargetMap } = require("./academicTarget.service");
+const { loadArchivedStudentScope } = require("./archivedStudentScope.service");
 const {
   ACHIEVEMENT_LEVEL_LABELS,
   ACHIEVEMENT_PLACE_LABELS,
@@ -734,9 +735,14 @@ const buildTopStudents = async ({ month, subjects, subjectOrder }) => {
   const targetSubjects = subjectOrder.slice(0, TOP_STUDENT_LIMIT);
   if (targetSubjects.length === 0) return [];
 
+  // Arxivlangan o'quvchi "fanning eng yaxshisi" bo'lib chiqmasin
   const rows = await prisma.grade.groupBy({
     by: ["subjectId", "studentId"],
-    where: { date: monthDayRange(month), subjectId: { in: targetSubjects } },
+    where: {
+      date: monthDayRange(month),
+      subjectId: { in: targetSubjects },
+      ...(await loadArchivedStudentScope()),
+    },
     _sum: { grade: true },
     _count: { _all: true },
   });
@@ -901,7 +907,7 @@ const buildAchievements = async ({ month, previousMonth }) => {
     }),
     prisma.studentAchievement.count({ where: { date: monthDayRange(previousMonth) } }),
     prisma.studentAchievement.findMany({
-      where: { date: range },
+      where: { date: range, student: { isArchived: false } },
       orderBy: [{ date: "desc" }, { createdAt: "desc" }],
       take: RECENT_ACHIEVEMENT_LIMIT,
       select: {

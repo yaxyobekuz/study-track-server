@@ -4,6 +4,7 @@ const {
   getTodayAllRecords,
 } = require("./attendance.service");
 const { buildExpectedResolver } = require("./studentAttendance.service");
+const { loadArchivedStudentScope } = require("./archivedStudentScope.service");
 // ⚠️ Sana MATNI serverda yig'ilmaydi — yagona formatlovchidan olinadi
 // (`.claude/rules/dates.md`). Davomat kuni `@db.Date` kabi UTC yarim
 // tunida yotadi, shuning uchun `{ utc: true }` MAJBURIY.
@@ -123,9 +124,9 @@ function monthRange(month, year) {
 }
 
 /** Bir kunning butun maktab bo'yicha yozuvlari (sinf kesimi uchun `classId` bilan). */
-function loadDayRecords(date) {
+function loadDayRecords(date, scope = {}) {
   return prisma.studentAttendance.findMany({
-    where: { date },
+    where: { date, ...scope },
     select: { studentId: true, classId: true, status: true },
   });
 }
@@ -155,8 +156,8 @@ function countDay(date, records, resolver) {
   return counts;
 }
 
-async function dayCounts(date, resolver) {
-  return countDay(date, await loadDayRecords(date), resolver);
+async function dayCounts(date, resolver, scope) {
+  return countDay(date, await loadDayRecords(date, scope), resolver);
 }
 
 // ── Sinf kesimi ─────────────────────────────────────────────────────
@@ -261,11 +262,11 @@ async function buildDailyByClass(date, records, resolver) {
  * ⚠️ Yig'indi KUNLAR bo'yicha yig'iladi, xom yozuvlardan emas: kutilgan
  * o'quvchi-kunlar faqat kun kesimida ma'noli (`aggregateByDay`).
  */
-async function monthCounts(month, year, resolver) {
+async function monthCounts(month, year, resolver, scope = {}) {
   const { m, y, start, end } = monthRange(month, year);
 
   const records = await prisma.studentAttendance.findMany({
-    where: { date: { gte: start, lt: end } },
+    where: { date: { gte: start, lt: end }, ...scope },
     select: { studentId: true, status: true, date: true },
     orderBy: { date: "asc" },
   });
@@ -334,7 +335,10 @@ async function getStudentReport(month, year, options = {}) {
   const today = getTodayNormalized();
 
   // Kutilgan o'quvchilar resolveri (faol o'quvchilar + jadval, bir marta)
-  const resolver = await buildExpectedResolver();
+  const [resolver, scope] = await Promise.all([
+    buildExpectedResolver(),
+    loadArchivedStudentScope(),
+  ]);
   const totalStudents = resolver.allStudentIds.size;
 
   // ⚠️ Tanlangan kun oyga TEGISHLI bo'lishi shart emas: karta "bugun"
@@ -356,14 +360,14 @@ async function getStudentReport(month, year, options = {}) {
     !(compareMonthNumber === m && compareYearNumber === y);
 
   const [selectedDayRecords, dailyCompare, monthlyCompare, monthRecords] = await Promise.all([
-    loadDayRecords(selectedDay),
-    compareDay ? dayCounts(compareDay, resolver) : Promise.resolve(null),
+    loadDayRecords(selectedDay, scope),
+    compareDay ? dayCounts(compareDay, resolver, scope) : Promise.resolve(null),
     hasCompareMonth
-      ? monthCounts(compareMonthNumber, compareYearNumber, resolver)
+      ? monthCounts(compareMonthNumber, compareYearNumber, resolver, scope)
       : Promise.resolve(null),
     // Oy yozuvlari - barcha kesimlar uchun (sana bo'yicha tartiblangan)
     prisma.studentAttendance.findMany({
-      where: { date: { gte: start, lt: end } },
+      where: { date: { gte: start, lt: end }, ...scope },
       select: {
         studentId: true,
         status: true,
@@ -681,12 +685,13 @@ async function getClassReport(classId, options = {}) {
   }
   const range = resolveClassPeriod(period, options);
 
-  const [classDoc, resolver] = await Promise.all([
+  const [classDoc, resolver, scope] = await Promise.all([
     prisma.class.findUnique({
       where: { id: classId },
       select: { id: true, name: true },
     }),
     buildExpectedResolver(),
+    loadArchivedStudentScope(),
   ]);
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
@@ -699,6 +704,8 @@ async function getClassReport(classId, options = {}) {
       where: {
         date: { gte: range.start, lt: range.end },
         OR: [{ classId }, { studentId: { in: memberIds } }],
+        // Arxivlangan — sinfdan ham, hisobotdan ham chiqqan (`loadArchivedStudentScope`)
+        ...scope,
       },
       select: {
         studentId: true,
@@ -770,7 +777,7 @@ async function getClassReport(classId, options = {}) {
   finalizeCounts(summary);
   const missedTotal = summary.expected - summary.came;
 
-  // Ism-familiya (sinfdan chiqqan/arxivlangan bo'lsa ham) va sabab nomlari
+  // Ism-familiya (sinfdan chiqqan bo'lsa ham) va sabab nomlari
   const studentIds = [...perStudent.keys()];
   const reasonIds = [
     ...new Set(

@@ -717,6 +717,7 @@ const getPenaltyStats = async () => {
     prisma.user.findMany({
       where: {
         role: { notIn: ["owner", "student"] },
+        isArchived: false,
         penaltyPoints: { gt: 0 },
       },
       select: {
@@ -730,7 +731,7 @@ const getPenaltyStats = async () => {
       take: 10,
     }),
     prisma.user.findMany({
-      where: { role: "student", penaltyPoints: { gt: 0 } },
+      where: { role: "student", isArchived: false, penaltyPoints: { gt: 0 } },
       select: {
         firstName: true,
         lastName: true,

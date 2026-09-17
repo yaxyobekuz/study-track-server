@@ -452,6 +452,9 @@ model User {
   archivedAt       DateTime?      @map("archived_at")
   // { coinBalance, penaltyPoints } — arxivlashdan oldingi zaxira
   archiveSnapshot  Json?          @map("archive_snapshot")
+  // Nega arxivlangani (admin izohi). Arxivdan qaytarilganda tozalanadi —
+  // `archivedAt` bilan birga faqat AMALDAGI arxiv holatini tasvirlaydi.
+  archiveNote      String?        @map("archive_note")
   // Ish vaqti QAYERDAN olinadi — `WorkTimeSource` izohiga qarang.
   // `schedule` bo'lganda quyidagi uch maydon va `weeklySchedule` DAVOMATDA
   // ishlatilmaydi (o'chirilmaydi ham: manbani qaytarganda qo'lda kiritilgan

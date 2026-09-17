@@ -46,7 +46,7 @@ async function distributeDailyCoins(targetDate) {
 
   // 1. Get all active students
   const students = await prisma.user.findMany({
-    where: { role: "student", isActive: true },
+    where: { role: "student", isActive: true, isArchived: false },
     select: { id: true, coinBalance: true },
   });
 
@@ -184,7 +184,7 @@ async function distributeWeeklyBonusCoins(range) {
 
   // Barcha faol o'quvchilar + sinf a'zoliklari
   const students = await prisma.user.findMany({
-    where: { role: "student", isActive: true },
+    where: { role: "student", isActive: true, isArchived: false },
     select: { id: true, classes: { select: { classId: true } } },
   });
 
@@ -344,12 +344,12 @@ async function getCoinStats() {
   ] = await Promise.all([
     prisma.coinTransaction.aggregate({ _sum: { amount: true } }),
     prisma.user.aggregate({
-      where: { isActive: true },
+      where: { isActive: true, isArchived: false },
       _sum: { coinBalance: true },
     }),
-    prisma.user.count({ where: { role: "student", isActive: true } }),
+    prisma.user.count({ where: { role: "student", isActive: true, isArchived: false } }),
     prisma.user.findMany({
-      where: { role: "student", isActive: true },
+      where: { role: "student", isActive: true, isArchived: false },
       orderBy: { coinBalance: "desc" },
       take: 10,
       select: {
@@ -452,7 +452,8 @@ async function getStudentTransactions(studentId, page = 1, limit = 20) {
  * @returns {object} Prisma where
  */
 function _buildFilterQuery(filterType, filterValue) {
-  const where = { isActive: true };
+  // Arxivlangan — tizimdan chiqqan: unga tanga ham, "hammaga" ro'yxati ham yo'q
+  const where = { isActive: true, isArchived: false };
 
   switch (filterType) {
     case "role":
@@ -628,7 +629,7 @@ async function getCoinLeaderboard(page = 1, limit = 50) {
 
   const [students, total] = await Promise.all([
     prisma.user.findMany({
-      where: { role: "student", isActive: true },
+      where: { role: "student", isActive: true, isArchived: false },
       orderBy: { coinBalance: "desc" },
       skip,
       take: limit,
@@ -646,7 +647,7 @@ async function getCoinLeaderboard(page = 1, limit = 50) {
         profileImage: { select: { variants: true } },
       },
     }),
-    prisma.user.count({ where: { role: "student", isActive: true } }),
+    prisma.user.count({ where: { role: "student", isActive: true, isArchived: false } }),
   ]);
 
   const ranked = students.map((student, i) => {

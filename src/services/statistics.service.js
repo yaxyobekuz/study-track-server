@@ -115,7 +115,7 @@ function paginate(rows, pageNum, limitNum) {
 async function buildRankingRows(studentWhere) {
   const week = getCurrentWeekRange();
   const students = await prisma.user.findMany({
-    where: { role: "student", isActive: true, ...studentWhere },
+    where: { role: "student", isActive: true, isArchived: false, ...studentWhere },
     select: STUDENT_SELECT,
   });
 
@@ -278,7 +278,7 @@ async function loadGradeRefMaps(grades) {
 async function computeRankAmong(studentWhere, studentSum, weekStart, weekEnd) {
   const ids = (
     await prisma.user.findMany({
-      where: { role: "student", isActive: true, ...studentWhere },
+      where: { role: "student", isActive: true, isArchived: false, ...studentWhere },
       select: { id: true },
     })
   ).map((s) => s.id);

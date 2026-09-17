@@ -12,6 +12,7 @@ const { isHoliday } = require("../services/holiday.service");
 // O'qish mantig'i (bugungi baholanmagan darslar, o'quvchi baholari, ref
 // biriktirish) servisda — HTTP'dan tashqarida ham chaqiriladi.
 const gradeService = require("../services/grade.service");
+const { loadArchivedStudentScope } = require("../services/archivedStudentScope.service");
 const { attachGradeRefs } = gradeService;
 const { resolveLessonAccess, scheduleDayOf } = require("../helpers/teacherAccess");
 const { findActiveUnlock } = require("../services/gradingUnlock.service");
@@ -154,16 +155,18 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
 
   // Get all students in the class
   const allStudents = await prisma.user.findMany({
-    where: { role: "student", classes: { some: { classId } } },
+    where: { role: "student", isArchived: false, classes: { some: { classId } } },
     select: { id: true, firstName: true, lastName: true },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
 
-  // Grade ref'lari scalar — baholarni olib qo'lda student/subject/teacher biriktiramiz
+  // Grade ref'lari scalar — baholarni olib qo'lda student/subject/teacher biriktiramiz.
+  // Arxivlangan o'quvchi eski bahosi bilan jurnalga qaytib kirmasin
   const gradeRows = await prisma.grade.findMany({
     where: {
       classId,
       date: { gte: startDate, lte: endDate },
+      ...(await loadArchivedStudentScope()),
     },
     select: {
       id: true,
@@ -787,7 +790,7 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
 
   // Get all students in the class
   const students = await prisma.user.findMany({
-    where: { role: "student", classes: { some: { classId } } },
+    where: { role: "student", isArchived: false, classes: { some: { classId } } },
     select: { id: true, firstName: true, lastName: true },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
@@ -902,7 +905,7 @@ const exportGrades = asyncHandler(async (req, res) => {
 
   // Get all students in the class
   const allStudents = await prisma.user.findMany({
-    where: { role: "student", classes: { some: { classId } } },
+    where: { role: "student", isArchived: false, classes: { some: { classId } } },
     select: { id: true, firstName: true, lastName: true },
     orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
   });

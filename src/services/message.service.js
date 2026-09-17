@@ -10,9 +10,14 @@
  * ⚠️ QABUL QILUVCHI SEMANTIKASI O'ZGARMAGAN. O'quvchining `telegramIds` —
  * uni botda bog'lagan ota-onalar. Tarqatma `TgUser.notificationsEnabled`
  * ni HISOBGA OLMAYDI (bildirishnomani o'chirgan ota-ona ham oladi) va
- * `isArchived`/`isActive` bo'yicha filtrlamaydi. Bu mavjud xatti-harakat;
- * uni bu refaktor ichida "tuzatish" yuborilgan xabarlar sonini jimgina
- * o'zgartirgan bo'lardi.
+ * `isActive` bo'yicha filtrlamaydi. Bu mavjud xatti-harakat; uni bu refaktor
+ * ichida "tuzatish" yuborilgan xabarlar sonini jimgina o'zgartirgan bo'lardi.
+ *
+ * ⚠️ ARXIVLANGANLAR esa "hammaga" tarqatmaga KIRMAYDI (biznes qarori,
+ * 2026-09-17): arxivlangan o'quvchi maktabdan ketgan va joriy ro'yxatlarning
+ * hech birida ko'rinmaydi — maktab e'lonlari uning ota-onasiga borishi
+ * shu qoidaga zid edi. Sinf tarqatmasi ularga o'zi yetmaydi (arxivlash
+ * sinfdan chiqaradi).
  *
  * ⚠️ NAVBAT JORIY FILIAL KONTEKSTIDA ishga tushadi
  * (`messageQueue.addBulkToQueue` → `startProcessing` → `getBranch()`).
@@ -154,6 +159,7 @@ async function resolveRecipients({ recipientType, classId, studentId }) {
       where: {
         telegramIds: { isEmpty: false },
         role: { in: ["teacher", "student"] },
+        isArchived: false,
       },
       select: recipientSelect,
     });

@@ -2127,6 +2127,139 @@ const cancelMonth = async (data, userId) => {
 };
 
 /**
+ * O'QUVCHINING OYLIK TO'LOV QARZINI 0 GA TUSHIRADI — arxivlashdagi
+ * "Qarzdorlikni 0 ga tushirish" (`user.service.archiveUser`).
+ *
+ * Ochiq (to'lanmagan / qisman) har bir oy ALOHIDA ishlanadi, ikki xil yo'l
+ * bilan — ikkalasi ham modulning MAVJUD mexanizmi, yangi "o'chirish" yo'q:
+ *
+ *  - TO'LANMAGAN oy (`paidAmount = 0`) → `cancelInvoice`. Pul harakatlanmaydi,
+ *    qator sababi va aktyori bilan qoladi.
+ *  - QISMAN TO'LANGAN oy → oy summasi TO'LANGAN QISMGA tenglashtiriladi
+ *    (`StudentMonthOverride` + `regenerateInvoice` → `amendPaidInvoice`).
+ *    ⚠️ Bekor qilinmaydi: `cancelInvoice` to'langan pulni DEPOZITGA qaytarardi,
+ *    ya'ni "qarz 0" o'rniga maktab o'quvchiga qarzdor bo'lib qolardi — holbuki
+ *    o'sha pul haqiqatan o'sha oy uchun to'langan. Override tufayli kechirilgan
+ *    qoldiq kunlik `regenerateAllUnpaid` da ham QAYTIB KELMAYDI: quruvchi
+ *    har safar override summasini oladi. Asl summa izohda muhrlanadi.
+ *
+ * ⚠️ Har oy o'z tranzaksiyasida (`cancelMonth` doktrinasi): bitta oy
+ * yiqilsa qolganlari baribir yopiladi, yiqilgani `failed` da qaytadi.
+ * Chaqiruvchi o'quvchini ARXIVLAGANDAN KEYIN chaqiradi — aks holda oylik pass
+ * bekor qilingan oyni orada qayta tiklab qo'yishi mumkin edi.
+ *
+ * @param {string} studentId
+ * @param {{note?: string, userId: string}} options
+ * @returns {Promise<{total: number, cancelled: number, forgiven: number, amount: string, failed: object[]}>}
+ */
+const writeOffStudentDebt = async (studentId, { note = "", userId }) => {
+  const reason = note
+    ? `Arxivlashda qarzdorlik 0 ga tushirildi: ${note}`
+    : "Arxivlashda qarzdorlik 0 ga tushirildi";
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: { studentId, status: { in: ["unpaid", "partial"] } },
+    select: { id: true, studentId: true, month: true, amount: true, paidAmount: true },
+    orderBy: [{ month: "asc" }, { id: "asc" }],
+  });
+
+  const summary = { total: invoices.length, cancelled: 0, forgiven: 0, failed: [] };
+  let written = new Decimal(0);
+
+  for (const invoice of invoices) {
+    const paid = new Decimal(invoice.paidAmount);
+    const debt = new Decimal(invoice.amount).minus(paid);
+
+    try {
+      if (paid.isZero()) {
+        await cancelInvoice(invoice.id, reason, userId);
+        summary.cancelled += 1;
+      } else {
+        await forgivePartialInvoice(invoice, { reason, userId });
+        summary.forgiven += 1;
+      }
+      written = written.plus(debt);
+    } catch (error) {
+      summary.failed.push({
+        invoiceId: invoice.id,
+        month: invoice.month,
+        monthLabel: formatMonthKey(invoice.month),
+        reason: error.message,
+      });
+    }
+  }
+
+  summary.amount = formatAmount(written);
+
+  if (summary.total > 0) {
+    logger.warn(
+      `[invoices] ARXIVLASHDA QARZ 0 GA TUSHIRILDI: student=${studentId} ` +
+        `bekor=${summary.cancelled} kechirildi=${summary.forgiven} ` +
+        `yiqildi=${summary.failed.length} summa=${summary.amount} ` +
+        `actor=${userId} sabab="${reason}"`,
+    );
+  }
+
+  return summary;
+};
+
+/**
+ * Qisman to'langan oyning QOLDIG'INI kechiradi: oy summasi to'langan qismga
+ * tenglashadi va oy "to'langan" bo'ladi (`writeOffStudentDebt` izohi).
+ *
+ * ⚠️ Yiqilsa override ORQAGA qaytariladi (oldingisi bo'lsa tiklanadi): osilib
+ * qolgan override keyingi qayta shakllantirishda oyni kutilmaganda
+ * o'zgartirib yuborardi.
+ *
+ * @param {{id: string, studentId: string, month: number, amount: object, paidAmount: object}} invoice
+ * @param {{reason: string, userId: string}} options
+ */
+const forgivePartialInvoice = async (invoice, { reason, userId }) => {
+  const key = { studentId: invoice.studentId, month: invoice.month };
+
+  const previous = await prisma.studentMonthOverride.findUnique({
+    where: { studentId_month: key },
+  });
+
+  const paid = new Decimal(invoice.paidAmount);
+  const overrideNote =
+    `${reason} (summa ${formatAmount(invoice.amount)}, to'langan ` +
+    `${formatAmount(paid)}, kechirildi ${formatAmount(new Decimal(invoice.amount).minus(paid))})`;
+
+  await prisma.studentMonthOverride.upsert({
+    where: { studentId_month: key },
+    create: { ...key, amount: paid, reasonCode: "other", note: overrideNote, createdBy: userId },
+    update: { amount: paid, reasonCode: "other", note: overrideNote, createdBy: userId },
+  });
+
+  try {
+    const result = await regenerateInvoice(invoice.id, reason, userId);
+
+    // `amendPaidInvoice` tarif topilmasa JIM qaytadi — oy o'zgarmagan bo'ladi
+    if (result.status !== "paid") {
+      throw new ConflictError(
+        "Oy summasini qayta hisoblab bo'lmadi (tarif topilmadi) — qo'lda to'g'rilang",
+      );
+    }
+  } catch (error) {
+    if (previous) {
+      await prisma.studentMonthOverride.update({
+        where: { id: previous.id },
+        data: {
+          amount: previous.amount,
+          reasonCode: previous.reasonCode,
+          note: previous.note,
+          createdBy: previous.createdBy,
+        },
+      });
+    } else {
+      await prisma.studentMonthOverride.deleteMany({ where: key });
+    }
+    throw error;
+  }
+};
+
+/**
  * AVTOMATIK QAYTA SHAKLLANTIRISH — tarif/narx/chegirma o'zgargach chaqiriladi.
  *
  * Berilgan o'quvchilarning [fromMonth..joriy oy] oralig'idagi TO'LANMAGAN
@@ -2422,6 +2555,7 @@ module.exports = {
   getSummary,
   updateNote,
   cancelInvoice,
+  writeOffStudentDebt,
   regenerateInvoice,
   regenerateForStudents,
   regenerateForTariff,

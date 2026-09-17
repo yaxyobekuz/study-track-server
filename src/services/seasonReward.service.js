@@ -91,6 +91,7 @@ async function getSeasonStats(seasonId, filter = {}) {
       where: {
         role: ROLES.STUDENT,
         isActive: { not: false },
+        isArchived: false,
         classes: { some: { classId: { in: [...bindingClassIds] } } },
       },
       select: {
@@ -107,8 +108,10 @@ async function getSeasonStats(seasonId, filter = {}) {
     .map((g) => g.studentId)
     .filter((id) => !userMap.has(id.toString()));
   if (missingIds.length > 0) {
+    // ⚠️ Arxivlangan o'quvchi natijasi bo'lsa ham reytingga, tanga
+    // tarqatishga va bot xabariga KIRMAYDI
     const extra = await prisma.user.findMany({
-      where: { id: { in: missingIds } },
+      where: { id: { in: missingIds }, isArchived: false },
       select: {
         id: true,
         firstName: true,
