@@ -540,22 +540,61 @@ const editPayment = async (id, data, userId) => {
     throw new BadRequestError("Bekor qilingan to'lovni tahrirlab bo'lmaydi");
   }
 
-  const reason = data.reason?.trim() || "To'lov tahrirlandi (qayta kiritildi)";
+  // Yangi qiymatlar — bo'sh maydonlar eskisidan olinadi.
+  const nextStudentId = data.studentId || existing.studentId;
+  const nextAccountId = data.accountId || existing.accountId;
+  const nextAmount =
+    data.amount != null && data.amount !== ""
+      ? parseAmount(data.amount, "To'lov summasi")
+      : new Decimal(existing.amount);
+  const nextPaidAt = data.paidAt ? parsePaidAt(data.paidAt) : existing.paidAt;
+  const nextNote = data.note != null ? data.note.trim() : existing.note;
 
-  // 1 ── Eski to'lovni bekor qilamiz: taqsimot/depozit/kassa qaytadi
+  // ⚠️ Pulga tegadigan maydonlar (o'quvchi, summa, to'lov turi) O'ZGARMAGAN
+  // bo'lsa — taqsimot, depozit va kassa qoldig'i AYNAN o'sha bo'ladi, faqat
+  // sana/izoh o'zgargan. Bunda JOYIDA yangilaymiz: bekor+qayta yaratish shart
+  // emas. Aynan o'sha bekor+qayta yo'li chek raqamini almashtirib, "bekor
+  // qilingan" qator qoldirib, summani jamiga IKKI marta qo'shib yuborardi.
+  const moneyUnchanged =
+    nextStudentId === existing.studentId &&
+    nextAccountId === existing.accountId &&
+    nextAmount.equals(existing.amount);
+
+  if (moneyUnchanged) {
+    await prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { id },
+        data: { paidAt: nextPaidAt, note: nextNote },
+      });
+
+      // Kassa daftaridagi qator ham shu to'lovniki — sana bilan birga suriladi.
+      // Kunlik hisobot `occurredAt` bo'yicha guruhlanadi; running balance esa
+      // `seq` ga bog'liq, shuning uchun qoldiqlar o'zgarmaydi (finance.md §7).
+      await tx.accountEntry.updateMany({
+        where: { paymentId: id, type: "payment" },
+        data: { occurredAt: nextPaidAt, note: nextNote },
+      });
+    }, TX_OPTIONS);
+
+    logger.info(
+      `[payment] To'lov joyida tahrirlandi (sana/izoh): payment=${id} actor=${userId}`,
+    );
+
+    return getPaymentById(id);
+  }
+
+  // ── Pulga tegadigan o'zgarish: append-only doktrinasi — bekor qilib
+  //    qayta yaratamiz (taqsimot/depozit/kassa qaytadi, yangi chek beriladi).
+  const reason = data.reason?.trim() || "To'lov tahrirlandi (qayta kiritildi)";
   await voidPayment(id, reason, userId);
 
-  // 2 ── Tahrirlangan qiymatlar bilan yangi to'lov (bo'sh maydonlar eskisidan)
   const created = await createPayment(
     {
-      studentId: data.studentId || existing.studentId,
-      accountId: data.accountId || existing.accountId,
-      amount:
-        data.amount != null && data.amount !== ""
-          ? String(data.amount)
-          : formatAmount(existing.amount),
-      paidAt: data.paidAt || existing.paidAt,
-      note: data.note != null ? data.note : existing.note,
+      studentId: nextStudentId,
+      accountId: nextAccountId,
+      amount: formatAmount(nextAmount),
+      paidAt: nextPaidAt,
+      note: nextNote,
     },
     userId,
   );
@@ -632,6 +671,13 @@ const getPayments = async (req) => {
       : { in: ids };
   }
 
+  // ⚠️ JAMI summa HAR DOIM bekor qilingan to'lovlarni chiqarib tashlaydi.
+  // Bekor qilingan to'lov puli kassaga teskari qator bilan qaytarilgan —
+  // demak u "umumiy tushum" emas. Ro'yxatning O'ZI `filter` bo'yicha
+  // (so'ralsa voided'ni ham ko'rsatadi), lekin `agg` (jami) hech qachon
+  // voided'ni sanamaydi — aks holda tahrirlangan (bekor+qayta) to'lov
+  // summasi ikki marta qo'shilib ketardi.
+  const activeFilter = { ...filter, isVoided: false };
   const [rows, total, agg] = await Promise.all([
     prisma.payment.findMany({
       where: filter,
@@ -644,7 +690,7 @@ const getPayments = async (req) => {
       },
     }),
     prisma.payment.count({ where: filter }),
-    prisma.payment.aggregate({ where: filter, _sum: { amount: true } }),
+    prisma.payment.aggregate({ where: activeFilter, _sum: { amount: true }, _count: true }),
   ]);
 
   const studentMap = await loadStudentMap(rows);
@@ -672,7 +718,7 @@ const getPayments = async (req) => {
   return {
     ...formatPaginationResponse(items, total, page, limit),
     totals: {
-      count: total,
+      count: agg._count ?? 0,
       totalAmount: formatAmount(new Decimal(agg._sum.amount ?? 0)),
     },
   };
