@@ -713,6 +713,18 @@ const getMySalaryStats = async (userId) => {
       perHourRate: formatAmount(projected.perHourRate),
       // Soat narxi yo'q (faqat fiksa) — o'tilmagan dars pulga ta'sir qilmaydi
       paysByHours: projected.perHourRate.greaterThan(0),
+      // BELGILANGAN OYLIK — admin belgilagan to'liq summa: hamma dars o'tilganda,
+      // ushlab qolish va to'xtatishsiz (fiksa + soat + ustamalar)
+      assignedAmount: formatAmount(planned.grossAmount),
+      // Belgilangan oylikdan ayriladiganlar (hamma dars o'tilgan holat bo'yicha)
+      plannedSuspendedAmount: formatAmount(planned.suspendedAmount),
+      suspensions: planned.suspensionBreakdown
+        .filter((line) => new Decimal(line.amount || 0).greaterThan(0))
+        .map((line) => ({ label: line.label, reason: line.reason, amount: line.amount })),
+      plannedDeductionAmount: formatAmount(planned.deductionAmount),
+      deductions: planned.deductionBreakdown
+        .filter((line) => new Decimal(line.amount || 0).greaterThan(0))
+        .map((line) => ({ reason: line.reason, amount: line.amount })),
       plannedAmount: formatAmount(planned.amount),
       projectedAmount: formatAmount(projected.amount),
       accruedAmount: formatAmount(accrued.amount),
