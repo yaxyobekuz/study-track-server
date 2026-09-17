@@ -32,6 +32,7 @@ const {
   previewPayment,
   createPayment,
   voidPayment,
+  replacePayment,
   getPayments,
 } = require("../controllers/payroll.controller");
 
@@ -136,6 +137,9 @@ router.get("/payments", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), 
 router.post("/payments/preview", protect, authorizePermission(PERMISSIONS.PAYROLL_PAY), previewPayment);
 router.post("/payments", protect, authorizePermission(PERMISSIONS.PAYROLL_PAY), createPayment);
 router.post("/payments/:id/void", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_VOID), voidPayment);
+// Tahrirlash = bekor qilish + qayta to'lash, shuning uchun IKKALA ruxsat ham
+// talab qilinadi: bitta tugma orqali huquq oshirib olinmasin.
+router.post("/payments/:id/replace", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_VOID), authorizePermission(PERMISSIONS.PAYROLL_PAY), replacePayment);
 
 // ── Oylik majburiyatlari ─────────────────────
 // O'ZIMNING oylik statistikam (teacher panel dashboardi) — ruxsatsiz,

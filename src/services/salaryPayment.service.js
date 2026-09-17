@@ -352,15 +352,284 @@ const voidPayment = async (id, reason, userId) => {
   return serializePayment(fresh);
 };
 
+/**
+ * To'lovni TAHRIRLASH — "1 000 000 o'rniga adashib 2 000 000 kiritilgan".
+ * Summa, sana, to'lov turi va izoh o'zgaradi; xodim O'ZGARMAYDI (boshqa
+ * odamga yozilgan to'lov bekor qilinib, to'g'ri xodimga qaytadan kiritiladi).
+ *
+ * ⚠️ Daftar APPEND-ONLY — joyida o'zgartirish yo'q. Eski to'lov BEKOR
+ * QILINADI (sababi "Tahrirlandi: ...") va to'g'ri qiymat bilan YANGI to'lov
+ * yoziladi. Ikkalasi ham registrda qoladi. Faqat izoh o'zgarsa — pulga
+ * tegmagani uchun joyida yangilanadi.
+ *
+ * ⚠️ BITTA TRANZAKSIYADA. O'quvchi tomonidagi `editPayment` void va create
+ * ni ketma-ket chaqiradi; bu yerda shunday qilinsa, qarzdan ko'p yangi summa
+ * rad etilganda eski to'lov bekor bo'lib, yangisi yozilmay qolardi — xodim
+ * jimgina "to'lanmagan" bo'lib, kassa qoldig'i o'zgarib ketardi.
+ *
+ * ⚠️ LOCK TARTIBI saqlanadi: bo'shatish va yangi taqsimot XOTIRADA
+ * birlashtiriladi, har bir majburiyat BIR MARTA (month asc, id asc) yoziladi,
+ * kassa(lar) esa oxirida — ikki xil to'lov turi bo'lsa `id` o'sish tartibida.
+ *
+ * @param {string} id
+ * @param {object} data - { amount?, accountId?, paidAt?, note?, reason }
+ * @param {string} userId
+ */
+const editPayment = async (id, data, userId) => {
+  const existing = await prisma.salaryPayment.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("To'lov topilmadi");
+  if (existing.isVoided) {
+    throw new BadRequestError("Bekor qilingan to'lovni tahrirlab bo'lmaydi");
+  }
+
+  const reason = data.reason?.trim();
+  if (!reason) throw new BadRequestError("Tahrirlash sababi majburiy");
+
+  const hasValue = (value) => value != null && value !== "";
+
+  const amount = hasValue(data.amount)
+    ? parseAmount(data.amount, "Summa")
+    : new Decimal(existing.amount);
+  if (amount.lessThanOrEqualTo(0)) {
+    throw new BadRequestError("To'lov summasi noldan katta bo'lishi kerak");
+  }
+
+  const accountId = data.accountId || existing.accountId;
+  // Sana yuborilmasa eskisi qoladi (vaqti bilan) — kun o'zgarmagan bo'lsa
+  // frontend uni yubormaydi
+  const paidAt = hasValue(data.paidAt) ? parsePaidAt(data.paidAt) : existing.paidAt;
+  const note = data.note != null ? String(data.note).trim() : existing.note;
+
+  const moneyChanged =
+    !amount.equals(existing.amount) ||
+    accountId !== existing.accountId ||
+    paidAt.getTime() !== existing.paidAt.getTime();
+
+  if (!moneyChanged) {
+    if (note === existing.note) throw new BadRequestError("Hech narsa o'zgarmadi");
+
+    const updated = await prisma.salaryPayment.update({ where: { id }, data: { note } });
+    return serializePayment(updated);
+  }
+
+  const account = await assertActiveAccount(accountId);
+  const now = new Date();
+
+  const result = await prisma.$transaction(async (tx) => {
+    // 1 ── Eski chek — CAS (parallel bekor qilish / tahrirlash poygasi)
+    const voided = await tx.salaryPayment.updateMany({
+      where: { id, isVoided: false },
+      data: {
+        isVoided: true,
+        voidedAt: now,
+        voidedBy: userId,
+        voidReason: `Tahrirlandi: ${reason}`,
+      },
+    });
+
+    if (voided.count !== 1) {
+      throw new ConflictError("To'lov shu orada bekor qilingan yoki tahrirlangan");
+    }
+
+    // 2 ── Eski taqsimotlar: qaysi oylikdan qancha pul bo'shaydi
+    const oldAllocations = await tx.salaryAllocation.findMany({
+      where: { paymentId: id, isVoided: false },
+    });
+
+    const released = new Map();
+    for (const a of oldAllocations) {
+      const sum = released.get(a.payrollEntryId) ?? new Decimal(0);
+      released.set(a.payrollEntryId, sum.plus(a.amount));
+    }
+
+    // 3 ── Tegishli majburiyatlar: bo'shaydiganlari + ochiq qarzlar
+    const entries = await tx.payrollEntry.findMany({
+      where: {
+        staffId: existing.staffId,
+        OR: [
+          { status: { in: ["unpaid", "partial"] } },
+          { id: { in: [...released.keys()] } },
+        ],
+      },
+      orderBy: [{ month: "asc" }, { id: "asc" }],
+    });
+
+    // Eski to'lov bo'shatilgandan keyingi holat — faqat xotirada
+    const afterRelease = entries.map((entry) => {
+      const paid = new Decimal(entry.paidAmount).minus(released.get(entry.id) ?? 0);
+      if (paid.isNegative()) {
+        throw new ConflictError(
+          "Oylik majburiyatining to'langan summasi manfiy bo'lib qoladi",
+        );
+      }
+      const status = deriveStatus(new Decimal(entry.amount), paid);
+      return {
+        ...entry,
+        paidAmount: paid,
+        status,
+        paidAt: status === "paid" ? entry.paidAt : null,
+      };
+    });
+
+    const candidates = afterRelease.filter((_, i) => entries[i].status !== "cancelled");
+    const outstanding = sumAmounts(
+      candidates.map((e) => Decimal.max(0, new Decimal(e.amount).minus(e.paidAmount))),
+    );
+
+    // ⚠️ QARZDAN ORTIQ TO'LOV RAD ETILADI — `createPayment` bilan AYNI qoida.
+    // Tranzaksiya orqaga qaytadi: eski to'lov ham o'z holida qoladi.
+    if (amount.greaterThan(outstanding)) {
+      throw new BadRequestError(
+        `Yangi summa qarzdan ko'p: bu to'lovsiz qarz ${formatAmount(outstanding)}, ` +
+          `yangi summa ${formatAmount(amount)}. Avans qo'llab-quvvatlanmaydi.`,
+      );
+    }
+
+    const { allocations, allocated } = allocateFifo(candidates, amount, paidAt);
+    const allocationByEntry = new Map(allocations.map((a) => [a.invoiceId, a]));
+
+    // 4 ── Har bir majburiyat BIR MARTA, month asc/id asc — CAS
+    for (let i = 0; i < entries.length; i++) {
+      const original = entries[i];
+      const allocation = allocationByEntry.get(original.id);
+      if (!allocation && !released.has(original.id)) continue;
+
+      const next = allocation
+        ? {
+            paidAmount: allocation.newPaidAmount,
+            status: allocation.status,
+            paidAt: allocation.paidAt,
+          }
+        : {
+            paidAmount: afterRelease[i].paidAmount,
+            status: afterRelease[i].status,
+            paidAt: afterRelease[i].paidAt,
+          };
+
+      const updated = await tx.payrollEntry.updateMany({
+        where: {
+          id: original.id,
+          amount: original.amount,
+          paidAmount: original.paidAmount,
+          status: original.status,
+        },
+        data: next,
+      });
+
+      if (updated.count !== 1) {
+        throw new ConflictError(
+          "Oylik majburiyati shu orada o'zgardi — qaytadan urinib ko'ring",
+        );
+      }
+    }
+
+    await tx.salaryAllocation.updateMany({
+      where: { paymentId: id, isVoided: false },
+      data: { isVoided: true, voidedAt: now },
+    });
+
+    // 5 ── Yangi chek va taqsimotlari
+    const payment = await tx.salaryPayment.create({
+      data: {
+        staffId: existing.staffId,
+        accountId: account.id,
+        amount,
+        paidAt,
+        note,
+        staffSnapshot: existing.staffSnapshot,
+        createdBy: userId,
+      },
+    });
+
+    if (allocations.length > 0) {
+      await tx.salaryAllocation.createMany({
+        data: allocations.map((a) => ({
+          paymentId: payment.id,
+          payrollEntryId: a.invoiceId,
+          staffId: existing.staffId,
+          amount: a.amount,
+          appliedAt: paidAt,
+        })),
+      });
+    }
+
+    // 6 ── KASSA — OXIRGI. Ikki xil to'lov turi bo'lsa `id` o'sish tartibida.
+    const staffLabel =
+      `${existing.staffSnapshot?.firstName ?? ""} ${existing.staffSnapshot?.lastName ?? ""}`.trim();
+
+    const postReversal = () =>
+      postEntry(tx, {
+        accountId: existing.accountId,
+        type: "salary_payment_void",
+        amount: new Decimal(existing.amount),
+        occurredAt: now,
+        salaryPaymentId: existing.id,
+        note: `Tahrirlandi: ${reason}`,
+        createdBy: userId,
+      });
+
+    const postPayment = () =>
+      postEntry(tx, {
+        accountId: account.id,
+        type: "salary_payment",
+        amount: amount.negated(),
+        occurredAt: paidAt,
+        salaryPaymentId: payment.id,
+        note: `Oylik — ${staffLabel}`,
+        createdBy: userId,
+      });
+
+    if (existing.accountId <= account.id) {
+      await postReversal();
+      await postPayment();
+    } else {
+      await postPayment();
+      await postReversal();
+    }
+
+    return { payment, allocations, allocated };
+  }, TX_OPTIONS);
+
+  // Audit — tranzaksiyadan KEYIN (`voidPayment` bilan bir xil tartib)
+  logger.warn(
+    `[salary] To'lov tahrirlandi: eski=${id} (${formatAmount(existing.amount)}) → ` +
+      `yangi=${result.payment.id} (${formatAmount(amount)}) staff=${existing.staffId} ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
+  return {
+    ...serializePayment(result.payment, { account }),
+    replacedPaymentId: id,
+    allocatedAmount: formatAmount(result.allocated),
+    allocations: result.allocations.map((a) => ({
+      payrollEntryId: a.invoiceId,
+      month: a.month,
+      monthLabel: formatMonthKey(a.month),
+      amount: formatAmount(a.amount),
+    })),
+  };
+};
+
 /** To'lovlar registri (sahifalangan). */
 const getPayments = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { query } = req;
 
+  const includeVoided = query.includeVoided === "true";
+
   const where = {};
   if (query.staffId) where.staffId = query.staffId;
   if (query.accountId) where.accountId = query.accountId;
-  if (query.includeVoided !== "true") where.isVoided = false;
+  if (!includeVoided) where.isVoided = false;
+  // Bitta oylikka tushgan to'lovlar ("Majburiyatlar" qatoridan tahrirlash uchun)
+  if (query.payrollEntryId) {
+    where.allocations = {
+      some: {
+        payrollEntryId: query.payrollEntryId,
+        ...(includeVoided ? {} : { isVoided: false }),
+      },
+    };
+  }
 
   // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
   // (yaroqsiz sana ham shu yerda rad etiladi, Prisma'ga tushmaydi)
@@ -422,5 +691,6 @@ module.exports = {
   previewPayment,
   createPayment,
   voidPayment,
+  editPayment,
   getPayments,
 };

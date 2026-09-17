@@ -77,6 +77,13 @@ const voidPayment = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message: "To'lov bekor qilindi" });
 });
 
+// To'lovni tahrirlash — eski bekor qilinib, to'g'ri summa bilan yangisi
+// yoziladi (append-only daftar, bitta tranzaksiya).
+const replacePayment = asyncHandler(async (req, res) => {
+  const data = await salaryPaymentService.editPayment(req.params.id, req.body, req.user.id);
+  res.json({ success: true, data, message: "To'lov tahrirlandi" });
+});
+
 const getPayments = asyncHandler(async (req, res) => {
   const data = await salaryPaymentService.getPayments(req);
   res.json({ success: true, ...data });
@@ -106,5 +113,6 @@ module.exports = {
   previewPayment,
   createPayment,
   voidPayment,
+  replacePayment,
   getPayments,
 };

@@ -288,6 +288,10 @@ const getExpenses = async (req) => {
       categoryName: "Oylik",
       note: s.note || null,
       payee: staffName.get(s.staffId) || "Xodim",
+      // Xom maydonlar — ro'yxatdan oylik to'lovini tahrirlash/bekor qilish uchun
+      staffId: s.staffId,
+      staffName: staffName.get(s.staffId) || "Xodim",
+      accountId: s.accountId,
       accountName: s.account?.name ?? null,
       amount: formatAmount(s.amount),
       occurredAt: s.paidAt,
