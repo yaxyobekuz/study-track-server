@@ -550,6 +550,9 @@ model UserSubject {
 model Class {
   id        String   @id @db.Char(24)
   name      String   @unique
+  // Sig'im — sinfga sig'adigan o'quvchilar soni (admin belgilaydi). null →
+  // belgilanmagan. "Ortiqcha (bo'sh) joy" = capacity − joriy o'quvchilar soni.
+  capacity  Int?
   isActive  Boolean  @default(true) @map("is_active")
   createdBy String   @map("created_by") @db.Char(24)
   createdAt DateTime @default(now()) @map("created_at")

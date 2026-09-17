@@ -1419,7 +1419,9 @@ const getOverviewDashboard = async (monthInput) => {
     where: { role: ROLES.STUDENT, isArchived: false },
     select: {
       id: true,
-      classes: { select: { class: { select: { id: true, name: true } } } },
+      classes: {
+        select: { class: { select: { id: true, name: true, capacity: true } } },
+      },
     },
   });
   const ids = students.map((s) => s.id);
@@ -1512,6 +1514,9 @@ const getOverviewDashboard = async (monthInput) => {
       {
         classId: cls?.id ?? null,
         className: cls?.name ?? NO_CLASS,
+        // Sig'im — admin belgilaydi (null → belgilanmagan). Sinfdagi barcha
+        // o'quvchida bir xil qiymat, shuning uchun birinchisidan olinadi.
+        capacity: cls?.capacity ?? null,
         studentCount: 0,
         grantCount: 0,
         expected: new Decimal(0),
@@ -1541,6 +1546,10 @@ const getOverviewDashboard = async (monthInput) => {
   const serializeClass = (r) => ({
     classId: r.classId,
     className: r.className,
+    // Sig'im va ORTIQCHA (bo'sh) joy — sig'im belgilanmagan bo'lsa ikkalasi
+    // ham null. Manfiy bo'lishi mumkin (sig'imdan oshib ketgan sinf).
+    capacity: r.capacity,
+    freeSpots: r.capacity != null ? r.capacity - r.studentCount : null,
     studentCount: r.studentCount,
     grantCount: r.grantCount,
     payingCount: r.studentCount - r.grantCount,

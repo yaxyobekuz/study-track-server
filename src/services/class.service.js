@@ -61,14 +61,29 @@ async function getClassById(id) {
 }
 
 /**
+ * Sig'imni normallashtiradi: bo'sh/`null` → `null` (belgilanmagan), aks holda
+ * manfiy bo'lmagan butun son. Yaroqsiz qiymatni JIM qabul qilmaydi.
+ */
+function normalizeCapacity(value) {
+  if (value == null || value === "") return null;
+  const n = Number.parseInt(value, 10);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new BadRequestError("Sig'im manfiy bo'lmagan butun son bo'lishi kerak");
+  }
+  return n;
+}
+
+/**
  * Yangi sinf yaratish.
  */
-async function createClass(name, createdBy) {
+async function createClass(name, createdBy, capacity) {
   if (!name) {
     throw new BadRequestError("Sinf nomi majburiy");
   }
 
-  const classData = await prisma.class.create({ data: { name, createdBy } });
+  const classData = await prisma.class.create({
+    data: { name, createdBy, capacity: normalizeCapacity(capacity) },
+  });
   const [populated] = await attachCreators([classData]);
   return populated;
 }
@@ -86,6 +101,9 @@ async function updateClass(id, data) {
   const update = {};
   if (data.name) update.name = data.name;
   if (data.isActive !== undefined) update.isActive = data.isActive;
+  // `capacity` maydoni yuborilgan bo'lsa (bo'sh string ham) — yangilanadi;
+  // yuborilmasa tegilmaydi.
+  if (data.capacity !== undefined) update.capacity = normalizeCapacity(data.capacity);
 
   const updated = await prisma.class.update({ where: { id }, data: update });
   const [populated] = await attachCreators([updated]);
