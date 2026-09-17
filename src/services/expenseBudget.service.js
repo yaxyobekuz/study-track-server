@@ -174,33 +174,26 @@ const getBudgets = async (query = {}) => {
   let totalLimit = new Decimal(0);
   let totalSpent = new Decimal(0);
 
-  const items = categories.map((category) => {
+  // ⚠️ "Foyda" kategoriyasi ALOHIDA: uning limiti admin tomonidan
+  // qo'yilmaydi, balki FORMULA bilan hisoblanadi — jami kutilayotgan kirim
+  // (accrued) MINUS boshqa barcha kategoriyalar limiti. Shu tufayli pastdagi
+  // JAMI limit aynan kirimga teng bo'ladi (foyda — "qolgan" ulush). U doim
+  // JAMI'dan bitta yuqorida (eng oxirgi qator) turadi.
+  const isFoydaCat = (c) => String(c.name ?? "").trim().toLowerCase() === "foyda";
+
+  const buildItem = (category, limit, spentRow) => {
     const budget = limitByCategory.get(category.id);
-    const spentRow = spentByCategory.get(category.id);
     const spent = spentRow?.amount ?? new Decimal(0);
-    const limit = budget ? effectiveLimit(budget, accrued) : null;
-
-    if (limit) totalLimit = totalLimit.plus(limit);
-    totalSpent = totalSpent.plus(spent);
-    spentByCategory.delete(category.id);
-
     const rate = limit ? rateOf(spent, limit) : null;
-    // Manfiy qoldiq — limitdan oshgani. Nolga qisib qo'ymaymiz: "qancha
-    // oshdik" degan raqam aynan shu ustunda ko'rinishi kerak.
+    // Manfiy qoldiq — limitdan oshgani. Nolga qisib qo'ymaymiz.
     const remaining = limit ? limit.minus(spent) : null;
-
-    // Eski "percentProfit" ni yagona "percentIncome" ga normallashtiramiz —
-    // frontend faqat bitta qiymat bilan ishlaydi
     const kind = isPercentKind(budget?.limitKind) ? "percentIncome" : "money";
-
     return {
       categoryId: category.id,
       name: category.name,
       isActive: category.isActive,
       excludeFromEbitda: category.excludeFromEbitda,
-      // `limit` — AMALDAGI so'm (foiz rejimida kirimdan hisoblangan)
       limit: limit ? formatAmount(limit) : null,
-      // Rejim va uni tahrirlash uchun xom qiymatlar (modal shulardan to'ladi)
       limitKind: kind,
       limitPercent:
         kind === "percentIncome" && budget?.limitPercent != null
@@ -212,10 +205,31 @@ const getBudgets = async (query = {}) => {
       status: statusOf(rate),
       expenseCount: spentRow?.count ?? 0,
       note: budget?.note ?? "",
+      isFoyda: isFoydaCat(category),
     };
-  });
+  };
 
-  // Arxivlangan kategoriyaga tushgan xarajat — ro'yxatdan tushib qolmasin
+  // 1 ── Foyda'DAN TASHQARI barcha kategoriyalar (katalog tartibida)
+  const foydaCat = categories.find(isFoydaCat) ?? null;
+  const items = [];
+  for (const category of categories) {
+    if (foydaCat && category.id === foydaCat.id) continue; // Foyda — oxirida
+    const budget = limitByCategory.get(category.id);
+    const limit = budget ? effectiveLimit(budget, accrued) : null;
+    if (limit) totalLimit = totalLimit.plus(limit);
+    const spentRow = spentByCategory.get(category.id);
+    totalSpent = totalSpent.plus(spentRow?.amount ?? new Decimal(0));
+    items.push(buildItem(category, limit, spentRow));
+    spentByCategory.delete(category.id);
+  }
+
+  // 2 ── FOYDA limiti = kirim − boshqa limitlar (manfiy bo'lmaydi)
+  const gap = accrued.minus(totalLimit);
+  const foydaLimit = gap.isNegative() ? new Decimal(0) : gap;
+  const foydaSpentRow = foydaCat ? spentByCategory.get(foydaCat.id) : null;
+  if (foydaCat) spentByCategory.delete(foydaCat.id); // unbudgeted'ga tushmasin
+
+  // 3 ── Arxivlangan kategoriyaga tushgan xarajat (Foyda emas)
   const unbudgeted = [...spentByCategory.entries()].map(([categoryId, row]) => {
     totalSpent = totalSpent.plus(row.amount);
     return {
@@ -236,7 +250,16 @@ const getBudgets = async (query = {}) => {
     };
   });
 
-  const all = [...items, ...unbudgeted];
+  // 4 ── FOYDA qatori — eng oxirida (JAMI'dan bitta yuqorida). Uni qo'shgach
+  //      JAMI limit = accrued (kirim) bo'ladi.
+  let foydaItem = null;
+  if (foydaCat) {
+    totalLimit = totalLimit.plus(foydaLimit);
+    totalSpent = totalSpent.plus(foydaSpentRow?.amount ?? new Decimal(0));
+    foydaItem = buildItem(foydaCat, foydaLimit, foydaSpentRow);
+  }
+
+  const all = [...items, ...unbudgeted, ...(foydaItem ? [foydaItem] : [])];
   const totalRate = rateOf(totalSpent, totalLimit);
 
   return {
@@ -258,20 +281,19 @@ const getBudgets = async (query = {}) => {
       limit: formatAmount(totalLimit),
       spent: formatAmount(totalSpent),
       remaining: formatAmount(totalLimit.minus(totalSpent)),
-      // KUTILAYOTGAN FOYDA — jami hisoblangan majburiyatdan limitlar
-      // olib tashlanadi: "hamma majburiyat yig'ilib, hamma limit ishlatilsa,
-      // qancha foyda qoladi". Foizlar hisoblangan majburiyatga nisbatan
-      // (limitlar 78% → foyda 22%).
-      expectedProfit: formatAmount(accrued.minus(totalLimit)),
+      // FOYDA endi "Foyda" kategoriyasi limiti sifatida jadvalda ko'rinadi
+      // (JAMI'dan bitta yuqorida). Bu maydonlar mavjud iste'molchilar uchun
+      // saqlanadi: expectedProfit = foyda ulushi (kirim − boshqa limitlar).
+      expectedProfit: formatAmount(foydaLimit),
       limitPercent: accrued.greaterThan(0)
-        ? Number(totalLimit.div(accrued).times(100).toFixed(1))
+        ? Number(totalLimit.minus(foydaLimit).div(accrued).times(100).toFixed(1))
         : null,
       profitPercent: accrued.greaterThan(0)
-        ? Number(accrued.minus(totalLimit).div(accrued).times(100).toFixed(1))
+        ? Number(foydaLimit.div(accrued).times(100).toFixed(1))
         : null,
       rate: totalRate,
       status: statusOf(totalRate),
-      withLimit: items.filter((row) => row.limit != null).length,
+      withLimit: all.filter((row) => row.limit != null).length,
       categoryCount: all.length,
       overCount: all.filter((row) => row.status === "over").length,
     },
