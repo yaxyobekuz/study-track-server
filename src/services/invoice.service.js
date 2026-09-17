@@ -1051,6 +1051,21 @@ const emptyRegistry = (month, page, limit, total = 0) => ({
 });
 
 /**
+ * GRANT o'quvchi — tizim egasi qaroriga ko'ra TARIF NOMI bilan aniqlanadi
+ * (chegirma bilan EMAS): katalogda alohida "Grand 100%" tarifi bo'ladi va
+ * o'quvchining SHU OYDAGI joriy tarifi nomi shunga mos kelsa grant sanaladi.
+ *
+ * ⚠️ Nomi ATAYLAB "Grand" (d bilan), "Grant" (t bilan) EMAS — tizim egasi
+ * shu imloni tanlagan. Bo'shliq, katta-kichik harf va so'z tartibiga
+ * bardoshli; "100" mustaqil son bo'lishi shart (ya'ni "1000" grant emas).
+ * Homiylik (isExclusive) chegirmasi endi grant sanog'iga KIRMAYDI.
+ */
+const isGrantTariffName = (name) => {
+  const n = String(name ?? "").toLowerCase();
+  return /grand/.test(n) && /(?<!\d)100(?!\d)/.test(n);
+};
+
+/**
  * Registr filtrini SAHIFALASHDAN OLDIN o'quvchi id'lariga aylantiradi.
  *
  * ⚠️ NIMA UCHUN SQL'DA, XOTIRADA EMAS. Ilgari filtr sahifa yuklangandan
@@ -1063,11 +1078,23 @@ const emptyRegistry = (month, page, limit, total = 0) => ({
  * Qaytadigan ro'yxat qarzdorlar/depoziti borlar soni bilan chegaralangan,
  * ya'ni butun maktab emas.
  *
- * @param {string|undefined} filter - "debtors" | "deposit" | "noTariff"
- * @param {number} month - YYYYMM (faqat `noTariff` uchun)
+ * @param {string|undefined} filter - "debtors" | "deposit" | "noTariff" | "grant"
+ * @param {number} month - YYYYMM (`noTariff` va `grant` uchun)
  * @returns {Promise<{mode: "in"|"notIn", ids: string[]}|null>}
  */
 const resolveRegistryFilter = async (filter, month) => {
+  if (filter === "grant") {
+    // GRANT o'quvchilar — shu oydagi joriy tarifi "Grand 100%" bo'lganlar
+    // (isGrant bilan bir xil qoida). Tarifi yo'q o'quvchi byStudent'ga
+    // tushmaydi, shuning uchun o'zi-o'zidan chiqib qoladi.
+    const { byStudent } = await resolveManyForMonth(month);
+    const ids = [];
+    for (const [sid, res] of byStudent) {
+      if (isGrantTariffName(res.items?.[0]?.tariff?.name)) ids.push(sid);
+    }
+    return { mode: "in", ids };
+  }
+
   if (filter === "debtors") {
     const rows = await prisma.monthlyInvoice.groupBy({
       by: ["studentId"],
@@ -1110,22 +1137,6 @@ const resolveRegistryFilter = async (filter, month) => {
   }
 
   return null;
-};
-
-/**
-/**
- * GRANT o'quvchi — tizim egasi qaroriga ko'ra TARIF NOMI bilan aniqlanadi
- * (chegirma bilan EMAS): katalogda alohida "Grand 100%" tarifi bo'ladi va
- * o'quvchining SHU OYDAGI joriy tarifi nomi shunga mos kelsa grant sanaladi.
- *
- * ⚠️ Nomi ATAYLAB "Grand" (d bilan), "Grant" (t bilan) EMAS — tizim egasi
- * shu imloni tanlagan. Bo'shliq, katta-kichik harf va so'z tartibiga
- * bardoshli; "100" mustaqil son bo'lishi shart (ya'ni "1000" grant emas).
- * Homiylik (isExclusive) chegirmasi endi grant sanog'iga KIRMAYDI.
- */
-const isGrantTariffName = (name) => {
-  const n = String(name ?? "").toLowerCase();
-  return /grand/.test(n) && /(?<!\d)100(?!\d)/.test(n);
 };
 
 /**
