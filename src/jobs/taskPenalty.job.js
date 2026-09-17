@@ -1,11 +1,19 @@
 const cron = require("node-cron");
 const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
+const { getTaskSettings } = require("../services/settings.service");
 const logger = require("../utils/logger");
 
 async function runPenaltyPass(ownerUser) {
   if (!ownerUser) {
     logger.warn("[TaskPenaltyCron] Owner foydalanuvchi topilmadi, o'tkazib yuborildi");
+    return;
+  }
+
+  // Filial sozlamasida avtomatik jarima o'chirilgan bo'lsa — hech narsa qilinmaydi
+  const settings = await getTaskSettings();
+  if (!settings.autoPenaltyEnabled) {
+    logger.info("[TaskPenaltyCron] Avtomatik jarima sozlamada o'chirilgan, o'tkazib yuborildi");
     return;
   }
 
@@ -61,6 +69,7 @@ async function runPenaltyPass(ownerUser) {
           data: {
             taskId: task.id,
             status: task.status,
+            kind: "penalty",
             reason: "Muddati o'tganligi sababli avtomatik jarima qo'llanildi",
             changedBy: ownerUser.id,
             changedAt: now,

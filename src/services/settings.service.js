@@ -87,6 +87,17 @@ async function getGradePenaltySettings() {
   });
 }
 
+/**
+ * Topshiriq qoidalari (yaratish, yakunlash, jarima). Sukut qiymatlari schema'da.
+ */
+async function getTaskSettings() {
+  return prisma.taskSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 async function getTestSettings() {
   return prisma.testSettings.upsert({
     where: { id: SINGLETON },
@@ -210,6 +221,7 @@ module.exports = {
   getPlannerSettings,
   getAttendanceSettings,
   getGradePenaltySettings,
+  getTaskSettings,
   getTestSettings,
   getDiagnosticSettings,
   getPenaltySettings,
