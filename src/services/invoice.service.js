@@ -1113,6 +1113,22 @@ const resolveRegistryFilter = async (filter, month) => {
 };
 
 /**
+/**
+ * GRANT o'quvchi — tizim egasi qaroriga ko'ra TARIF NOMI bilan aniqlanadi
+ * (chegirma bilan EMAS): katalogda alohida "Grand 100%" tarifi bo'ladi va
+ * o'quvchining SHU OYDAGI joriy tarifi nomi shunga mos kelsa grant sanaladi.
+ *
+ * ⚠️ Nomi ATAYLAB "Grand" (d bilan), "Grant" (t bilan) EMAS — tizim egasi
+ * shu imloni tanlagan. Bo'shliq, katta-kichik harf va so'z tartibiga
+ * bardoshli; "100" mustaqil son bo'lishi shart (ya'ni "1000" grant emas).
+ * Homiylik (isExclusive) chegirmasi endi grant sanog'iga KIRMAYDI.
+ */
+const isGrantTariffName = (name) => {
+  const n = String(name ?? "").toLowerCase();
+  return /grand/.test(n) && /(?<!\d)100(?!\d)/.test(n);
+};
+
+/**
  * O'QUVCHILAR REGISTRI — kassirning asosiy ekrani.
  *
  * Har bir qatorda: tarif, chegirma, shu oydagi summa, depozit qoldig'i va
@@ -1282,9 +1298,9 @@ const getStudentRegistry = async (req) => {
             ? `${Number(d.value)}%`
             : `${formatAmount(d.value)} so'm`,
       })),
-      // GRANT = isExclusive (grant/homiylik) chegirmasi bor o'quvchi —
-      // dashboard "grant vs to'lovchi" sanog'i shu bilan ajratiladi.
-      isGrant: discounts.some((d) => d.isExclusive),
+      // GRANT = joriy tarifi "Grand 100%" bo'lgan o'quvchi (TARIF nomi bilan,
+      // chegirma emas). "grant vs to'lovchi" sanog'i shu bilan ajratiladi.
+      isGrant: isGrantTariffName(resolved?.items?.[0]?.tariff?.name),
       // Qo'shimcha xizmatlar (yotoqxona, ovqat) — kassir nimadan qancha
       // yig'ilayotganini ko'rishi kerak
       services: services.map((s) => ({ id: s.id, name: s.name, amount: s.amount })),
@@ -1326,10 +1342,10 @@ const getStudentRegistry = async (req) => {
  * shakllantirmagan oyda ro'yxat bo'sh qolib, o'quvchilar "yo'q" bo'lib
  * ko'rinardi.
  *
- * GRANT = isExclusive (grant/homiylik) chegirmasi shu oyda amal qiladigan
- * o'quvchi. Sinf — o'quvchining JONLI birlamchi sinfi (`classes[0]`), invoice
- * snapshot'i emas: shunda sinfni bosganda ochiladigan ro'yxat (registr,
- * `classId` bo'yicha) aynan shu sanoq bilan mos keladi.
+ * GRANT = joriy tarifi "Grand 100%" bo'lgan o'quvchi (TARIF nomi bilan,
+ * chegirma emas). Sinf — o'quvchining JONLI birlamchi sinfi (`classes[0]`),
+ * invoice snapshot'i emas: shunda sinfni bosganda ochiladigan ro'yxat
+ * (registr, `classId` bo'yicha) aynan shu sanoq bilan mos keladi.
  *
  * @param {number|string} monthInput
  * @returns {Promise<object>}
@@ -1364,7 +1380,7 @@ const getOverviewDashboard = async (monthInput) => {
     };
   }
 
-  const [invoices, discountsByStudent, resolved, depositAgg] = await Promise.all([
+  const [invoices, resolved, depositAgg] = await Promise.all([
     prisma.monthlyInvoice.findMany({
       where: { month, studentId: { in: ids }, status: { not: "cancelled" } },
       select: {
@@ -1374,10 +1390,10 @@ const getOverviewDashboard = async (monthInput) => {
         directionName: true,
       },
     }),
-    resolveDiscountsForMonth(month, { studentIds: ids }),
     // Yo'nalish JONLI tarifdan olinadi (snapshot'dan emas): tarifga yo'nalish
     // keyin biriktirilsa yoki to'lov tushgan invoice qayta shakllanmasa ham
     // o'quvchi to'g'ri yo'nalishga tushadi — "Yo'nalishsiz" bo'lagi qolmaydi.
+    // Grant sanog'i ham shundan (tarif nomi) chiqadi.
     resolveManyForMonth(month, { studentIds: ids }),
     prisma.studentAccount.aggregate({
       where: { studentId: { in: ids } },
@@ -1403,9 +1419,10 @@ const getOverviewDashboard = async (monthInput) => {
     invByStudent.set(inv.studentId, prev);
   }
 
+  // GRANT = joriy tarifi "Grand 100%" bo'lgan o'quvchi (TARIF nomi bilan).
   const grantSet = new Set();
-  for (const [sid, list] of discountsByStudent) {
-    if (list.some((d) => d.isExclusive)) grantSet.add(sid);
+  for (const [sid, res] of resolved.byStudent) {
+    if (isGrantTariffName(res.items?.[0]?.tariff?.name)) grantSet.add(sid);
   }
 
   const NO_CLASS = "Sinfsiz";
