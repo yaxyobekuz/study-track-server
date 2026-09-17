@@ -739,7 +739,7 @@ const debtTotalsAt = async (asOfMonth) => {
 };
 
 const buildDebt = async (asOfMonth, compareMonth) => {
-  const [totals, previousTotals, totalRow, agingRows, debtorsPage] = await Promise.all([
+  const [totals, previousTotals, totalRow, agingRows, debtorsPage, splitRow] = await Promise.all([
     debtTotalsAt(asOfMonth),
     // ⚠️ Taqqoslash oyi HOLATIGA qarab olinadi, o'sha oyning o'z qarzi
     // emas: "o'tgan oy oxirida qancha qarz turgan edi" degan savolga
@@ -780,6 +780,20 @@ const buildDebt = async (asOfMonth, compareMonth) => {
     ),
     // Mavjud registr qayta ishlatiladi — yangi so'rov yozilmaydi
     getDebtors({ query: { limit: String(TOP_DEBTORS_LIMIT) } }),
+    // Qarzdorlarni ikkiga ajratish: yopilmagan majburiyatlariga BIROR pul
+    // to'lagan (qisman) va UMUMAN to'lamagan o'quvchilar soni.
+    prisma.$queryRawUnsafe(
+      `SELECT
+          COUNT(*) FILTER (WHERE paid > 0)::int AS partial,
+          COUNT(*) FILTER (WHERE paid = 0)::int AS unpaid
+         FROM (
+           SELECT student_id, SUM(paid_amount) AS paid
+             FROM monthly_invoices
+            WHERE status IN ('unpaid', 'partial') AND month <= $1
+            GROUP BY student_id
+         ) AS per_student`,
+      asOfMonth,
+    ),
   ]);
 
   const debt = totals.debt;
@@ -796,6 +810,9 @@ const buildDebt = async (asOfMonth, compareMonth) => {
     overdue: formatAmount(totals.overdue),
     debtorCount,
     studentCount,
+    // Qarzdorlar ikkiga: qisman to'lagan va umuman to'lanmagan
+    partialCount: splitRow[0]?.partial ?? 0,
+    unpaidCount: splitRow[0]?.unpaid ?? 0,
     // Yuqori qatordagi kartalar uchun — qolgan KPI kartalari kabi
     // "o'tgan oy" satri bo'lishi uchun
     previousDebt: formatAmount(previousTotals.debt),

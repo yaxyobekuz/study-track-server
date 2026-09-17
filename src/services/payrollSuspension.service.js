@@ -66,7 +66,8 @@ const MAX_STAFF = 1000;
 const MAX_MONTHS = 12;
 const REASON_MAX = 200;
 const NOTE_MAX = 500;
-const DRAFT_ID = "draft";
+const DRAFT_PREFIX = "draft-";
+const MAX_PARTS = 20;
 const ITEM_KEY_PATTERN = /^(tutor|bonus|rule):.{1,200}$/;
 const ALL_STAFF_LABEL = "Barcha xodimlar";
 
@@ -110,7 +111,8 @@ const componentLabelOf = (row) =>
 /**
  * Formadan kelgan qoralamani o'qiydi va tekshiradi.
  *
- * @param {object} data - { scope, staffIds, component, itemKey, startMonth, endMonth, reason, note, confirmAll }
+ * @param {object} data - { scope, staffIds, parts: [{component, itemKey}], startMonth, endMonth, reason, note, confirmAll }
+ *   (eski shakl: `component` + `itemKey` — bitta qism)
  */
 const parseDraft = (data = {}) => {
   const scope = data.scope === "all" ? "all" : data.scope === "staff" ? "staff" : null;
@@ -134,19 +136,40 @@ const parseDraft = (data = {}) => {
     throw new BadRequestError("Barcha xodimlar oyligini to'xtatish uchun tasdiqlang");
   }
 
-  const component = data.component;
-  if (!SUSPENSION_COMPONENTS.includes(component)) {
-    throw new BadRequestError("Oylikning qaysi qismi to'xtatilishini tanlang");
+  // QISMLAR — bir amalda bir nechtasi (masalan asosiy oylik + bitta tyutor
+  // sinfi). Eski shakl (`component` + `itemKey`) ham qabul qilinadi.
+  const rawParts = Array.isArray(data.parts)
+    ? data.parts
+    : [{ component: data.component, itemKey: data.itemKey }];
+  if (rawParts.length === 0) throw new BadRequestError("Oylikning qaysi qismi to'xtatilishini tanlang");
+  if (rawParts.length > MAX_PARTS) {
+    throw new BadRequestError(`Bir amalda ko'pi bilan ${MAX_PARTS} ta qism tanlash mumkin`);
   }
 
-  let itemKey = "";
-  if (component === "item") {
-    if (scope !== "staff" || staffIds.length !== 1) {
-      throw new BadRequestError("Aniq qo'shimchani faqat bitta xodim uchun to'xtatish mumkin");
+  const parts = [];
+  const seen = new Set();
+  for (const raw of rawParts) {
+    const component = raw?.component;
+    if (!SUSPENSION_COMPONENTS.includes(component)) {
+      throw new BadRequestError("Oylikning qaysi qismi to'xtatilishini tanlang");
     }
-    itemKey = typeof data.itemKey === "string" ? data.itemKey.trim() : "";
-    if (!ITEM_KEY_PATTERN.test(itemKey)) throw new BadRequestError("Qo'shimchani tanlang");
+    let itemKey = "";
+    if (component === "item") {
+      if (scope !== "staff" || staffIds.length !== 1) {
+        throw new BadRequestError("Aniq qo'shimchani faqat bitta xodim uchun to'xtatish mumkin");
+      }
+      itemKey = typeof raw.itemKey === "string" ? raw.itemKey.trim() : "";
+      if (!ITEM_KEY_PATTERN.test(itemKey)) throw new BadRequestError("Qo'shimchani tanlang");
+    }
+    const key = `${component}|${itemKey}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push({ component, itemKey });
   }
+  // "Butun oylik" qolganlarini o'z ichiga oladi — ortiqcha qator yozilmasin
+  const normalizedParts = parts.some((part) => part.component === "all")
+    ? [{ component: "all", itemKey: "" }]
+    : parts;
 
   const startMonth = parseMonthKey(data.startMonth, "Qaysi oydan");
   const endMonth =
@@ -167,7 +190,7 @@ const parseDraft = (data = {}) => {
   }
   const note = typeof data.note === "string" ? data.note.trim().slice(0, NOTE_MAX) : "";
 
-  return { scope, staffIds, component, itemKey, startMonth, endMonth, reason, note };
+  return { scope, staffIds, parts: normalizedParts, startMonth, endMonth, reason, note };
 };
 
 /**
@@ -319,17 +342,30 @@ const getUnits = async (staffId, monthInput) => {
   };
 };
 
-/** `item` uchun qo'shimcha nomi — shu oyda xodimda bor bo'lishi SHART. */
-const resolveItemLabel = async (staffId, month, itemKey) => {
-  const units = await getUnits(staffId, month);
-  const unit = units.items.find((item) => item.key === itemKey);
-  if (!unit) {
-    throw new BadRequestError(
-      `Tanlangan qo'shimcha ${formatMonthKey(month)} da bu xodimda topilmadi — ro'yxatni yangilang`,
-    );
-  }
-  return unit.label;
+/**
+ * Qismlarga nom beradi. `item` — shu oyda xodimda bor bo'lishi SHART (qismlar
+ * bir marta yuklanadi).
+ *
+ * @returns {Promise<Array<{component, itemKey, itemLabel, label}>>}
+ */
+const resolvePartLabels = async (parts, staffId, month) => {
+  const needsUnits = parts.some((part) => part.component === "item");
+  const units = needsUnits ? await getUnits(staffId, month) : null;
+  return parts.map((part) => {
+    if (part.component !== "item") {
+      return { ...part, itemLabel: "", label: SUSPENSION_COMPONENT_LABELS[part.component] };
+    }
+    const unit = units.items.find((item) => item.key === part.itemKey);
+    if (!unit) {
+      throw new BadRequestError(
+        `Tanlangan qo'shimcha ${formatMonthKey(month)} da bu xodimda topilmadi — ro'yxatni yangilang`,
+      );
+    }
+    return { ...part, itemLabel: unit.label, label: unit.label };
+  });
 };
+
+const partsLabelOf = (parts) => parts.map((part) => part.label).join(", ");
 
 /* ─────────────────────── Oldindan hisob ─────────────────────── */
 
@@ -347,8 +383,7 @@ const previewSuspension = async (data) => {
 
   const users =
     draft.scope === "all" ? (await loadPayrollStaff(month)).users : await loadStaff(draft.staffIds);
-  const itemLabel =
-    draft.component === "item" ? await resolveItemLabel(users[0].id, month, draft.itemKey) : "";
+  const parts = await resolvePartLabels(draft.parts, users[0]?.id, month);
 
   const staffIds = users.map((u) => u.id);
   const [ctx, entryMap] = await Promise.all([
@@ -358,14 +393,17 @@ const previewSuspension = async (data) => {
   const sealedIds = [...entryMap.keys()];
   const sources = sealedIds.length ? await loadResyncSources(month, sealedIds) : null;
 
-  const draftFor = (staffId) => ({
-    id: DRAFT_ID,
-    staffId: draft.scope === "all" ? null : staffId,
-    component: draft.component,
-    itemKey: draft.itemKey,
-    itemLabel,
-    reason: draft.reason,
-  });
+  const draftFor = (staffId) =>
+    parts.map((part, index) => ({
+      id: `${DRAFT_PREFIX}${index}`,
+      staffId: draft.scope === "all" ? null : staffId,
+      component: part.component,
+      itemKey: part.itemKey,
+      itemLabel: part.itemLabel,
+      reason: draft.reason,
+    }));
+  const draftSum = (lines) =>
+    sumAmounts(lines.filter((line) => String(line.id).startsWith(DRAFT_PREFIX)).map((line) => line.amount));
 
   const items = [];
   for (const user of users) {
@@ -379,22 +417,22 @@ const previewSuspension = async (data) => {
       const src = sources.forStaff(user.id);
       const next = recomputeSealedEntry(entry, {
         ...src,
-        suspensions: [...src.suspensions, draftFor(user.id)],
+        suspensions: [...src.suspensions, ...draftFor(user.id)],
       });
       before = new Decimal(entry.amount);
       after = next.amount;
-      draftAmount = next.data.suspensionBreakdown.find((l) => l.id === DRAFT_ID)?.amount ?? "0.00";
+      draftAmount = draftSum(next.data.suspensionBreakdown);
       sealState = isResyncBlocked(entry, next) ? "locked" : "resync";
     } else {
       const c = computeForStaff(user, month, ctx);
       if (!c || c.grossAmount.lessThanOrEqualTo(0)) continue;
       const withDraft = computeForStaff(user, month, {
         ...ctx,
-        suspensions: [...(ctx.suspensions || []), draftFor(user.id)],
+        suspensions: [...(ctx.suspensions || []), ...draftFor(user.id)],
       });
       before = c.amount;
       after = withDraft.amount;
-      draftAmount = withDraft.suspensionBreakdown.find((l) => l.id === DRAFT_ID)?.amount ?? "0.00";
+      draftAmount = draftSum(withDraft.suspensionBreakdown);
     }
 
     items.push({
@@ -413,8 +451,7 @@ const previewSuspension = async (data) => {
     month,
     monthLabel: formatMonthKey(month),
     periodLabel: periodLabelOf(draft.startMonth, draft.endMonth),
-    componentLabel:
-      draft.component === "item" ? itemLabel : SUSPENSION_COMPONENT_LABELS[draft.component],
+    componentLabel: partsLabelOf(parts),
     totals: {
       staffCount: items.length,
       beforeAmount: formatAmount(sumAmounts(applied.map((row) => row.beforeAmount))),
@@ -445,10 +482,8 @@ const previewSuspension = async (data) => {
 const createSuspension = async (data, actorId) => {
   const draft = parseDraft(data);
   const users = draft.scope === "staff" ? await loadStaff(draft.staffIds) : [];
-  const itemLabel =
-    draft.component === "item"
-      ? await resolveItemLabel(draft.staffIds[0], draft.startMonth, draft.itemKey)
-      : "";
+  const parts = await resolvePartLabels(draft.parts, draft.staffIds[0], draft.startMonth);
+  const componentLabel = partsLabelOf(parts);
 
   const batchId = generateId();
   const created = await prisma.$transaction(async (tx) => {
@@ -459,43 +494,43 @@ const createSuspension = async (data, actorId) => {
     const duplicates = await tx.payrollSuspension.findMany({
       where: {
         status: "active",
-        component: draft.component,
-        itemKey: draft.itemKey,
         startMonth: draft.startMonth,
         endMonth: draft.endMonth,
         staffId: draft.scope === "all" ? null : { in: draft.staffIds },
+        OR: parts.map((part) => ({ component: part.component, itemKey: part.itemKey })),
       },
-      select: { staffId: true },
+      select: { staffId: true, component: true, itemKey: true },
     });
-    const duplicateIds = new Set(duplicates.map((d) => d.staffId));
+    const duplicateKeys = new Set(
+      duplicates.map((d) => `${d.staffId ?? "ALL"}|${d.component}|${d.itemKey}`),
+    );
 
-    const targets =
-      draft.scope === "all"
-        ? duplicateIds.has(null)
-          ? []
-          : [null]
-        : draft.staffIds.filter((id) => !duplicateIds.has(id));
-    if (targets.length === 0) {
+    const targets = draft.scope === "all" ? [null] : draft.staffIds;
+    const rows = [];
+    for (const staffId of targets) {
+      for (const part of parts) {
+        if (duplicateKeys.has(`${staffId ?? "ALL"}|${part.component}|${part.itemKey}`)) continue;
+        rows.push({
+          staffId,
+          batchId,
+          component: part.component,
+          itemKey: part.itemKey,
+          itemLabel: part.itemLabel,
+          startMonth: draft.startMonth,
+          endMonth: draft.endMonth,
+          reason: draft.reason,
+          note: draft.note,
+          createdBy: actorId,
+        });
+      }
+    }
+    if (rows.length === 0) {
       throw new ConflictError("Bu to'xtatish allaqachon yozilgan");
     }
 
-    await tx.payrollSuspension.createMany({
-      data: targets.map((staffId) => ({
-        staffId,
-        batchId,
-        component: draft.component,
-        itemKey: draft.itemKey,
-        itemLabel,
-        startMonth: draft.startMonth,
-        endMonth: draft.endMonth,
-        reason: draft.reason,
-        note: draft.note,
-        createdBy: actorId,
-      })),
-    });
+    await tx.payrollSuspension.createMany({ data: rows });
 
-    const componentLabel =
-      draft.component === "item" ? itemLabel : SUSPENSION_COMPONENT_LABELS[draft.component];
+    const writtenStaff = [...new Set(rows.map((row) => row.staffId))];
     await payrollAudit.record(
       {
         actorId,
@@ -504,13 +539,12 @@ const createSuspension = async (data, actorId) => {
         targetId: batchId,
         summary:
           `Oylik to'xtatildi (${componentLabel}): ` +
-          `${draft.scope === "all" ? ALL_STAFF_LABEL : `${targets.length} ta xodim`} — ` +
+          `${draft.scope === "all" ? ALL_STAFF_LABEL : `${writtenStaff.length} ta xodim`} — ` +
           `${periodLabelOf(draft.startMonth, draft.endMonth)}. Sabab: ${draft.reason}`,
         newValue: {
           batchId,
-          staffIds: targets,
-          component: draft.component,
-          itemKey: draft.itemKey,
+          staffIds: writtenStaff,
+          parts: parts.map(({ component, itemKey }) => ({ component, itemKey })),
           startMonth: draft.startMonth,
           endMonth: draft.endMonth,
         },
@@ -518,12 +552,14 @@ const createSuspension = async (data, actorId) => {
       tx,
     );
 
-    return { targets, duplicateIds };
+    const skippedStaff = targets.filter((staffId) => !writtenStaff.includes(staffId));
+    return { writtenStaff, skippedStaff, rowCount: rows.length };
   });
 
   logger.warn(
-    `[payroll] Oylik to'xtatildi: batch=${batchId} component=${draft.component} ` +
-      `staff=${draft.scope === "all" ? "ALL" : created.targets.join(",")} ` +
+    `[payroll] Oylik to'xtatildi: batch=${batchId} ` +
+      `parts=${parts.map((p) => p.itemKey || p.component).join(",")} ` +
+      `staff=${draft.scope === "all" ? "ALL" : created.writtenStaff.join(",")} ` +
       `period=${draft.startMonth}-${draft.endMonth} actor=${actorId}`,
   );
 
@@ -531,17 +567,17 @@ const createSuspension = async (data, actorId) => {
   // bilan to'qnashsa, to'xtatishning o'zi orqaga qaytmaydi — kunlik
   // shakllantirish yana urinadi.
   const resync = await resyncSealedEntries(
-    draft.scope === "all" ? null : created.targets,
+    draft.scope === "all" ? null : created.writtenStaff,
     sealedMonthsOf(draft.startMonth, draft.endMonth),
   );
 
   const userMap = new Map(users.map((u) => [u.id, u]));
   return {
     batchId,
-    created: created.targets.length,
-    skippedDuplicates: [...created.duplicateIds]
-      .filter(Boolean)
-      .map((id) => fullName(userMap.get(id))),
+    created: created.writtenStaff.length,
+    rows: created.rowCount,
+    componentLabel,
+    skippedDuplicates: created.skippedStaff.filter(Boolean).map((id) => fullName(userMap.get(id))),
     resync,
   };
 };
