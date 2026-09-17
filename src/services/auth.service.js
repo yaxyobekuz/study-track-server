@@ -25,6 +25,7 @@ const branchService = require("./branch.service");
 const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
 const pushService = require("./push.service");
+const { loadTutorRoleValues, isTutorUser } = require("./tutorGroup.service");
 
 /**
  * SOXTA BCRYPT HASH — vaqtni tenglashtirish uchun.
@@ -294,11 +295,15 @@ async function getMe(userId, activeBranch) {
   const entry = await userDirectory.findByUserId(userId);
   const homeBranch = entry ? await branchService.findById(entry.branchId) : null;
   const available = await availableBranchesFor(user);
+  const tutorRoles = await loadTutorRoleValues();
 
   return {
     ...user,
     // Ko'p rollilik — `role` asosiy bo'lib qoladi, `roles` esa hammasi
     roles: allRoles(user),
+    // Tyutor roli (rol belgisi bo'yicha) — panellar "Guruhlarim" bo'limini
+    // shunga qarab ko'rsatadi
+    isTutor: isTutorUser(user, tutorRoles),
     classes: user.classes.map((uc) => uc.class),
     profilePicture: user.profileImage || null,
     branch: publicBranch(activeBranch),

@@ -2,13 +2,15 @@
  * PAYROLL ENGINE — bitta xodim/o'qituvchi uchun oylik komponentlarini hisoblaydi.
  *
  * FINAL = BASE (lavozim) + FIXED (ixtiyoriy) + TEACHING (toifa × dars soati)
- *         + APPROVED BONUSES − DEDUCTIONS (ushlab qolish, yalpidan oshmaydi)
+ *         + APPROVED BONUSES + TUTOR GROUPS − DEDUCTIONS (ushlab qolish, yalpidan oshmaydi)
  *
  *   staff (Texnik/Boshqaruv):  base = position.baseSalary
  *                              (yoki xodimning shaxsiy maoshi — `customBaseSalary`)
  *   teacher (MTB/Boshlang'ich/Yuqori): teaching = category.perHourRate × hours
  *   fixed  — ixtiyoriy qo'shimcha (mavjud StaffSalary.fixedAmount qatlami)
  *   bonus  — tasdiqlangan PayrollBonus + eski StaffSalary.allowances
+ *   tutor  — tyutor guruhlari: har sinf uchun guruh summasi + o'quvchiga
+ *            summa × o'quvchilar soni (`TutorGroup`, ustama qatori `type: "tutor"`)
  *
  * Bir joyda hisoblanadi va HAM generatsiya (muhrlash), HAM admin ko'rinishi
  * (preview) shu funksiyani chaqiradi — ikki xil raqam chiqmaydi.
@@ -18,8 +20,9 @@ const prisma = require("../config/prisma");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { ROLES } = require("../utils/constants");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
-const { computeDeductions } = require("../helpers/salaryRules.helpers");
+const { computeDeductions, computeTutorGroupAmount } = require("../helpers/salaryRules.helpers");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
+const { loadGroupsForPayroll } = require("./tutorGroup.service");
 
 const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -61,7 +64,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     )
     .map((u) => u.id);
 
-  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -100,6 +103,8 @@ const loadContext = async (month, users, preloaded = {}) => {
           select: { id: true, positionId: true, customBaseSalary: true },
         })
       : [],
+    // TYUTOR GURUHLARI — o'quvchilar soni bilan, bir marta
+    loadGroupsForPayroll(month, staffIds),
   ]);
 
   // Faqat O'SHA lavozimda amal qiladi: taxminiy (hypothetical) lavozim
@@ -124,7 +129,17 @@ const loadContext = async (month, users, preloaded = {}) => {
     bonusMap.get(b.staffId).push(b);
   }
 
-  return { positionMap, categoryMap, salaryRules, hoursMap, bonusMap, deductionMap, customBaseMap };
+  return {
+    positionMap,
+    categoryMap,
+    salaryRules,
+    hoursMap,
+    bonusMap,
+    deductionMap,
+    customBaseMap,
+    tutorGroupMap: tutor.groupMap,
+    classStudentCounts: tutor.studentCounts,
+  };
 };
 
 /**
@@ -150,9 +165,12 @@ const computeForStaff = (user, month, ctx) => {
   const position = user.positionId ? ctx.positionMap.get(user.positionId) : null;
   const category = user.salaryCategoryId ? ctx.categoryMap.get(user.salaryCategoryId) : null;
   const rule = ctx.salaryRules.get(user.id) || null;
+  const tutorGroups = ctx.tutorGroupMap?.get(user.id) || [];
 
-  // Biriktirilmagan (na lavozim, na toifa, na eski qoida) → payroll yo'q
-  if (!position && !category && !rule) return null;
+  // Biriktirilmagan (na lavozim, na toifa, na eski qoida, na tyutor guruhi) → payroll yo'q.
+  // ⚠️ Faqat guruhi bor tyutor ham oylik oladi: aks holda lavozimi hali
+  // belgilanmagan tyutorning qo'shimcha oyligi jimgina yo'qolardi.
+  if (!position && !category && !rule && tutorGroups.length === 0) return null;
 
   const { amount: base, isCustom: baseIsCustom } = resolvePositionBase(user, position, ctx);
   const extraFixed = new Decimal(rule ? rule.fixedAmount : 0);
@@ -186,6 +204,30 @@ const computeForStaff = (user, month, ctx) => {
     allowanceBreakdown.push({ label: b.label, type: b.type, value: b.value, amount: formatAmount(amt) });
   }
 
+  // TYUTOR GURUHLARI — foizli ustama bazasiga (`preBonus`) KIRMAYDI, ustiga
+  // qo'shiladi. Qatorda sinf va o'quvchilar soni MUHRLANADI: keyin sinf
+  // tarkibi o'zgarsa ham "nega shuncha" degan savolga javob qoladi.
+  let tutorAmount = new Decimal(0);
+  for (const g of tutorGroups) {
+    const studentCount = ctx.classStudentCounts?.get(g.classId) ?? 0;
+    const amt = computeTutorGroupAmount(g, studentCount);
+    const className = g.class?.name ?? "";
+    tutorAmount = tutorAmount.plus(amt);
+    allowanceBreakdown.push({
+      label: `Tyutor: ${className || "sinf"}`,
+      type: "tutor",
+      value: Number(amt),
+      amount: formatAmount(amt),
+      tutorGroupId: g.id,
+      classId: g.classId,
+      className,
+      studentCount,
+      perStudentAmount: formatAmount(g.perStudentAmount),
+      groupAmount: formatAmount(g.groupAmount),
+    });
+  }
+  allowanceAmount = allowanceAmount.plus(tutorAmount);
+
   const grossAmount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
 
   // Ushlab qolish — YALPIDAN, oylik manfiy bo'lolmaydi
@@ -212,6 +254,7 @@ const computeForStaff = (user, month, ctx) => {
     fixedAmount,
     kpiAmount,
     allowanceAmount,
+    tutorAmount,
     lessonHours: hours,
     perHourRate,
     amount,
@@ -236,6 +279,7 @@ const previewForStaff = (user, month, ctx) => {
     fixedAmount: formatAmount(c.fixedAmount),
     kpiAmount: formatAmount(c.kpiAmount),
     allowanceAmount: formatAmount(c.allowanceAmount),
+    tutorAmount: formatAmount(c.tutorAmount),
     lessonHours: Number(c.lessonHours),
     perHourRate: formatAmount(c.perHourRate),
     amount: formatAmount(c.amount),

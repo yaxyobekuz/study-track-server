@@ -112,6 +112,15 @@ async function deleteClass(id) {
     );
   }
 
+  // Tyutor guruhi oylik tarixiga ishora qiladi — sinf jimgina yo'qolmasin
+  const tutorGroupsCount = await prisma.tutorGroup.count({ where: { classId: id } });
+  if (tutorGroupsCount > 0) {
+    throw new BadRequestError(
+      "Bu sinf tyutorga guruh sifatida biriktirilgan (yoki biriktirilgan edi). " +
+        "Sinfni o'chirish o'rniga uni faol emas qiling",
+    );
+  }
+
   await prisma.class.delete({ where: { id } });
 }
 

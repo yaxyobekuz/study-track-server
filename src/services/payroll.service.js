@@ -36,6 +36,7 @@ const {
 const payrollEngine = require("./payrollEngine.service");
 const { getTeacherHours } = require("./lessonHours.service");
 const { getFinanceSettings } = require("./settings.service");
+const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
 
 // Payroll uchun user maydonlari — biriktirmalar bilan
 const PAYROLL_USER_SELECT = {
@@ -156,8 +157,12 @@ const generateForMonth = async (monthInput, options = {}) => {
   }
 
   // 1 ── Oylik oladigan xodimlar: lavozim (staff) YOKI toifa (teacher) YOKI
-  // eski StaffSalary qoidasi bor. `isArchived` FILTRLANADI (ketganga yozilmaydi).
-  const salaryRules = await resolveSalariesForMonth(month); // eski qatlam
+  // eski StaffSalary qoidasi YOKI tyutor guruhi bor. `isArchived` FILTRLANADI
+  // (ketganga yozilmaydi).
+  const [salaryRules, tutorIds] = await Promise.all([
+    resolveSalariesForMonth(month), // eski qatlam
+    resolveTutorIdsForMonth(month),
+  ]);
   const ruleIds = [...salaryRules.keys()];
 
   const where = {
@@ -167,6 +172,7 @@ const generateForMonth = async (monthInput, options = {}) => {
       { positionId: { not: null } },
       { salaryCategoryId: { not: null } },
       ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+      ...(tutorIds.length ? [{ id: { in: tutorIds } }] : []),
     ],
   };
   if (staffIds?.length) where.id = { in: staffIds };
@@ -457,7 +463,10 @@ const cancelEntry = async (id, reason, userId) => {
  * @returns {Promise<{amount: Decimal}>}
  */
 const computeAssignedPayroll = async (month) => {
-  const salaryRules = await resolveSalariesForMonth(month);
+  const [salaryRules, tutorIds] = await Promise.all([
+    resolveSalariesForMonth(month),
+    resolveTutorIdsForMonth(month),
+  ]);
   const ruleIds = [...salaryRules.keys()];
 
   const staff = await prisma.user.findMany({
@@ -468,6 +477,7 @@ const computeAssignedPayroll = async (month) => {
         { positionId: { not: null } },
         { salaryCategoryId: { not: null } },
         ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+        ...(tutorIds.length ? [{ id: { in: tutorIds } }] : []),
       ],
     },
     select: PAYROLL_USER_SELECT,
@@ -523,6 +533,10 @@ const getMySalaryStats = async (userId) => {
       amount: true,
       paidAmount: true,
       status: true,
+      fixedAmount: true,
+      kpiAmount: true,
+      allowanceAmount: true,
+      allowanceBreakdown: true,
       deductionAmount: true,
       deductionBreakdown: true,
     },
@@ -573,9 +587,22 @@ const getMySalaryStats = async (userId) => {
     current: {
       // Oylik tarkibi
       amount: formatAmount(currentAmount),
-      fixedAmount: formatAmount(computed?.fixedAmount ?? 0),
-      kpiAmount: formatAmount(computed?.kpiAmount ?? 0),
-      allowanceAmount: formatAmount(computed?.allowanceAmount ?? 0),
+      // Tarkib `amount` bilan BIR MANBADAN: muhrlangan bo'lsa muhrdan. Aks
+      // holda muhrdan keyin qo'shilgan ustama (masalan tyutor guruhi) jonli
+      // tarkibda ko'rinib, muhrlangan summaga qo'shilmagan bo'lib chiqardi.
+      fixedAmount: formatAmount(currentEntry ? currentEntry.fixedAmount : computed?.fixedAmount ?? 0),
+      kpiAmount: formatAmount(currentEntry ? currentEntry.kpiAmount : computed?.kpiAmount ?? 0),
+      allowanceAmount: formatAmount(
+        currentEntry ? currentEntry.allowanceAmount : computed?.allowanceAmount ?? 0,
+      ),
+      // Ustama qatorlari (tyutor guruhlari ham, `type: "tutor"`) — muhrlangan
+      // bo'lsa muhrdan, aks holda jonli: xodim qo'shimcha oylik qayerdan
+      // kelganini ko'radi
+      allowanceBreakdown: currentEntry
+        ? Array.isArray(currentEntry.allowanceBreakdown)
+          ? currentEntry.allowanceBreakdown
+          : []
+        : computed?.allowanceBreakdown ?? [],
       // Ushlab qolingan (summa `amount` dan allaqachon ayirilgan)
       deductionAmount: formatAmount(currentDeduction),
       deductions: deductionRows.map((row) => ({

@@ -56,6 +56,7 @@ const externalIncomeRoutes = require("./externalIncome.routes");
 const payrollRoutes = require("./payroll.routes");
 const lessonHoursRoutes = require("./lessonHours.routes");
 const payrollRequestRoutes = require("./payrollRequest.routes");
+const tutorGroupRoutes = require("./tutorGroup.routes");
 const expenseCategoryRoutes = require("./expenseCategory.routes");
 const expenseRoutes = require("./expense.routes");
 const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
@@ -134,6 +135,8 @@ router.use("/payroll", payrollRoutes);
 router.use("/lesson-hours", lessonHoursRoutes);
 // O'qituvchi/xodim oylik so'rovlari (zayavka) — paneldan tasdiqlash
 router.use("/payroll-requests", payrollRequestRoutes);
+// Tyutor guruhlari — sinf biriktirish va o'quvchilar soniga qarab qo'shimcha oylik
+router.use("/tutor-groups", tutorGroupRoutes);
 router.use("/expense-categories", expenseCategoryRoutes);
 router.use("/expenses", expenseRoutes);
 router.use("/student-finance-statuses", studentFinanceStatusRoutes);

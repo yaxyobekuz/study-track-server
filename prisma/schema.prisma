@@ -559,8 +559,59 @@ model Class {
   testBindings    TestBindingClass[]
   weeklyStats     WeeklyStatsClass[]
   diagnosticTests DiagnosticTestClass[]
+  tutorGroups     TutorGroup[]
 
   @@map("classes")
+}
+
+// TYUTOR GURUHI — tyutorga biriktirilgan SINF va SHU BIRIKTIRISH uchun
+// qo'shimcha oylik stavkalari.
+//
+//   qo'shimcha oylik = groupAmount + perStudentAmount × o'quvchilar soni
+//
+// Summa `payrollEngine` da USTAMA qatori sifatida hisoblanadi (formula bitta
+// joyda) va majburiyatga `allowanceBreakdown` ichida (`type: "tutor"`, sinf
+// nomi va o'quvchilar soni bilan) MUHRLANADI.
+//
+// ⚠️ STAVKA HAR BIRIKTIRISHDA — tyutorda ham, sinfda ham EMAS (biznes
+// qarori): bir tyutor bir sinf uchun bir summa, boshqasi uchun boshqa summa
+// oladi.
+//
+// ⚠️ DAVR BILAN (oy aniqligida). Summa o'zgarsa va biriktirish o'tgan oydan
+// boshlangan bo'lsa, eski qator oldingi oyda YOPILADI va yangi qator ochiladi
+// — o'tgan oylar tarixi eski summada qoladi (`staffContract` bilan bir xil).
+//
+// ⚠️ BIR OYDA BIR SINFGA BITTA TYUTOR — kesishuv service'da taqiqlanadi:
+// aks holda bitta sinf uchun ikki kishiga qo'shimcha oylik yozilardi.
+//
+// ⚠️ O'quvchilar soni SANASIZ (`UserClass` tarixsiz): hisoblash paytidagi
+// arxivlanmagan o'quvchilar olinadi. Muhrlangan oylikda esa o'sha paytdagi
+// son qoladi.
+model TutorGroup {
+  id      String @id @db.Char(24)
+  // soft ref → User (tyutor). FK yo'q: xodim arxivlansa ham tarix qoladi.
+  tutorId String @map("tutor_id") @db.Char(24)
+  classId String @map("class_id") @db.Char(24)
+
+  perStudentAmount Decimal @default(0) @map("per_student_amount") @db.Decimal(14, 2)
+  groupAmount      Decimal @default(0) @map("group_amount") @db.Decimal(14, 2)
+
+  // Amal qilish davri (oy aniqligida). endMonth = null → muddatsiz.
+  startMonth Int  @map("start_month")
+  endMonth   Int? @map("end_month")
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Restrict: sinf o'chirilishidan oldin service tushunarli xato beradi
+  class Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+
+  @@index([tutorId, startMonth])
+  @@index([classId, startMonth])
+  @@map("tutor_groups")
 }
 
 model Subject {

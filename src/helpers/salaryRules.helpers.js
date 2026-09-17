@@ -135,9 +135,31 @@ const computeDeductions = (gross, items = [], { perHourRate = 0 } = {}) => {
   return { total, breakdown };
 };
 
+/**
+ * TYUTOR QO'SHIMCHA OYLIGI — bitta biriktirilgan guruh (sinf) uchun.
+ *
+ *   summa = groupAmount + perStudentAmount × o'quvchilar soni
+ *
+ * ⚠️ FORMULA FAQAT SHU YERDA. Oylik dvigateli ham (muhrlash), tyutor kartasi
+ * ham (jonli ko'rinish) shuni chaqiradi — aks holda kartada bir raqam,
+ * vedomostda boshqa raqam chiqardi.
+ *
+ * Foizli ustamalar bazasiga KIRMAYDI: u fiksa + soatdan hisoblanadi
+ * (`payrollEngine`), tyutor summasi esa ustiga qo'shiladi.
+ *
+ * @param {{perStudentAmount: *, groupAmount: *}} group
+ * @param {number} studentCount
+ * @returns {Decimal}
+ */
+const computeTutorGroupAmount = (group, studentCount) =>
+  new Decimal(group.groupAmount || 0)
+    .plus(new Decimal(group.perStudentAmount || 0).times(Math.max(0, Number(studentCount) || 0)))
+    .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+
 module.exports = {
   ALLOWANCE_TYPES,
   normalizeAllowances,
   computeAllowances,
   computeDeductions,
+  computeTutorGroupAmount,
 };

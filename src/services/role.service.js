@@ -127,7 +127,7 @@ async function getAllRoles() {
  */
 async function getRoleOptions() {
   return platformPrisma.role.findMany({
-    select: { id: true, name: true, value: true, isSystem: true },
+    select: { id: true, name: true, value: true, isSystem: true, isTutor: true },
     orderBy: [{ isSystem: "desc" }, { name: "asc" }],
   });
 }
@@ -136,7 +136,7 @@ async function getRoleOptions() {
  * Yangi rol yaratish.
  */
 async function createRole(data, createdBy) {
-  const { name, value, permissions } = data;
+  const { name, value, permissions, isTutor } = data;
 
   if (!name || !value) {
     throw new BadRequestError("Rol nomi va qiymati majburiy");
@@ -148,6 +148,7 @@ async function createRole(data, createdBy) {
         name,
         value: value.toLowerCase().trim(),
         createdBy,
+        ...(isTutor !== undefined && { isTutor: Boolean(isTutor) }),
         ...(permissions !== undefined && {
           permissions: validatePermissions(permissions),
         }),
@@ -170,6 +171,7 @@ async function updateRole(id, data) {
     workEndTime,
     workDays,
     weeklySchedule,
+    isTutor,
   } = data;
 
   const role = await platformPrisma.role.findUnique({ where: { id } });
@@ -198,6 +200,11 @@ async function updateRole(id, data) {
   // Boshlang'ich ruxsatlar tizim rollari uchun ham sozlanadi — bu nom/kalitdan
   // farqli o'laroq faqat yangi foydalanuvchilarga ta'sir qiladi
   if (permissions !== undefined) update.permissions = validatePermissions(permissions);
+
+  // Tyutor belgisi tizim rollarida ham ochiq: u nom/kalit emas, "bu rol
+  // egasiga sinf biriktiriladi" degan qaror. Belgi olinsa mavjud guruhlar
+  // O'CHIRILMAYDI (oylik tarixi) — ular xodim kartasida ko'rinib turadi.
+  if (isTutor !== undefined) update.isTutor = Boolean(isTutor);
 
   if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
   if (workEndTime !== undefined) update.workEndTime = workEndTime || null;

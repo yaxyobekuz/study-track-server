@@ -27,6 +27,7 @@ const SECTIONS = {
   SCHEDULE_SYNC: "scheduleSync",
   PLANNER: "planner",
   SUBSTITUTIONS: "substitutions",
+  TUTORS: "tutors",
   TOPICS: "topics",
   CLASSES: "classes",
   SUBJECTS: "subjects",
@@ -546,6 +547,24 @@ const PERMISSION_SECTIONS = [
       A.view,
       { key: "create", label: "O'rinbosar biriktirish" },
       { key: "cancel", label: "Bekor qilish / o'chirish" },
+    ],
+  },
+  {
+    // TYUTOR GURUHLARI — tyutorga sinf biriktirish va shu biriktirish uchun
+    // qo'shimcha oylik (o'quvchiga / guruhga summa).
+    //
+    // ⚠️ `assign` PULNI belgilaydi: summa oylik dvigatelida ustama bo'lib
+    // majburiyatga muhrlanadi. Shuning uchun guruhni ko'rish (`view`) va
+    // biriktirish ALOHIDA amal — o'quv bo'limi guruh manzarasini ko'radi,
+    // lekin qo'shimcha oylikni o'zi yoza olmasligi kerak.
+    //
+    // Tyutorning O'Z guruhlari (`/tutor-groups/my`) kalitsiz — id tokendan.
+    key: SECTIONS.TUTORS,
+    label: "Tyutor guruhlari",
+    group: "Ta'lim",
+    actions: [
+      { key: "view", label: "Ko'rish (guruh, davomat, baho, qo'shimcha oylik)" },
+      { key: "assign", label: "Guruh biriktirish va qo'shimcha oylik belgilash" },
     ],
   },
   {

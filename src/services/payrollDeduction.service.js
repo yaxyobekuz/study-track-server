@@ -56,6 +56,7 @@ const { formatDateTimeUz } = require("../helpers/date.helpers");
 const { computeDeductions } = require("../helpers/salaryRules.helpers");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
 const { loadContext, computeForStaff } = require("./payrollEngine.service");
+const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
 const payrollAudit = require("./payrollAudit.service");
 const logger = require("../utils/logger");
 
@@ -217,7 +218,10 @@ const loadStaff = async (staffIds) => {
  */
 const getCandidates = async (monthInput) => {
   const month = monthInput ? parseMonthKey(monthInput, "Oy") : currentMonthKey();
-  const salaryRules = await resolveSalariesForMonth(month);
+  const [salaryRules, tutorIds] = await Promise.all([
+    resolveSalariesForMonth(month),
+    resolveTutorIdsForMonth(month),
+  ]);
   const ruleIds = [...salaryRules.keys()];
 
   const users = await prisma.user.findMany({
@@ -228,6 +232,8 @@ const getCandidates = async (monthInput) => {
         { positionId: { not: null } },
         { salaryCategoryId: { not: null } },
         ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+        // Faqat tyutor guruhi bor xodim ham oylik oladi (`payrollEngine`)
+        ...(tutorIds.length ? [{ id: { in: tutorIds } }] : []),
       ],
     },
     select: STAFF_SELECT,
@@ -629,6 +635,7 @@ const extendAllScopeDeductions = async (staffIds = null, { batchIds = null } = {
     select: { staffId: true },
   });
   const ruleIds = [...new Set(rules.map((r) => r.staffId))];
+  const tutorIds = await resolveTutorIdsForMonth(minStart, { fromMonth: true });
 
   const staff = await prisma.user.findMany({
     where: {
@@ -639,6 +646,7 @@ const extendAllScopeDeductions = async (staffIds = null, { batchIds = null } = {
         { positionId: { not: null } },
         { salaryCategoryId: { not: null } },
         ...(ruleIds.length ? [{ id: { in: ruleIds } }] : []),
+        ...(tutorIds.length ? [{ id: { in: tutorIds } }] : []),
       ],
     },
     select: { id: true },
