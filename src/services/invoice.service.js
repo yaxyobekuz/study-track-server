@@ -647,6 +647,11 @@ const getStudentInvoices = async (studentId, options = {}) => {
       amount: s.amount,
       debt: formatAmount(d?.debt ?? 0),
       isActive: true,
+      // Moliya sahifasidan JOYIDA tahrirlash/o'chirish uchun
+      assignmentId: s.assignmentId,
+      startMonth: s.startMonth,
+      isCustom: s.isCustom ?? false,
+      baseAmount: s.baseAmount ?? null,
     });
     seenServiceIds.add(s.id);
   }

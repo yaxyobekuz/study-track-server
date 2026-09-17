@@ -232,7 +232,13 @@ const resolveServicesForMonth = async (month, { studentIds } = {}) => {
       name: service.name,
       // Individual narx katalogdan ustun (StudentTariff.customAmount uslubi)
       amount: formatAmount(row.customAmount ?? service.monthlyAmount),
+      // Katalog narxi — "individual narx" belgisini ko'rsatish uchun
+      baseAmount: formatAmount(service.monthlyAmount),
+      isCustom: row.customAmount != null,
       assignmentId: row.id,
+      // Biriktirish o'chirish/yopish qaroriga kerak (o'tgan oyni qamragan
+      // biriktirma o'chirilmaydi — yopiladi)
+      startMonth: row.startMonth,
     });
   }
 
