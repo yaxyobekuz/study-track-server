@@ -1,11 +1,12 @@
 /**
  * TOPSHIRIQ PUSH XABARI — matn va `data` ni quradi (sof funksiya).
  *
- * Xodimga to'rt hodisada push boradi:
+ * Xodimga besh hodisada push boradi:
  *   created   — yangi topshiriq berildi
  *   rejected  — bajarilgan ish rad etildi (`pending_rejected`)
  *   stopped   — topshiriq to'xtatildi
  *   completed — topshiriq muvaffaqiyatli yakunlandi (tasdiqlandi)
+ *   reopened  — yakunlangan/to'xtatilgan topshiriq yangi muddat bilan qayta ochildi
  *
  * ⚠️ `data` MOBIL ILOVA BILAN SHARTNOMA: ilova bosilgan bildirishnomadan
  * `taskId` bo'yicha topshiriq sahifasini ochadi. Kalitlarni o'zgartirish
@@ -19,6 +20,7 @@ const TASK_PUSH_EVENTS = Object.freeze({
   REJECTED: "rejected",
   STOPPED: "stopped",
   COMPLETED: "completed",
+  REOPENED: "reopened",
 });
 
 // Android kanali — mobil ilova shu id bilan kanal yaratadi.
@@ -29,6 +31,7 @@ const TITLES = {
   [TASK_PUSH_EVENTS.REJECTED]: "Topshiriq rad etildi",
   [TASK_PUSH_EVENTS.STOPPED]: "Topshiriq to'xtatildi",
   [TASK_PUSH_EVENTS.COMPLETED]: "Topshiriq muvaffaqiyatli yakunlandi",
+  [TASK_PUSH_EVENTS.REOPENED]: "Topshiriq qayta ochildi",
 };
 
 const truncate = (text, max) => {
