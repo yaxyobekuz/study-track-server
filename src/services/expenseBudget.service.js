@@ -112,7 +112,7 @@ const getBudgets = async (query = {}) => {
   const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
   const { from, to } = monthInstantRange(month);
 
-  const [categories, budgets, spentRows] = await Promise.all([
+  const [categories, budgets, spentRows, salaryAgg] = await Promise.all([
     prisma.expenseCategory.findMany({
       where: { isArchived: false },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -122,6 +122,16 @@ const getBudgets = async (query = {}) => {
     prisma.expense.groupBy({
       by: ["categoryId", "categoryName"],
       where: { isVoided: false, occurredAt: { gte: from, lte: to } },
+      _sum: { amount: true },
+      _count: { _all: true },
+    }),
+    // ⚠️ XODIMLAR OYLIGI (SalaryPayment) — "Oylik" kategoriyasining ISHLATILGANI
+    // shu jadvaldan chiqadi. Oylik to'lovi Expense yozuvi YARATMAYDI (u yoqdan
+    // ham, "Oylik" xarajat kategoriyasidan ham SalaryPayment yoziladi), shuning
+    // uchun budjet "ishlatilgan" i SalaryPayment'ni qo'shmasa 0 bo'lib qolardi.
+    // Payroll "Tarqatildi" bilan AYNAN bir manba → ikki joyda bir xil summa.
+    prisma.salaryPayment.aggregate({
+      where: { isVoided: false, paidAt: { gte: from, lte: to } },
       _sum: { amount: true },
       _count: { _all: true },
     }),
@@ -135,6 +145,25 @@ const getBudgets = async (query = {}) => {
       count: row._count._all,
       name: row.categoryName,
     });
+  }
+
+  // "Oylik" kategoriyasi (nomi bilan aniqlanadi — `ExpenseModals.isSalaryName`
+  // bilan bir xil qoida) ishlatilganiga oylik to'lovlarini qo'shamiz.
+  const salaryTotal = new Decimal(salaryAgg._sum.amount ?? 0);
+  if (salaryTotal.greaterThan(0)) {
+    const salaryCat = categories.find(
+      (c) => String(c.name ?? "").trim().toLowerCase() === "oylik",
+    );
+    if (salaryCat) {
+      const prev = spentByCategory.get(salaryCat.id) ?? {
+        amount: new Decimal(0),
+        count: 0,
+        name: salaryCat.name,
+      };
+      prev.amount = prev.amount.plus(salaryTotal);
+      prev.count += salaryAgg._count._all;
+      spentByCategory.set(salaryCat.id, prev);
+    }
   }
 
   // Jami hisoblangan majburiyat — "% majburiyat" limitining bazasi. DOIM
