@@ -1,6 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
 const payrollService = require("../services/payroll.service");
 const salaryPaymentService = require("../services/salaryPayment.service");
+const payrollRecalcService = require("../services/payrollRecalc.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
 
@@ -89,21 +90,22 @@ const getPayments = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
-/**
- * Bitta majburiyatni qayta shakllantirish — bekor qilinganini qaytarish
- * yoki qoida to'g'rilangandan keyin summani yangilash.
- */
-const regenerateEntry = asyncHandler(async (req, res) => {
-  const data = await payrollService.regenerateEntry(
-    req.params.id,
-    req.body?.reason,
-    req.user.id,
-  );
-  res.json({ success: true, message: "Majburiyat qayta shakllantirildi", data });
+// ── Qayta hisoblash (muhrlangan oylikni amaldagi shartnomaga keltirish) ──
+
+// Oynadagi "eski → yangi" ro'yxati — hech narsa yozilmaydi
+const previewRecalc = asyncHandler(async (req, res) => {
+  const data = await payrollRecalcService.recalcEntries({ ...req.body, dryRun: true }, req.user.id);
+  res.json({ success: true, data });
+});
+
+const recalc = asyncHandler(async (req, res) => {
+  const data = await payrollRecalcService.recalcEntries({ ...req.body, dryRun: false }, req.user.id);
+  res.json({ success: true, data });
 });
 
 module.exports = {
-  regenerateEntry,
+  previewRecalc,
+  recalc,
   getEntries,
   getStaffEntries,
   getMyEntries,

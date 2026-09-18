@@ -29,6 +29,8 @@ const {
   getMySalaryStats,
   generate,
   cancelEntry,
+  previewRecalc,
+  recalc,
   previewPayment,
   createPayment,
   voidPayment,
@@ -160,6 +162,12 @@ router.post("/payments/:id/replace", protect, validateObjectId("id"), authorizeP
 // faqat rol tekshiruvi (controller ichida). `/staff/:staffId` dan OLDIN.
 router.get("/my-stats", protect, getMySalaryStats);
 router.post("/generate", protect, authorizePermission(PERMISSIONS.PAYROLL_GENERATE), generate);
+// QAYTA HISOBLASH — muhrlangan (to'lov tushgan bo'lsa ham) oylikni amaldagi
+// shartnomaga keltiradi. Yozish IKKALA ruxsatni talab qiladi: shakllantirish
+// huquqi yolg'iz to'langan oylikning summasini o'zgartirishga yetmasin
+// (`payroll.service` doktrinasi, `payrollRecalc.service.js`).
+router.post("/recalc/preview", protect, authorizePermission(PERMISSIONS.PAYROLL_GENERATE), previewRecalc);
+router.post("/recalc", protect, authorizePermission(PERMISSIONS.PAYROLL_GENERATE), authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), recalc);
 router.get("/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffEntries);
 router.get("/", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getEntries);
 router.post("/:id/cancel", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.PAYROLL_CANCEL), cancelEntry);

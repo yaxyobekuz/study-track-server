@@ -983,6 +983,12 @@ const buildPayroll = async (month, compareMonth) => {
     previousAssigned: formatAmount(previousAssignedRow.amount),
     assignedChange: changeOf(assignedRow.amount, previousAssignedRow.amount),
     assignedStaffCount: assignedRow.staffCount,
+    // BELGILANGAN OYLIK — hamma dars o'tilganda, ushlab qolish va
+    // to'xtatishsiz; va o'tilmagan darslar uchun ayirilgani (o'qituvchi
+    // profilidagi hisob bilan AYNI — `computeAssignedPayroll`)
+    plannedGross: formatAmount(assignedRow.plannedGross),
+    previousPlannedGross: formatAmount(previousAssignedRow.plannedGross),
+    missedAmount: formatAmount(assignedRow.missedAmount),
     staffCount: items.length,
     unpaidCount: items.filter((row) => row.status !== "paid").length,
     previousAccrued: formatAmount(previousAccrued),
@@ -1499,6 +1505,27 @@ const getDashboard = async (query = {}, options = {}) => {
         const prevLeftD = prevDueD.minus(prevPaidD);
 
         return {
+          // BELGILANGAN OYLIK — "boshida hammaga qancha belgilangan":
+          // hamma dars o'tilganda, ushlab qolish va to'xtatishsiz. Pastdagi
+          // "Tarqatish kerak" dan farqi — o'tilmagan darslar (`missed`),
+          // ushlab qolish va hali muhrlanmagan soatbay oyliklar.
+          payrollPlanned: {
+            key: "payrollPlanned",
+            unit: "money",
+            value: payroll.plannedGross,
+            plan: null,
+            planRate: null,
+            previous: payroll.previousPlannedGross,
+            change: changeOf(
+              new Decimal(payroll.plannedGross),
+              new Decimal(payroll.previousPlannedGross),
+            ),
+            changeUnit: "percent",
+            // Frontend "− X so'm o'tilmagan darslar uchun" deb ko'rsatadi
+            missed: payroll.missedAmount,
+            staffCount: payroll.assignedStaffCount,
+            sub: `${payroll.assignedStaffCount} ta xodimga belgilangan`,
+          },
           payrollDue: {
             key: "payrollDue",
             unit: "money",

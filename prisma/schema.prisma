@@ -3440,8 +3440,9 @@ model StaffSalary {
 
 // OYLIK MAJBURIYAT — `MonthlyInvoice` ning ko'zgusi.
 //
-// ⚠️ `amount` MUHRLANADI: uni o'zgartiradigan endpoint YO'Q. Xato bo'lsa
-// bekor qilinib qayta shakllantiriladi (hisob-faktura doktrinasi).
+// ⚠️ `amount` MUHRLANADI: uni qo'lda yozadigan endpoint YO'Q. Yagona istisno —
+// "Qayta hisoblash" (`payrollRecalc.service.js`): amaldagi shartnomadan, to'lovga
+// tegmasdan, yangi summa to'langanidan kam bo'lmasa (`finance.md` §10).
 //
 // ⚠️ Kun proratsiyasi YO'Q. "Fiksa" — qat'iy summa, oy aniqligida. Oy
 // o'rtasida ishga kirgan xodim uchun `startMonth` keyingi oydan qo'yiladi.

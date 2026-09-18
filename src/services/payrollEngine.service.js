@@ -39,6 +39,40 @@ const coveringBonusWhere = (month) => ({
 });
 
 /**
+ * Dars soati kerak bo'lgan xodimlar: toifasi bor YOKI qoidasida qo'lda soat
+ * narxi bor. `loadContext` ham, soatni o'zi yuklaydigan chaqiruvchilar ham
+ * (`computeAssignedPayroll`) SHUNI chaqiradi — ro'yxat ikki xil bo'lmasin.
+ *
+ * ⚠️ Faqat toifa bo'yicha filtrlansa, qo'lda stavkali o'qituvchining soati
+ * 0 bo'lib qolardi: vedomost (soatni o'zi yuklaydi) KPI ni ko'rsatardi,
+ * shakllantirilgan majburiyat esa KPI siz muhrlanardi.
+ *
+ * @param {Array} users
+ * @param {Map} salaryRules
+ * @returns {string[]}
+ */
+const hourlyStaffIds = (users, salaryRules) =>
+  users
+    .filter(
+      (u) =>
+        u.salaryCategoryId ||
+        new Decimal(salaryRules.get(u.id)?.perHourRate ?? 0).greaterThan(0),
+    )
+    .map((u) => u.id);
+
+/**
+ * `getTeachersHours` natijasi → dvigatel kutadigan soat shakli. `hours` —
+ * qaysi soat hisoblanishi (reja / oy oxiri / o'tildi): bitta natijadan bir
+ * nechta kontekst quriladi.
+ */
+const toEngineHours = (info, hours) => ({
+  hours,
+  weeklyHours: info?.weeklyHours ?? 0,
+  weeklyLessons: info?.weeklyHours ?? 0,
+  monthlyLessons: info?.teachingDays ?? 0,
+});
+
+/**
  * Oy uchun payroll kontekstini bir marta yuklaydi (N+1 so'rovsiz).
  *
  * ⚠️ `preloaded.hoursMap` — chaqiruvchi dars soatini ALLAQACHON hisoblagan
@@ -58,17 +92,7 @@ const loadContext = async (month, users, preloaded = {}) => {
 
   const salaryRules = preloaded.salaryRules || (await resolveSalariesForMonth(month));
 
-  // Soat kerak bo'lganlar: toifasi bor YOKI qoidasida qo'lda soat narxi bor.
-  // ⚠️ Faqat toifa bo'yicha filtrlansa, qo'lda stavkali o'qituvchining soati
-  // 0 bo'lib qolardi: vedomost (soatni o'zi yuklaydi) KPI ni ko'rsatardi,
-  // shakllantirilgan majburiyat esa KPI siz muhrlanardi.
-  const teacherIds = users
-    .filter(
-      (u) =>
-        u.salaryCategoryId ||
-        new Decimal(salaryRules.get(u.id)?.perHourRate ?? 0).greaterThan(0),
-    )
-    .map((u) => u.id);
+  const teacherIds = hourlyStaffIds(users, salaryRules);
 
   const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows] = await Promise.all([
     positionIds.length
@@ -373,6 +397,8 @@ const previewForStaff = (user, month, ctx) => {
 };
 
 module.exports = {
+  hourlyStaffIds,
+  toEngineHours,
   loadContext,
   loadSuspensionsForMonth,
   suspensionsFor,

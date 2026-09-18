@@ -4,10 +4,11 @@
  * Qoida (`StaffSalary`) → har oy MAJBURIYAT (`PayrollEntry`) → to'lov uni
  * yopadi. Shu tufayli "kimga qancha qarzdormiz" degan savolga javob bor.
  *
- * ⚠️ QAYTARILMASLIK: `amount` ni o'zgartiradigan funksiya YO'Q. Qoida keyin
- * to'g'rilansa, tuzatish KEYINGI oydan amal qiladi. Yagona olib tashlash
- * yo'li — `cancelled` holati, sababi bilan; to'lov tushgan majburiyat esa
- * umuman bekor qilinmaydi.
+ * ⚠️ QAYTARILMASLIK: shakllantirish va avtomat passlar mavjud qatorning
+ * lavozim maoshi va dars soatiga TEGMAYDI. Yagona istisno — admin ongli
+ * ravishda bosadigan "Qayta hisoblash" (`payrollRecalc.service.js`), sabab va
+ * audit bilan. Yagona olib tashlash yo'li — `cancelled` holati, sababi bilan;
+ * to'lov tushgan majburiyat esa umuman bekor qilinmaydi.
  *
  * ⚠️ BEKOR QILINGAN MAJBURIYAT SHAKLLANTIRISHNI TO'SMAYDI (`finance.md` §10).
  * U bo'sh o'rin: shakllantirish uni O'SHA QATORNING O'ZIDA qayta hisoblab
@@ -40,7 +41,7 @@ const {
   STAFF_SELECT,
 } = require("./staffSalary.service");
 const payrollEngine = require("./payrollEngine.service");
-const { getTeacherHours } = require("./lessonHours.service");
+const { getTeacherHours, getTeachersHours } = require("./lessonHours.service");
 const { getFinanceSettings } = require("./settings.service");
 const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
 
@@ -604,8 +605,15 @@ const cancelEntry = async (id, reason, userId) => {
  * shuni chaqiradi), shuning uchun dashboard'dagi "belgilangan" raqami generatsiya
  * bilan bir xil bo'ladi. Moliya dashboardi P&L uchun ishlatadi.
  *
+ * Uch summa BITTA kontekstdan, faqat soat boshqa — o'qituvchi profilidagi
+ * jonli hisob (`getMySalaryStats.live`) bilan AYNI qoida:
+ *   amount       — oy oxirida (o'tildi + qoldi), ushlab qolish va to'xtatishdan keyin
+ *   plannedGross — BELGILANGAN OYLIK: hamma dars o'tilganda
+ *                  (o'tildi + o'tilmadi + qoldi), ushlab qolish va to'xtatishsiz
+ *   missedAmount — o'tilmagan darslar uchun ayirilgani (reja − oy oxirida)
+ *
  * @param {number} month - YYYYMM
- * @returns {Promise<{amount: Decimal}>}
+ * @returns {Promise<{amount: Decimal, plannedGross: Decimal, missedAmount: Decimal, staffCount: number}>}
  */
 const computeAssignedPayroll = async (month) => {
   const [salaryRules, tutorIds] = await Promise.all([
@@ -628,15 +636,47 @@ const computeAssignedPayroll = async (month) => {
     select: PAYROLL_USER_SELECT,
   });
 
-  if (staff.length === 0) return { amount: new Decimal(0) };
-
-  const ctx = await payrollEngine.loadContext(month, staff, { salaryRules });
   let amount = new Decimal(0);
+  let plannedGross = new Decimal(0);
+  let missedAmount = new Decimal(0);
+  let staffCount = 0;
+  if (staff.length === 0) return { amount, plannedGross, missedAmount, staffCount };
+
+  // Soat BIR MARTA o'qiladi, undan ikki kontekst: "oy oxirida" va "reja".
+  // O'tilmagan darslar `hours` dan allaqachon ayirilgan — reja ularni qaytaradi.
+  const hoursInfo = await getTeachersHours(
+    payrollEngine.hourlyStaffIds(staff, salaryRules),
+    month,
+  );
+  const projectedHours = new Map();
+  const plannedHours = new Map();
+  for (const [id, info] of hoursInfo) {
+    const hours = info.hours ?? 0;
+    projectedHours.set(String(id), payrollEngine.toEngineHours(info, hours));
+    plannedHours.set(
+      String(id),
+      payrollEngine.toEngineHours(info, hours + (info.missedHours ?? 0)),
+    );
+  }
+
+  const ctx = await payrollEngine.loadContext(month, staff, {
+    salaryRules,
+    hoursMap: projectedHours,
+  });
+  const plannedCtx = { ...ctx, hoursMap: plannedHours };
+
   for (const person of staff) {
     const c = payrollEngine.computeForStaff(person, month, ctx);
-    if (c && c.amount.greaterThan(0)) amount = amount.plus(c.amount);
+    if (!c) continue;
+    staffCount += 1;
+    if (c.amount.greaterThan(0)) amount = amount.plus(c.amount);
+
+    const planned = payrollEngine.computeForStaff(person, month, plannedCtx);
+    plannedGross = plannedGross.plus(planned.grossAmount);
+    const missed = planned.amount.minus(c.amount);
+    if (missed.greaterThan(0)) missedAmount = missedAmount.plus(missed);
   }
-  return { amount };
+  return { amount, plannedGross, missedAmount, staffCount };
 };
 
 /**
@@ -682,17 +722,7 @@ const getMySalaryStats = async (userId) => {
   if (computed && hoursInfo) {
     const withHours = (hours) => ({
       ...ctx,
-      hoursMap: new Map([
-        [
-          String(user.id),
-          {
-            hours,
-            weeklyHours: hoursInfo.weeklyHours ?? 0,
-            weeklyLessons: hoursInfo.weeklyHours ?? 0,
-            monthlyLessons: hoursInfo.teachingDays ?? 0,
-          },
-        ],
-      ]),
+      hoursMap: new Map([[String(user.id), payrollEngine.toEngineHours(hoursInfo, hours)]]),
     });
     const missedHours = hoursInfo.missedHours ?? 0;
     const planned = payrollEngine.computeForStaff(
@@ -865,6 +895,7 @@ const getMySalaryStats = async (userId) => {
 
 module.exports = {
   STATUS_LABELS,
+  PAYROLL_USER_SELECT,
   serializeEntry,
   generateForMonth,
   getEntries,
