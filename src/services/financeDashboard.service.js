@@ -35,6 +35,8 @@ const {
   monthStartDate,
   monthEndDate,
   monthInstantRange,
+  daysInMonth,
+  currentDayOfMonth,
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, percentChange } = require("../helpers/money.helpers");
 const { sumIncome, sumExpense, AGING_BUCKETS } = require("./financeReport.service");
@@ -329,6 +331,139 @@ const resolveTrendRange = (query = {}) => {
   }
 
   return { granularity, fromStr, toStr, from, to, fmt, buckets };
+};
+
+// Kunlik pul harakati: daftar yozuvi turi → ko'rsatiladigan ustun. Qolgani
+// (qaytarish, to'g'rilash, o'tkazma) — "boshqa".
+const DAILY_CASH_BUCKETS = {
+  payment: "studentPayments",
+  payment_void: "studentPayments",
+  external_income: "externalIncome",
+  external_income_void: "externalIncome",
+  damage_payment: "damage",
+  damage_payment_void: "damage",
+  salary_payment: "salary",
+  salary_payment_void: "salary",
+  expense: "expenses",
+  expense_void: "expenses",
+};
+
+/**
+ * KUNLIK PUL HARAKATI — kassa (to'lov turlari) daftaridan, kun bo'yicha.
+ *
+ * Har kun uchun: kirim (o'quvchi to'lovi, tashqi kirim, zarar undiruvi),
+ * chiqim (xodimlar oyligi, xarajat), boshqa (ota-onaga qaytarish, qo'lda
+ * to'g'rilash) va kun oxiridagi kassa qoldig'i.
+ *
+ * ⚠️ MANBA — `account_entries`, domen jadvallari EMAS. Shu tufayli har kuni
+ *      kun boshidagi qoldiq + kirim − chiqim + boshqa = kun oxiridagi qoldiq
+ * aynan bajariladi va oy oxiridagi qoldiq "Kassadagi pul" (`balanceAt`) bilan
+ * bir xil chiqadi. Olib tashlangan cash flow grafigi domen jadvallaridan
+ * yig'ilardi: bekor qilingan to'lov asl kunidan jimgina yo'qolardi, daftar
+ * esa uni bekor qilingan kuni ayiradi — ikkisi hech qachon mos kelmasdi.
+ *
+ * ⚠️ BEKOR QILISH O'Z KUNIDA ko'rinadi (teskari yozuv o'sha kuni tushgan):
+ * 5-kuni tushgan to'lov 10-kuni bekor qilinsa, 10-kun kirimi shunchaga kam.
+ * Bir kunning o'zida bekor qilingani o'sha kunda nolga chiqadi.
+ *
+ * ⚠️ To'lov turlari orasidagi o'tkazma umumiy qoldiqni o'zgartirmaydi
+ * (ikkala yozuv bir lahzada) — "boshqa" ga tushadi va u yerda 0 bo'ladi.
+ *
+ * @param {object} query - { month }
+ */
+const getDailyCash = async (query = {}) => {
+  const month = parseOptionalMonthKey(query.month, "Oy") ?? currentMonthKey();
+  const { from, to } = monthInstantRange(month);
+  const current = currentMonthKey();
+
+  // Kelajak oyda kun yo'q; joriy oyda — bugungacha
+  const lastDay = month > current ? 0 : month === current ? currentDayOfMonth() : daysInMonth(month);
+
+  const [rows, opening, before] = await Promise.all([
+    prisma.$queryRawUnsafe(
+      `SELECT to_char(occurred_at ${TASHKENT_TZ}, 'YYYY-MM-DD') AS day, type::text AS type,
+              SUM(amount)::text AS amount
+         FROM account_entries
+        WHERE occurred_at >= $1 AND occurred_at <= $2
+        GROUP BY 1, 2`,
+      from,
+      to,
+    ),
+    prisma.paymentAccount.aggregate({ _sum: { openingBalance: true } }),
+    prisma.accountEntry.aggregate({ where: { occurredAt: { lt: from } }, _sum: { amount: true } }),
+  ]);
+
+  const zero = () => ({
+    studentPayments: new Decimal(0),
+    externalIncome: new Decimal(0),
+    damage: new Decimal(0),
+    salary: new Decimal(0),
+    expenses: new Decimal(0),
+    other: new Decimal(0),
+  });
+  const byDay = new Map();
+  for (const row of rows) {
+    const bucket = byDay.get(row.day) ?? zero();
+    const key = DAILY_CASH_BUCKETS[row.type] ?? "other";
+    bucket[key] = bucket[key].plus(row.amount ?? 0);
+    byDay.set(row.day, bucket);
+  }
+
+  const openingBalance = new Decimal(opening._sum.openingBalance ?? 0).plus(before._sum.amount ?? 0);
+  const totals = zero();
+  let balance = openingBalance;
+  const year = Math.trunc(month / 100);
+  const mm = pad2(month % 100);
+  const today = month === current ? currentDayOfMonth() : null;
+
+  const days = [];
+  for (let d = 1; d <= lastDay; d += 1) {
+    const date = `${year}-${mm}-${pad2(d)}`;
+    const b = byDay.get(date) ?? zero();
+    for (const key of Object.keys(totals)) totals[key] = totals[key].plus(b[key]);
+
+    // Chiqim daftarda manfiy — ekranda musbat ko'rsatiladi
+    const income = b.studentPayments.plus(b.externalIncome).plus(b.damage);
+    const expense = b.salary.plus(b.expenses).negated();
+    const net = income.minus(expense).plus(b.other);
+    balance = balance.plus(net);
+
+    days.push({
+      date,
+      day: d,
+      isToday: d === today,
+      income: formatAmount(income),
+      studentPayments: formatAmount(b.studentPayments),
+      externalIncome: formatAmount(b.externalIncome.plus(b.damage)),
+      expense: formatAmount(expense),
+      salary: formatAmount(b.salary.negated()),
+      expenses: formatAmount(b.expenses.negated()),
+      other: formatAmount(b.other),
+      net: formatAmount(net),
+      balance: formatAmount(balance),
+    });
+  }
+
+  const income = totals.studentPayments.plus(totals.externalIncome).plus(totals.damage);
+  const expense = totals.salary.plus(totals.expenses).negated();
+
+  return {
+    month,
+    monthLabel: formatMonthKey(month),
+    openingBalance: formatAmount(openingBalance),
+    closingBalance: formatAmount(balance),
+    totals: {
+      income: formatAmount(income),
+      studentPayments: formatAmount(totals.studentPayments),
+      externalIncome: formatAmount(totals.externalIncome.plus(totals.damage)),
+      expense: formatAmount(expense),
+      salary: formatAmount(totals.salary.negated()),
+      expenses: formatAmount(totals.expenses.negated()),
+      other: formatAmount(totals.other),
+      net: formatAmount(balance.minus(openingBalance)),
+    },
+    days,
+  };
 };
 
 /**
@@ -1875,6 +2010,7 @@ module.exports = {
   getDashboard,
   getKpiScorecard,
   getAccrualSeries,
+  getDailyCash,
   // Sinov uchun ochiladi
   monthInstantRange,
   balanceAt,

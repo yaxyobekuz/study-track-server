@@ -15,6 +15,7 @@ const {
   getDashboard,
   getKpiScorecard,
   getAccrualTrend,
+  getDailyCash,
   getTargets,
   saveTargets,
   getOverview,
@@ -34,6 +35,8 @@ const {
 router.get("/dashboard", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getDashboard);
 router.get("/kpi", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getKpiScorecard);
 router.get("/accrual-trend", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getAccrualTrend);
+// Kunlik pul harakati — dashboard bilan AYNI huquq (o'sha kassa raqamlari)
+router.get("/daily-cash", protect, authorizePermission(PERMISSIONS.REPORTS_VIEW), getDailyCash);
 
 // REJA (byudjet). Ko'rish — dashboard bilan bir xil huquq (raqam baribir
 // ekranda turadi), YOZISH esa alohida: reja qo'yish rahbarning qarori va

@@ -70,6 +70,12 @@ const getAccrualTrend = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// Kunlik pul harakati — kirim / chiqim / kassa qoldig'i har kun uchun
+const getDailyCash = asyncHandler(async (req, res) => {
+  const data = await financeDashboardService.getDailyCash(req.query);
+  res.json({ success: true, data });
+});
+
 const getTargets = asyncHandler(async (req, res) => {
   const data = await financeTargetService.getTargets(req.query);
   res.json({ success: true, data });
@@ -108,6 +114,7 @@ module.exports = {
   getDashboard,
   getKpiScorecard,
   getAccrualTrend,
+  getDailyCash,
   getTargets,
   saveTargets,
   getOverview,
