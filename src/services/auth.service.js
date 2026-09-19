@@ -27,6 +27,11 @@ const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
 const pushService = require("./push.service");
 const { loadTutorRoleValues, isTutorUser } = require("./tutorGroup.service");
+const { getOfficeGeofenceSettings } = require("./settings.service");
+const {
+  parseOfficeLocation,
+  parseOfficeRadius,
+} = require("../helpers/geolocation.helpers");
 
 /**
  * SOXTA BCRYPT HASH — vaqtni tenglashtirish uchun.
@@ -87,6 +92,32 @@ const availableBranchesFor = async (user) => {
  * @returns {boolean}
  */
 const canSwitchBranch = (available = []) => available.length > 1;
+
+/**
+ * OFIS NUQTASI — mobil ilova "keldim/ketdim" dan OLDIN hududda ekanini
+ * ko'rsatishi uchun. Joriy filialniki: qayd ham shu filialga yoziladi.
+ *
+ * ⚠️ Faqat davomat qiladigan xodimga (`attendance.service.checkIn` bilan
+ * AYNI shart): o'quvchi va owner'da "keldim" yo'q, ularga nuqta ochilmaydi.
+ * `attendance.view` berish yo'li EMAS — u jarima qoidalarini ham ochardi.
+ *
+ * ⚠️ Bu faqat QULAYLIK: yakuniy qarorni server qayd paytida o'zi chiqaradi
+ * (`resolveLocation`), mijozdagi tekshiruvga tayanilmaydi.
+ *
+ * Nuqta kiritilmagan yoki buzuq → `null` (serverda ham "unconfigured").
+ *
+ * @param {object} user
+ * @returns {Promise<{officeLocation: {lat: number, lng: number}, officeRadius: number}|null>}
+ */
+const officeGeofenceFor = async (user) => {
+  if (user.role === ROLES.STUDENT || user.role === ROLES.OWNER) return null;
+
+  const settings = await getOfficeGeofenceSettings();
+  const officeLocation = parseOfficeLocation(settings?.officeLocation);
+  if (!officeLocation) return null;
+
+  return { officeLocation, officeRadius: parseOfficeRadius(settings.officeRadius) };
+};
 
 /**
  * TOKENDAN MUDDATNI OLISH.
@@ -376,6 +407,7 @@ async function getMe(userId, activeBranch) {
   const homeBranch = entry ? await branchService.findById(entry.branchId) : null;
   const available = await availableBranchesFor(user);
   const tutorRoles = await loadTutorRoleValues();
+  const office = await officeGeofenceFor(user);
 
   return {
     ...user,
@@ -390,6 +422,9 @@ async function getMe(userId, activeBranch) {
     homeBranch: publicBranch(homeBranch ?? activeBranch),
     canSwitchBranch: canSwitchBranch(available),
     availableBranches: available,
+    // Ofis nuqtasi (metrda radius) — `null` bo'lsa hudud tekshiruvi yo'q
+    officeLocation: office?.officeLocation ?? null,
+    officeRadius: office?.officeRadius ?? null,
   };
 }
 

@@ -124,6 +124,22 @@ function parseOfficeLocation(officeLocation) {
   return parseCoords(officeLocation.lat, officeLocation.lng);
 }
 
+/** Radius yaroqsiz bo'lsa ishlatiladigan qiymat (metr). */
+const DEFAULT_OFFICE_RADIUS = 100;
+
+/**
+ * Ofis radiusi (metr). Qayd etishdagi qaror ham, mijozga beriladigan radius
+ * ham SHU funksiyadan — ilova bir radius bilan "hududdasiz" deb, server
+ * boshqasi bilan "tashqarida" deb qaror chiqarmasligi uchun.
+ *
+ * @param {*} officeRadius
+ * @returns {number}
+ */
+function parseOfficeRadius(officeRadius) {
+  const radius = Number(officeRadius);
+  return Number.isFinite(radius) && radius > 0 ? radius : DEFAULT_OFFICE_RADIUS;
+}
+
 /**
  * QAYD ETISH JOYLASHUVINI HAL QILADI.
  *
@@ -161,8 +177,7 @@ function resolveLocation(payload, officeLocation, officeRadius) {
   // Ofis belgilanmagan — koordinata saqlanadi, lekin taqqoslash yo'q.
   if (!office) return buildResult(LOCATION_STATUS.UNCONFIGURED, coords, acc, null);
 
-  const radius = Number(officeRadius);
-  const safeRadius = Number.isFinite(radius) && radius > 0 ? radius : 100;
+  const safeRadius = parseOfficeRadius(officeRadius);
 
   const distance = Math.round(haversineDistance(coords, office));
   const buffer = Math.min(acc, MAX_ACCURACY_BUFFER);
@@ -216,6 +231,7 @@ module.exports = {
   resolveLocation,
   parseCoords,
   parseOfficeLocation,
+  parseOfficeRadius,
   LOCATION_STATUS,
   MAX_ACCURACY_BUFFER,
   UNRELIABLE_ACCURACY,

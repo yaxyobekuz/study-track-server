@@ -79,6 +79,22 @@ async function getAttendanceSettings() {
   });
 }
 
+/**
+ * Ofis nuqtasi va radiusi — FAQAT O'QISH va FAQAT shu ikki maydon.
+ *
+ * `getAttendanceSettings` dan farqi: upsert EMAS (`/auth/me` har sahifa
+ * yuklanishida chaqiriladi) va jarima qoidalari kabi qolgan sozlamalar
+ * umuman yuklanmaydi. Qator hali yo'q — nuqta kiritilmagan degani.
+ *
+ * @returns {Promise<{officeLocation: *, officeRadius: number}|null>}
+ */
+async function getOfficeGeofenceSettings() {
+  return prisma.attendanceSettings.findUnique({
+    where: { id: SINGLETON },
+    select: { officeLocation: true, officeRadius: true },
+  });
+}
+
 async function getGradePenaltySettings() {
   return prisma.gradePenaltySettings.upsert({
     where: { id: SINGLETON },
@@ -220,6 +236,7 @@ module.exports = {
   getScheduleSyncSettings,
   getPlannerSettings,
   getAttendanceSettings,
+  getOfficeGeofenceSettings,
   getGradePenaltySettings,
   getTaskSettings,
   getTestSettings,
