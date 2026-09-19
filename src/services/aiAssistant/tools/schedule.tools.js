@@ -512,10 +512,9 @@ const scheduleTeacher = defineTool({
   async handler(args, ctx) {
     const teacherId = requireId(args.teacherId, "O'qituvchi id");
 
-    // ⚠️ `withSalary: false` ATAYLAB. Controller owner uchun `true` beradi,
-    // lekin u v1 `StaffSalary.amount` ni o'qiydi — payroll v2 da (lavozim
-    // bazasi + fiksa + KPI) bu raqam haqiqiy oylik emas. Model uni oylik
-    // deb aytib yubormasligi uchun pul faqat payroll vositalaridan olinadi.
+    // ⚠️ `withSalary: false` ATAYLAB: jadval vositasi pul ochmaydi. Oylik
+    // faqat payroll vositalaridan (o'z ruxsati bilan) olinadi — jadvalni
+    // ko'rish huquqi oylik summasini ochib bermasligi kerak.
     const [workload, substitutions] = await Promise.all([
       asToolError(() => teacherWorkloadService.getTeacherWorkload(teacherId, { withSalary: false })),
       substitutionService.getSubstitutions(

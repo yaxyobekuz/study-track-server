@@ -19,6 +19,8 @@ const { NotFoundError } = require("../utils/errors");
 const { ROLES, DAYS } = require("../utils/constants");
 const { getScheduleSettings } = require("./settings.service");
 const { resolveSalaryForMonth } = require("./staffSalary.service");
+const payrollEngine = require("./payrollEngine.service");
+const { getTeacherHours } = require("./lessonHours.service");
 const {
   currentMonthKey,
   formatMonthKey,
@@ -35,6 +37,16 @@ const TEACHER_SELECT = {
   lastName: true,
   fullName: true,
   role: true,
+};
+
+// Dvigatel uchun maydonlar — javobga CHIQMAYDI (`teacher` TEACHER_SELECT bilan
+// qaytadi). Shaxsiy maoshni dvigatel bazadan o'zi o'qiydi (`loadContext`).
+const PAYROLL_SELECT = {
+  id: true,
+  role: true,
+  isArchived: true,
+  positionId: true,
+  salaryCategoryId: true,
 };
 
 /**
@@ -77,8 +89,54 @@ function resolveTime(lesson, periodMap) {
  * borligini taxmin qilish kerak bo'lardi, bunday raqam esa domenda yo'q.
  */
 function perWeeklyHour(amount, weeklyHours) {
-  if (!weeklyHours) return null;
+  if (amount == null || !weeklyHours) return null;
   return formatAmount(toDecimal(amount).div(weeklyHours));
+}
+
+/**
+ * BELGILANGAN OYLIK — vedomost bilan AYNI dvigatel (`payrollEngine`) va AYNI
+ * qoida: hamma dars o'tilganda (o'tildi + o'tilmadi + qoldi), ushlab qolish
+ * va to'xtatishsiz yalpi. Profil → "Oylik" dagi `assignedAmount` va moliya
+ * dashboardidagi `plannedGross` ham shunday hisoblanadi.
+ *
+ * ⚠️ `StaffSalary` qatoridan O'QILMAYDI: oylik v2 da unda `amount` yo'q
+ * (fiksa / soat narxi / ustamalar), lavozim maoshi, shaxsiy maosh, toifa va
+ * tyutor guruhi esa umuman boshqa joyda. Qatordan o'qish 500 bilan yiqilardi
+ * yoki lavozim bo'yicha oylik oladiganga "Oylik belgilanmagan" deb turardi.
+ *
+ * Arxivlangan xodim `null`: vedomost unga oylik yozmaydi.
+ *
+ * @param {string} teacherId
+ * @param {number} month - YYYYMM
+ * @returns {Promise<{rule: object|null, amount: Decimal|null}>}
+ */
+async function resolveAssignedSalary(teacherId, month) {
+  const [user, rule] = await Promise.all([
+    prisma.user.findUnique({ where: { id: teacherId }, select: PAYROLL_SELECT }),
+    resolveSalaryForMonth(teacherId, month),
+  ]);
+
+  if (!user || user.role === ROLES.STUDENT || user.isArchived) {
+    return { rule, amount: null };
+  }
+
+  // Faqat shu xodimning qoidasi — boshqalarning oyligi yuklanmaydi
+  const salaryRules = new Map(rule ? [[user.id, rule]] : []);
+
+  // Soat faqat soatbay qismi borga (dvigatelning o'z ro'yxati bilan AYNI)
+  const hoursMap = new Map();
+  if (payrollEngine.hourlyStaffIds([user], salaryRules).length > 0) {
+    const info = await getTeacherHours(user.id, month);
+    if (info) {
+      const plannedHours = (info.hours ?? 0) + (info.missedHours ?? 0);
+      hoursMap.set(user.id, payrollEngine.toEngineHours(info, plannedHours));
+    }
+  }
+
+  const ctx = await payrollEngine.loadContext(month, [user], { salaryRules, hoursMap });
+  const computed = payrollEngine.computeForStaff(user, month, ctx);
+
+  return { rule, amount: computed ? computed.grossAmount : null };
 }
 
 /**
@@ -192,18 +250,22 @@ async function getTeacherWorkload(teacherId, { withSalary = false } = {}) {
   );
 
   // ── Oylik (ruxsat bilan) ────────────────────
+  // Ruxsatsiz chaqiruvda dvigatel UMUMAN ishga tushmaydi. Javobga faqat
+  // yig'ma summa chiqadi — ushlab qolish / to'xtatish sabablari EMAS.
   let salary = null;
 
   if (withSalary) {
     const month = currentMonthKey();
-    const rule = await resolveSalaryForMonth(teacherId, month);
+    const { rule, amount } = await resolveAssignedSalary(teacherId, month);
 
     salary = {
       month,
       monthLabel: formatMonthKey(month),
-      amount: rule ? formatAmount(rule.amount) : null,
+      amount: formatAmount(amount),
+      // `StaffSalary` qoidasining davri (bo'lmasa `null`) — AI vositasi
+      // "qoida bormi" degan savolga shunga qaraydi
       periodLabel: rule ? formatMonthRange(rule.startMonth, rule.endMonth) : null,
-      perWeeklyHour: rule ? perWeeklyHour(rule.amount, weeklyHours) : null,
+      perWeeklyHour: perWeeklyHour(amount, weeklyHours),
     };
   }
 
