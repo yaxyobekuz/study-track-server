@@ -103,9 +103,13 @@ const protect = asyncHandler(async (req, res, next) => {
     if (decoded.jti) {
       const alive = await securityService.touchSession(decoded.jti);
       if (!alive) {
-        throw new UnauthorizedError(
+        const error = new UnauthorizedError(
           "Seans tugatilgan — qaytadan tizimga kiring",
         );
+        // Panel login sahifasida "seans boshqa qurilmadan yakunlandi" deb
+        // aytishi uchun — oddiy muddati o'tgan tokendan ajratiladi
+        error.details = { reason: "session_ended" };
+        throw error;
       }
     }
 

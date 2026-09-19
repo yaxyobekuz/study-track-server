@@ -4,17 +4,27 @@ const router = express.Router();
 
 // Middlewares
 const { protect } = require("../middleware/auth.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
 
 // Controllers
 const {
   login,
+  resolveSessionLimit,
   getMe,
   switchBranch,
   logout,
+  listMySessions,
+  terminateMySession,
+  terminateOtherSessions,
 } = require("../controllers/auth.controller");
 
 // Public routes
 router.post("/login", login);
+
+// Qurilmalar limiti to'lganda (o'qituvchi) — bittasini yakunlab davom etish.
+// ⚠️ `/login` ostida turgani ataylab: `index.js` dagi `loginLimiter`
+// (prefiks bo'yicha) bu yo'lni ham qamraydi.
+router.post("/login/terminate", resolveSessionLimit);
 
 // Protected routes
 router.get("/me", protect, getMe);
@@ -27,5 +37,16 @@ router.post("/switch-branch", protect, switchBranch);
 // Chiqish — seansni yopadi. `protect` bilan: qaysi seansni yopishni
 // tokenning `jti` si aytadi va uni faqat tekshirilgan token beradi.
 router.post("/logout", protect, logout);
+
+// O'z seanslarim ("Qurilmalar"). Ruxsat kaliti YO'Q — faqat o'ziniki,
+// identifikator tokendan. ⚠️ `/others` `/:id` dan OLDIN turadi.
+router.get("/sessions", protect, listMySessions);
+router.delete("/sessions/others", protect, terminateOtherSessions);
+router.delete(
+  "/sessions/:id",
+  protect,
+  validateObjectId("id"),
+  terminateMySession,
+);
 
 module.exports = router;

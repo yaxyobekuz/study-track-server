@@ -186,7 +186,12 @@ const publicSession = (row, names) => ({
   expiresAt: row.expiresAt,
   expiresLabel: formatDateUz(row.expiresAt),
   endReason: row.endReason,
-  endReasonLabel: END_REASON_LABELS[row.endReason] ?? row.endReason,
+  // O'zi "Qurilmalar" ro'yxatidan yakunlagani admin uzganidan ajraladi
+  // (`userSession.service.js` → `endedBy` = o'zi)
+  endReasonLabel:
+    row.endReason === "revoked" && row.endedBy && row.endedBy === row.userId
+      ? "O'zi yakunladi"
+      : (END_REASON_LABELS[row.endReason] ?? row.endReason),
   endedAt: row.endedAt,
   isLive: row.endReason === "active" && row.expiresAt > new Date(),
 });

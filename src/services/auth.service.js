@@ -11,10 +11,17 @@
 
 const prisma = require("../config/prisma");
 const { runWithBranch } = require("../config/branchContext");
-const { generateToken, generateJti, verifyToken } = require("../utils/jwt");
+const {
+  generateToken,
+  generateJti,
+  verifyToken,
+  generateLoginTicket,
+  verifyLoginTicket,
+} = require("../utils/jwt");
 const { matchPassword } = require("../utils/password");
 const {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } = require("../utils/errors");
@@ -24,6 +31,7 @@ const { allRoles, hasRole } = require("../utils/permissions");
 const branchService = require("./branch.service");
 const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
+const userSessionService = require("./userSession.service");
 const pushService = require("./push.service");
 const { loadTutorRoleValues, isTutorUser } = require("./tutorGroup.service");
 
@@ -212,55 +220,186 @@ async function login(username, password, client = {}) {
       );
     }
 
-    // ⚠️ `jti` TOKENDAN OLDIN tug'iladi: seans qatori va token AYNI
-    // qiymatga ega bo'lishi kerak, aks holda "seansni tugat" tugmasi
-    // boshqa tokenni qidirib topmasdi.
-    const jti = generateJti();
-    const token = generateToken(user.id, branch.id, jti);
-    const available = await availableBranchesFor(user);
+    return issueSession({ user, branch, client });
+  });
+}
 
-    securityService.recordAttempt({
-      username,
-      userId: user.id,
+/**
+ * TOKEN BERISH VA SEANS OCHISH — parol (yoki login tiketi) tekshirilgandan
+ * keyingi yagona yo'l: login ham, limit oynasidan davom etish ham shu
+ * yerdan o'tadi. Ikkita nusxa bo'lsa, limit tekshiruvi ulardan biriga
+ * qo'shilmay qolardi.
+ *
+ * ⚠️ FILIAL KONTEKSTI ICHIDA chaqiriladi (`runWithBranch`).
+ *
+ * ⚠️ SEANS TOKEN QAYTARILISHIDAN OLDIN YOZILADI (`await`). Ilgari u
+ * "yozib qo'y va unut" edi, lekin o'qituvchi limiti aynan shu yozuvda
+ * tekshiriladi: token avval berilib, limit keyin aniqlansa, to'rtinchi
+ * qurilma baribir kirib olardi. Qoidalar (ogohlantirishlar) esa
+ * avvalgidek javobni kutdirmaydi.
+ *
+ * @param {object} input
+ * @param {object} input.user - filialdagi `User` (`classes` bilan)
+ * @param {object} input.branch
+ * @param {object} [input.client] - `clientInfo()`
+ * @returns {Promise<object>} - login javobi
+ * @throws {ConflictError} - `details.reason === "session_limit"`
+ */
+async function issueSession({ user, branch, client = {} }) {
+  // ⚠️ `jti` TOKENDAN OLDIN tug'iladi: seans qatori va token AYNI
+  // qiymatga ega bo'lishi kerak, aks holda "seansni tugat" tugmasi
+  // boshqa tokenni qidirib topmasdi.
+  const jti = generateJti();
+  const token = generateToken(user.id, branch.id, jti);
+
+  let admitted = null;
+  try {
+    admitted = await securityService.admitSession({
+      user,
       branchId: branch.id,
-      success: true,
-      reason: "ok",
+      jti,
+      expiresAt: tokenExpiry(token),
       client,
+      enforceLimit: true,
+    });
+  } catch (error) {
+    if (error instanceof securityService.SessionLimitError) {
+      throw await sessionLimitError(error, { user, branch, client });
+    }
+    // ⚠️ Seans yozilmasa ham login O'TADI (avvalgi xatti-harakat):
+    // platforma bazasidagi uzilish butun maktabni tizimdan chiqarib
+    // yubormasligi kerak. `jti` li, lekin qatorsiz token `auth.middleware`
+    // da eski token kabi o'tadi.
+    logger.warn(`[auth] seans ochilmadi: ${error.message}`);
+  }
+
+  const available = await availableBranchesFor(user);
+
+  securityService.recordAttempt({
+    username: user.username,
+    userId: user.id,
+    branchId: branch.id,
+    success: true,
+    reason: "ok",
+    client,
+  });
+
+  // ⚠️ `await` QILINMAYDI: qoidalar (bir vaqtdagi seans, yangi qurilma,
+  // brute-force) bir nechta so'rov yuboradi va login javobini kutib
+  // turishi kerak emas.
+  if (admitted) {
+    securityService
+      .runSessionRules({ user, branchId: branch.id, client, ...admitted })
+      .catch(() => {});
+  }
+
+  return {
+    user: {
+      id: user.id,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      fullName: user.fullName,
+      role: user.role,
+      // ⚠️ `role` ASOSIY rol bo'lib qoladi (panellar va bot unga
+      // tayanadi), `roles` esa BARCHA rollar — ko'p rollilik shu
+      // maydondan o'qiladi.
+      roles: allRoles(user),
+      extraRoles: user.extraRoles || [],
+      classes: user.classes.map((uc) => uc.class),
+      branch: publicBranch(branch),
+    },
+    token,
+    branch: publicBranch(branch),
+    availableBranches: available,
+  };
+}
+
+/**
+ * "QURILMALAR LIMITI TO'LGAN" javobi.
+ *
+ * `details` da ochiq seanslar (qaysi qurilma, qachon faol bo'lgan) va
+ * 5 daqiqalik login tiketi: odam shu oynaning o'zida bittasini
+ * yakunlab, parolni qayta kiritmasdan davom etadi
+ * (`POST /auth/login/terminate`). Ro'yxat bo'lmasa, u qaysi qurilmani
+ * yopishni bilmasdi — tizimga kira olmagani uchun "Qurilmalar" sahifasini
+ * ham ocha olmasdi.
+ *
+ * ⚠️ 409, 401 EMAS: panellar 401 da tokenni o'chirib login sahifasiga
+ * qaytaradi, bu yerda esa odam aynan login sahifasida qolishi kerak.
+ *
+ * @param {securityService.SessionLimitError} error
+ * @param {object} context
+ * @returns {Promise<ConflictError>}
+ */
+async function sessionLimitError(error, { user, branch, client }) {
+  return new ConflictError(
+    `Hisobingizga bir vaqtda ko'pi bilan ${error.limit} ta qurilmadan kirish mumkin. ` +
+      "Davom etish uchun boshqa qurilmalardan birini yakunlang.",
+    {
+      reason: "session_limit",
+      limit: error.limit,
+      sessions: await userSessionService.describeSessions(error.sessions),
+      ticket: generateLoginTicket({
+        userId: user.id,
+        branchId: branch.id,
+        deviceId: client.deviceId ?? null,
+      }),
+    },
+  );
+}
+
+/**
+ * LIMIT OYNASIDAN DAVOM ETISH — tanlangan qurilmalar yakunlanadi va
+ * login oxiriga yetkaziladi.
+ *
+ * ⚠️ PAROL QAYTA SO'RALMAYDI — uning o'rnida 5 daqiqalik tiket
+ * (`utils/jwt.js`). Tiket faqat parol TO'G'RI bo'lgandagina beriladi.
+ *
+ * ⚠️ HISOB HOLATI QAYTA TEKSHIRILADI: oradagi daqiqalarda hisob o'chirilgan
+ * yoki arxivlangan bo'lishi mumkin — tiket uni chetlab o'tmasligi kerak.
+ *
+ * ⚠️ Limit `issueSession` da YANA tekshiriladi: yopilgan seans o'rniga
+ * shu lahzada boshqa qurilma kirib olgan bo'lsa, odam yangilangan ro'yxat
+ * bilan yana o'sha oynani ko'radi.
+ *
+ * @param {object} input
+ * @param {string} input.ticket
+ * @param {string[]} [input.sessionIds]
+ * @param {boolean} [input.all]
+ * @param {object} [client] - `clientInfo()`
+ * @returns {Promise<object>} - login javobi
+ */
+async function resolveSessionLimit({ ticket, sessionIds, all } = {}, client = {}) {
+  const expired = () =>
+    new BadRequestError("Kutish vaqti tugadi — qaytadan tizimga kiring");
+
+  const claims = verifyLoginTicket(ticket);
+  if (!claims) throw expired();
+
+  // Tiket boshqa brauzerga ko'chirilgan bo'lsa — ishlamaydi
+  if (claims.did && claims.did !== (client.deviceId ?? null)) throw expired();
+
+  let branch;
+  try {
+    branch = await branchService.getUsableById(claims.bid);
+  } catch {
+    throw expired();
+  }
+
+  return runWithBranch(branch, async () => {
+    const user = await prisma.user.findUnique({
+      where: { id: claims.sub },
+      include: { classes: { include: { class: { select: { id: true, name: true } } } } },
     });
 
-    // ⚠️ `await` QILINMAYDI: qoidalar (bir vaqtdagi seans, yangi qurilma,
-    // brute-force) bir nechta so'rov yuboradi va login javobini kutib
-    // turishi kerak emas.
-    securityService
-      .openSession({
-        user,
-        branchId: branch.id,
-        jti,
-        expiresAt: tokenExpiry(token),
-        client,
-      })
-      .catch(() => {});
+    if (!user) throw expired();
+    if (!user.isActive) throw new ForbiddenError("Sizning hisobingiz faol emas");
+    if (user.isArchived) throw new ForbiddenError("Sizning hisobingiz arxivlangan");
 
-    return {
-      user: {
-        id: user.id,
-        username: user.username,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        fullName: user.fullName,
-        role: user.role,
-        // ⚠️ `role` ASOSIY rol bo'lib qoladi (panellar va bot unga
-        // tayanadi), `roles` esa BARCHA rollar — ko'p rollilik shu
-        // maydondan o'qiladi.
-        roles: allRoles(user),
-        extraRoles: user.extraRoles || [],
-        classes: user.classes.map((uc) => uc.class),
-        branch: publicBranch(branch),
-      },
-      token,
-      branch: publicBranch(branch),
-      availableBranches: available,
-    };
+    await userSessionService.terminateForLogin(user.id, { sessionIds, all });
+
+    return issueSession({ user, branch, client });
   });
 }
 
@@ -420,6 +559,7 @@ async function logout(jti) {
 
 module.exports = {
   login,
+  resolveSessionLimit,
   getMe,
   switchBranch,
   logout,

@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const authService = require("../services/auth.service");
+const userSessionService = require("../services/userSession.service");
 const { clientInfo } = require("../helpers/request.helpers");
 
 // Login
@@ -58,4 +59,55 @@ const logout = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { login, getMe, switchBranch, logout };
+// Qurilmalar limiti oynasidan davom etish — tanlangan seanslar yakunlanadi
+// va login javobi qaytadi. Token yo'q: kimligini 5 daqiqalik tiket aytadi.
+const resolveSessionLimit = asyncHandler(async (req, res) => {
+  const { ticket, sessionIds, all } = req.body || {};
+  const data = await authService.resolveSessionLimit(
+    { ticket, sessionIds, all: all === true },
+    clientInfo(req),
+  );
+
+  res.json({ success: true, data });
+});
+
+// ── O'Z SEANSLARIM ("Qurilmalar") ──────────────────────────────────
+// ⚠️ `req.tokenJti` — joriy seans. U ro'yxatda `isCurrent` bo'ladi va
+// "boshqalarini yakunlash" uni yopmaydi.
+
+const listMySessions = asyncHandler(async (req, res) => {
+  const data = await userSessionService.listMine(req.user, req.tokenJti);
+  res.json({ success: true, data });
+});
+
+const terminateMySession = asyncHandler(async (req, res) => {
+  const data = await userSessionService.terminateMine(
+    req.user,
+    req.params.id,
+    req.tokenJti,
+  );
+  res.json({ success: true, message: "Seans yakunlandi", data });
+});
+
+const terminateOtherSessions = asyncHandler(async (req, res) => {
+  const data = await userSessionService.terminateOthers(req.user, req.tokenJti);
+  res.json({
+    success: true,
+    message:
+      data.closed > 0
+        ? `${data.closed} ta seans yakunlandi`
+        : "Boshqa ochiq seans yo'q",
+    data,
+  });
+});
+
+module.exports = {
+  login,
+  resolveSessionLimit,
+  getMe,
+  switchBranch,
+  logout,
+  listMySessions,
+  terminateMySession,
+  terminateOtherSessions,
+};

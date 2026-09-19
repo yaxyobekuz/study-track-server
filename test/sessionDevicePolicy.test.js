@@ -2,9 +2,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 /**
- * SEANS SIYOSATI — o'quvchi ko'p qurilmada, xodim avvalgidek.
+ * SEANS SIYOSATI — o'quvchi ko'p qurilmada, o'qituvchi 3 tagacha,
+ * qolgan xodim avvalgidek.
  *
- * `openSession` va `dedupeLiveSessions` HAQIQIY kodi ishlaydi, faqat
+ * `openSession`, `admitSession` va `dedupeLiveSessions` HAQIQIY kodi
+ * ishlaydi, faqat
  * platforma bazasi xotiradagi soxta bilan almashtiriladi: qoida "qaysi
  * seans yopildi" degan natija bilan tekshirilishi kerak, ichki funksiya
  * chaqiruvlari bilan emas.
@@ -64,6 +66,9 @@ const fakePlatformPrisma = {
     },
   },
   branch: { findMany: async () => [] },
+  // Tranzaksiya — o'sha soxta client; advisory lock — hech narsa qilmaydi
+  $transaction: async (fn) => fn(fakePlatformPrisma),
+  $executeRaw: async () => 0,
 };
 
 const platformPath = require.resolve("../src/config/platformPrisma");
@@ -82,9 +87,12 @@ const { clientDeviceId, clientInfo } = require("../src/helpers/request.helpers")
 const BRANCH = "b".repeat(24);
 const STUDENT = { id: "s".repeat(24), username: "ali", role: "student" };
 const TEACHER = { id: "t".repeat(24), username: "vali", role: "teacher" };
+const STAFF = { id: "r".repeat(24), username: "gulnora", role: "reception" };
 
 const PHONE_A = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
 const PHONE_B = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
+const PHONE_C = "0c1c2c3c4c5c6c7c8c9cacbcccdcecfc";
+const PHONE_D = "9d8d7d6d5d4d3d2d1d0dfdedddcdbdad";
 
 const ANDROID = "Chrome · Android";
 
@@ -158,30 +166,108 @@ test("o'quvchi: joriy etish kuni — identifikatorsiz eski seans bilan soxta ogo
   assert.equal(liveIds(STUDENT.id).length, 2, "baribir hech narsa yopilmaydi");
 });
 
-/* ───────────────────────── Xodim (o'zgarmagan) ───────────────────────── */
+/* ───────────────────────── O'qituvchi — 3 ta qurilma ───────────────────────── */
 
-test("o'qituvchi: bir turdagi qurilmadan yangi kirish eskisini yopadi (avvalgidek)", async () => {
+/** Login yo'li — limit bilan (`auth.service.js` → `issueSession`). */
+const admit = (user, client) =>
+  security.admitSession({
+    user,
+    branchId: BRANCH,
+    jti: `jti${jtiSeq++}`,
+    expiresAt: new Date(Date.now() + 3600 * 1000),
+    client: { ip: "10.0.0.5", ...client },
+    enforceLimit: true,
+  });
+
+test("o'qituvchi: ikki turli telefon (bir xil yorliq) — ikkalasi ham ochiq", async () => {
   reset();
   const first = await login(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_A });
   const second = await login(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_B });
 
+  assert.deepEqual(liveIds(TEACHER.id).sort(), [first.id, second.id].sort());
+  assert.equal(second.multiDevice, true);
+});
+
+test("o'qituvchi: identifikatorsiz mijoz (mobil ilova) qayta kirsa — eskisi yorliq bo'yicha almashtiriladi", async () => {
+  reset();
+  const first = await login(TEACHER, { channel: "teacher", device: "Mobil ilova · Android" });
+  const second = await login(TEACHER, { channel: "teacher", device: "Mobil ilova · Android" });
+
   assert.deepEqual(liveIds(TEACHER.id), [second.id]);
+  assert.equal(db.sessions.find((row) => row.id === first.id).endReason, "superseded");
+});
+
+test("o'qituvchi: 4-qurilma limitga uriladi va HECH NARSA yozilmaydi", async () => {
+  reset();
+  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C]) {
+    await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId });
+  }
+
+  await assert.rejects(
+    () => admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_D }),
+    (error) =>
+      error instanceof security.SessionLimitError &&
+      error.limit === 3 &&
+      error.sessions.length === 3,
+  );
+  assert.equal(liveIds(TEACHER.id).length, 3);
+  assert.equal(db.sessions.length, 3);
+});
+
+test("o'qituvchi: limitda AYNI qurilmadan qayta kirish o'tadi (eskisi almashtiriladi)", async () => {
+  reset();
+  const first = await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_A });
+  await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_B });
+  await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_C });
+
+  const again = await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_A });
+
+  assert.equal(liveIds(TEACHER.id).length, 3);
+  assert.ok(liveIds(TEACHER.id).includes(again.session.id));
+  assert.equal(db.sessions.find((row) => row.id === first.session.id).endReason, "superseded");
+});
+
+test("o'qituvchi: filial almashtirish (limitsiz yo'l) limitga urilmaydi", async () => {
+  reset();
+  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C]) {
+    await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId });
+  }
+
+  const moved = await login(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_D });
+  assert.ok(moved, "openSession limitni tekshirmaydi");
+});
+
+/* ───────────────────────── Qolgan xodim (o'zgarmagan) ───────────────────────── */
+
+test("xodim: bir turdagi qurilmadan yangi kirish eskisini yopadi (avvalgidek)", async () => {
+  reset();
+  const first = await login(STAFF, { channel: "reception", device: ANDROID, deviceId: PHONE_A });
+  const second = await login(STAFF, { channel: "reception", device: ANDROID, deviceId: PHONE_B });
+
+  assert.deepEqual(liveIds(STAFF.id), [second.id]);
   assert.equal(db.sessions.find((row) => row.id === first.id).endReason, "superseded");
   assert.equal(second.multiDevice, false);
 });
 
-test("o'qituvchi: boshqa turdagi qurilma yopilmaydi (avvalgidek)", async () => {
+test("xodim: boshqa turdagi qurilma yopilmaydi va limit yo'q (avvalgidek)", async () => {
   reset();
-  await login(TEACHER, { channel: "teacher", device: ANDROID });
-  await login(TEACHER, { channel: "teacher", device: "Chrome · Windows" });
+  await admit(STAFF, { channel: "reception", device: ANDROID });
+  await admit(STAFF, { channel: "reception", device: "Chrome · Windows" });
+  await admit(STAFF, { channel: "reception", device: "Safari · iOS" });
+  await admit(STAFF, { channel: "reception", device: "Firefox · Linux" });
 
-  assert.equal(liveIds(TEACHER.id).length, 2);
+  assert.equal(liveIds(STAFF.id).length, 4);
 });
 
-test("qo'shimcha 'student' roli xodimni cheklovdan chiqarmaydi", () => {
-  assert.equal(security.allowsMultiDevice({ role: "teacher", extraRoles: ["student"] }), false);
+test("siyosat ASOSIY rol bo'yicha — qo'shimcha rol cheklovni o'zgartirmaydi", () => {
+  assert.equal(security.allowsMultiDevice({ role: "reception", extraRoles: ["student"] }), false);
   assert.equal(security.allowsMultiDevice({ role: "student" }), true);
+  assert.equal(security.allowsMultiDevice({ role: "teacher" }), true);
   assert.equal(security.allowsMultiDevice(null), false);
+
+  assert.equal(security.sessionLimitOf({ role: "teacher" }), 3);
+  assert.equal(security.sessionLimitOf({ role: "owner", extraRoles: ["teacher"] }), null);
+  assert.equal(security.sessionLimitOf({ role: "student" }), null);
 });
 
 /* ───────────────────────── Kechki supurgi ───────────────────────── */

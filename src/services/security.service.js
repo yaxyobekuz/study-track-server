@@ -27,8 +27,19 @@
  * ⚠️ XODIMDA AVVALGIDEK: bir turdagi qurilmadan ("Chrome · Android")
  * yangi kirish eskisini `superseded` bilan yopadi.
  *
+ * ⚠️ O'QITUVCHI — BIR VAQTDA 3 TA SEANS (biznes qarori, 2026-09-19;
+ * `SESSION_LIMITS`). Uchta turli qurilma bemalol ishlaydi (qurilma
+ * `deviceId` bilan ajratiladi, o'quvchidagi kabi), to'rtinchisidan kirish
+ * RAD ETILADI — lekin javobda ochiq seanslar ro'yxati va login tiketi
+ * keladi, odam QAYSI qurilmani yakunlashni o'zi tanlaydi va parolsiz
+ * davom etadi. Yuqoridagi doktrinaning yagona istisnosi shu: tizim
+ * to'rtinchi kirishni to'xtatadi, lekin hech kimni o'zi UZMAYDI (eng
+ * eskisini jimgina yopish direktor misolidagi "kompyuterdagi ish
+ * yo'qoldi" holatining aynan o'zi bo'lardi).
+ *
  * Siyosat seans qatoriga yoziladi (`multiDevice`), chunki kechki supurgi
- * rolni bilmaydi. Qaror — `allowsMultiDevice()`, BITTA joyda.
+ * rolni bilmaydi. Qaror — `allowsMultiDevice()`, `sessionLimitOf()` va
+ * `sameDeviceRule()`, BITTA joyda.
  *
  * ── PAROL VA MAXFIYLIK ───────────────────────────────────────────────
  *
@@ -232,16 +243,25 @@ async function raise({
  * @param {string} userId
  * @returns {Promise<object[]>}
  */
-function liveSessions(userId) {
-  return platformPrisma.userSession.findMany({
-    where: {
-      userId,
-      endReason: "active",
-      expiresAt: { gt: new Date() },
-    },
+function liveSessions(userId, client = platformPrisma) {
+  return client.userSession.findMany({
+    where: liveSessionWhere(userId),
     orderBy: { lastSeenAt: "desc" },
   });
 }
+
+/**
+ * "Ochiq seans" sharti — `liveSessions` va seanslarni yopadigan har
+ * bir yo'l uchun BITTA.
+ *
+ * @param {string} userId
+ * @returns {object} - Prisma `where`
+ */
+const liveSessionWhere = (userId) => ({
+  userId,
+  endReason: "active",
+  expiresAt: { gt: new Date() },
+});
 
 /**
  * IP MANZILDAN TARMOQ PREFIKSI.
@@ -403,16 +423,75 @@ const describeOrigin = (s = {}) =>
   `(${s.ip || "IP yo'q"})`;
 
 /**
+ * BIR VAQTDAGI OCHIQ SEANSLAR CHEGARASI — asosiy rol bo'yicha.
+ *
+ * ⚠️ O'QITUVCHI — 3 TA (biznes qarori, 2026-09-19). Hamma filial va hamma
+ * panel bo'yicha BIRGA sanaladi: chegara odamga qo'yilgan, filialga emas
+ * (filial almashtirish eski seansni yopadi, ya'ni u qurilma sonini
+ * oshirmaydi).
+ *
+ * ⚠️ `role` (asosiy rol) bo'yicha, `hasRole` EMAS — `allowsMultiDevice`
+ * bilan AYNI sabab: qo'shimcha "teacher" roli berilgan direktor jimgina
+ * limitga tushib qolmasligi kerak.
+ */
+const SESSION_LIMITS = Object.freeze({ [ROLES.TEACHER]: 3 });
+
+/**
+ * @param {{ role?: string }} user
+ * @returns {number|null} - `null` — chegara yo'q
+ */
+const sessionLimitOf = (user) => SESSION_LIMITS[user?.role] ?? null;
+
+/**
  * BU HISOB BIR NECHTA QURILMADA BIR VAQTDA ISHLAY OLADIMI.
  *
- * ⚠️ FAQAT O'QUVCHI. Qaror `role` (asosiy rol) bo'yicha, `hasRole` EMAS:
- * qo'shimcha "student" roli berilgan xodim o'z cheklovidan jimgina
- * chiqib ketmasligi kerak.
+ * O'quvchi — cheksiz, o'qituvchi — `SESSION_LIMITS` gacha. Qaror `role`
+ * (asosiy rol) bo'yicha, `hasRole` EMAS: qo'shimcha "student" roli
+ * berilgan xodim o'z cheklovidan jimgina chiqib ketmasligi kerak.
  *
  * @param {{ role?: string }} user
  * @returns {boolean}
  */
-const allowsMultiDevice = (user) => user?.role === ROLES.STUDENT;
+const allowsMultiDevice = (user) =>
+  user?.role === ROLES.STUDENT || sessionLimitOf(user) != null;
+
+/**
+ * "YANGI KIRISH SHU QURILMANING ESKI SEANSINI ALMASHTIRADIMI" qoidasi.
+ *
+ *   o'quvchi   — FAQAT `deviceId` bo'yicha (`sameBrowser`): shubhada
+ *                yopilmaydi, ikkinchi telefon birinchisini otib yubormaydi;
+ *   o'qituvchi — `sameOrigin`: identifikator bo'lsa u, bo'lmasa yorliq.
+ *                ⚠️ Qat'iy `sameBrowser` bu yerda XATO bo'lardi: mobil
+ *                ilova identifikator yubormaydi va har qayta kirishi yangi
+ *                seans qoldirib, uch kunda limitni o'zi to'ldirardi;
+ *   qolgan xodim — yorliq bo'yicha ("Chrome · Android"), avvalgidek.
+ *
+ * @param {{ role?: string }} user
+ * @returns {(a: object, b: object) => boolean}
+ */
+function sameDeviceRule(user) {
+  if (user?.role === ROLES.STUDENT) return sameBrowser;
+  if (sessionLimitOf(user) != null) return sameOrigin;
+  return (a, b) => originKeyOf(a) === originKeyOf(b);
+}
+
+/**
+ * Seanslar limiti to'lgan — `admitSession` tashlaydi.
+ *
+ * ⚠️ `sessions` — XOM qatorlar (`jti` bilan). Mijozga to'g'ridan-to'g'ri
+ * CHIQMAYDI: `auth.service.js` ularni `userSession.service.js` orqali
+ * ochiq shaklga keltiradi. Xato global handler'ga yetib borsa ham faqat
+ * `message` chiqadi.
+ */
+class SessionLimitError extends Error {
+  constructor(limit, sessions) {
+    super(`Bir vaqtda ko'pi bilan ${limit} ta qurilmadan kirish mumkin`);
+    this.name = "SessionLimitError";
+    this.statusCode = 409;
+    this.limit = limit;
+    this.sessions = sessions;
+  }
+}
 
 /**
  * YANGI SEANS OCHISH + QOIDALARNI ISHLATISH.
@@ -434,12 +513,39 @@ const allowsMultiDevice = (user) => user?.role === ROLES.STUDENT;
  * bitta odamning o'ndan ortiq "ochiq" seansi yig'ilib qolardi va
  * `concurrent_session` ogohlantirishi shu shovqindan chiqardi.
  *
- * ⚠️ "AYNI QURILMA" SIYOSATGA BOG'LIQ (`allowsMultiDevice`):
- *   xodim    — yorliq bo'yicha ("Chrome · Android"), avvalgidek;
- *   o'quvchi — FAQAT `deviceId` bo'yicha. Yorliq ikkita turli telefonni
- *              ajrata olmaydi va o'quvchi ikkinchi telefondan kirganda
- *              birinchisidan otib yuborilardi. Identifikator yo'q bo'lsa
- *              hech narsa yopilmaydi.
+ * ⚠️ "AYNI QURILMA" SIYOSATGA BOG'LIQ — `sameDeviceRule()`.
+ *
+ * ⚠️ XATO TASHLAMAYDI (filial almashtirish seans yozilmagani uchun
+ * yiqilmasligi kerak). Limit tekshiruvi kerak bo'lgan login yo'li
+ * `admitSession` ni to'g'ridan-to'g'ri chaqiradi.
+ *
+ * @param {object} input - `admitSession` bilan bir xil
+ * @returns {Promise<object|null>} - yaratilgan seans (xato bo'lsa `null`)
+ */
+async function openSession(input) {
+  try {
+    const admitted = await admitSession(input);
+    await runSessionRules({ ...input, ...admitted });
+    return admitted.session;
+  } catch (error) {
+    logger.warn(`[security] seans ochilmadi: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * SEANSNI QABUL QILISH — eski seanslarni yopadi, limitni tekshiradi va
+ * yangi qatorni yozadi. Qoidalar (ogohlantirishlar) BU YERDA ishlamaydi:
+ * ular `runSessionRules` da, login javobini kutdirmaslik uchun.
+ *
+ * ⚠️ HAMMASI BITTA TRANZAKSIYADA, odam bo'yicha advisory lock ostida.
+ * Limit "o'qi → sana → yoz" shaklida: qulfsiz ikkita parallel login
+ * ikkalasi ham "2 ta ochiq, joy bor" deb o'qib, to'rtinchi seansni
+ * yozib qo'yardi.
+ *
+ * ⚠️ LIMITDA HECH NARSA O'ZGARMAYDI — xato tranzaksiyani to'liq orqaga
+ * qaytaradi: rad etilgan kirish shu qurilmaning eski seansini ham
+ * yopib ketmasligi kerak.
  *
  * @param {object} input
  * @param {object} input.user - `{ id, username, firstName, lastName, role }`
@@ -448,68 +554,114 @@ const allowsMultiDevice = (user) => user?.role === ROLES.STUDENT;
  * @param {Date} input.expiresAt - tokenning `exp` idan
  * @param {object} input.client - `clientInfo()`
  * @param {string} [input.supersedeJti] - yopiladigan oldingi seans (filial almashtirish)
- * @returns {Promise<object|null>} - yaratilgan seans (xato bo'lsa `null`)
+ * @param {boolean} [input.enforceLimit=false] - `SESSION_LIMITS` ni qo'llash (faqat login)
+ * @returns {Promise<{ session: object, previous: object[] }>}
+ * @throws {SessionLimitError}
  */
-async function openSession({ user, branchId, jti, expiresAt, client = {}, supersedeJti }) {
-  let session = null;
+async function admitSession({
+  user,
+  branchId,
+  jti,
+  expiresAt,
+  client = {},
+  supersedeJti,
+  enforceLimit = false,
+}) {
+  const multiDevice = allowsMultiDevice(user);
+  const isSameDevice = sameDeviceRule(user);
+  const current = { ...client, channel: client.channel || "admin" };
+  const limit = enforceLimit ? sessionLimitOf(user) : null;
 
-  try {
-    if (supersedeJti) {
-      await closeSession({ jti: supersedeJti, reason: "superseded" });
-    }
+  const { session, previous, closedAny } = await platformPrisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`user_session:${user.id}`}))`;
 
-    // ⚠️ Tekshiruvlar uchun OLDINGI holat kerak — yangi qator qo'shilishidan
-    // OLDIN o'qiladi, aks holda "bu birinchi seansmi" savoli har doim
-    // "yo'q" bo'lardi.
-    const live = await liveSessions(user.id);
+      const now = new Date();
+      let closedAny = false;
 
-    // ── AYNI QURILMANING ESKI SEANSLARI ──────────────────────────────
-    // ⚠️ FILIAL HAM SOLISHTIRILADI: xodim ikkita filialda ishlashi
-    // mumkin va filial almashtirish o'z seansini `supersedeJti` bilan
-    // alohida yopadi. Filialni hisobga olmasak, Chilonzordagi ish
-    // Yunusoboddagi seansni jimgina yopib qo'yardi.
-    const multiDevice = allowsMultiDevice(user);
-    const current = { ...client, channel: client.channel || "admin" };
-    const isSameDevice = multiDevice
-      ? (s) => sameBrowser(s, current)
-      : (s) => originKeyOf(s) === originKeyOf(current);
+      if (supersedeJti) {
+        const { count } = await tx.userSession.updateMany({
+          where: { jti: supersedeJti, endReason: "active" },
+          data: { endReason: "superseded", endedAt: now, endedBy: null },
+        });
+        closedAny = count > 0;
+      }
 
-    const replaced = live.filter((s) => s.branchId === branchId && isSameDevice(s));
+      // ⚠️ Tekshiruvlar uchun OLDINGI holat kerak — yangi qator
+      // qo'shilishidan OLDIN o'qiladi, aks holda "bu birinchi seansmi"
+      // savoli har doim "yo'q" bo'lardi.
+      const live = await liveSessions(user.id, tx);
 
-    if (replaced.length > 0) {
-      await closeSessions(
-        replaced.map((s) => s.id),
-        "superseded",
+      // ── AYNI QURILMANING ESKI SEANSLARI ────────────────────────────
+      // ⚠️ FILIAL HAM SOLISHTIRILADI: xodim ikkita filialda ishlashi
+      // mumkin va filial almashtirish o'z seansini `supersedeJti` bilan
+      // alohida yopadi. Filialni hisobga olmasak, Chilonzordagi ish
+      // Yunusoboddagi seansni jimgina yopib qo'yardi.
+      const replaced = live.filter(
+        (s) => s.branchId === branchId && isSameDevice(s, current),
       );
-    }
 
-    // Yopilganlari endi "oldingi holat" emas — ular shu qurilmaning
-    // o'zi. Qoidalar faqat BOSHQA qurilmalarni ko'rishi kerak.
-    const before = live.filter((s) => !replaced.some((r) => r.id === s.id));
+      // Yopilganlari endi "oldingi holat" emas — ular shu qurilmaning
+      // o'zi. Qoidalar ham, limit ham faqat BOSHQA qurilmalarni ko'radi.
+      const previous = live.filter((s) => !replaced.includes(s));
 
-    session = await platformPrisma.userSession.create({
-      data: {
-        id: generateId(),
-        userId: user.id,
-        username: user.username || "",
-        branchId,
-        jti,
-        channel: client.channel || "admin",
-        ip: client.ip ?? null,
-        userAgent: client.userAgent ?? null,
-        device: client.device ?? null,
-        deviceId: client.deviceId ?? null,
-        multiDevice,
-        expiresAt,
-      },
-    });
+      if (limit != null && previous.length >= limit) {
+        throw new SessionLimitError(limit, previous);
+      }
 
-    await runRules({ user, branchId, session, previous: before, client });
+      if (replaced.length > 0) {
+        await tx.userSession.updateMany({
+          where: { id: { in: replaced.map((s) => s.id) }, endReason: "active" },
+          data: { endReason: "superseded", endedAt: now, endedBy: null },
+        });
+        closedAny = true;
+      }
+
+      const session = await tx.userSession.create({
+        data: {
+          id: generateId(),
+          userId: user.id,
+          username: user.username || "",
+          branchId,
+          jti,
+          channel: client.channel || "admin",
+          ip: client.ip ?? null,
+          userAgent: client.userAgent ?? null,
+          device: client.device ?? null,
+          deviceId: client.deviceId ?? null,
+          multiDevice,
+          expiresAt,
+        },
+      });
+
+      return { session, previous, closedAny };
+    },
+  );
+
+  // Yopilgan seanslar "ko'rindi" oynasida 2 daqiqa tirik bo'lib turmasin
+  if (closedAny) seenWindow.clear();
+
+  return { session, previous };
+}
+
+/**
+ * Yangi seans ustida xavfsizlik qoidalari. XATO TASHLAMAYDI — login
+ * `await` qilmaydi.
+ *
+ * @param {object} input
+ * @param {object} input.user
+ * @param {string} input.branchId
+ * @param {object} input.session - `admitSession` natijasi
+ * @param {object[]} input.previous - `admitSession` natijasi
+ * @param {object} [input.client]
+ * @returns {Promise<void>}
+ */
+async function runSessionRules({ user, branchId, session, previous, client = {} }) {
+  try {
+    await runRules({ user, branchId, session, previous, client });
   } catch (error) {
-    logger.warn(`[security] seans ochilmadi: ${error.message}`);
+    logger.warn(`[security] seans qoidalari ishlamadi: ${error.message}`);
   }
-
-  return session;
 }
 
 /**
@@ -1037,9 +1189,11 @@ async function expireStaleSessions() {
  * `openSession` dagi shart bilan AYNI. Ikki joyda ikki xil bo'lsa,
  * kechasi supurgi kunduzi ochilgan seansni yopib yurardi.
  *
- * ⚠️ O'QUVCHI SEANSI (`multiDevice`) FAQAT `deviceId` BO'YICHA
- * guruhlanadi, identifikatorsizi umuman tegilmaydi: yorliq bo'yicha
- * birlashtirish ikkinchi telefonini kechasi jimgina uzib qo'yardi.
+ * ⚠️ O'QUVCHI VA O'QITUVCHI SEANSI (`multiDevice`) FAQAT `deviceId`
+ * BO'YICHA guruhlanadi, identifikatorsizi umuman tegilmaydi: yorliq
+ * bo'yicha birlashtirish ikkinchi telefonini kechasi jimgina uzib
+ * qo'yardi. O'qituvchining identifikatorsiz seansi (mobil ilova) kirish
+ * paytida yorliq bo'yicha almashtiriladi (`sameDeviceRule`).
  *
  * @returns {Promise<number>} - nechta ortiqcha seans yopildi
  */
@@ -1091,11 +1245,18 @@ module.exports = {
   sameOrigin,
   countOrigins,
   deviceTagOf,
+  SESSION_LIMITS,
+  SessionLimitError,
+  sessionLimitOf,
   allowsMultiDevice,
+  sameDeviceRule,
   recordAttempt,
   raise,
   liveSessions,
+  liveSessionWhere,
   openSession,
+  admitSession,
+  runSessionRules,
   checkFailedStreak,
   touchSession,
   closeSession,
