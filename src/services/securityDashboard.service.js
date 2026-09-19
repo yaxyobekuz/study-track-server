@@ -75,6 +75,8 @@ const REASON_LABELS = {
   inactive: "Hisob faol emas",
   archived: "Hisob arxivlangan",
   rate_limited: "Limitdan oshdi",
+  // Parol to'g'ri, lekin o'qituvchining qurilmalar limiti to'lgan
+  session_limit: "Qurilmalar limiti to'lgan",
 };
 
 /** Seans tugash sabablarining nomlari. */

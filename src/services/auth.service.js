@@ -11,13 +11,7 @@
 
 const prisma = require("../config/prisma");
 const { runWithBranch } = require("../config/branchContext");
-const {
-  generateToken,
-  generateJti,
-  verifyToken,
-  generateLoginTicket,
-  verifyLoginTicket,
-} = require("../utils/jwt");
+const { generateToken, generateJti, verifyToken } = require("../utils/jwt");
 const { matchPassword } = require("../utils/password");
 const {
   BadRequestError,
@@ -31,7 +25,6 @@ const { allRoles, hasRole } = require("../utils/permissions");
 const branchService = require("./branch.service");
 const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
-const userSessionService = require("./userSession.service");
 const pushService = require("./push.service");
 const { loadTutorRoleValues, isTutorUser } = require("./tutorGroup.service");
 
@@ -225,10 +218,9 @@ async function login(username, password, client = {}) {
 }
 
 /**
- * TOKEN BERISH VA SEANS OCHISH — parol (yoki login tiketi) tekshirilgandan
- * keyingi yagona yo'l: login ham, limit oynasidan davom etish ham shu
- * yerdan o'tadi. Ikkita nusxa bo'lsa, limit tekshiruvi ulardan biriga
- * qo'shilmay qolardi.
+ * TOKEN BERISH VA SEANS OCHISH — parol tekshirilgandan keyingi yagona
+ * yo'l. Ikkita nusxa bo'lsa, limit tekshiruvi ulardan biriga qo'shilmay
+ * qolardi.
  *
  * ⚠️ FILIAL KONTEKSTI ICHIDA chaqiriladi (`runWithBranch`).
  *
@@ -264,7 +256,18 @@ async function issueSession({ user, branch, client = {} }) {
     });
   } catch (error) {
     if (error instanceof securityService.SessionLimitError) {
-      throw await sessionLimitError(error, { user, branch, client });
+      // Parol TO'G'RI, lekin kirish rad etildi — xavfsizlik jurnalida
+      // ko'rinsin: bu hisob parolini bilgan kimdir yangi qurilmadan
+      // kirmoqchi bo'lgan
+      securityService.recordAttempt({
+        username: user.username,
+        userId: user.id,
+        branchId: branch.id,
+        success: false,
+        reason: "session_limit",
+        client,
+      });
+      throw sessionLimitError(error);
     }
     // ⚠️ Seans yozilmasa ham login O'TADI (avvalgi xatti-harakat):
     // platforma bazasidagi uzilish butun maktabni tizimdan chiqarib
@@ -316,91 +319,29 @@ async function issueSession({ user, branch, client = {} }) {
 }
 
 /**
- * "QURILMALAR LIMITI TO'LGAN" javobi.
+ * "QURILMALAR LIMITI TO'LGAN" javobi — FAQAT XABAR.
  *
- * `details` da ochiq seanslar (qaysi qurilma, qachon faol bo'lgan) va
- * 5 daqiqalik login tiketi: odam shu oynaning o'zida bittasini
- * yakunlab, parolni qayta kiritmasdan davom etadi
- * (`POST /auth/login/terminate`). Ro'yxat bo'lmasa, u qaysi qurilmani
- * yopishni bilmasdi — tizimga kira olmagani uchun "Qurilmalar" sahifasini
- * ham ocha olmasdi.
+ * ⚠️ OCHIQ SEANSLAR RO'YXATI (qurilma, IP, oxirgi faollik) VA ULARNI
+ * YAKUNLASH IMKONI BU YERDA BERILMAYDI. Login oynasidagi odam hisob egasi
+ * ekani isbotlanmagan — faqat parolni bilgan. Ro'yxat berilsa, parolni
+ * bilgan begona odam egasining qurilmalari va IP manzillarini ko'rib,
+ * uning seanslarini yopib, o'zi kirib olardi (ilgari aynan shunday edi:
+ * `POST /auth/login/terminate` va 5 daqiqalik tiket — olib tashlangan).
+ * Joy bo'shatish — faqat allaqachon kirgan qurilmadan (Profil →
+ * Qurilmalar, `userSession.service.js`) yoki admin orqali (xavfsizlik
+ * bo'limi, `security.revoke`).
  *
  * ⚠️ 409, 401 EMAS: panellar 401 da tokenni o'chirib login sahifasiga
  * qaytaradi, bu yerda esa odam aynan login sahifasida qolishi kerak.
  *
  * @param {securityService.SessionLimitError} error
- * @param {object} context
- * @returns {Promise<ConflictError>}
+ * @returns {ConflictError}
  */
-async function sessionLimitError(error, { user, branch, client }) {
+function sessionLimitError(error) {
   return new ConflictError(
-    `Hisobingizga bir vaqtda ko'pi bilan ${error.limit} ta qurilmadan kirish mumkin. ` +
-      "Davom etish uchun boshqa qurilmalardan birini yakunlang.",
-    {
-      reason: "session_limit",
-      limit: error.limit,
-      sessions: await userSessionService.describeSessions(error.sessions),
-      ticket: generateLoginTicket({
-        userId: user.id,
-        branchId: branch.id,
-        deviceId: client.deviceId ?? null,
-      }),
-    },
+    `Siz ${error.limit} ta qurilmadan kirib bo'lgansiz — bir vaqtda bundan ko'p qurilmada ishlab bo'lmaydi.`,
+    { reason: "session_limit", limit: error.limit },
   );
-}
-
-/**
- * LIMIT OYNASIDAN DAVOM ETISH — tanlangan qurilmalar yakunlanadi va
- * login oxiriga yetkaziladi.
- *
- * ⚠️ PAROL QAYTA SO'RALMAYDI — uning o'rnida 5 daqiqalik tiket
- * (`utils/jwt.js`). Tiket faqat parol TO'G'RI bo'lgandagina beriladi.
- *
- * ⚠️ HISOB HOLATI QAYTA TEKSHIRILADI: oradagi daqiqalarda hisob o'chirilgan
- * yoki arxivlangan bo'lishi mumkin — tiket uni chetlab o'tmasligi kerak.
- *
- * ⚠️ Limit `issueSession` da YANA tekshiriladi: yopilgan seans o'rniga
- * shu lahzada boshqa qurilma kirib olgan bo'lsa, odam yangilangan ro'yxat
- * bilan yana o'sha oynani ko'radi.
- *
- * @param {object} input
- * @param {string} input.ticket
- * @param {string[]} [input.sessionIds]
- * @param {boolean} [input.all]
- * @param {object} [client] - `clientInfo()`
- * @returns {Promise<object>} - login javobi
- */
-async function resolveSessionLimit({ ticket, sessionIds, all } = {}, client = {}) {
-  const expired = () =>
-    new BadRequestError("Kutish vaqti tugadi — qaytadan tizimga kiring");
-
-  const claims = verifyLoginTicket(ticket);
-  if (!claims) throw expired();
-
-  // Tiket boshqa brauzerga ko'chirilgan bo'lsa — ishlamaydi
-  if (claims.did && claims.did !== (client.deviceId ?? null)) throw expired();
-
-  let branch;
-  try {
-    branch = await branchService.getUsableById(claims.bid);
-  } catch {
-    throw expired();
-  }
-
-  return runWithBranch(branch, async () => {
-    const user = await prisma.user.findUnique({
-      where: { id: claims.sub },
-      include: { classes: { include: { class: { select: { id: true, name: true } } } } },
-    });
-
-    if (!user) throw expired();
-    if (!user.isActive) throw new ForbiddenError("Sizning hisobingiz faol emas");
-    if (user.isArchived) throw new ForbiddenError("Sizning hisobingiz arxivlangan");
-
-    await userSessionService.terminateForLogin(user.id, { sessionIds, all });
-
-    return issueSession({ user, branch, client });
-  });
 }
 
 /**
@@ -559,7 +500,6 @@ async function logout(jti) {
 
 module.exports = {
   login,
-  resolveSessionLimit,
   getMe,
   switchBranch,
   logout,

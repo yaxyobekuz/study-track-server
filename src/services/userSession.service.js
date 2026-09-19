@@ -25,10 +25,8 @@ const platformPrisma = require("../config/platformPrisma");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
 const { ACTIVITY_CHANNEL_LABELS } = require("../utils/constants");
-const { isValidId } = require("../utils/objectId");
 const securityService = require("./security.service");
 const pushService = require("./push.service");
-const logger = require("../utils/logger");
 
 /**
  * "ONLAYN" OYNASI. `lastSeenAt` 2 daqiqada bir yoziladi
@@ -37,9 +35,6 @@ const logger = require("../utils/logger");
  * bo'lib miltillardi.
  */
 const ONLINE_WINDOW_MS = 5 * 60 * 1000;
-
-/** Bitta so'rovda yakunlanadigan seanslar chegarasi (limit oynasi uchun yetarli). */
-const MAX_TERMINATE_IDS = 20;
 
 /**
  * Qurilma turi — ro'yxatdagi belgi uchun (telefon / kompyuter).
@@ -228,37 +223,6 @@ async function terminateOthers(user, currentJti) {
   return { closed };
 }
 
-/**
- * LIMIT OYNASIDAN YAKUNLASH — login tiketi bilan (token hali yo'q).
- *
- * @param {string} userId - tiketdan
- * @param {object} input
- * @param {string[]} [input.sessionIds]
- * @param {boolean} [input.all] - hammasini yakunlash
- * @returns {Promise<{ closed: number }>}
- */
-async function terminateForLogin(userId, { sessionIds, all } = {}) {
-  const where = securityService.liveSessionWhere(userId);
-
-  if (!all) {
-    const ids = [...new Set(Array.isArray(sessionIds) ? sessionIds : [])];
-
-    if (ids.length === 0) {
-      throw new BadRequestError("Yakunlanadigan qurilma tanlanmadi");
-    }
-    if (ids.length > MAX_TERMINATE_IDS || !ids.every(isValidId)) {
-      throw new BadRequestError("Qurilmalar ro'yxati noto'g'ri");
-    }
-
-    where.id = { in: ids };
-  }
-
-  const closed = await terminateWhere(where, userId);
-  logger.info(`[sessions] limit oynasidan ${closed} ta seans yakunlandi (user ${userId})`);
-
-  return { closed };
-}
-
 module.exports = {
   ONLINE_WINDOW_MS,
   deviceKindOf,
@@ -267,5 +231,4 @@ module.exports = {
   listMine,
   terminateMine,
   terminateOthers,
-  terminateForLogin,
 };

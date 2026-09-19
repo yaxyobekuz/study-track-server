@@ -9,7 +9,6 @@ const { validateObjectId } = require("../middleware/validate.middleware");
 // Controllers
 const {
   login,
-  resolveSessionLimit,
   getMe,
   switchBranch,
   logout,
@@ -20,11 +19,6 @@ const {
 
 // Public routes
 router.post("/login", login);
-
-// Qurilmalar limiti to'lganda (o'qituvchi) — bittasini yakunlab davom etish.
-// ⚠️ `/login` ostida turgani ataylab: `index.js` dagi `loginLimiter`
-// (prefiks bo'yicha) bu yo'lni ham qamraydi.
-router.post("/login/terminate", resolveSessionLimit);
 
 // Protected routes
 router.get("/me", protect, getMe);
