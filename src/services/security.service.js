@@ -27,13 +27,13 @@
  * ⚠️ XODIMDA AVVALGIDEK: bir turdagi qurilmadan ("Chrome · Android")
  * yangi kirish eskisini `superseded` bilan yopadi.
  *
- * ⚠️ O'QITUVCHI — BIR VAQTDA 3 TA SEANS (biznes qarori, 2026-09-19;
- * `SESSION_LIMITS`). Uchta turli qurilma bemalol ishlaydi (qurilma
- * `deviceId` bilan ajratiladi, o'quvchidagi kabi), to'rtinchisidan kirish
+ * ⚠️ O'QITUVCHI — BIR VAQTDA 4 TA SEANS (biznes qarori, 2026-09-19;
+ * `SESSION_LIMITS`). To'rtta turli qurilma bemalol ishlaydi (qurilma
+ * `deviceId` bilan ajratiladi, o'quvchidagi kabi), beshinchisidan kirish
  * RAD ETILADI — lekin javobda ochiq seanslar ro'yxati va login tiketi
  * keladi, odam QAYSI qurilmani yakunlashni o'zi tanlaydi va parolsiz
  * davom etadi. Yuqoridagi doktrinaning yagona istisnosi shu: tizim
- * to'rtinchi kirishni to'xtatadi, lekin hech kimni o'zi UZMAYDI (eng
+ * beshinchi kirishni to'xtatadi, lekin hech kimni o'zi UZMAYDI (eng
  * eskisini jimgina yopish direktor misolidagi "kompyuterdagi ish
  * yo'qoldi" holatining aynan o'zi bo'lardi).
  *
@@ -425,7 +425,8 @@ const describeOrigin = (s = {}) =>
 /**
  * BIR VAQTDAGI OCHIQ SEANSLAR CHEGARASI — asosiy rol bo'yicha.
  *
- * ⚠️ O'QITUVCHI — 3 TA (biznes qarori, 2026-09-19). Hamma filial va hamma
+ * ⚠️ O'QITUVCHI — 4 TA (biznes qarori, 2026-09-19): 4 ta qurilmadan
+ * kirilgan bo'lsa, 5-qurilma kira olmaydi. Hamma filial va hamma
  * panel bo'yicha BIRGA sanaladi: chegara odamga qo'yilgan, filialga emas
  * (filial almashtirish eski seansni yopadi, ya'ni u qurilma sonini
  * oshirmaydi).
@@ -434,7 +435,7 @@ const describeOrigin = (s = {}) =>
  * bilan AYNI sabab: qo'shimcha "teacher" roli berilgan direktor jimgina
  * limitga tushib qolmasligi kerak.
  */
-const SESSION_LIMITS = Object.freeze({ [ROLES.TEACHER]: 3 });
+const SESSION_LIMITS = Object.freeze({ [ROLES.TEACHER]: 4 });
 
 /**
  * @param {{ role?: string }} user
@@ -463,7 +464,7 @@ const allowsMultiDevice = (user) =>
  *   o'qituvchi — `sameOrigin`: identifikator bo'lsa u, bo'lmasa yorliq.
  *                ⚠️ Qat'iy `sameBrowser` bu yerda XATO bo'lardi: mobil
  *                ilova identifikator yubormaydi va har qayta kirishi yangi
- *                seans qoldirib, uch kunda limitni o'zi to'ldirardi;
+ *                seans qoldirib, bir necha kunda limitni o'zi to'ldirardi;
  *   qolgan xodim — yorliq bo'yicha ("Chrome · Android"), avvalgidek.
  *
  * @param {{ role?: string }} user
@@ -540,7 +541,7 @@ async function openSession(input) {
  *
  * ⚠️ HAMMASI BITTA TRANZAKSIYADA, odam bo'yicha advisory lock ostida.
  * Limit "o'qi → sana → yoz" shaklida: qulfsiz ikkita parallel login
- * ikkalasi ham "2 ta ochiq, joy bor" deb o'qib, to'rtinchi seansni
+ * ikkalasi ham "3 ta ochiq, joy bor" deb o'qib, beshinchi seansni
  * yozib qo'yardi.
  *
  * ⚠️ LIMITDA HECH NARSA O'ZGARMAYDI — xato tranzaksiyani to'liq orqaga

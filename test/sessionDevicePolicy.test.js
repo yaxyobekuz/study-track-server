@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 /**
- * SEANS SIYOSATI — o'quvchi ko'p qurilmada, o'qituvchi 3 tagacha,
+ * SEANS SIYOSATI — o'quvchi ko'p qurilmada, o'qituvchi 4 tagacha,
  * qolgan xodim avvalgidek.
  *
  * `openSession`, `admitSession` va `dedupeLiveSessions` HAQIQIY kodi
@@ -93,6 +93,7 @@ const PHONE_A = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6";
 const PHONE_B = "f0e1d2c3b4a5968778695a4b3c2d1e0f";
 const PHONE_C = "0c1c2c3c4c5c6c7c8c9cacbcccdcecfc";
 const PHONE_D = "9d8d7d6d5d4d3d2d1d0dfdedddcdbdad";
+const PHONE_E = "e5e5e4e4e3e3e2e2e1e1e0e0edecebea";
 
 const ANDROID = "Chrome · Android";
 
@@ -166,7 +167,7 @@ test("o'quvchi: joriy etish kuni — identifikatorsiz eski seans bilan soxta ogo
   assert.equal(liveIds(STUDENT.id).length, 2, "baribir hech narsa yopilmaydi");
 });
 
-/* ───────────────────────── O'qituvchi — 3 ta qurilma ───────────────────────── */
+/* ───────────────────────── O'qituvchi — 4 ta qurilma ───────────────────────── */
 
 /** Login yo'li — limit bilan (`auth.service.js` → `issueSession`). */
 const admit = (user, client) =>
@@ -197,21 +198,22 @@ test("o'qituvchi: identifikatorsiz mijoz (mobil ilova) qayta kirsa — eskisi yo
   assert.equal(db.sessions.find((row) => row.id === first.id).endReason, "superseded");
 });
 
-test("o'qituvchi: 4-qurilma limitga uriladi va HECH NARSA yozilmaydi", async () => {
+test("o'qituvchi: 4 ta qurilma o'tadi, 5-qurilma limitga uriladi va HECH NARSA yozilmaydi", async () => {
   reset();
-  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C]) {
+  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C, PHONE_D]) {
     await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId });
   }
+  assert.equal(liveIds(TEACHER.id).length, 4);
 
   await assert.rejects(
-    () => admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_D }),
+    () => admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_E }),
     (error) =>
       error instanceof security.SessionLimitError &&
-      error.limit === 3 &&
-      error.sessions.length === 3,
+      error.limit === 4 &&
+      error.sessions.length === 4,
   );
-  assert.equal(liveIds(TEACHER.id).length, 3);
-  assert.equal(db.sessions.length, 3);
+  assert.equal(liveIds(TEACHER.id).length, 4);
+  assert.equal(db.sessions.length, 4);
 });
 
 test("o'qituvchi: limitda AYNI qurilmadan qayta kirish o'tadi (eskisi almashtiriladi)", async () => {
@@ -219,21 +221,22 @@ test("o'qituvchi: limitda AYNI qurilmadan qayta kirish o'tadi (eskisi almashtiri
   const first = await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_A });
   await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_B });
   await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_C });
+  await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_D });
 
   const again = await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_A });
 
-  assert.equal(liveIds(TEACHER.id).length, 3);
+  assert.equal(liveIds(TEACHER.id).length, 4);
   assert.ok(liveIds(TEACHER.id).includes(again.session.id));
   assert.equal(db.sessions.find((row) => row.id === first.session.id).endReason, "superseded");
 });
 
 test("o'qituvchi: filial almashtirish (limitsiz yo'l) limitga urilmaydi", async () => {
   reset();
-  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C]) {
+  for (const deviceId of [PHONE_A, PHONE_B, PHONE_C, PHONE_D]) {
     await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId });
   }
 
-  const moved = await login(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_D });
+  const moved = await login(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_E });
   assert.ok(moved, "openSession limitni tekshirmaydi");
 });
 
@@ -265,7 +268,7 @@ test("siyosat ASOSIY rol bo'yicha — qo'shimcha rol cheklovni o'zgartirmaydi", 
   assert.equal(security.allowsMultiDevice({ role: "teacher" }), true);
   assert.equal(security.allowsMultiDevice(null), false);
 
-  assert.equal(security.sessionLimitOf({ role: "teacher" }), 3);
+  assert.equal(security.sessionLimitOf({ role: "teacher" }), 4);
   assert.equal(security.sessionLimitOf({ role: "owner", extraRoles: ["teacher"] }), null);
   assert.equal(security.sessionLimitOf({ role: "student" }), null);
 });

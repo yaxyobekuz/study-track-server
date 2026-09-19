@@ -234,7 +234,7 @@ async function login(username, password, client = {}) {
  *
  * ⚠️ SEANS TOKEN QAYTARILISHIDAN OLDIN YOZILADI (`await`). Ilgari u
  * "yozib qo'y va unut" edi, lekin o'qituvchi limiti aynan shu yozuvda
- * tekshiriladi: token avval berilib, limit keyin aniqlansa, to'rtinchi
+ * tekshiriladi: token avval berilib, limit keyin aniqlansa, beshinchi
  * qurilma baribir kirib olardi. Qoidalar (ogohlantirishlar) esa
  * avvalgidek javobni kutdirmaydi.
  *
