@@ -1,7 +1,7 @@
 /**
  * XAVFSIZLIK SUPURGISI — kechasi 03:40.
  *
- * Uch ish qiladi va uchalasi ham FAQAT TARTIBGA SOLADI, hech kimni
+ * Quyidagi ishlarni qiladi va hammasi FAQAT TARTIBGA SOLADI, hech kimni
  * bloklamaydi (`security.service.js` doktrinasi: qayd etadi, to'xtatmaydi):
  *
  *   0. BITTA QURILMANING ORTIQCHA SEANSLARINI YOPADI. Bitta telefondan
@@ -18,6 +18,14 @@
  *      ⚠️ O'CHIRMAYDI, YOPADI. Seans tarixi — xavfsizlik tarixi: "bu
  *      odam o'sha kuni qaysi qurilmadan kirgan edi" degan savolga javob
  *      faqat qator saqlangandagina bo'ladi.
+ *
+ *   1b. HARAKATSIZ SEANSLARNI YOPADI (`idle`, 2026-09-19). 4 kun bironta
+ *      so'rov kelmagan seans — odatda telefondan o'chirilgan ilova: u
+ *      logout chaqirmaydi va o'qituvchining 4 ta joyidan birini 30 kun
+ *      egallab turardi. Supurgi faqat QATORNI yopadi — bunday seans
+ *      `checkSession` va limit sanog'ida allaqachon o'lik (kechasigacha
+ *      kutib turmaydi). Seansning push qurilmalari ham shu yerda
+ *      o'chiriladi (aylanma `require` sababi — `closeIdleSessions` izohi).
  *
  *   2. ESKI OGOHLANTIRISHLARNI YOPADI. 30 kundan beri ochiq turgan
  *      ogohlantirish — bu "hech kim qaramadi" degani va ro'yxatni
@@ -38,6 +46,7 @@
 const cron = require("node-cron");
 const platformPrisma = require("../config/platformPrisma");
 const securityService = require("../services/security.service");
+const pushService = require("../services/push.service");
 const logger = require("../utils/logger");
 
 /** Ochiq ogohlantirish shuncha kundan keyin avtomatik yopiladi. */
@@ -49,7 +58,7 @@ const ATTEMPT_RETENTION_DAYS = 180;
 /**
  * Bitta supurish passi.
  *
- * @returns {Promise<{deduped: number, expired: number, staleAlerts: number, purged: number}>}
+ * @returns {Promise<{deduped: number, expired: number, idle: number, staleAlerts: number, purged: number}>}
  */
 async function runSecuritySweep() {
   const now = Date.now();
@@ -59,6 +68,12 @@ async function runSecuritySweep() {
 
   // ── 1. Muddati o'tgan seanslar ────────────────────────────────────
   const expired = await securityService.expireStaleSessions();
+
+  // ── 1b. 4 kun harakatsiz seanslar ─────────────────────────────────
+  const { count: idle, jtis: idleJtis } = await securityService.closeIdleSessions();
+  // Yopilgan seansning telefoni topshiriq bildirishnomalarini olishda
+  // davom etmasin (`forgetSessions` xato tashlamaydi)
+  await pushService.forgetSessions(idleJtis);
 
   // ── 2. Uzoq ochiq turgan ogohlantirishlar ─────────────────────────
   const staleBefore = new Date(now - ALERT_STALE_DAYS * 24 * 3600 * 1000);
@@ -73,16 +88,17 @@ async function runSecuritySweep() {
     where: { createdAt: { lt: purgeBefore } },
   });
 
-  if (deduped || expired || staleAlerts || purged) {
+  if (deduped || expired || idle || staleAlerts || purged) {
     logger.info(
       `[SecuritySweep] ${deduped} ta ortiqcha seans birlashtirildi, ` +
         `${expired} ta seans yopildi, ` +
+        `${idle} ta harakatsiz seans yopildi, ` +
         `${staleAlerts} ta ogohlantirish avtomatik belgilandi, ` +
         `${purged} ta eski urinish tozalandi`,
     );
   }
 
-  return { deduped, expired, staleAlerts, purged };
+  return { deduped, expired, idle, staleAlerts, purged };
 }
 
 /** Cron jobni belgilaydi. Har kuni 03:40 (Asia/Tashkent). */

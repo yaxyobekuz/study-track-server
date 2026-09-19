@@ -37,6 +37,20 @@
  * eskisini jimgina yopish direktor misolidagi "kompyuterdagi ish
  * yo'qoldi" holatining aynan o'zi bo'lardi).
  *
+ * ── EGASIZ QOLGAN SEANSLAR (2026-09-19) ──────────────────────────────
+ *
+ * Ilova telefondan o'chirilsa logout chaqirilmaydi va seans limitdagi
+ * joyni 30 kun egallab turardi. Ikki yo'l bilan yopiladi — ikkalasi ham
+ * "hech kim ishlatmayotgan" seansga tegadi, ishlab turgan odamni UZMAYDI
+ * (yuqoridagi doktrina buzilmaydi):
+ *
+ *   `idle`        — `SESSION_IDLE_DAYS` davomida so'rov kelmadi. ASOSIY
+ *                   kafolat: `checkSession` va `liveStateWhere` darhol,
+ *                   kechki supurgi (`closeIdleSessions`) qatorni yopadi.
+ *   `app_removed` — Firebase push tokeni o'ldi (`push.service.js`).
+ *                   TEZLATGICH: odatda ~1 kun ichida, signal kelmasa
+ *                   baribir `idle` yopadi.
+ *
  * Siyosat seans qatoriga yoziladi (`multiDevice`), chunki kechki supurgi
  * rolni bilmaydi. Qaror — `allowsMultiDevice()`, `sessionLimitOf()` va
  * `sameDeviceRule()`, BITTA joyda.
@@ -89,6 +103,38 @@ const NIGHT_TO = 5;
 
 /** Uzoq kirmagan hisob shu kundan keyin "uyquda" hisoblanadi. */
 const DORMANT_DAYS = 45;
+
+/**
+ * Shuncha kun so'rov kelmagan seans yopiladi (biznes qarori, 2026-09-19).
+ *
+ * ⚠️ NIMA UCHUN: ilova telefondan o'chirilganda `POST /auth/logout`
+ * chaqirilmaydi va seans token muddati tugaguncha (30 kun) "ochiq" bo'lib
+ * qolardi. O'qituvchida u `SESSION_LIMITS` dagi joyni egallaydi: ikki-uch
+ * marta qayta o'rnatilgach login 409 bilan yopilib qolardi, bo'shatadigan
+ * qurilma esa qolmagan.
+ *
+ * ⚠️ Narxi: bayram yoki ta'tildan (4 kundan ko'p) qaytgan odam qayta login
+ * qiladi — server uni o'chirilgan ilovadan ajrata olmaydi.
+ *
+ * ⚠️ Env ga chiqarilmaydi — `SESSION_LIMITS` kabi kodda turadigan qaror.
+ * Kun o'lchovi `lastSeenAt` (2 daqiqada bir yoziladi, `SEEN_WINDOW_MS`),
+ * shuning uchun yangi ustun kerak emas.
+ */
+const SESSION_IDLE_DAYS = 4;
+const idleCutoff = () => new Date(Date.now() - SESSION_IDLE_DAYS * 24 * 3600 * 1000);
+
+/**
+ * ILOVA O'CHIRILDI DEGAN SIGNALGA ISHONMASLIK OYNASI.
+ *
+ * ⚠️ Push tokeni o'lgan, lekin seans shu oyna ichida so'rov yuborgan
+ * bo'lsa — tokenni kimdir ISHLATIB turibdi, ya'ni ilova o'chirilmagan
+ * (token yangilanib, yangisi serverga yetib bormagan holat). Bunday
+ * seans yopilmaydi: faol odamni tizimdan uloqtirishdan ko'ra, uni
+ * `SESSION_IDLE_DAYS` qoidasiga qoldirish xavfsizroq. O'chirilgan
+ * ilovada esa signal odatda soatlab kechikadi (`push.service.js`),
+ * ya'ni bu oyna haqiqiy holatni deyarli to'smaydi.
+ */
+const APP_REMOVED_QUIET_MS = 60 * 60 * 1000;
 
 /**
  * TEZ FILIAL ALMASHTIRISH — oynasi va ostonasi.
@@ -236,9 +282,10 @@ async function raise({
 /**
  * Foydalanuvchining HOZIR OCHIQ seanslari.
  *
- * "Ochiq" = tugatilmagan VA muddati o'tmagan. Ikkala shart ham kerak:
- * `endReason` faqat qo'lda tugatilganda o'zgaradi, muddat esa o'zi
- * o'tadi va uni hech kim yozmaydi (cron kechroq tozalaydi).
+ * "Ochiq" = tugatilmagan, muddati o'tmagan VA `SESSION_IDLE_DAYS` ichida
+ * so'rov kelgan. Uchala shart ham kerak: `endReason` faqat yopilganda
+ * o'zgaradi, muddat va harakatsizlik esa o'zi o'tadi va ularni kechki
+ * supurgi (03:40) yozguncha qator `active` bo'lib turadi.
  *
  * @param {string} userId
  * @returns {Promise<object[]>}
@@ -251,17 +298,41 @@ function liveSessions(userId, client = platformPrisma) {
 }
 
 /**
+ * "Ochiq seans" holati — odamdan qat'i nazar (xavfsizlik bo'limi,
+ * ro'yxatlar). `liveSessionWhere` va `isSessionLive` bilan AYNI qoida.
+ *
+ * ⚠️ `lastSeenAt` sharti MAJBURIY: usiz harakatsiz seans kechki
+ * supurgigacha limitga kirib, "Qurilmalar" ro'yxatida tirik bo'lib
+ * turardi — `checkSession` esa uni allaqachon rad etadi.
+ *
+ * @returns {object} - Prisma `where`
+ */
+const liveStateWhere = () => ({
+  endReason: "active",
+  expiresAt: { gt: new Date() },
+  lastSeenAt: { gte: idleCutoff() },
+});
+
+/**
  * "Ochiq seans" sharti — `liveSessions` va seanslarni yopadigan har
  * bir yo'l uchun BITTA.
  *
  * @param {string} userId
  * @returns {object} - Prisma `where`
  */
-const liveSessionWhere = (userId) => ({
-  userId,
-  endReason: "active",
-  expiresAt: { gt: new Date() },
-});
+const liveSessionWhere = (userId) => ({ userId, ...liveStateWhere() });
+
+/**
+ * O'qilgan qator "ochiq"mi — `liveStateWhere` ning JS dagi egizagi.
+ *
+ * @param {{ endReason: string, expiresAt: Date, lastSeenAt: Date }} row
+ * @returns {boolean}
+ */
+const isSessionLive = (row) =>
+  Boolean(row) &&
+  row.endReason === "active" &&
+  new Date(row.expiresAt) > new Date() &&
+  new Date(row.lastSeenAt) >= idleCutoff();
 
 /**
  * IP MANZILDAN TARMOQ PREFIKSI.
@@ -1063,22 +1134,28 @@ async function checkSession(jti) {
     // 03:40 da yopadi, ya'ni oralig'da `endReason` hamon `active`
     // bo'lib turadi. Faqat `endReason` ga qarasak, muddati o'tgan
     // token o'sha kechagacha ishlab turardi.
+    //
+    // ⚠️ `lastSeenAt` HAM — aynan shu sabab bilan (`SESSION_IDLE_DAYS`).
+    // Usiz 5 kun kirmagan odam supurgidan OLDIN ilovani ochsa, so'rov
+    // o'tib `lastSeenAt` ni yangilab qo'yardi va harakatsiz seans
+    // jimgina "tirilib" ketardi. Shart `where` ICHIDA: tekshiruv va
+    // yangilash bitta atomar UPDATE, oraliqda poyga yo'q.
     const { count } = await platformPrisma.userSession.updateMany({
-      where: { jti, endReason: "active", expiresAt: { gt: new Date() } },
+      where: { jti, ...liveStateWhere() },
       data: { lastSeenAt: new Date() },
     });
 
     if (count === 1) return true;
 
     // Qator yangilanmadi — yo umuman yo'q (eski token: o'tkazamiz), yo
-    // tugatilgan/muddati o'tgan (o'tkazmaymiz).
+    // tugatilgan / muddati o'tgan / harakatsiz (o'tkazmaymiz).
     const exists = await platformPrisma.userSession.findUnique({
       where: { jti },
-      select: { endReason: true, expiresAt: true },
+      select: { endReason: true, expiresAt: true, lastSeenAt: true },
     });
 
     if (!exists) return true;
-    return exists.endReason === "active" && exists.expiresAt > new Date();
+    return isSessionLive(exists);
   } catch (error) {
     // Baza yiqilsa hamma tizimdan chiqib ketmasligi kerak
     logger.warn(`[security] seans yangilanmadi: ${error.message}`);
@@ -1128,17 +1205,95 @@ async function closeSession({ jti, sessionId, reason, actorId }) {
  *
  * @param {string[]} ids
  * @param {string} reason - `SessionEndReason`
+ * @param {object} [guard] - qo'shimcha Prisma `where` sharti: o'qish va
+ *   yopish orasida holati o'zgargan qator yopilmasligi uchun
  * @returns {Promise<number>} - nechta seans yopildi
  */
-async function closeSessions(ids, reason) {
+async function closeSessions(ids, reason, guard = {}) {
   if (!ids?.length) return 0;
 
   const { count } = await platformPrisma.userSession.updateMany({
-    where: { id: { in: ids }, endReason: "active" },
+    where: { ...guard, id: { in: ids }, endReason: "active" },
     data: { endReason: reason, endedAt: new Date(), endedBy: null },
   });
 
   if (count > 0) seenWindow.clear();
+  return count;
+}
+
+/**
+ * HARAKATSIZ SEANSLARNI YOPADI — kechki supurgi chaqiradi.
+ *
+ * `SESSION_IDLE_DAYS` davomida bironta so'rov kelmagan, hali ochiq va
+ * muddati o'tmagan seans `idle` bilan yopiladi.
+ *
+ * ⚠️ Avval qatorlar o'qiladi, keyin FAQAT o'sha `id` lar yopiladi
+ * (`userSession.service.js` → `terminateWhere` naqshi) va yopishda
+ * harakatsizlik sharti YANA tekshiriladi: oraliqda ochilgan yoki
+ * ko'ringan seans tasodifan yopilib ketmasligi uchun.
+ *
+ * ⚠️ ROL BO'YICHA FILTR YO'Q — o'quvchi, o'qituvchi va xodim uchun qoida
+ * bir xil. Rol filial schema'sida turadi va uni har seans uchun o'qish
+ * supurgini qimmatlashtirardi.
+ *
+ * ⚠️ Push qurilmalari BU YERDA o'chirilmaydi — `jtis` qaytariladi va
+ * supurgi `pushService.forgetSession` ni o'zi chaqiradi: `push.service`
+ * bu faylni import qiladi (`closeAppRemovedSession`), teskari import
+ * aylanma `require` bo'lardi.
+ *
+ * ⚠️ O'CHIRMAYDI, YOPADI — `expireStaleSessions` bilan AYNI sabab.
+ *
+ * @returns {Promise<{ count: number, jtis: string[] }>}
+ */
+async function closeIdleSessions() {
+  const cutoff = idleCutoff();
+
+  const rows = await platformPrisma.userSession.findMany({
+    where: {
+      endReason: "active",
+      expiresAt: { gt: new Date() },
+      lastSeenAt: { lt: cutoff },
+    },
+    select: { id: true, jti: true },
+  });
+  if (rows.length === 0) return { count: 0, jtis: [] };
+
+  const count = await closeSessions(
+    rows.map((row) => row.id),
+    "idle",
+    { lastSeenAt: { lt: cutoff } },
+  );
+
+  return { count, jtis: rows.map((row) => row.jti) };
+}
+
+/**
+ * ILOVA O'CHIRILGAN SEANSNI YOPADI — `push.service.js` chaqiradi.
+ *
+ * Chaqiruvchi allaqachon ikkita shartni tekshirgan: Firebase tokenni
+ * `registration-token-not-registered` deb qaytargan VA shu `jti` ga
+ * bitta ham tirik token qolmagan (token yangilangani emas).
+ *
+ * ⚠️ Uchinchi shart shu yerda: `APP_REMOVED_QUIET_MS` ichida so'rov
+ * kelgan seans YOPILMAYDI — token bilan kimdir ishlab turibdi. Shart
+ * `where` ichida, ya'ni tekshiruv va yopish bitta atomar UPDATE.
+ *
+ * @param {string} jti
+ * @returns {Promise<number>} - nechta seans yopildi (0 yoki 1)
+ */
+async function closeAppRemovedSession(jti) {
+  if (!jti) return 0;
+
+  const { count } = await platformPrisma.userSession.updateMany({
+    where: {
+      jti,
+      endReason: "active",
+      lastSeenAt: { lt: new Date(Date.now() - APP_REMOVED_QUIET_MS) },
+    },
+    data: { endReason: "app_removed", endedAt: new Date(), endedBy: null },
+  });
+
+  if (count > 0) seenWindow.delete(jti);
   return count;
 }
 
@@ -1238,6 +1393,9 @@ module.exports = {
   SEEN_WINDOW_MS,
   BRUTE_THRESHOLD,
   DORMANT_DAYS,
+  SESSION_IDLE_DAYS,
+  APP_REMOVED_QUIET_MS,
+  idleCutoff,
   RAPID_SWITCH_WINDOW_MS,
   RAPID_SWITCH_THRESHOLD,
   networkOf,
@@ -1254,7 +1412,9 @@ module.exports = {
   recordAttempt,
   raise,
   liveSessions,
+  liveStateWhere,
   liveSessionWhere,
+  isSessionLive,
   openSession,
   admitSession,
   runSessionRules,
@@ -1262,6 +1422,8 @@ module.exports = {
   touchSession,
   closeSession,
   closeSessions,
+  closeIdleSessions,
+  closeAppRemovedSession,
   forgetSeenCache,
   expireStaleSessions,
   dedupeLiveSessions,

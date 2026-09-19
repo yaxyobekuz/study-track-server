@@ -492,6 +492,10 @@ enum SessionEndReason {
   revoked
   expired
   superseded
+  // 4 kun bironta so'rov kelmadi (`security.service.js` → `SESSION_IDLE_DAYS`)
+  idle
+  // Push tokeni "ro'yxatdan chiqdi" — ilova telefondan o'chirilgan
+  app_removed
 }
 
 /**

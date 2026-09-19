@@ -102,6 +102,9 @@ const prisma = {
     findMany: async () => [],
   },
   lessonSubstitution: { findMany: async () => [] },
+  // Tyutor guruhlari va oylikni to'xtatish (2026-09-17) — bu testlarda yo'q
+  tutorGroup: { findMany: async () => [] },
+  payrollSuspension: { findMany: async () => [] },
   scheduleLesson: {
     groupBy: async ({ where }) => {
       const counts = new Map();

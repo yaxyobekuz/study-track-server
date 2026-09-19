@@ -182,7 +182,7 @@ async function terminateMine(user, sessionId, currentJti) {
   // ⚠️ `userId` sharti MAJBURIY: boshqa odamning seans id si "topilmadi"
   const session = await platformPrisma.userSession.findFirst({
     where: { id: sessionId, userId: user.id },
-    select: { id: true, jti: true, endReason: true, expiresAt: true },
+    select: { id: true, jti: true, endReason: true, expiresAt: true, lastSeenAt: true },
   });
   if (!session) throw new NotFoundError("Seans topilmadi");
 
@@ -192,7 +192,8 @@ async function terminateMine(user, sessionId, currentJti) {
     );
   }
 
-  if (session.endReason !== "active" || session.expiresAt <= new Date()) {
+  // Harakatsiz seans ham yakunlangan hisoblanadi (`isSessionLive`)
+  if (!securityService.isSessionLive(session)) {
     throw new BadRequestError("Bu seans allaqachon yakunlangan");
   }
 

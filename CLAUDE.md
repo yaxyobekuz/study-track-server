@@ -117,6 +117,17 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
   with the mobile app.
 - Mobile API: `POST /api/push/devices { token, platform }` after every login
   and token refresh, `DELETE /api/push/devices { token }` before logout.
+- ⚠️ `data.type = "ping"` — silent data-only probe (`probeDevices`,
+  `jobs/pushTokenProbe.job.js`, 04:10 and 16:10). The app MUST ignore it
+  silently. The job runs only with `PUSH_TOKEN_PROBE_ENABLED=true` — turn it
+  on after the app version that ignores `ping` is released.
+- A dead token can close a session (`app_removed`): only on
+  `registration-token-not-registered`, only when that `jti` has no push rows
+  left (a refreshed token is not an uninstall) and only when the session sent
+  no request in the last hour (`APP_REMOVED_QUIET_MS`). All of it lives in
+  `dropDeadTokens` — `sendToUsers` and `probeDevices` must not grow their own
+  copy. Sessions idle for 4 days are closed anyway (`idle`,
+  `security.service.js` → `SESSION_IDLE_DAYS`).
 
 ## Logging
 

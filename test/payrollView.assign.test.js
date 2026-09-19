@@ -99,19 +99,18 @@ fakeModule("../src/services/payrollEngine.service", {
 
 const view = require("../src/services/payrollView.service");
 
-test("nomzodlar: shu bo'limdagilar chiqariladi, oyligi belgilanmaganlar tepada", async () => {
+test("nomzodlar: faqat oyligi belgilanmaganlar, ism tartibida", async () => {
   const rows = await view.getAssignCandidates({ query: { departmentId: DEPT_A } });
   const names = rows.map((r) => r.fullName);
 
-  // Ali va Zafar allaqachon Oshxonada — qayta tanlanmaydi.
-  // Avval oyligi yo'qlar (ism tartibida), keyin lavozimi/qoidasi borlar.
-  assert.deepEqual(names, ["Dilnoza", "Gulnora", "Bobur", "Farhod"]);
-  const byName = Object.fromEntries(rows.map((r) => [r.fullName, r]));
-  assert.equal(byName.Bobur.currentLabel, "Qorovul");
-  assert.equal(byName.Bobur.hasSalary, true);
-  assert.equal(byName.Farhod.hasSalary, true);
-  assert.equal(byName.Dilnoza.currentLabel, null);
-  assert.equal(byName.Dilnoza.hasSalary, false);
+  // ⚠️ Biznes qarori (2026-09-17, `getAssignCandidates` izohi): oyligi bor
+  // xodim QAYSI bo'limda bo'lishidan qat'i nazar chiqmaydi — Ali va Zafar
+  // (shu bo'lim lavozimi), Bobur (boshqa bo'lim lavozimi), Farhod (amaldagi
+  // oylik qoidasi). Ilgari ular ro'yxat oxirida `hasSalary` bilan chiqardi.
+  assert.deepEqual(names, ["Dilnoza", "Gulnora"]);
+  for (const hidden of ["Ali", "Zafar", "Bobur", "Farhod"]) {
+    assert.ok(!names.includes(hidden), `${hidden} — oyligi bor, nomzod emas`);
+  }
   // O'qituvchi va o'quvchi staff bo'limga nomzod emas
   assert.ok(!names.includes("Olim") && !names.includes("Sardor"));
 });

@@ -63,6 +63,7 @@ const {
   startChangelogNotificationCron,
 } = require("./src/jobs/changelogNotification.job");
 const { startSecuritySweepCron } = require("./src/jobs/securitySweep.job");
+const { startPushTokenProbeCron } = require("./src/jobs/pushTokenProbe.job");
 const { startScheduleSheetSyncCron } = require("./src/jobs/scheduleSheetSync.job");
 
 // ================================
@@ -223,6 +224,8 @@ const bootstrap = async () => {
   startInventoryCheckReminderCron();
   startChangelogNotificationCron();
   startSecuritySweepCron();
+  // O'chirilgan mobil ilovalar seansini yopish (PUSH_TOKEN_PROBE_ENABLED bilan)
+  startPushTokenProbeCron();
   // Dars jadvali: Google Sheets manbasini avtomatik tekshirish (faqat sheet rejimida)
   startScheduleSheetSyncCron();
 

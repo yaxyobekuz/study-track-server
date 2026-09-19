@@ -86,6 +86,10 @@ const END_REASON_LABELS = {
   revoked: "Majburan tugatildi",
   expired: "Muddati o'tdi",
   superseded: "Filial almashtirildi",
+  // `SESSION_IDLE_DAYS` davomida so'rov kelmadi (kechki supurgi)
+  idle: "Uzoq vaqt kirmagan",
+  // Push tokeni o'ldi — telefondan ilova o'chirilgan
+  app_removed: "Ilova o'chirilgan",
 };
 
 /* ═══════════════════════ YORDAMCHILAR ═══════════════════════ */
@@ -195,7 +199,8 @@ const publicSession = (row, names) => ({
       ? "O'zi yakunladi"
       : (END_REASON_LABELS[row.endReason] ?? row.endReason),
   endedAt: row.endedAt,
-  isLive: row.endReason === "active" && row.expiresAt > new Date(),
+  // ⚠️ `security.service.js` dagi qoida — harakatsiz seans ham tirik EMAS
+  isLive: securityService.isSessionLive(row),
 });
 
 /** Ogohlantirish qatorini mijoz shakliga keltiradi. */
@@ -249,7 +254,6 @@ const publicAlert = (row, names) => ({
 async function getOverview({ days, actor, branch, withDetails = false } = {}) {
   const period = resolvePeriod({ days });
   const scope = branchScope(actor, branch);
-  const now = new Date();
   const today = currentDayDate();
 
   const attemptWhere = {
@@ -271,8 +275,10 @@ async function getOverview({ days, actor, branch, withDetails = false } = {}) {
     firstAttempt,
   ] = await Promise.all([
     // ── Hozir ochiq seanslar ────────────────────────────────────────
+    // ⚠️ `liveStateWhere` — limit va "Qurilmalar" bilan AYNI qoida:
+    // harakatsiz seans kechki supurgigacha ham "ochiq" deb sanalmaydi
     platformPrisma.userSession.findMany({
-      where: { ...scope, endReason: "active", expiresAt: { gt: now } },
+      where: { ...scope, ...securityService.liveStateWhere() },
       orderBy: { lastSeenAt: "desc" },
     }),
 
@@ -640,8 +646,7 @@ async function listSessions({
   if (userId) where.userId = userId;
 
   if (status === "live") {
-    where.endReason = "active";
-    where.expiresAt = { gt: new Date() };
+    Object.assign(where, securityService.liveStateWhere());
   } else if (status === "ended") {
     where.endReason = { not: "active" };
   }
@@ -942,7 +947,6 @@ async function getUserSecurity(userId, { actor, branch, days } = {}) {
   }
 
   const names = await loadNames([userId]);
-  const now = new Date();
 
   return {
     user: profile
@@ -956,7 +960,7 @@ async function getUserSecurity(userId, { actor, branch, days } = {}) {
       : { id: userId, name: names.get(userId)?.name ?? "Noma'lum" },
 
     live: sessions
-      .filter((s) => s.endReason === "active" && s.expiresAt > now)
+      .filter((s) => securityService.isSessionLive(s))
       .map((s) => publicSession(s, names)),
 
     history: sessions.map((s) => publicSession(s, names)),

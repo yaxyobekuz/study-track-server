@@ -155,6 +155,11 @@ const config = {
   // ko'p qatorli `private_key` .env ni buzmaydi. Bo'sh bo'lsa push o'chiq,
   // server normal ishlaydi.
   firebaseServiceAccountBase64: process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 || "",
+  // Ovozsiz "ping" bilan o'chirilgan ilovalarni aniqlash (`pushTokenProbe.job.js`).
+  // ⚠️ Faqat mobil ilovaning `data.type = "ping"` ni jimgina e'tiborsiz
+  // qoldiradigan versiyasi chiqqach `true` qilinadi — undan oldin eski
+  // ilova ping'ni noma'lum xabar sifatida ko'rsatishi mumkin.
+  pushTokenProbeEnabled: process.env.PUSH_TOKEN_PROBE_ENABLED === "true",
 
   // Message queue
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,

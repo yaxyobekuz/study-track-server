@@ -93,6 +93,9 @@ const prisma = {
   payrollAudit: table("audits"),
   staffSalary: table("salaries"),
   $transaction: async (fn) => fn(prisma),
+  // Tyutor guruhlari va oylikni to'xtatish (2026-09-17) — bu testlarda yo'q
+  tutorGroup: { findMany: async () => [] },
+  payrollSuspension: { findMany: async () => [] },
 };
 
 fakeModule("../src/config/prisma", prisma);

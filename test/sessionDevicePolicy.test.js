@@ -23,6 +23,7 @@ function matches(row, where = {}) {
       if ("not" in cond && value === cond.not) return false;
       if ("gt" in cond && !(value > cond.gt)) return false;
       if ("gte" in cond && !(value >= cond.gte)) return false;
+      if ("lt" in cond && !(value < cond.lt)) return false;
       if ("lte" in cond && !(value <= cond.lte)) return false;
       return true;
     }
@@ -30,7 +31,7 @@ function matches(row, where = {}) {
   });
 }
 
-const db = { sessions: [], alerts: [] };
+const db = { sessions: [], alerts: [], devices: [] };
 let seq = 0;
 
 const fakePlatformPrisma = {
@@ -38,6 +39,7 @@ const fakePlatformPrisma = {
     findMany: async ({ where } = {}) =>
       db.sessions.filter((row) => matches(row, where)).map((row) => ({ ...row })),
     findFirst: async ({ where } = {}) => db.sessions.find((row) => matches(row, where)) ?? null,
+    findUnique: async ({ where } = {}) => db.sessions.find((row) => matches(row, where)) ?? null,
     count: async ({ where } = {}) => db.sessions.filter((row) => matches(row, where)).length,
     create: async ({ data }) => {
       const now = new Date(Date.now() + seq++);
@@ -58,11 +60,19 @@ const fakePlatformPrisma = {
       return { count: rows.length };
     },
   },
-  loginAttempt: { count: async () => 0 },
+  loginAttempt: { count: async () => 0, deleteMany: async () => ({ count: 0 }) },
   securityAlert: {
     upsert: async ({ create }) => {
       db.alerts.push(create);
       return create;
+    },
+    updateMany: async () => ({ count: 0 }),
+  },
+  pushDevice: {
+    deleteMany: async ({ where }) => {
+      const before = db.devices.length;
+      db.devices = db.devices.filter((row) => !matches(row, where));
+      return { count: before - db.devices.length };
     },
   },
   branch: { findMany: async () => [] },
@@ -100,6 +110,7 @@ const ANDROID = "Chrome · Android";
 const reset = () => {
   db.sessions = [];
   db.alerts = [];
+  db.devices = [];
 };
 
 let jtiSeq = 0;
@@ -334,4 +345,129 @@ test("clientDeviceId: faqat to'g'ri shakldagi sarlavha qabul qilinadi", () => {
   assert.equal(clientDeviceId(req("abc'; DROP TABLE--xxxxxxxx")), null);
   assert.equal(clientDeviceId({ headers: {} }), null);
   assert.equal(clientInfo(req(PHONE_A)).deviceId, PHONE_A);
+});
+
+/* ───────────────────────── Harakatsiz seans (4 kun) ───────────────────────── */
+
+const DAY = 24 * 3600 * 1000;
+const daysAgo = (days) => new Date(Date.now() - days * DAY);
+
+/** Tayyor seans qatori — `lastSeenAt` qo'lda beriladi. */
+const seed = (id, userId, seenDaysAgo, extra = {}) => {
+  const row = {
+    id,
+    jti: `jti-${id}`,
+    userId,
+    branchId: BRANCH,
+    channel: "teacher",
+    device: ANDROID,
+    deviceId: null,
+    multiDevice: true,
+    endReason: "active",
+    createdAt: daysAgo(seenDaysAgo + 1),
+    lastSeenAt: daysAgo(seenDaysAgo),
+    expiresAt: new Date(Date.now() + 20 * DAY),
+    ...extra,
+  };
+  db.sessions.push(row);
+  return row;
+};
+
+const rowOf = (id) => db.sessions.find((row) => row.id === id);
+
+test("harakatsiz: 5 kun so'rov kelmagan seans `idle` bilan yopiladi, 3 kunligiga tegilmaydi", async () => {
+  reset();
+  seed("old", TEACHER.id, 5);
+  seed("recent", TEACHER.id, 3);
+  // Muddati o'tgani — bu `expireStaleSessions` ishi, `idle` emas
+  seed("expired", TEACHER.id, 10, { expiresAt: daysAgo(1) });
+  // Allaqachon yopilgani qayta yozilmaydi
+  seed("closed", TEACHER.id, 9, { endReason: "logout" });
+
+  const result = await security.closeIdleSessions();
+
+  assert.equal(result.count, 1);
+  assert.deepEqual(result.jtis, ["jti-old"]);
+  assert.equal(rowOf("old").endReason, "idle");
+  assert.ok(rowOf("old").endedAt instanceof Date);
+  assert.equal(rowOf("recent").endReason, "active");
+  assert.equal(rowOf("expired").endReason, "active");
+  assert.equal(rowOf("closed").endReason, "logout");
+});
+
+test("harakatsiz: 5 kunlik seans bilan so'rov — 401 (false) va `lastSeenAt` yangilanmaydi", async () => {
+  reset();
+  const stale = seed("stale", TEACHER.id, 5);
+  const staleSeen = stale.lastSeenAt;
+
+  assert.equal(await security.touchSession(stale.jti), false);
+  assert.equal(rowOf("stale").lastSeenAt, staleSeen, "seans jimgina tirilmasligi kerak");
+
+  // Oyna ham to'lmaydi — ikkinchi so'rov ham rad etiladi
+  assert.equal(await security.touchSession(stale.jti), false);
+
+  const fresh = seed("fresh", TEACHER.id, 3);
+  assert.equal(await security.touchSession(fresh.jti), true);
+  assert.ok(rowOf("fresh").lastSeenAt > daysAgo(0.01), "tirik seans ko'rindi deb yoziladi");
+
+  // Qatori yo'q eski token avvalgidek o'tadi
+  assert.equal(await security.touchSession("jti-unknown-legacy"), true);
+});
+
+test("harakatsiz: limitda — 4 tadan bittasi 5 kun harakatsiz bo'lsa yangi login o'tadi", async () => {
+  reset();
+  seed("a", TEACHER.id, 0.1, { deviceId: PHONE_A });
+  seed("b", TEACHER.id, 0.1, { deviceId: PHONE_B });
+  seed("c", TEACHER.id, 0.1, { deviceId: PHONE_C });
+  seed("d", TEACHER.id, 5, { deviceId: PHONE_D });
+
+  const admitted = await admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_E });
+
+  assert.equal(admitted.previous.length, 3, "harakatsiz seans limitga kirmaydi");
+  assert.ok(admitted.session.lastSeenAt instanceof Date, "yangi seans darhol 'ko'rindi'");
+
+  const mine = await security.liveSessions(TEACHER.id);
+  assert.equal(mine.length, 4);
+  assert.ok(!mine.some((row) => row.id === "d"), "Qurilmalar ro'yxatida ham ko'rinmaydi");
+});
+
+test("harakatsiz: 4 ta TIRIK seans bo'lsa limit avvalgidek ishlaydi", async () => {
+  reset();
+  for (const [id, deviceId] of [["a", PHONE_A], ["b", PHONE_B], ["c", PHONE_C], ["d", PHONE_D]]) {
+    seed(id, TEACHER.id, 3.9, { deviceId });
+  }
+
+  await assert.rejects(
+    () => admit(TEACHER, { channel: "teacher", device: ANDROID, deviceId: PHONE_E }),
+    security.SessionLimitError,
+  );
+});
+
+test("isSessionLive: yopilgan, muddati o'tgan va harakatsiz — tirik emas", () => {
+  const live = { endReason: "active", expiresAt: new Date(Date.now() + DAY), lastSeenAt: new Date() };
+
+  assert.equal(security.isSessionLive(live), true);
+  assert.equal(security.isSessionLive({ ...live, endReason: "idle" }), false);
+  assert.equal(security.isSessionLive({ ...live, expiresAt: daysAgo(1) }), false);
+  assert.equal(security.isSessionLive({ ...live, lastSeenAt: daysAgo(4.01) }), false);
+  assert.equal(security.isSessionLive({ ...live, lastSeenAt: undefined }), false);
+  assert.equal(security.isSessionLive(null), false);
+});
+
+test("supurgi: harakatsiz seans yopiladi va uning push qurilmasi o'chiriladi", async () => {
+  reset();
+  seed("gone", TEACHER.id, 6);
+  seed("here", TEACHER.id, 1);
+  db.devices = [
+    { token: "t-gone", jti: "jti-gone" },
+    { token: "t-here", jti: "jti-here" },
+  ];
+
+  const { runSecuritySweep } = require("../src/jobs/securitySweep.job");
+  const result = await runSecuritySweep();
+
+  assert.equal(result.idle, 1);
+  assert.equal(rowOf("gone").endReason, "idle");
+  assert.equal(rowOf("here").endReason, "active");
+  assert.deepEqual(db.devices.map((row) => row.token), ["t-here"]);
 });

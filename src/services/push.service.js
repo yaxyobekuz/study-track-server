@@ -5,6 +5,14 @@
  *   1. Qurilma reyestri — mobil ilova login qilgach FCM tokenini yozadi,
  *      chiqishda o'chiradi (`push_devices`, platformada).
  *   2. Yuborish — `sendToUsers(userIds, message)`.
+ *   3. Tekshiruv — `probeDevices()`: ovozsiz "ping" (`pushTokenProbe.job.js`).
+ *
+ * ⚠️ O'LIK TOKEN SEANSNI HAM YOPISHI MUMKIN (2026-09-19). Ilova telefondan
+ * o'chirilsa logout chaqirilmaydi — serverga yetadigan yagona signal
+ * Firebase'ning `registration-token-not-registered` javobi. Qaror bitta
+ * joyda (`dropDeadTokens`): `sendToUsers` ham, `probeDevices` ham shuni
+ * chaqiradi — ikki nusxa bo'lsa "token shunchaki yangilangan" sharti
+ * bittasida unutilib, ishlab turgan odam tizimdan chiqib ketardi.
  *
  * ⚠️ PUSH HECH QACHON ASOSIY AMALNI YIQITMAYDI. Topshiriq bazaga yozilgan,
  * Firebase esa tashqi xizmat: u ishlamay qolsa foydalanuvchi "topshiriq
@@ -21,6 +29,10 @@ const { getMessaging } = require("firebase-admin/messaging");
 const platformPrisma = require("../config/platformPrisma");
 const { config } = require("../config/env.config");
 const logger = require("../utils/logger");
+// ⚠️ Bir tomonlama: `security.service` bu faylni import QILMAYDI (aylanma
+// `require` bo'lardi) — shu sababli harakatsiz seanslarning qurilmalarini
+// supurgi o'zi o'chiradi (`securitySweep.job.js`).
+const securityService = require("./security.service");
 
 const APP_NAME = "study-track-push";
 const PLATFORMS = ["android", "ios"];
@@ -29,10 +41,33 @@ const FCM_BATCH_SIZE = 500;
 // Bu kodlar tokenning O'ZI yaroqsizligini bildiradi (ilova o'chirilgan,
 // token yangilangan) — bunday qatorni saqlashdan foyda yo'q. Tarmoq yoki
 // kvota xatolarida esa token o'chirilmaydi.
+const APP_REMOVED_CODE = "messaging/registration-token-not-registered";
 const DEAD_TOKEN_CODES = new Set([
-  "messaging/registration-token-not-registered",
+  APP_REMOVED_CODE,
+  // ⚠️ Token MATNI buzuq — ilova o'chirilganini BILDIRMAYDI: qator
+  // o'chiriladi, lekin seans yopilmaydi.
   "messaging/invalid-registration-token",
 ]);
+
+/**
+ * OVOZSIZ TEKSHIRUV XABARI — faqat `data`, `notification` bloki YO'Q,
+ * ya'ni foydalanuvchi hech narsa ko'rmaydi.
+ *
+ * ⚠️ `data.type = "ping"` — mobil ilova bilan SHARTNOMA: ilova uni jimgina
+ * e'tiborsiz qoldiradi. Shuning uchun tekshiruv jobi faqat shunday ilova
+ * versiyasi chiqqach yoqiladi (`PUSH_TOKEN_PROBE_ENABLED`).
+ *
+ * ⚠️ `dryRun` EMAS: u xabarni telefonga yetkazmaydi, Firebase esa ilova
+ * o'chirilganini aynan YETKAZIB BO'LMAGAN xabardan keyin biladi.
+ */
+const PING_MESSAGE = Object.freeze({
+  data: { type: "ping" },
+  android: { priority: "normal" },
+  apns: {
+    headers: { "apns-push-type": "background", "apns-priority": "5" },
+    payload: { aps: { contentAvailable: true } },
+  },
+});
 
 // undefined — hali urinilmagan, null — o'chiq (kalit yo'q yoki yaroqsiz)
 let messaging;
@@ -123,6 +158,35 @@ async function forgetSession(jti) {
 }
 
 /**
+ * Bir nechta seansning qurilmalarini BIRDAN o'chiradi — kechki supurgi
+ * (`securitySweep.job.js`) harakatsiz seanslar uchun chaqiradi.
+ *
+ * ⚠️ `forgetSession` ni `Promise.all` bilan ming marta chaqirish EMAS:
+ * birinchi supurgida 30 kunlik yig'ilgan seanslar bir yo'la yopiladi va
+ * har biriga alohida so'rov ulanishlar hovuzini to'ldirardi.
+ *
+ * @param {string[]} jtis
+ * @returns {Promise<{ removed: number }>} - xato tashlamaydi
+ */
+async function forgetSessions(jtis) {
+  const list = [...new Set((jtis || []).filter(Boolean))];
+  let removed = 0;
+
+  for (let i = 0; i < list.length; i += 1000) {
+    try {
+      const { count } = await platformPrisma.pushDevice.deleteMany({
+        where: { jti: { in: list.slice(i, i + 1000) } },
+      });
+      removed += count;
+    } catch (error) {
+      logger.warn(`[push] seanslar qurilmalari o'chirilmadi: ${error.message}`);
+    }
+  }
+
+  return { removed };
+}
+
+/**
  * Filial almashtirilganda qurilmani yangi seansga ko'chiradi.
  * ⚠️ Kutilmaydi va xato tashlamaydi — filial almashtirish push tufayli
  * yiqilmasligi kerak.
@@ -139,9 +203,10 @@ function moveSession(oldJti, { jti, branchId }) {
 /**
  * Seansi TIRIK qurilmalarni qoldiradi.
  *
- * ⚠️ `auth.middleware` bilan bir xil qoida: `jti` siz qator yoki
- * `user_sessions` da topilmagan `jti` o'tadi (eski token), yopilgan yoki
- * muddati o'tgan seans o'tmaydi.
+ * ⚠️ `auth.middleware` bilan bir xil qoida (`isSessionLive`): `jti` siz
+ * qator yoki `user_sessions` da topilmagan `jti` o'tadi (eski token),
+ * yopilgan, muddati o'tgan yoki harakatsiz (`SESSION_IDLE_DAYS`) seans
+ * o'tmaydi — u seans bilan kelgan so'rov baribir 401 oladi.
  */
 async function filterLiveDevices(devices) {
   const jtis = [...new Set(devices.map((d) => d.jti).filter(Boolean))];
@@ -149,13 +214,10 @@ async function filterLiveDevices(devices) {
 
   const sessions = await platformPrisma.userSession.findMany({
     where: { jti: { in: jtis } },
-    select: { jti: true, endReason: true, expiresAt: true },
+    select: { jti: true, endReason: true, expiresAt: true, lastSeenAt: true },
   });
-  const now = new Date();
   const dead = new Set(
-    sessions
-      .filter((s) => s.endReason !== "active" || s.expiresAt <= now)
-      .map((s) => s.jti),
+    sessions.filter((s) => !securityService.isSessionLive(s)).map((s) => s.jti),
   );
 
   return devices.filter((d) => !d.jti || !dead.has(d.jti));
@@ -176,14 +238,130 @@ function stringifyData(data = {}) {
 }
 
 /**
+ * Tokenlarga 500 talik partiyalar bilan yuboradi va javoblarni saralaydi.
+ *
+ * ⚠️ Partiya xatosi (tarmoq, kvota) qolgan partiyalarni to'xtatadi, lekin
+ * shu paytgacha yig'ilgan o'lik tokenlar YO'QOLMAYDI — chaqiruvchi ularni
+ * baribir `dropDeadTokens` ga beradi.
+ *
+ * @param {import("firebase-admin/messaging").Messaging} client
+ * @param {string[]} tokens
+ * @param {object} message - `tokens` siz multicast xabari
+ * @returns {Promise<{ sent: number, failed: number, dead: string[], gone: string[] }>}
+ *   `dead` — o'chiriladigan tokenlar; `gone` — ulardan "ilova o'chirilgan"lari
+ */
+async function sendInBatches(client, tokens, message) {
+  const outcome = { sent: 0, failed: 0, dead: [], gone: [] };
+
+  try {
+    for (let i = 0; i < tokens.length; i += FCM_BATCH_SIZE) {
+      const batch = tokens.slice(i, i + FCM_BATCH_SIZE);
+      // ⚠️ Har partiyaga YANGI nusxa: firebase-admin xabarni tekshirayotib
+      // ichki obyektlarni joyida o'zgartiradi (`contentAvailable` →
+      // `content-available`), keyingi partiya buzilgan xabar olmasin.
+      const response = await client.sendEachForMulticast({
+        ...structuredClone(message),
+        tokens: batch,
+      });
+
+      outcome.sent += response.successCount;
+      outcome.failed += response.failureCount;
+
+      response.responses.forEach((r, idx) => {
+        if (r.success) return;
+        const code = r.error?.code;
+        if (DEAD_TOKEN_CODES.has(code)) {
+          outcome.dead.push(batch[idx]);
+          if (code === APP_REMOVED_CODE) outcome.gone.push(batch[idx]);
+        } else {
+          logger.warn(`[push] yuborilmadi (${code || "noma'lum"}): ${r.error?.message}`);
+        }
+      });
+    }
+  } catch (error) {
+    logger.error(`[push] yuborishda xato: ${error.message}`);
+  }
+
+  return outcome;
+}
+
+/**
+ * O'LIK TOKENLARNI O'CHIRADI va ilovasi o'chirilgan seanslarni yopadi —
+ * `sendToUsers` va `probeDevices` uchun YAGONA yo'l.
+ *
+ * Seans (`app_removed`) faqat uchala shart birga bo'lsa yopiladi:
+ *   1. Firebase aynan `registration-token-not-registered` qaytargan
+ *      (`invalid-registration-token` — buzuq matn, ilova tirik bo'lishi mumkin);
+ *   2. o'lik tokenlar o'chirilgach shu `jti` ga BITTA HAM qator qolmagan —
+ *      aks holda FCM tokenni shunchaki YANGILAGAN va ilova yangisini
+ *      yozib qo'ygan: ishlab turgan odam tizimdan chiqib ketardi;
+ *   3. seans oxirgi soatda so'rov yubormagan
+ *      (`security.service.js` → `APP_REMOVED_QUIET_MS`).
+ *
+ * ⚠️ `jti` lar O'CHIRISHDAN OLDIN o'qiladi — keyin qator yo'q bo'ladi.
+ * ⚠️ Faqat qatordagi `jti` ning seansi yopiladi: tokenni boshqa seansga
+ * ko'chirib (`registerDevice`), birovning seansini yopdirib bo'lmaydi.
+ *
+ * @param {{ dead: string[], gone: string[] }} outcome - `sendInBatches` natijasi
+ * @returns {Promise<{ removed: number, closed: number }>} - xato tashlamaydi
+ */
+async function dropDeadTokens({ dead, gone }) {
+  const result = { removed: 0, closed: 0 };
+  if (!dead?.length) return result;
+
+  try {
+    const owners = gone?.length
+      ? await platformPrisma.pushDevice.findMany({
+          where: { token: { in: gone }, jti: { not: null } },
+          select: { jti: true },
+        })
+      : [];
+
+    const { count } = await platformPrisma.pushDevice.deleteMany({
+      where: { token: { in: dead } },
+    });
+    result.removed = count;
+
+    result.closed = await closeOrphanedSessions([...new Set(owners.map((d) => d.jti))]);
+  } catch (error) {
+    logger.error(`[push] o'lik tokenlar tozalanmadi: ${error.message}`);
+  }
+
+  return result;
+}
+
+/**
+ * Bitta ham tirik tokeni qolmagan seanslarni `app_removed` bilan yopadi.
+ *
+ * @param {string[]} jtis
+ * @returns {Promise<number>} - nechta seans yopildi
+ */
+async function closeOrphanedSessions(jtis) {
+  let closed = 0;
+
+  for (const jti of jtis) {
+    try {
+      const left = await platformPrisma.pushDevice.count({ where: { jti } });
+      if (left > 0) continue; // token shunchaki yangilangan — seans tirik
+      closed += await securityService.closeAppRemovedSession(jti);
+    } catch (error) {
+      logger.warn(`[push] ilovasi o'chirilgan seans yopilmadi: ${error.message}`);
+    }
+  }
+
+  if (closed > 0) logger.info(`[push] ${closed} ta seans yopildi — ilova o'chirilgan`);
+  return closed;
+}
+
+/**
  * Foydalanuvchilarning barcha tirik qurilmalariga push yuboradi.
  *
  * @param {string[]} userIds
  * @param {{ title: string, body: string, data?: object, channelId?: string }} message
- * @returns {Promise<{ sent: number, failed: number, removed: number, skipped?: string }>}
+ * @returns {Promise<{ sent: number, failed: number, removed: number, closed: number, skipped?: string }>}
  */
 async function sendToUsers(userIds, { title, body, data, channelId }) {
-  const result = { sent: 0, failed: 0, removed: 0 };
+  const result = { sent: 0, failed: 0, removed: 0, closed: 0 };
 
   try {
     const client = getClient();
@@ -200,13 +378,10 @@ async function sendToUsers(userIds, { title, body, data, channelId }) {
     );
     if (devices.length === 0) return { ...result, skipped: "no_devices" };
 
-    const tokens = devices.map((d) => d.token);
-    const deadTokens = [];
-
-    for (let i = 0; i < tokens.length; i += FCM_BATCH_SIZE) {
-      const batch = tokens.slice(i, i + FCM_BATCH_SIZE);
-      const response = await client.sendEachForMulticast({
-        tokens: batch,
+    const outcome = await sendInBatches(
+      client,
+      devices.map((d) => d.token),
+      {
         notification: { title, body },
         data: stringifyData(data),
         android: {
@@ -214,27 +389,59 @@ async function sendToUsers(userIds, { title, body, data, channelId }) {
           notification: { sound: "default", ...(channelId ? { channelId } : {}) },
         },
         apns: { payload: { aps: { sound: "default" } } },
-      });
+      },
+    );
 
-      result.sent += response.successCount;
-      result.failed += response.failureCount;
-
-      response.responses.forEach((r, idx) => {
-        if (r.success) return;
-        const code = r.error?.code;
-        if (DEAD_TOKEN_CODES.has(code)) deadTokens.push(batch[idx]);
-        else logger.warn(`[push] yuborilmadi (${code || "noma'lum"}): ${r.error?.message}`);
-      });
-    }
-
-    if (deadTokens.length > 0) {
-      const { count } = await platformPrisma.pushDevice.deleteMany({
-        where: { token: { in: deadTokens } },
-      });
-      result.removed = count;
-    }
+    result.sent = outcome.sent;
+    result.failed = outcome.failed;
+    Object.assign(result, await dropDeadTokens(outcome));
   } catch (error) {
     logger.error(`[push] yuborishda xato: ${error.message}`);
+  }
+
+  return result;
+}
+
+/**
+ * TIRIK SEANSLI BARCHA QURILMALARGA OVOZSIZ "PING" — ilova o'chirilgan
+ * telefonlarni aniqlash uchun (`pushTokenProbe.job.js`).
+ *
+ * ⚠️ NIMA UCHUN KERAK: o'lik token faqat XABAR YUBORILGANDA ma'lum
+ * bo'ladi. Bir hafta topshiriq olmagan odamning o'chirilgan ilovasi
+ * sezilmay qolardi.
+ *
+ * ⚠️ Kechikish: Android'da o'chirilgandan keyingi BIRINCHI xabar ko'pincha
+ * "yetkazildi" bo'lib qaytadi, `not-registered` ikkinchisida keladi; iOS
+ * da APNs buni soatlab-kunlab kechiktiradi. Ya'ni bu TEZLATGICH — asosiy
+ * kafolat `SESSION_IDLE_DAYS`.
+ *
+ * @returns {Promise<{ probed: number, sent: number, failed: number, removed: number, closed: number, skipped?: string }>}
+ *   xato tashlamaydi
+ */
+async function probeDevices() {
+  const result = { probed: 0, sent: 0, failed: 0, removed: 0, closed: 0 };
+
+  try {
+    const client = getClient();
+    if (!client) return { ...result, skipped: "disabled" };
+
+    const devices = await filterLiveDevices(
+      await platformPrisma.pushDevice.findMany({ select: { token: true, jti: true } }),
+    );
+    if (devices.length === 0) return { ...result, skipped: "no_devices" };
+
+    result.probed = devices.length;
+    const outcome = await sendInBatches(
+      client,
+      devices.map((d) => d.token),
+      PING_MESSAGE,
+    );
+
+    result.sent = outcome.sent;
+    result.failed = outcome.failed;
+    Object.assign(result, await dropDeadTokens(outcome));
+  } catch (error) {
+    logger.error(`[push] tekshiruvda xato: ${error.message}`);
   }
 
   return result;
@@ -246,8 +453,11 @@ module.exports = {
   registerDevice,
   unregisterDevice,
   forgetSession,
+  forgetSessions,
   moveSession,
   sendToUsers,
+  probeDevices,
+  PING_MESSAGE,
   // test uchun
   _filterLiveDevices: filterLiveDevices,
   _stringifyData: stringifyData,
