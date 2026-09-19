@@ -1063,12 +1063,15 @@ const getDebtors = async (req) => {
 
   const ids = pageRows.map((row) => row.studentId);
 
-  // Ro'yxatda ko'rsatilmaydigan hech narsa o'qilmaydi: sinf JOIN'i ham,
-  // depozit qoldig'i ham olib tashlangan. Sinf bo'yicha FILTR esa yuqorida,
-  // alohida so'rovda ishlaydi.
+  // Ro'yxatda ko'rsatilmaydigan hech narsa o'qilmaydi (depozit qoldig'i
+  // olib tashlangan). Sinf faqat SHU SAHIFA o'quvchilari uchun o'qiladi —
+  // ustunda ko'rsatiladi; sinf bo'yicha FILTR esa yuqorida, alohida so'rovda.
   const students = await prisma.user.findMany({
     where: { id: { in: ids } },
-    select: STUDENT_SELECT,
+    select: {
+      ...STUDENT_SELECT,
+      classes: { select: { class: { select: { name: true } } } },
+    },
   });
 
   const studentMap = new Map(students.map((s) => [s.id, s]));
@@ -1083,6 +1086,13 @@ const getDebtors = async (req) => {
         ? `${student.firstName} ${student.lastName ?? ""}`.trim()
         : "Noma'lum",
       isArchived: student?.isArchived ?? false,
+      // Joriy sinf (`UserClass` sanasiz). Arxivlanganda o'quvchi sinflardan
+      // chiqariladi — unda null bo'ladi.
+      className:
+        student?.classes
+          ?.map((c) => c.class?.name)
+          .filter(Boolean)
+          .join(", ") || null,
       debt: formatAmount(row.debt),
       unpaidCount: row.unpaidCount,
       oldestMonth: row.oldestMonth,
