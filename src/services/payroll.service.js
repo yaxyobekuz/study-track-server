@@ -4,17 +4,24 @@
  * Qoida (`StaffSalary`) → har oy MAJBURIYAT (`PayrollEntry`) → to'lov uni
  * yopadi. Shu tufayli "kimga qancha qarzdormiz" degan savolga javob bor.
  *
- * ⚠️ QAYTARILMASLIK: shakllantirish va avtomat passlar mavjud qatorning
- * lavozim maoshi va dars soatiga TEGMAYDI. Yagona istisno — admin ongli
- * ravishda bosadigan "Qayta hisoblash" (`payrollRecalc.service.js`), sabab va
- * audit bilan. Yagona olib tashlash yo'li — `cancelled` holati, sababi bilan;
- * to'lov tushgan majburiyat esa umuman bekor qilinmaydi.
+ * ⚠️ VEDOMOST BILAN BIR XIL: TO'LOV TUSHMAGAN (`paidAmount = 0`) majburiyat
+ * shakllantirish va avtomat passlarda joriy hisobga (dars soati, qoida,
+ * ustama, ushlab qolish) MOSLAB QAYTA MUHRLANADI — vedomostdagi ("Oy oxirida")
+ * summa bilan aynan bir xil bo'lishi uchun (`generateForMonth`: `refreshes`).
+ * Ilgari HAMMA amaldagi majburiyat muhrlangan edi va qoida o'zgarsa eskirib
+ * qolardi (vedomost 12 mln, majburiyat 6.6 mln).
+ * TO'LOV TUSHGAN (`paidAmount > 0`) majburiyat esa MUHRLANGAN — unga taqsimot
+ * bog'langan, avtomat tegilmaydi. Uni ongli qayta hisoblash — admin bosadigan
+ * "Qayta hisoblash" (`payrollRecalc.service.js`), sabab va audit bilan. Yagona
+ * olib tashlash yo'li — `cancelled` holati, sababi bilan.
  *
  * ⚠️ BEKOR QILINGAN MAJBURIYAT SHAKLLANTIRISHNI TO'SMAYDI (`finance.md` §10).
  * U bo'sh o'rin: shakllantirish uni O'SHA QATORNING O'ZIDA qayta hisoblab
- * tiklaydi (`restored`). Aks holda xato muhrlangan oylikni tuzatishning
- * hujjatdagi yagona yo'li — "bekor qilish → qayta shakllantirish" — ishlamasdi:
- * bir marta bekor qilingan oy o'sha xodimga hech qachon qaytmasdi.
+ * tiklaydi (`restored`).
+ *
+ * ⚠️ SOATBAY OYLIK HAM OCHIQ OYDA SHAKLLANTIRILADI: soat vedomost bilan bir
+ * manbadan (oy to'liq, projeksiya). Ilgari oy yopilguncha kechiktirilardi va
+ * o'qituvchilar majburiyatlar ro'yxatida ko'rinmasdi.
  *
  * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida.
  */
@@ -119,18 +126,19 @@ const emptySummary = (month, reason) => ({
   created: 0,
   // Bekordan tiklangani — yangi qator emas, lekin registrda qayta paydo bo'ladi
   restored: 0,
+  // To'lanmagan qatorning summasi joriy hisobga (vedomost) moslab qayta yozildi
+  updated: 0,
+  // To'lanmagan qatorda bu oy oyligi qolmadi — bekor qilindi
+  cancelledStale: 0,
   // Mavjud qatorda tyutor/ushlab qolish qismi yangilangani va to'lov
   // tufayli yangilab bo'lmagani
   resynced: 0,
   resyncLocked: 0,
-  // Ochiq oyda eski qoida bilan muhrlangan soatbay oylik — bekor qilindi
-  unsealedOpenMonth: 0,
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
   deductionTotal: "0.00",
   // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
-  // monthOpen  — soatbay qismi bor, oy hali yopilmagan (pastdagi izoh)
   skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0, monthOpen: 0 },
   durationMs: 0,
 });
@@ -141,8 +149,9 @@ const emptySummary = (month, reason) => ({
  * IDEMPOTENT: `@@unique([staffId, month])` va oldindan tekshiruv tufayli
  * ikki marta chaqirish ikkinchi qator yaratmaydi.
  *
- * ⚠️ Bekor qilingan majburiyat (`paidAmount = 0`) TIKLANADI — fayl
- * sarlavhasiga qarang. Amaldagisi (unpaid/partial/paid) tegilmaydi.
+ * ⚠️ To'lov tushmagan majburiyat (`paidAmount = 0`) joriy hisobga MOSLAB
+ * qayta muhrlanadi (`refreshes`) yoki bekordan tiklanadi (`restores`); to'lov
+ * tushgani (`paidAmount > 0`) tegilmaydi. Fayl sarlavhasiga qarang.
  *
  * @param {number|string} monthInput
  * @param {object} options - { dryRun, staffIds, actorId }
@@ -202,58 +211,34 @@ const generateForMonth = async (monthInput, options = {}) => {
     return summary;
   }
 
-  // 1b ── OCHIQ OYDA MUHRLANGAN SOATBAY OYLIK (eski qoida). Soatbay qism oy
-  // yopilgandan keyin FAKTDAN muhrlanadi (pastdagi `monthOpen`); undan oldin
-  // yozilgan qatorda o'tilmagan va hali o'tilmagan darslar ham pulga aylangan —
-  // vedomost bir summa, o'qituvchi profili va moliya boshqa summa ko'rsatardi.
-  // Bunday TO'LANMAGAN qator bekor qilinadi: soatbay xodimga oy yopilgach
-  // faktdan qayta yoziladi, soatbaydan fiksaga o'tgan xodimga esa shu passda
-  // darhol (pastdagi tiklash). To'lov tushganiga TEGILMAYDI.
-  if (!dryRun && month >= currentMonthKey()) {
-    const unsealed = await prisma.payrollEntry.updateMany({
-      where: {
-        month,
-        staffId: { in: staff.map((s) => s.id) },
-        status: { in: ["unpaid", "paid"] },
-        paidAmount: 0,
-        perHourRate: { gt: 0 },
-      },
-      data: {
-        status: "cancelled",
-        cancelReason:
-          "Ochiq oyda dars soati bo'yicha muhrlangan edi — oy yopilgach o'tilgan darslar bo'yicha qayta hisoblanadi",
-        cancelledAt: new Date(),
-        cancelledBy: actorId ?? SYSTEM_ACTOR_ID,
-      },
-    });
-    summary.unsealedOpenMonth = unsealed.count;
-    if (unsealed.count > 0) {
-      logger.warn(
-        `[payroll] ${formatMonthKey(month)}: ochiq oyda muhrlangan ${unsealed.count} ta soatbay ` +
-          `oylik bekor qilindi (oy yopilgach faktdan yoziladi)`,
-      );
-    }
-  }
-
   // 2 ── Allaqachon shakllantirilganlari
   //
-  // ⚠️ IKKI XIL "mavjud" bor va ular BOSHQACHA ishlanadi:
-  //   amaldagi (unpaid/partial/paid) → TEGILMAYDI, summa muhrlangan;
-  //   bekor qilingani                → TIKLANADI (`restorable`).
-  // `paidAmount` himoya qavati: `cancelEntry` to'lov tushganini bekor
-  // qilmaydi, lekin pul tushgan qatorning summasini qayta yozish taqsimotni
-  // yolg'onga aylantirardi.
+  // ⚠️ UCH XIL "mavjud" bor va ular BOSHQACHA ishlanadi (`paidAmount` — hakam):
+  //   to'lov tushgan (paidAmount > 0)        → QULFLANGAN, tegilmaydi (muhr);
+  //   to'lanmagan (unpaid/0-so'm, paid = 0)  → QAYTA MUHRLANADI (`refreshable`)
+  //                                            — vedomost bilan bir xil bo'lsin;
+  //   bekor qilingani (paid = 0)             → TIKLANADI (`restorable`).
+  //
+  // ⚠️ VEDOMOST BILAN BIR XIL: to'lov tushmagan majburiyatning summasi HAR
+  // shakllantirishda joriy hisobga (dars soati/qoida/ustama/ushlab qolish)
+  // moslab qayta yoziladi — ilgari u BIR MARTA muhrlanib, qoida o'zgarsa
+  // eskirib qolardi (vedomost 12 mln, majburiyat 6.6 mln). To'lov tushgan
+  // qatorga TEGILMAYDI: unga allaqachon taqsimot bog'langan (`finance.md` §10).
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
-    select: { id: true, staffId: true, status: true, paidAmount: true },
+    select: { id: true, staffId: true, status: true, paidAmount: true, amount: true },
   });
   const restorable = new Map();
-  const existingIds = new Set();
+  const refreshable = new Map();
+  const lockedIds = new Set();
   for (const row of existing) {
-    if (row.status === "cancelled" && !new Decimal(row.paidAmount).greaterThan(0)) {
+    const paid = new Decimal(row.paidAmount).greaterThan(0);
+    if (paid) {
+      lockedIds.add(row.staffId); // to'lov tushgan — muhr o'zgarmaydi
+    } else if (row.status === "cancelled") {
       restorable.set(row.staffId, row);
     } else {
-      existingIds.add(row.staffId);
+      refreshable.set(row.staffId, row); // unpaid yoki 0-so'm "paid", pul tushmagan
     }
   }
 
@@ -262,41 +247,46 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   // 4 ── Qatorlarni yig'ish (engine bilan hisoblab, MUHRLAB)
   //
-  // Ikki savat: YANGI qatorlar (`createMany`) va TIKLANADIGANLARI (mavjud
-  // qatorni JOYIDA yangilash). Summa va snapshot ikkalasiga AYNI shaklda.
+  // ⚠️ SOATBAY OYLIK HAM SHAKLLANTIRILADI (ochiq oyda ham). Soat vedomost
+  // bilan bir MANBADAN (`payrollEngine` + `lessonHours`) — oy to'liq
+  // (projeksiya, "Oy oxirida") kesimida. Ilgari soatbay qism oy yopilguncha
+  // KECHIKTIRILARDI, natijada o'qituvchilar majburiyatlar ro'yxatida umuman
+  // ko'rinmasdi. Endi ular ham ko'rinadi va summa vedomostdagi bilan bir xil;
+  // to'lanmagani har shakllantirishda joriy holatga moslanadi (`refreshes`).
+  //
+  // To'rt savat: YANGI (`createMany`), TIKLASH (bekordan), QAYTA MUHRLASH
+  // (to'lanmagan, summa eskirgan) va NOL-GA CHIQARISH (to'lanmagan, bu oy
+  // oyligi qolmadi → bekor).
   const rows = [];
   const restores = [];
+  const refreshes = [];
+  const zeroedOut = [];
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
   let kpiTotal = new Decimal(0);
   let deductionTotal = new Decimal(0);
 
   for (const person of staff) {
-    if (existingIds.has(person.id)) {
+    if (lockedIds.has(person.id)) {
+      // To'lov tushgan — muhr o'zgarmaydi (taqsimot bog'langan)
       summary.skipped.alreadyExists += 1;
       continue;
     }
 
+    const existingRefresh = refreshable.get(person.id);
+    const existingRestore = restorable.get(person.id);
+
     const c = payrollEngine.computeForStaff(person, month, ctx);
-    if (!c) {
-      summary.skipped.noSalary += 1;
-      continue;
-    }
-    // ⚠️ SOATBAY QISM OY YOPILGANDAN KEYIN MUHRLANADI (`finance.md` §10).
-    // Soat endi FAKTDAN (baho + davomat) hisoblanadi, fakt esa faqat o'tgan
-    // kunlar uchun bor: oy o'rtasida muhrlansa, hali o'tilmagan darslar ham
-    // pulga aylanib qolardi. Oy yopilgach cron (`catchUpMonths`) yoki
-    // qo'lda shakllantirish uni yozadi. Faqat fiksa xodimga tegilmaydi.
-    if (month >= currentMonthKey() && c.perHourRate.greaterThan(0)) {
-      summary.skipped.monthOpen += 1;
-      continue;
-    }
-    // ⚠️ YALPI tekshiriladi, sof emas: oylik bor-u ushlab qolish yoki
-    // to'xtatish uni to'liq yopgan xodimga ham qator yoziladi (0 so'm) — aks
-    // holda "shu oy oyligi to'xtatildi / ushlab qolindi" degan fakt registrdan
-    // yo'qolardi, to'xtatish bekor qilinsa esa qator shu yerda tiklanadi.
-    if (c.grossAmount.lessThanOrEqualTo(0)) {
-      summary.skipped.zeroAmount += 1;
+
+    // Bu oy oyligi yo'qmi? Biriktirma yo'q (`!c`) yoki YALPI 0 (masalan
+    // shu oy darsi bo'lmagan KPI o'qituvchi). To'lanmagan mavjud qator bo'lsa
+    // — endi bu oy oyligi qolmadi, bekor qilinadi (vedomost ham 0 ko'rsatadi).
+    if (!c || c.grossAmount.lessThanOrEqualTo(0)) {
+      if (existingRefresh) {
+        zeroedOut.push(existingRefresh.id);
+      } else {
+        summary.skipped[!c ? "noSalary" : "zeroAmount"] += 1;
+      }
       continue;
     }
 
@@ -331,15 +321,22 @@ const generateForMonth = async (monthInput, options = {}) => {
       },
     };
 
-    const cancelled = restorable.get(person.id);
-    if (cancelled) {
+    if (existingRestore) {
       // ⚠️ TIKLASH — bekor qilish izi TOZALANADI: qator endi amaldagi
       // majburiyat. `createdBy` tegilmaydi — qatorni birinchi kim
       // shakllantirgani haqidagi fakt.
       restores.push({
-        id: cancelled.id,
+        id: existingRestore.id,
         data: { ...facts, paidAt: null, cancelReason: "", cancelledAt: null, cancelledBy: null },
       });
+    } else if (existingRefresh) {
+      // QAYTA MUHRLASH — faqat summa haqiqatan o'zgargan bo'lsa (keraksiz
+      // yozuvni oldini oladi). To'lov tushmagani uchun taqsimot buzilmaydi.
+      if (!new Decimal(existingRefresh.amount).equals(c.amount)) {
+        refreshes.push({ id: existingRefresh.id, data: facts });
+      } else {
+        summary.skipped.alreadyExists += 1;
+      }
     } else {
       rows.push({
         staffId: person.id,
@@ -353,6 +350,8 @@ const generateForMonth = async (monthInput, options = {}) => {
 
   summary.created = rows.length;
   summary.restored = restores.length;
+  summary.updated = refreshes.length;
+  summary.cancelledStale = zeroedOut.length;
   summary.totalAmount = formatAmount(total);
   summary.fixedTotal = formatAmount(fixedTotal);
   summary.kpiTotal = formatAmount(kpiTotal);
@@ -383,23 +382,55 @@ const generateForMonth = async (monthInput, options = {}) => {
     summary.skipped.alreadyExists += restores.length - restored;
   }
 
-  // 5 ── MAVJUD majburiyatlar: tyutor qatorlari va ushlab qolish amaldagi
-  // holatga moslanadi (`resyncSealedEntries`). Guruh biriktirish nuqtasi buni
-  // o'zi qiladi — bu yer undan oldin muhrlangan yoki o'shanda yiqilgan qatorlar
-  // uchun: tugma bosilsa tyutor puli moliyaga albatta tushadi.
-  if (!dryRun && existingIds.size > 0) {
+  if (!dryRun && refreshes.length > 0) {
+    // ⚠️ COMPARE-AND-SWAP: faqat pul tushmagan (`paidAmount = 0`) va hali
+    // amaldagi qatorni qayta muhrlaydi. Oral, kimdir to'lov kiritsa, `count`
+    // 0 bo'ladi va eski muhr saqlanadi — taqsimot yolg'onga aylanmaydi.
+    const results = await prisma.$transaction(
+      refreshes.map((row) =>
+        prisma.payrollEntry.updateMany({
+          where: { id: row.id, paidAmount: 0, status: { in: ["unpaid", "paid"] } },
+          data: row.data,
+        }),
+      ),
+    );
+    const updated = results.reduce((sum, r) => sum + r.count, 0);
+    summary.updated = updated;
+    summary.skipped.alreadyExists += refreshes.length - updated;
+  }
+
+  if (!dryRun && zeroedOut.length > 0) {
+    // To'lanmagan qatorda bu oy oyligi qolmadi (dars soati 0 / qoida yopildi)
+    const result = await prisma.payrollEntry.updateMany({
+      where: { id: { in: zeroedOut }, paidAmount: 0, status: { in: ["unpaid", "paid"] } },
+      data: {
+        status: "cancelled",
+        cancelReason: "Shu oyda oylik yo'q — dars soati yoki qoida o'zgardi",
+        cancelledAt: new Date(),
+        cancelledBy: actorId ?? SYSTEM_ACTOR_ID,
+      },
+    });
+    summary.cancelledStale = result.count;
+  }
+
+  // 5 ── QULFLANGAN (to'lov tushgan) majburiyatlar: tyutor qatorlari va ushlab
+  // qolish amaldagi holatga moslanadi (`resyncSealedEntries`) — summa muhrlangan
+  // bo'lsa-da, 0-so'm to'lovli maxsus holat uchun.
+  if (!dryRun && lockedIds.size > 0) {
     const resync = await require("./payrollDeduction.service").resyncSealedEntries(
-      [...existingIds],
+      [...lockedIds],
       [month],
     );
     summary.resynced = resync.updated;
     summary.resyncLocked = resync.locked.length;
   }
 
-  if (!dryRun && summary.created + summary.restored > 0) {
+  if (!dryRun && summary.created + summary.restored + summary.updated + summary.cancelledStale > 0) {
     logger.info(
       `[payroll] ${formatMonthKey(month)}: ${summary.created} ta oylik majburiyati` +
         (summary.restored > 0 ? `, ${summary.restored} tasi bekordan qaytarildi` : "") +
+        (summary.updated > 0 ? `, ${summary.updated} tasi qayta muhrlandi` : "") +
+        (summary.cancelledStale > 0 ? `, ${summary.cancelledStale} tasi bekor qilindi (oyligi yo'q)` : "") +
         `, jami ${formatAmount(total)}`,
     );
   }

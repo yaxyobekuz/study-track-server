@@ -127,16 +127,15 @@ async function runInvoiceGenerationPass({ force = false } = {}) {
             // registrda paydo bo'ladi — logda jim qolsa, "qayerdan
             // chiqdi" degan savolga javob bo'lmasdi.
             `bekordan qaytarilgan ${payrollSummary.restored}, ` +
+            // To'lanmagan majburiyat joriy hisobga (vedomost) moslab qayta
+            // muhrlangani va oyligi qolmagani uchun bekor qilingani
+            `qayta muhrlangan ${payrollSummary.updated}, ` +
+            `bekor qilingan ${payrollSummary.cancelledStale}, ` +
             `mavjud ${payrollSummary.skipped.alreadyExists}, ` +
             `arxivlangan ${payrollSummary.skipped.archived}, ` +
-            // ⚠️ Soatbay uchun ikkita YANGI sabab ham logga chiqadi: oy
-            // yopilmagani (`monthOpen`) va soat yo'qligi (`noHours`).
-            // Jim qolsa, "nega bu odamga oylik yozilmadi" degan savolga
-            // javob faqat kodni o'qib topilardi.
-            `oy ochiq ${payrollSummary.skipped.monthOpen}, ` +
-            `soatsiz ${payrollSummary.skipped.noHours}, ` +
+            `soatsiz/oyligsiz ${payrollSummary.skipped.zeroAmount + payrollSummary.skipped.noSalary}, ` +
             `summa ${payrollSummary.totalAmount} ` +
-            `(soatdan ${payrollSummary.hoursAmount}, ${payrollSummary.hoursTotal} soat)`,
+            `(shundan KPI ${payrollSummary.kpiTotal})`,
         );
       }
     } catch (error) {
