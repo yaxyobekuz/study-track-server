@@ -335,17 +335,22 @@ const resolveTrendRange = (query = {}) => {
 
 // Kunlik pul harakati: daftar yozuvi turi → ko'rsatiladigan ustun. Qolgani
 // (qaytarish, to'g'rilash, o'tkazma) — "boshqa".
+//
+// ⚠️ BEKOR QILISH kirim/chiqimga QO'SHILMAYDI — alohida ustun. Ilgari
+// `payment_void` to'lov bilan bir ustunda edi: boshqa kungi to'lovlar bugun
+// bekor qilinsa, bugungi kirim MANFIY chiqib, "tushgan pul" ma'nosini
+// yo'qotardi. Kirim va chiqim endi faqat haqiqatan tushgan/chiqqan pul.
 const DAILY_CASH_BUCKETS = {
   payment: "studentPayments",
-  payment_void: "studentPayments",
+  payment_void: "voidedIncome",
   external_income: "externalIncome",
-  external_income_void: "externalIncome",
+  external_income_void: "voidedIncome",
   damage_payment: "damage",
-  damage_payment_void: "damage",
+  damage_payment_void: "voidedIncome",
   salary_payment: "salary",
-  salary_payment_void: "salary",
+  salary_payment_void: "voidedExpense",
   expense: "expenses",
-  expense_void: "expenses",
+  expense_void: "voidedExpense",
 };
 
 /**
@@ -362,9 +367,10 @@ const DAILY_CASH_BUCKETS = {
  * yig'ilardi: bekor qilingan to'lov asl kunidan jimgina yo'qolardi, daftar
  * esa uni bekor qilingan kuni ayiradi — ikkisi hech qachon mos kelmasdi.
  *
- * ⚠️ BEKOR QILISH O'Z KUNIDA ko'rinadi (teskari yozuv o'sha kuni tushgan):
- * 5-kuni tushgan to'lov 10-kuni bekor qilinsa, 10-kun kirimi shunchaga kam.
- * Bir kunning o'zida bekor qilingani o'sha kunda nolga chiqadi.
+ * ⚠️ BEKOR QILISH O'Z KUNIDA, ALOHIDA USTUNDA ko'rinadi (teskari yozuv o'sha
+ * kuni tushgan): 5-kuni tushgan to'lov 10-kuni bekor qilinsa, 5-kun kirimi
+ * o'zgarmaydi, 10-kunda "bekor qilindi" −shuncha. Kirim/chiqim hech qachon
+ * manfiy bo'lmaydi; kun natijasi va qoldiq avvalgidek daftarga teng.
  *
  * ⚠️ To'lov turlari orasidagi o'tkazma umumiy qoldiqni o'zgartirmaydi
  * (ikkala yozuv bir lahzada) — "boshqa" ga tushadi va u yerda 0 bo'ladi.
@@ -399,6 +405,8 @@ const getDailyCash = async (query = {}) => {
     damage: new Decimal(0),
     salary: new Decimal(0),
     expenses: new Decimal(0),
+    voidedIncome: new Decimal(0), // daftarda manfiy (pul qaytib chiqdi)
+    voidedExpense: new Decimal(0), // daftarda musbat (pul kassaga qaytdi)
     other: new Decimal(0),
   });
   const byDay = new Map();
@@ -425,7 +433,9 @@ const getDailyCash = async (query = {}) => {
     // Chiqim daftarda manfiy — ekranda musbat ko'rsatiladi
     const income = b.studentPayments.plus(b.externalIncome).plus(b.damage);
     const expense = b.salary.plus(b.expenses).negated();
-    const net = income.minus(expense).plus(b.other);
+    // Bekor qilishning kassaga sof ta'siri (ishorali)
+    const voided = b.voidedIncome.plus(b.voidedExpense);
+    const net = income.minus(expense).plus(voided).plus(b.other);
     balance = balance.plus(net);
 
     days.push({
@@ -438,6 +448,9 @@ const getDailyCash = async (query = {}) => {
       expense: formatAmount(expense),
       salary: formatAmount(b.salary.negated()),
       expenses: formatAmount(b.expenses.negated()),
+      voided: formatAmount(voided),
+      voidedIncome: formatAmount(b.voidedIncome.negated()),
+      voidedExpense: formatAmount(b.voidedExpense),
       other: formatAmount(b.other),
       net: formatAmount(net),
       balance: formatAmount(balance),
@@ -459,6 +472,9 @@ const getDailyCash = async (query = {}) => {
       expense: formatAmount(expense),
       salary: formatAmount(totals.salary.negated()),
       expenses: formatAmount(totals.expenses.negated()),
+      voided: formatAmount(totals.voidedIncome.plus(totals.voidedExpense)),
+      voidedIncome: formatAmount(totals.voidedIncome.negated()),
+      voidedExpense: formatAmount(totals.voidedExpense),
       other: formatAmount(totals.other),
       net: formatAmount(balance.minus(openingBalance)),
     },
