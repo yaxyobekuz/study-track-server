@@ -38,6 +38,7 @@ const initRoles = require("./src/utils/initRoles");
 // Cron jobs
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
 const { startAcademicInsightCron } = require("./src/jobs/academicInsight.job");
+const { startGradeAnalysisCron } = require("./src/jobs/gradeAnalysis.job");
 const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
 const { startTaskPenaltyCron } = require("./src/jobs/taskPenalty.job");
@@ -205,6 +206,7 @@ const bootstrap = async () => {
   // Cron job'larni faqat DB ulanganidan keyin ishga tushirish
   startWeeklyStatsCron();
   startAcademicInsightCron();
+  startGradeAnalysisCron();
   startTopicIncrementCron();
   startDailyCoinCron();
   await startTaskPenaltyCron();

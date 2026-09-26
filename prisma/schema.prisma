@@ -1336,6 +1336,18 @@ model Grade {
   comment     String?
   date        DateTime
   lessonOrder Int      @default(1) @map("lesson_order")
+  // DARS MAVZUSI — baho qo'yilgan darsda o'tilgan mavzu (soft ref → Topic).
+  //
+  // Faqat BUGUNGI darsga qo'yilgan bahoda yoziladi: sinf+fanning joriy
+  // mavzusidan (`ClassSubjectProgress`), shu kun tugagan darslar hisobga
+  // olinib (`helpers/lessonTopic.js`). O'tgan kunga (ochilgan oyna) qo'yilgan
+  // bahoda `null`: joriy mavzu o'sha kunning mavzusi emas — taxmin yozilsa
+  // "qaysi mavzu oqsayapti" tahlili jimgina noto'g'ri mavzuni ayblardi.
+  //
+  // ⚠️ Eski baholarda `null` — tarix ORQAGA to'ldirilmaydi (mavzu tarixi
+  // saqlanmagan, faqat joriy raqam bor). Baholar tahlili mavzu kesimini
+  // faqat mavzusi bor baholardan quradi va qamrovni ochiq aytadi.
+  topicId     String?  @map("topic_id") @db.Char(24)
   isEdited    Boolean  @default(false) @map("is_edited")
   // editHistory[] — { previousGrade, editedAt, editedBy } (faqat audit)
   editHistory Json     @default("[]") @map("edit_history")
@@ -4811,6 +4823,160 @@ model ClubMember {
   @@index([clubId, startDate])
   @@index([studentId, startDate])
   @@map("club_members")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// BAHOLAR TAHLILI — o'quvchi kesimidagi o'zlashtirish tahlili
+// ═════════════════════════════════════════════════════════════════════
+//
+// Admin (yoki haftalik cron) TAHLIL ISHGA TUSHIRADI: davr (hafta … yil) va
+// qamrov (butun maktab / sinflar / bitta o'quvchi). Har bir o'quvchiga
+// alohida HISOBOT yoziladi: fanlar, mavzular, trend, sinfga nisbatan o'rni,
+// sabablar va tavsiyalar — o'quvchi, ota-ona va xodim uchun ALOHIDA matn.
+//
+// ⚠️ IKKI QATLAM (`AcademicInsight` bilan bir xil doktrina): raqamlarni
+// QOIDA hisoblaydi (`helpers/gradeAnalysis.js`), model faqat MATN yozadi va
+// matndagi har bir son faktlar bilan solishtiriladi. Model ishlamasa —
+// qoidalar matni (`source: "rules"`), hisobot baribir to'liq.
+//
+// ⚠️ HISOBOT — MUHRLANGAN FAKT. Keyin baho tahrirlansa ham o'tgan hisobot
+// o'zgarmaydi: ota-ona ko'rgan raqam ertaga boshqacha bo'lib qolmasligi
+// kerak. Yangi holat — yangi tahlil.
+
+enum GradeAnalysisStatus {
+  queued // navbatda
+  running // ishlanmoqda
+  completed // tayyor
+  failed // xato bilan to'xtadi
+  cancelled // admin to'xtatdi
+}
+
+model GradeAnalysisRun {
+  id String @id @db.Char(24)
+
+  // "week" | "month" | "quarter" | "half" | "year" (`GRADE_ANALYSIS_PERIODS`)
+  period   String   @db.VarChar(10)
+  // Tahlil oynasi — Toshkent kunlari, UTC yarim tunida, IKKALASI INKLYUZIV.
+  // `getUTC*` bilan o'qiladi (`dates.md` §4).
+  fromDate DateTime @map("from_date") @db.Date
+  toDate   DateTime @map("to_date") @db.Date
+
+  // "school" | "classes" | "student"
+  scope     String   @db.VarChar(10)
+  classIds  String[] @default([]) @map("class_ids")
+  studentId String?  @map("student_id") @db.Char(24)
+
+  // "manual" — admin bosgan, "weekly" — dushanba cron'i
+  trigger String  @default("manual") @db.VarChar(10)
+  useAi   Boolean @default(true) @map("use_ai")
+  // Tayyor bo'lganda o'quvchi/ota-onaga avtomatik yuborilsinmi
+  notify  Boolean @default(true)
+
+  status    GradeAnalysisStatus @default(queued)
+  total     Int                 @default(0)
+  processed Int                 @default(0)
+  aiCount   Int                 @default(0) @map("ai_count")
+
+  // Qamrov bo'yicha YIG'MA natija (dashboard shundan chiziladi) va
+  // rahbariyat uchun xulosa matni. Ikkalasi tahlil tugaganda yoziladi.
+  overview  Json?
+  narrative Json?
+
+  error String? @db.Text
+
+  // Nashr: hisobotlar o'quvchi/ota-onaga ochilgan payt va push natijasi
+  publishedAt DateTime? @map("published_at")
+  publishedBy String    @default("") @map("published_by") @db.VarChar(24)
+  pushSent    Int       @default(0) @map("push_sent")
+
+  // ⚠️ `VarChar`, `Char` EMAS — cron aktyorsiz yozadi va bo'sh satr
+  // CHAR(24) da 24 ta probelga aylanardi (`AcademicInsight.createdBy`).
+  createdBy  String    @default("") @map("created_by") @db.VarChar(24)
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  // Ishlov berayotgan jarayonning "yurak urishi" — to'xtab qolgan tahlil
+  // shu bo'yicha aniqlanadi va qayta navbatga qo'yiladi.
+  heartbeatAt DateTime? @map("heartbeat_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  reports GradeAnalysisReport[]
+
+  @@index([createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("grade_analysis_runs")
+}
+
+model GradeAnalysisReport {
+  id    String @id @db.Char(24)
+  runId String @map("run_id") @db.Char(24)
+
+  // soft ref → User. FK yo'q: o'quvchi o'chirilsa ham hisobot tarixi qoladi.
+  studentId       String  @map("student_id") @db.Char(24)
+  // ⚠️ O'QUVCHI SURATI — sinf kesimi SHU YERDAN olinadi, joriy sinfdan
+  // emas (`education.md` §5). { firstName, lastName, className }
+  studentSnapshot Json    @map("student_snapshot")
+  classId         String? @map("class_id") @db.Char(24)
+
+  period   String   @db.VarChar(10)
+  fromDate DateTime @map("from_date") @db.Date
+  toDate   DateTime @map("to_date") @db.Date
+
+  // "excellent" | "good" | "average" | "weak" | "critical" | "insufficient"
+  level           String @db.VarChar(16)
+  average         Float?
+  previousAverage Float? @map("previous_average")
+  gradeCount      Int    @default(0) @map("grade_count")
+  // 0–100, formulasi `helpers/gradeAnalysis.js` da (`riskScore`)
+  riskScore       Int    @default(0) @map("risk_score")
+
+  facts    Json // qoidalar hisoblagan XOM faktlar (modelga aynan shu ketgan)
+  findings Json // [{ code, tone, ... }] — sabab va kuchli tomonlar
+
+  // Uch auditoriya — bir xil faktlar, uch xil murojaat:
+  //   studentView — o'quvchiga ("siz"), parentView — ota-onaga
+  //   ("farzandingiz"), staffView — xodimga (sinf rahbari / o'qituvchi).
+  // ⚠️ `staffView` mobil API'ga CHIQMAYDI.
+  studentView Json @map("student_view")
+  parentView  Json @map("parent_view")
+  staffView   Json @map("staff_view")
+
+  source String @default("rules") @db.VarChar(10)
+  model  String @default("") @db.VarChar(60)
+
+  isPublished   Boolean   @default(false) @map("is_published")
+  publishedAt   DateTime? @map("published_at")
+  studentSeenAt DateTime? @map("student_seen_at")
+  parentSeenAt  DateTime? @map("parent_seen_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run GradeAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  // Bitta tahlilda bitta o'quvchiga BITTA hisobot — qayta ishga tushirilgan
+  // (to'xtab qolib tiklangan) tahlil ikkinchi qator yoza olmaydi.
+  @@unique([runId, studentId])
+  @@index([studentId, isPublished, publishedAt(sort: Desc)])
+  @@index([runId, level])
+  @@map("grade_analysis_reports")
+}
+
+// Filial singletoni — haftalik avtomat tahlil sozlamalari.
+model GradeAnalysisSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // Har dushanba o'tgan hafta bo'yicha butun maktab tahlili
+  weeklyEnabled Boolean @default(true) @map("weekly_enabled")
+  // Haftalik natija o'quvchi/ota-onaga avtomatik yuborilsinmi
+  weeklyNotify  Boolean @default(true) @map("weekly_notify")
+  // Matnni AI yozsinmi (o'chiq bo'lsa — faqat qoidalar matni)
+  useAi         Boolean @default(true) @map("use_ai")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("grade_analysis_settings")
 }
 
 // HAFTALIK AI TAHLIL — o'quv bo'limi uchun ish rejasi.

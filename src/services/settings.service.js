@@ -138,6 +138,15 @@ async function getDiagnosticSettings() {
   });
 }
 
+/** Baholar tahlili: haftalik avtomat tahlil va AI (`gradeAnalysis.service.js`). */
+async function getGradeAnalysisSettings() {
+  return prisma.gradeAnalysisSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 /**
  * PenaltySettings — lazy migration: fineAmounts bo'sh bo'lsa eski
  * studentFineAmount/teacherFineAmount dan to'ldiradi (Mongoose logikasi).
@@ -241,6 +250,7 @@ module.exports = {
   getTaskSettings,
   getTestSettings,
   getDiagnosticSettings,
+  getGradeAnalysisSettings,
   getPenaltySettings,
   getPremiumSettings,
   getFinanceSettings,

@@ -21,6 +21,7 @@ const SECTIONS = {
   ATTENDANCE: "attendance",
   GRADES: "grades",
   EDUCATION: "education",
+  GRADE_ANALYSIS: "gradeAnalysis",
   ACHIEVEMENTS: "achievements",
   CLUBS: "clubs",
   SCHEDULES: "schedules",
@@ -178,6 +179,29 @@ const PERMISSION_SECTIONS = [
     label: "Ta'lim dashboardi",
     group: "Ta'lim",
     actions: [A.view, { key: "plan", label: "Reja belgilash" }],
+  },
+  {
+    // BAHOLAR TAHLILI — har bir o'quvchi bo'yicha fan/mavzu kesimidagi
+    // o'zlashtirish, sabablar va tavsiyalar (`gradeAnalysis.service.js`).
+    //
+    // ⚠️ `education.view` DAN ALOHIDA: bu yerda HAR BIR O'QUVCHINING
+    // shaxsiy xulosasi va xavf balli turadi, dashboardda esa faqat yig'ma.
+    //
+    // Amallar ataylab mayda:
+    //   `run`     — tahlilni ishga tushirish (AI limitini sarflaydi)
+    //   `publish` — hisobotni o'quvchi va ota-onaga ochish + push. Ishga
+    //               tushirish huquqi buni o'zi bermaydi: yuborilgan matnni
+    //               ota-ona o'qiydi, qaytarib bo'lmaydi.
+    key: SECTIONS.GRADE_ANALYSIS,
+    label: "Baholar tahlili",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "run", label: "Tahlilni ishga tushirish" },
+      { key: "publish", label: "O'quvchi va ota-onaga yuborish" },
+      A.delete,
+      A.settings,
+    ],
   },
   {
     // Olimpiada va musobaqa yutuqlari — tashqi hodisa qaydi.

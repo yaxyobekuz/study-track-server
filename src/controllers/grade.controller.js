@@ -17,6 +17,8 @@ const { attachGradeRefs } = gradeService;
 const { resolveLessonAccess, scheduleDayOf } = require("../helpers/teacherAccess");
 const { findActiveUnlock } = require("../services/gradingUnlock.service");
 const { assertAtSchool } = require("../services/gradingPresence.service");
+// Baholar tahlili uchun dars mavzusi — xato tashlamaydi (servis izohiga qarang)
+const { resolveGradeTopics } = require("../services/gradeTopic.service");
 // ⚠️ TOSHKENT KUNI. `new Date()` ni to'g'ridan-to'g'ri berib bo'lmaydi:
 // `teacherAccess` sanani FAQAT `getUTC*` bilan o'qiydi, jadval esa
 // `getCurrentDayUz()` (Toshkent devor-soati) bilan olinadi. Toshkentda
@@ -427,6 +429,20 @@ const createGrade = asyncHandler(async (req, res) => {
   // "qo'yilgan payt" yozilsa, baho bugungi kunga tushib, o'tilmagan dars
   // o'tilgan bo'lmay qolardi.
   const now = day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date();
+
+  // DARS MAVZUSI — faqat BUGUNGI darsga (baholar tahlilining mavzu kesimi).
+  // O'tgan kunga yozilmaydi: joriy mavzu o'sha kunning mavzusi emas.
+  // ⚠️ `resolveGradeTopics` xato TASHLAMAYDI — aniqlab bo'lmasa baho
+  // mavzusiz yoziladi, baho qo'yish hech qachon shu sababli yiqilmaydi.
+  const topicByOrder = day.isPast
+    ? new Map()
+    : await resolveGradeTopics({
+        classId,
+        subjectId,
+        lessons: todaySchedule.lessons,
+        lessonOrders: missingLessonOrders,
+      });
+
   const gradesToCreate = missingLessonOrders.map((order) => ({
     studentId,
     subjectId,
@@ -436,6 +452,7 @@ const createGrade = asyncHandler(async (req, res) => {
     date: now,
     lessonOrder: order,
     comment,
+    topicId: topicByOrder.get(order) ?? null,
   }));
 
   await prisma.grade.createMany({ data: gradesToCreate });

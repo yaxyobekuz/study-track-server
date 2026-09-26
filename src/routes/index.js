@@ -51,6 +51,7 @@ const studentMonthOverrideRoutes = require("./studentMonthOverride.routes");
 const financeSettingsRoutes = require("./financeSettings.routes");
 const financeReportRoutes = require("./financeReport.routes");
 const academicDashboardRoutes = require("./academicDashboard.routes");
+const gradeAnalysisRoutes = require("./gradeAnalysis.routes");
 const incomeCategoryRoutes = require("./incomeCategory.routes");
 const externalIncomeRoutes = require("./externalIncome.routes");
 const payrollRoutes = require("./payroll.routes");
@@ -128,6 +129,8 @@ router.use("/finance-settings", financeSettingsRoutes);
 router.use("/finance-reports", financeReportRoutes);
 // TA'LIM DASHBOARDI — moliya dashboardining akademik ko'zgusi.
 router.use("/education", academicDashboardRoutes);
+// BAHOLAR TAHLILI — admin dashboardi va mobil (o'quvchi / ota-ona) hisobotlari
+router.use("/grade-analysis", gradeAnalysisRoutes);
 router.use("/income-categories", incomeCategoryRoutes);
 router.use("/external-incomes", externalIncomeRoutes);
 router.use("/payroll", payrollRoutes);
