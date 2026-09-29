@@ -1409,15 +1409,33 @@ async function getUsersForExport(role) {
  * `getUsersForExport("student")` bilan bir xil o'quvchi to'plami (arxivlangan
  * ham — qarz arxivlashda bekor bo'lmaydi), lekin moliya ustunlari qo'shilgan.
  *
+ * `classId` berilsa — faqat o'sha sinf o'quvchilari (ro'yxat sahifasidagi
+ * `class` filtri bilan AYNI shart: `UserClass` orqali). Arxivlangan o'quvchi
+ * arxivlashda sinflardan chiqariladi, shuning uchun sinf eksportiga
+ * o'z-o'zidan tushmaydi.
+ *
+ * @param {{ classId?: string }} [options]
  * @returns {Promise<{ all: object[], debtors: object[] }>}
  */
-async function getStudentsFinanceExport() {
+async function getStudentsFinanceExport({ classId } = {}) {
   const { resolveManyForMonth } = require("./tariffResolution.service");
   const { formatAmount, Decimal } = require("../helpers/money.helpers");
   const month = currentMonthKey();
 
+  const where = { role: "student" };
+  if (classId) {
+    // Yo'q sinf jim "bo'sh fayl" bo'lib qaytmasin — sinf o'chirilgan yoki
+    // id xato bo'lsa foydalanuvchi buni aniq bilishi kerak.
+    const cls = await prisma.class.findUnique({
+      where: { id: classId },
+      select: { id: true },
+    });
+    if (!cls) throw new NotFoundError("Sinf topilmadi");
+    where.classes = { some: { classId } };
+  }
+
   const students = await prisma.user.findMany({
-    where: { role: "student" },
+    where,
     include: { classes: { include: { class: { select: { name: true } } } } },
     orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
   });

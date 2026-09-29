@@ -10,6 +10,7 @@ const staffReportService = require("../services/staffReport.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
 const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
+const { isValidId } = require("../utils/objectId");
 const {
   monthKeyOfDate,
   parseDayDate,
@@ -266,6 +267,18 @@ const restoreUser = asyncHandler(async (req, res) => {
 // Export users to Excel (Owner only)
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
+  const classId = req.query.classId ? String(req.query.classId) : null;
+
+  // Sinf kesimi faqat O'QUVCHILAR eksportida: xodim/umumiy eksportda uni
+  // jim e'tiborsiz qoldirish "sinf tanladim, hamma chiqdi" holatini berardi.
+  if (classId) {
+    if (role !== "student") {
+      throw new BadRequestError("Sinf bo'yicha faqat o'quvchilar yuklanadi");
+    }
+    if (!isValidId(classId)) {
+      throw new BadRequestError("Sinf identifikatori noto'g'ri");
+    }
+  }
 
   // O'QUVCHILAR eksporti — MOLIYALI va IKKI VARAQLI:
   //   1) "O'quvchilar" — hamma o'quvchi + tarif/to'langan/qarz;
@@ -273,7 +286,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // Boshqa rollar (xodim/o'qituvchi) uchun moliya ustunlari mantiqsiz —
   // ular avvalgidek bitta varaqli eksport oladi.
   if (role === "student") {
-    const { all, debtors } = await userService.getStudentsFinanceExport();
+    const { all, debtors } = await userService.getStudentsFinanceExport({
+      classId,
+    });
 
     const workbook = ExcelService.createWorkbook();
 
