@@ -1016,11 +1016,22 @@ async function getRun(id) {
   };
 }
 
-/** Tahlillar tarixi (yig'masiz — ro'yxat yengil qolsin). */
-async function listRuns({ page = 1, limit = 12, status, trigger } = {}) {
+/**
+ * Tahlillar tarixi (yig'masiz — ro'yxat yengil qolsin).
+ *
+ * `scope` — bitta yoki vergul bilan bir nechta qamrov (`school,classes`):
+ * sahifa tepasidagi reyting oxirgi MAKTAB/SINF tahlilini shu bilan topadi —
+ * tanlangan tahlil bitta o'quvchiniki bo'lsa ham reyting ko'rinib tursin.
+ */
+async function listRuns({ page = 1, limit = 12, status, trigger, scope } = {}) {
   const where = {};
   if (status && Object.values(STATUS).includes(status)) where.status = status;
   if (trigger && Object.values(TRIGGERS).includes(trigger)) where.trigger = trigger;
+  const scopes = String(scope || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => SCOPE_KEYS.includes(value));
+  if (scopes.length) where.scope = { in: [...new Set(scopes)] };
 
   const take = Math.min(50, Math.max(1, Number(limit) || 12));
   const skip = (Math.max(1, Number(page) || 1) - 1) * take;
