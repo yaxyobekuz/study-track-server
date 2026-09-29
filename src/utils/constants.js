@@ -172,7 +172,6 @@ const PAGINATION_DEFAULTS = {
 };
 
 // Grade time constraints
-const GRADE_TIME_LIMIT_MINUTES = config.gradeTimeLimitMinutes;
 const ENABLE_SCHEDULE_TIME_VALIDATION = config.enableScheduleTimeValidation;
 
 module.exports = {
@@ -191,6 +190,5 @@ module.exports = {
   GRADE_MIN,
   GRADE_MAX,
   PAGINATION_DEFAULTS,
-  GRADE_TIME_LIMIT_MINUTES,
   ENABLE_SCHEDULE_TIME_VALIDATION,
 };

@@ -1326,6 +1326,15 @@ model Attendance {
   excuseReason           String?          @map("excuse_reason")
   absenceReason          String?          @map("absence_reason") @db.Char(24)
   autoMarked             Boolean          @default(false) @map("auto_marked")
+  // KUN YAKUNI — "Men ketdim" bosilgan paytdagi ishlar holati MUHRLANADI
+  // (`checkoutGate.service.js` → `sealReport`): nechta dars, nechtasi
+  // baholangan, nechta topshiriq ochiq qolgan. Keyin baho qo'yilsa ham bu
+  // qator o'zgarmaydi — "ketayotganda nima qoldi" degan savolning javobi.
+  // `null` — darvozadan oldingi qator yoki admin qo'lda belgilagan ketish.
+  checkoutReport         Json?            @map("checkout_report")
+  // soft ref → CheckoutRequest: ishlar tugamay turib RAHBARIYAT RUXSATI
+  // bilan ketilgan bo'lsa (tasdiqlangan so'rov).
+  checkoutRequestId      String?          @map("checkout_request_id") @db.Char(24)
   createdBy              String?          @map("created_by") @db.Char(24)
   lastModifiedBy         String?          @map("last_modified_by") @db.Char(24)
   createdAt              DateTime         @default(now()) @map("created_at")
@@ -1354,6 +1363,11 @@ model AttendanceSettings {
   // Bugungi darsga baho faqat MAKTABDA (kelgan va ketmagan) qo'yiladi.
   // O'chirish — "kelish" tugmasi ishlamay qolgan kun uchun zaxira yo'l.
   gradingRequiresPresence     Boolean  @default(true) @map("grading_requires_presence")
+  // KUNNI YOPISH — o'qituvchi "Men ketdim" ni faqat bugungi ishlari tugagach
+  // bosadi (`checkoutGate.service.js`). Tugamagan bo'lsa — rahbariyatdan
+  // ruxsat so'raydi (`CheckoutRequest`). Har biri alohida o'chiriladi.
+  checkoutRequireGrades       Boolean  @default(true) @map("checkout_require_grades")
+  checkoutRequireTasks        Boolean  @default(true) @map("checkout_require_tasks")
   updatedBy                   String?  @map("updated_by") @db.Char(24)
   createdAt                   DateTime @default(now()) @map("created_at")
   updatedAt                   DateTime @updatedAt @map("updated_at")
@@ -1419,6 +1433,47 @@ model ExcuseRequest {
   @@index([status, createdAt(sort: Desc)])
   @@index([userId, createdAt(sort: Desc)])
   @@map("excuse_requests")
+}
+
+enum CheckoutRequestStatus {
+  pending
+  approved
+  rejected
+  cancelled
+}
+
+// ISHLAR TUGAMASDAN KETISH — RAHBARIYATGA SO'ROV.
+//
+// O'qituvchi "Men ketdim" ni faqat bugungi darslariga baho qo'yib, muddati
+// kelgan topshiriqlarini topshirib bo'lgach bosadi (`checkoutGate.service.js`).
+// Kutilmagan holatda (kasallik, oilaviy sabab, dars hali boshlanmagan) sabab
+// yozib so'rov yuboradi; tasdiqlansa o'sha KUN ichida ketish ochiladi.
+//
+// ⚠️ O'CHIRILMAYDI — o'qituvchi faqat `pending` ni bekor qiladi (`cancelled`),
+// rahbariyat tasdiqlaydi/rad etadi: "kim, qachon, nima sababdan ruxsat berdi"
+// izi davomat qatori (`Attendance.checkoutRequestId`) bilan birga qoladi.
+// ⚠️ Bir kunda bitta FAOL (pending | approved) so'rov — tekshiruv advisory
+// lock ichida (qisman yagona indeks Prisma sxemasida ifodalanmaydi).
+model CheckoutRequest {
+  id           String                @id @db.Char(24)
+  userId       String                @map("user_id") @db.Char(24)
+  // Toshkent kuni, UTC yarim tuni — `Attendance.date` bilan AYNI shakl
+  date         DateTime
+  reason       String
+  status       CheckoutRequestStatus @default(pending)
+  // So'rov paytida NIMA TUGAMAGAN edi — muhrlanadi: rahbar qaror qilayotganda
+  // o'qituvchi baho qo'yib qo'ysa ham, u nimaga ruxsat so'ralganini ko'radi.
+  pendingItems Json                  @default("{}") @map("pending_items")
+  reviewedBy   String?               @map("reviewed_by") @db.Char(24)
+  reviewedAt   DateTime?             @map("reviewed_at")
+  reviewNote   String?               @map("review_note")
+  createdAt    DateTime              @default(now()) @map("created_at")
+  updatedAt    DateTime              @updatedAt @map("updated_at")
+
+  @@index([userId, date])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([date, status])
+  @@map("checkout_requests")
 }
 
 // ─────────────────────────────────────────────

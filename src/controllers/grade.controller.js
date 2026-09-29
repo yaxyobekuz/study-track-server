@@ -351,8 +351,9 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  // Check grading time window (only if enabled in config)
-  const { GRADE_TIME_LIMIT_MINUTES, ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
+  // Vaqt: bugungi darsga — dars BOSHLANGANDAN "Men ketdim" gacha (dars
+  // tugashi yopmaydi, `checkGradingTimeWindow`). Faqat sozlamada yoqilgan bo'lsa.
+  const { ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
 
   // Vaqt oynasi faqat BUGUNGI dars uchun — ochib berilgan o'tgan kunda dars
   // allaqachon tugagan, oyna ruxsatning ma'nosini yo'qqa chiqarardi
@@ -363,21 +364,13 @@ const createGrade = asyncHandler(async (req, res) => {
       (s) => s.order === finalLessonOrder,
     );
 
-    if (
-      !lessonSchedule ||
-      !lessonSchedule.startTime ||
-      !lessonSchedule.endTime
-    ) {
+    if (!lessonSchedule || !lessonSchedule.startTime) {
       throw new BadRequestError(
-        "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+        "Dars jadvali to'liq emas - boshlanish vaqti kiritilmagan",
       );
     }
 
-    const timeCheck = checkGradingTimeWindow(
-      lessonSchedule.startTime,
-      lessonSchedule.endTime,
-      GRADE_TIME_LIMIT_MINUTES,
-    );
+    const timeCheck = checkGradingTimeWindow(lessonSchedule.startTime);
 
     if (!timeCheck.canGrade) {
       throw new ForbiddenError(timeCheck.reason);
@@ -517,7 +510,7 @@ const updateGrade = asyncHandler(async (req, res) => {
   // Bugungi bahoni ham faqat maktabda turib o'zgartiradi
   if (isTodayGrade) await assertAtSchool(req.user);
 
-  // Check grading time window for updates (only if enabled in config)
+  // Vaqt: dars boshlangandan "Men ketdim" gacha (faqat sozlamada yoqilgan bo'lsa)
   const { ENABLE_SCHEDULE_TIME_VALIDATION } = require("../utils/constants");
 
   if (ENABLE_SCHEDULE_TIME_VALIDATION && !unlockedPast) {
@@ -539,24 +532,16 @@ const updateGrade = asyncHandler(async (req, res) => {
         s.order === gradeDoc.lessonOrder,
     );
 
-    if (
-      !lessonSchedule ||
-      !lessonSchedule.startTime ||
-      !lessonSchedule.endTime
-    ) {
+    if (!lessonSchedule || !lessonSchedule.startTime) {
       throw new BadRequestError(
-        "Dars jadvali to'liq emas - boshlanish va tugash vaqti kiritilmagan",
+        "Dars jadvali to'liq emas - boshlanish vaqti kiritilmagan",
       );
     }
 
+    // Dars tugashi tahrirni ham yopmaydi — faqat "Men ketdim" (maktabda
+    // bo'lish sharti) yopadi
     const { checkGradingTimeWindow } = require("../helpers/date.helpers");
-    const { GRADE_TIME_LIMIT_MINUTES } = require("../utils/constants");
-
-    const timeCheck = checkGradingTimeWindow(
-      lessonSchedule.startTime,
-      lessonSchedule.endTime,
-      GRADE_TIME_LIMIT_MINUTES,
-    );
+    const timeCheck = checkGradingTimeWindow(lessonSchedule.startTime);
 
     if (!timeCheck.canGrade) {
       throw new ForbiddenError(timeCheck.reason);

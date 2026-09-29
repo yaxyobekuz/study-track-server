@@ -43,6 +43,31 @@ router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);
 router.post("/check-out", protect, checkOut);
 
+// KUNNI YOPISH — "Men ketdim" dan oldin ishlar ro'yxati va rahbariyatga
+// ruxsat so'rovi (`checkoutGate.service.js`). ⚠️ `/:id` dan OLDIN.
+const {
+  getMyReadiness,
+  createRequest: createCheckoutRequest,
+  cancelRequest: cancelCheckoutRequest,
+  listRequests: listCheckoutRequests,
+  reviewRequest: reviewCheckoutRequest,
+} = require("../controllers/checkoutGate.controller");
+router.get("/checkout-readiness", protect, getMyReadiness);
+router.post("/checkout-requests", protect, createCheckoutRequest);
+router.delete("/checkout-requests/:id", protect, cancelCheckoutRequest);
+router.get(
+  "/checkout-requests",
+  protect,
+  authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW),
+  listCheckoutRequests,
+);
+router.put(
+  "/checkout-requests/:id/review",
+  protect,
+  authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW),
+  reviewCheckoutRequest,
+);
+
 router.post("/excuse", protect, createExcuseRequest);
 router.get("/excuse/my", protect, getMyExcuses);
 router.get("/excuse/recent", protect, authorizePermission(PERMISSIONS.ATTENDANCE_REVIEW), getRecentExcuses);

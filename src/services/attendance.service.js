@@ -1,4 +1,5 @@
 const prisma = require("../config/prisma");
+const { Prisma } = require("../generated/prisma");
 // Rollar katalogi PLATFORMADA — ish vaqti default'lari barcha filiallarga umumiy
 const platformPrisma = require("../config/platformPrisma");
 const { getAttendanceSettings } = require("./settings.service");
@@ -23,6 +24,7 @@ const {
   getScheduleWorkTime,
   getScheduleWorkTimes,
 } = require("./scheduleWorkTime.service");
+const { resolveCheckout } = require("./checkoutGate.service");
 
 function getTodayNormalized() {
   const now = new Date();
@@ -397,6 +399,13 @@ async function checkIn(userId, locationPayload, adminUserId) {
  * saqlanadi. "Kelganda ofisda edi, ketganda tashqarida" — bu ikki xil
  * fakt va ular bitta bayroqqa siqilsa, tekshirishning ma'nosi qolmaydi.
  *
+ * ⚠️ KUNNI YOPISH DARVOZASI (`checkoutGate.service.js`): o'qituvchi bugungi
+ * darslariga baho qo'yib, muddati kelgan topshiriqlarini topshirmaguncha
+ * ketolmaydi (409, `details.reason = "checkout_blocked"`) — yoki rahbariyat
+ * so'rovini tasdiqlagan bo'lishi kerak. Holat qatorga MUHRLANADI
+ * (`checkoutReport`). Rahbar ruxsati bilan ketishda erta ketish jarimasi
+ * yozilmaydi — bu ruxsat berilgan ketish.
+ *
  * @param {string} userId
  * @param {{ lat?: *, lng?: *, accuracy?: * }} [locationPayload]
  * @param {string} [adminUserId]
@@ -421,6 +430,9 @@ async function checkOut(userId, locationPayload, adminUserId) {
   if (record.checkOut) {
     throw new BadRequestError("Bugun allaqachon ketganlik qayd etilgan");
   }
+
+  // Ishlar tugaganmi (yoki rahbar ruxsat berganmi) — aks holda shu yerda 409
+  const gate = await resolveCheckout(user);
 
   const settings = await getAttendanceSettings();
 
@@ -456,6 +468,8 @@ async function checkOut(userId, locationPayload, adminUserId) {
     isEarlyOut,
     earlyOutMinutes,
     ...locationFields("checkOut", location),
+    checkoutReport: gate.report ?? undefined,
+    checkoutRequestId: gate.requestId,
   };
 
   // Kun yakuni bayroqlari — IKKALA qayddan yig'iladi (ochilgan bayroq
@@ -464,9 +478,12 @@ async function checkOut(userId, locationPayload, adminUserId) {
   updateData.outOfOffice = record.outOfOffice || location.outOfOffice;
   updateData.locationWarning = record.locationWarning || location.locationWarning;
 
-  // Erta ketish jarimasi (avval penaltyApplied bo'lmagan bo'lsa)
+  // Erta ketish jarimasi (avval penaltyApplied bo'lmagan bo'lsa).
+  // Rahbar ruxsati bilan ketishda — yo'q: fakt (`isEarlyOut`) yoziladi,
+  // jarima esa ruxsat berilgan ketishga qo'llanmaydi.
   if (
     isEarlyOut &&
+    !gate.approved &&
     settings.earlyDeparturePenaltyPoints > 0 &&
     !record.penaltyApplied
   ) {
@@ -709,6 +726,8 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         status: rec?.status || "not_marked",
         checkIn: rec?.checkIn || null,
         checkOut: rec?.checkOut || null,
+        // Ishlar tugamay, rahbariyat ruxsati bilan ketgan (`checkoutGate.service.js`)
+        checkoutApproved: Boolean(rec?.checkoutRequestId),
         isLate: rec?.isLate || false,
         lateMinutes: rec?.lateMinutes || 0,
         excuseReason: rec?.excuseReason || null,
@@ -855,6 +874,9 @@ async function updateTimes(userId, dateInput, times = {}, adminUserId) {
       data.checkOutLocation = null;
       data.checkOutLocationStatus = null;
       data.checkOutDistance = null;
+      // Kun yopilishi ham bekor — qayta "Men ketdim" yangi hisobot yozadi
+      data.checkoutReport = Prisma.DbNull;
+      data.checkoutRequestId = null;
     }
   }
 
@@ -962,6 +984,9 @@ async function updateSettings(data, updatedBy) {
     "pausedUsers",
     // Bugungi darsga baho faqat maktabda (`gradingPresence.service.js`)
     "gradingRequiresPresence",
+    // Kunni yopish — "Men ketdim" dan oldin baho/topshiriq (`checkoutGate.service.js`)
+    "checkoutRequireGrades",
+    "checkoutRequireTasks",
   ];
 
   const update = {};
@@ -982,6 +1007,11 @@ async function updateSettings(data, updatedBy) {
   if (update.gradingRequiresPresence !== undefined) {
     if (typeof update.gradingRequiresPresence !== "boolean") {
       throw new BadRequestError("Baho qo'yish sharti ha/yo'q qiymati bo'lishi kerak");
+    }
+  }
+  for (const key of ["checkoutRequireGrades", "checkoutRequireTasks"]) {
+    if (update[key] !== undefined && typeof update[key] !== "boolean") {
+      throw new BadRequestError("Kunni yopish sharti ha/yo'q qiymati bo'lishi kerak");
     }
   }
 

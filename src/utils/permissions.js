@@ -146,7 +146,7 @@ const PERMISSION_SECTIONS = [
       A.view,
       { key: "mark", label: "Davomat belgilash" },
       A.update,
-      { key: "review", label: "Sababnomalarni ko'rib chiqish" },
+      { key: "review", label: "Sababnoma va ketish so'rovlarini ko'rib chiqish" },
       { key: "reasons", label: "Sabab turlarini boshqarish" },
       { key: "reports", label: "Hisobotlar" },
       A.settings,

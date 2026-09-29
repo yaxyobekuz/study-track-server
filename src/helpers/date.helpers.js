@@ -163,19 +163,26 @@ const minutesToTime = (minutes) => {
 };
 
 /**
- * Dars vaqti oralig'ini tekshiradi (baho qo'yish uchun)
+ * Bugungi darsga baho qo'yish VAQTI — dars BOSHLANGANDAN keyin.
+ *
+ * ⚠️ YUQORI CHEGARA YO'Q (biznes qarori, 2026-09-29): bugungi darsga baho
+ * "Men ketdim" bosilguncha qo'yiladi — dars tugashi uni YOPMAYDI. Ketgach
+ * yopish `gradingPresence.service.js` ning ishi ("Siz maktabda emassiz").
+ * Ilgari baho dars tugaganidan 30 daqiqa keyin yopilardi: keyingi darsga
+ * kirgan o'qituvchi oldingi darsiga baho qo'ya olmay qolardi, "Men ketdim"
+ * darvozasi esa (`checkoutGate.service.js`) o'sha bahoni talab qilardi.
+ *
+ * ⚠️ PASTKI CHEGARA QOLADI: boshlanmagan darsga baho uni o'tilgan qilib
+ * oylikka yozardi (`finance.md` §10) va "hali boshlanmagan dars ketishni
+ * to'sadi" qoidasini chetlab o'tardi.
+ *
  * @param {string} startTime - Boshlanish vaqti (HH:mm)
- * @param {string} endTime - Tugash vaqti (HH:mm)
- * @param {number} gracePeriodMinutes - Darsdan keyin qo'shimcha vaqt (default: 30)
- * @returns {{canGrade: boolean, reason: string}} Natija
+ * @returns {{canGrade: boolean, reason: string|null}}
  */
-const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => {
+const checkGradingTimeWindow = (startTime) => {
   const currentMinutes = getCurrentTimeInMinutes();
   const startMinutes = timeToMinutes(startTime);
-  const endMinutes = timeToMinutes(endTime);
-  const graceEndMinutes = endMinutes + gracePeriodMinutes;
 
-  // Dars boshlanishidan oldin
   if (currentMinutes < startMinutes) {
     const minutesUntilStart = startMinutes - currentMinutes;
     return {
@@ -184,15 +191,6 @@ const checkGradingTimeWindow = (startTime, endTime, gracePeriodMinutes = 30) => 
     };
   }
 
-  // Darsdan keyin grace period tugagan
-  if (currentMinutes > graceEndMinutes) {
-    return {
-      canGrade: false,
-      reason: `Baho qo'yish muddati tugagan. Dars ${minutesToTime(endMinutes)} da tugagan (${gracePeriodMinutes} daqiqalik muddat tugadi)`,
-    };
-  }
-
-  // Dars davomida yoki grace period ichida
   return { canGrade: true, reason: null };
 };
 

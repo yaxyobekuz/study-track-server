@@ -180,7 +180,6 @@ const config = {
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,
 
   // Grade
-  gradeTimeLimitMinutes: parseInt(process.env.GRADE_TIME_LIMIT_MINUTES, 10) || 30,
   enableScheduleTimeValidation: process.env.ENABLE_SCHEDULE_TIME_VALIDATION === "true",
 
   // CORS
