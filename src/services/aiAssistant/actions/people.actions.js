@@ -20,6 +20,7 @@
 
 const userService = require("../../user.service");
 const classService = require("../../class.service");
+const classChanges = require("../../studentClassChange.service");
 const subjectService = require("../../subject.service");
 const permissionService = require("../../permission.service");
 const branchService = require("../../branch.service");
@@ -974,7 +975,7 @@ const setStudentClasses = defineAction({
   risk: "medium",
   permission: "users.update",
   description:
-    "Propose REPLACING the full class list of one student (classIds is the complete new list; an empty list removes the student from all classes). Class membership does not change price or past reports. Not for archived students (except clearing) and not for staff. To move several students from one class to another use propose_move_students_to_class.",
+    "Propose REPLACING the full class list of one student (classIds is the complete new list; an empty list removes the student from all classes). If any current class is taken away (removal or move) a reason is REQUIRED — ask the owner for it, never invent one; it is stored in the class-change log. Class membership does not change price or past reports. Not for archived students (except clearing) and not for staff. To move several students from one class to another use propose_move_students_to_class.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -986,6 +987,13 @@ const setStudentClasses = defineAction({
         maxItems: 20,
         items: { type: "string", pattern: "^[a-fA-F0-9]{24}$" },
         description: "Complete new list of class ids (from people_classes).",
+      },
+      reason: {
+        type: "string",
+        minLength: classChanges.REASON_MIN,
+        maxLength: classChanges.REASON_MAX,
+        pattern: SAFE_TEXT_PATTERN,
+        description: "Why the student leaves a current class, as the owner stated it. Required when any current class is removed; not needed for pure additions.",
       },
     },
   },
@@ -1011,26 +1019,54 @@ const setStudentClasses = defineAction({
     }
 
     const nameOf = (id) => byId.get(id)?.name ?? (user.classes || []).find((c) => c.id === id)?.name ?? id;
+
+    // Sinf YO'QOTILSA sabab majburiy — HTTP yo'li bilan AYNI qoida
+    // (`studentClassChange.service.js`). Taxmin qilingan sabab emas, egasi aytgani.
+    const { removed, added } = classChanges.diffClassIds(currentIds, classIds);
+    let reason = null;
+    if (removed.length > 0) {
+      if (!args.reason || !args.reason.trim()) {
+        throw new AiToolError(
+          `Sabab majburiy: o'quvchi ${joinNames(removed.map(nameOf))} sinfidan chiqadi. Egasidan sababini so'rang va reason bilan qayta taklif qiling.`,
+        );
+      }
+      try {
+        reason = classChanges.normalizeReason(args.reason);
+      } catch (error) {
+        throw new AiToolError(error.message);
+      }
+    }
+
     const warnings = homeWarning ? [homeWarning] : [];
     if (classIds.length === 0) warnings.push("O'quvchi hech bir sinfda qolmaydi");
     if (classIds.length > 1) warnings.push("O'quvchi bir vaqtda bir nechta sinfda bo'ladi");
     const inactive = classIds.filter((id) => byId.get(id)?.isActive === false).map(nameOf);
     if (inactive.length > 0) warnings.push(`Faol bo'lmagan sinf: ${inactive.join(", ")}`);
 
+    const fields = [
+      { label: "Sinflar", before: joinNames(currentIds.map(nameOf)), after: joinNames(classIds.map(nameOf)) },
+    ];
+    if (reason) fields.push({ label: "Sabab", before: "—", after: reason });
+
+    const effects = ["Tarif va hisob-faktura summasiga ta'sir qilmaydi"];
+    if (removed.length > 0) {
+      effects.push(
+        added.length > 0
+          ? "\"Sinf o'zgarishlari\" jurnaliga ko'chirish sifatida sababi bilan yoziladi"
+          : "\"Sinf o'zgarishlari\" jurnaliga sinfdan chiqarish sifatida sababi bilan yoziladi",
+      );
+    }
+
     return {
-      params: { userId: user.id, classIds },
+      params: { userId: user.id, classIds, reason },
       preview: {
         summary: `${personName(user)} sinflari: ${joinNames(classIds.map(nameOf))}`,
         target: targetLabel(user),
-        fields: [
-          { label: "Sinflar", before: joinNames(currentIds.map(nameOf)), after: joinNames(classIds.map(nameOf)) },
-        ],
-        effects: [
-          "Tarif va hisob-faktura summasiga ta'sir qilmaydi",
-        ],
+        fields,
+        effects,
         warnings,
       },
-      fingerprint: { userId: user.id, currentIds, classIds, isArchived: user.isArchived },
+      fingerprint: { userId: user.id, currentIds, classIds, reason, isArchived: user.isArchived },
     };
   },
   // Mirrors PUT /api/users/:id — user.routes.js:95 → user.controller.updateUser:125-133
@@ -1038,7 +1074,11 @@ const setStudentClasses = defineAction({
   async execute(params, ctx) {
     await assertHomeBranch(params.userId, ctx);
     await mirrorUserScope(params.userId, ctx);
-    const user = await userService.updateUser(params.userId, { classes: params.classIds });
+    const user = await userService.updateUser(
+      params.userId,
+      { classes: params.classIds, classChangeReason: params.reason ?? undefined },
+      { actorId: ctx.user.id, source: classChanges.CHANGE_SOURCES.ASSISTANT },
+    );
     return {
       summary: `${personName(user)} sinflari yangilandi: ${joinNames((user.classes || []).map((c) => c.name))}`,
       data: { userId: user.id, classIds: (user.classes || []).map((c) => c.id) },
@@ -1058,11 +1098,11 @@ const moveStudents = defineAction({
   risk: "medium",
   permission: "classes.transfer",
   description:
-    "Propose moving selected students from one class to another (e.g. transfer from 5-A to 5-B). Every student must currently be a member of the source class (check with people_class_detail); their other class memberships stay. Class membership does not change price.",
+    "Propose moving selected students from one class to another (e.g. transfer from 5-A to 5-B). Every student must currently be a member of the source class (check with people_class_detail); their other class memberships stay. A reason is REQUIRED — ask the owner for it, never invent one; it is stored in the class-change log. Class membership does not change price.",
   parameters: {
     type: "object",
     additionalProperties: false,
-    required: ["sourceClassId", "targetClassId", "studentIds"],
+    required: ["sourceClassId", "targetClassId", "studentIds", "reason"],
     properties: {
       sourceClassId: idSchema("Class the students are in now (people_classes)."),
       targetClassId: idSchema("Class to move them to (people_classes)."),
@@ -1073,9 +1113,22 @@ const moveStudents = defineAction({
         items: { type: "string", pattern: "^[a-fA-F0-9]{24}$" },
         description: "Student ids to move (members of the source class).",
       },
+      reason: {
+        type: "string",
+        minLength: classChanges.REASON_MIN,
+        maxLength: classChanges.REASON_MAX,
+        pattern: SAFE_TEXT_PATTERN,
+        description: "Why the students are moved, as the owner stated it (stored for every student in the class-change log).",
+      },
     },
   },
   async prepare(args) {
+    let reason;
+    try {
+      reason = classChanges.normalizeReason(args.reason);
+    } catch (error) {
+      throw new AiToolError(error.message);
+    }
     const sourceId = requireId(args.sourceClassId, "sourceClassId");
     const targetId = requireId(args.targetClassId, "targetClassId");
     if (sourceId === targetId) throw new AiToolError("Manba va maqsad sinf bir xil");
@@ -1089,8 +1142,8 @@ const moveStudents = defineAction({
     const members = new Map(source.students.map((s) => [s.id, s]));
     const notMembers = studentIds.filter((id) => !members.has(id));
     if (notMembers.length > 0) {
-      // `moveStudentsToClass` a'zolikni tekshirmaydi va a'zo bo'lmaganni
-      // shunchaki maqsad sinfga QO'SHIB yuborardi (people.md H10).
+      // `moveStudentsToClass` endi a'zo bo'lmaganni o'tkazib yuboradi, lekin
+      // taklif oldindan aniq aytishi kerak — jim "N tadan M tasi" bo'lmasin.
       const known = await prisma.user.findMany({
         where: { id: { in: notMembers } },
         select: { id: true, firstName: true, lastName: true },
@@ -1122,16 +1175,18 @@ const moveStudents = defineAction({
     const targetAfter = target.students.length + studentIds.length - alreadyInTarget.length;
 
     return {
-      params: { sourceClassId: sourceId, targetClassId: targetId, studentIds },
+      params: { sourceClassId: sourceId, targetClassId: targetId, studentIds, reason },
       preview: {
         summary: `${studentIds.length} ta o'quvchi "${source.name}" sinfidan "${target.name}" sinfiga ko'chiriladi`,
         target: `${source.name} → ${target.name}`,
         fields: [
           { label: `"${source.name}" o'quvchilari`, before: String(source.students.length), after: String(sourceAfter) },
           { label: `"${target.name}" o'quvchilari`, before: String(target.students.length), after: String(targetAfter) },
+          { label: "Sabab", before: "—", after: reason },
         ],
         effects: [
           `Ko'chiriladi: ${joinNames(names)}`,
+          "Har bir o'quvchi \"Sinf o'zgarishlari\" jurnaliga sababi bilan yoziladi",
           "O'quvchilarning boshqa sinflardagi a'zoligi saqlanadi",
           "Tarif va hisob-faktura summasiga ta'sir qilmaydi",
         ],
@@ -1141,6 +1196,7 @@ const moveStudents = defineAction({
         sourceClassId: sourceId,
         targetClassId: targetId,
         studentIds,
+        reason,
         sourceCount: source.students.length,
         targetCount: target.students.length,
         alreadyInTarget,
@@ -1150,15 +1206,15 @@ const moveStudents = defineAction({
   },
   // Mirrors POST /api/classes/:id/students/move — class.routes.js:36 (validateObjectId → classes.transfer) →
   // class.controller.moveStudentsToClass:86-99 `moveStudentsToClass(req.params.id, studentIds, targetClassId)`.
-  async execute(params) {
+  async execute(params, ctx) {
     const result = await classService.moveStudentsToClass(
       params.sourceClassId,
-      params.studentIds,
-      params.targetClassId,
+      { studentIds: params.studentIds, targetClassId: params.targetClassId, reason: params.reason },
+      { actorId: ctx.user.id, source: classChanges.CHANGE_SOURCES.ASSISTANT },
     );
     return {
       summary: `${params.studentIds.length} ta o'quvchi boshqa sinfga ko'chirildi`,
-      details: [{ label: "Maqsad sinfga qo'shildi", value: String(result.modified) }],
+      details: [{ label: "Ko'chirildi", value: String(result.modified) }],
       data: result,
     };
   },
