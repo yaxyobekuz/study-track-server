@@ -39,6 +39,7 @@ const {
   getScheduleWorkTime,
   summarizeWeek,
 } = require("./scheduleWorkTime.service");
+const classChanges = require("./studentClassChange.service");
 
 /**
  * Arxivlash o'qish davrini qanday sabab bilan yopadi.
@@ -902,13 +903,28 @@ async function createUser(data, actorId, actor = null) {
  *
  * ⚠️ `phone` / `parentPhone` bu yerda QABUL QILINMAYDI (kelsa e'tiborsiz
  * qoladi): ular alohida ruxsat ostida — `updateUserPhone`.
+ *
+ * ⚠️ O'QUVCHI SINFLARI: `classes` — to'liq YANGI ro'yxat (bo'sh massiv =
+ * barcha sinflardan chiqarish). O'quvchi kamida bitta sinfini yo'qotsa
+ * `classChangeReason` MAJBURIY va o'zgarish jurnalga yoziladi
+ * (`studentClassChange.service.js`). Sof qo'shish sababsiz.
+ *
+ * @param {string} id
+ * @param {object} data
+ * @param {{ actorId?: string|null, source?: string }} [options] - jurnal uchun
+ *   aktyor va manba (sinf o'zgarsa aktyor majburiy)
  */
-async function updateUser(id, data) {
+async function updateUser(id, data, options = {}) {
+  const {
+    actorId = null,
+    source = classChanges.CHANGE_SOURCES.PROFILE,
+  } = options;
   const {
     firstName,
     lastName,
     gender,
     classes: userClasses,
+    classChangeReason,
     subjects: userSubjects,
     isActive,
     workTimeSource,
@@ -956,28 +972,41 @@ async function updateUser(id, data) {
       update.weeklySchedule = weeklySchedule || {};
   }
 
-  let classesChanged = false;
+  // Yangi sinflar ro'yxati (takrorsiz). `null` — sinflarga tegilmaydi.
   let nextClassIds = null;
+  let classReason = null;
   if (user.role === "student" && userClasses) {
-    if (user.isArchived && userClasses.length > 0) {
+    if (!Array.isArray(userClasses)) {
+      throw new BadRequestError("Sinflar ro'yxati noto'g'ri formatda");
+    }
+    nextClassIds = [...new Set(userClasses.map(String))];
+
+    if (user.isArchived && nextClassIds.length > 0) {
       throw new BadRequestError(
         "Arxivlangan o'quvchiga sinf biriktirish mumkin emas",
       );
     }
-    for (const classId of userClasses) {
-      const classExists = await prisma.class.findUnique({
-        where: { id: classId },
-      });
-      if (!classExists) {
-        throw new BadRequestError(`Sinf topilmadi: ${classId}`);
-      }
+
+    // Bitta so'rov bilan — har sinf uchun alohida `findUnique` emas
+    const existing = await prisma.class.findMany({
+      where: { id: { in: nextClassIds } },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((c) => c.id));
+    const missing = nextClassIds.find((classId) => !existingIds.has(classId));
+    if (missing) {
+      throw new BadRequestError(`Sinf topilmadi: ${missing}`);
     }
 
-    const prevClasses = user.classes.map((c) => c.classId).sort();
-    nextClassIds = [...userClasses].sort();
-    classesChanged =
-      prevClasses.length !== nextClassIds.length ||
-      prevClasses.some((c, i) => c !== nextClassIds[i]);
+    // Sabab OLDINDAN tekshiriladi — tez va tushunarli javob uchun. Hal
+    // qiluvchi farq baribir tranzaksiya ichida, qulf ostida qayta olinadi.
+    const { removed } = classChanges.diffClassIds(
+      user.classes.map((c) => c.classId),
+      nextClassIds,
+    );
+    if (removed.length > 0) {
+      classReason = classChanges.normalizeReason(classChangeReason);
+    }
   }
 
   // O'QITUVCHI FANLARI — sinflarning ko'zgusi, lekin TESKARI rol uchun:
@@ -1007,14 +1036,45 @@ async function updateUser(id, data) {
   }
 
   await prisma.$transaction(async (tx) => {
+    // Sinf a'zoligi qulfi — BIRINCHI amal (sinf sahifasidagi ko'chirish /
+    // chiqarish bilan bir xil qulf, `studentClassChange.service.js`)
+    if (nextClassIds) await classChanges.lockStudentClasses(tx, [id]);
+
     await tx.user.update({ where: { id }, data: update });
-    if (classesChanged) {
-      await tx.userClass.deleteMany({ where: { userId: id } });
-      await tx.userClass.createMany({
-        data: userClasses.map((classId) => ({ userId: id, classId })),
-        skipDuplicates: true,
+
+    if (nextClassIds) {
+      // Farq QULF ICHIDA qayta olinadi: yuqoridagi o'qishdan keyin boshqa
+      // amal a'zolikni o'zgartirgan bo'lishi mumkin
+      const current = await tx.userClass.findMany({
+        where: { userId: id },
+        select: { classId: true },
       });
+      const { removed, added } = classChanges.diffClassIds(
+        current.map((c) => c.classId),
+        nextClassIds,
+      );
+
+      if (removed.length > 0) {
+        // Oraliqda qo'shilgan sinf endi olib tashlanayotgan bo'lsa ham
+        // sababsiz o'tmaydi
+        const reason = classReason ?? classChanges.normalizeReason(classChangeReason);
+        await tx.userClass.deleteMany({
+          where: { userId: id, classId: { in: removed } },
+        });
+        await classChanges.recordClassChanges(
+          tx,
+          [{ studentId: id, fromClassIds: removed, toClassIds: added }],
+          { reason, source, actorId },
+        );
+      }
+      if (added.length > 0) {
+        await tx.userClass.createMany({
+          data: added.map((classId) => ({ userId: id, classId })),
+          skipDuplicates: true,
+        });
+      }
     }
+
     if (subjectsChanged) {
       await tx.userSubject.deleteMany({ where: { userId: id } });
       await tx.userSubject.createMany({

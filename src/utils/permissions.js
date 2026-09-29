@@ -300,6 +300,9 @@ const PERMISSION_SECTIONS = [
       A.delete,
       { key: "students", label: "O'quvchi qo'shish / chiqarish" },
       { key: "transfer", label: "O'quvchilarni ko'chirish" },
+      // Chiqarish / ko'chirish SABABLARI registri — alohida: sinf
+      // ro'yxatini ko'rish huquqi "nega chiqarildi" izohlarini ochmasin
+      { key: "history", label: "Sinf o'zgarishlari tarixi (sabablari bilan)" },
       A.export,
     ],
   },

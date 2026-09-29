@@ -9,6 +9,7 @@ const {
   addStudentsToClass,
   removeStudentsFromClass,
   moveStudentsToClass,
+  getClassChanges,
   exportClassStudents,
   exportClasses,
 } = require("../controllers/class.controller");
@@ -22,6 +23,8 @@ router.use(protect);
 // GET routes for everyone
 router.get("/", getAllClasses);
 router.get("/export", authorizePermission(PERMISSIONS.CLASSES_EXPORT), exportClasses);
+// Sinf o'zgarishlari jurnali (sabablar — alohida ruxsat). ⚠️ `/:id` dan OLDIN.
+router.get("/changes", authorizePermission(PERMISSIONS.CLASSES_HISTORY), getClassChanges);
 router.get("/:id", validateObjectId("id"), getClass);
 router.get("/:id/export", validateObjectId("id"), authorizePermission(PERMISSIONS.CLASSES_EXPORT), exportClassStudents);
 

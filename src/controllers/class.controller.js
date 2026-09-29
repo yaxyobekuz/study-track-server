@@ -1,5 +1,7 @@
 const ExcelService = require("../services/excel.service");
 const classService = require("../services/class.service");
+const classChangeService = require("../services/studentClassChange.service");
+const { formatPaginationResponse } = require("../utils/pagination");
 const asyncHandler = require("../middleware/async.middleware");
 
 // Get all classes
@@ -67,13 +69,14 @@ const addStudentsToClass = asyncHandler(async (req, res) => {
   });
 });
 
-// Remove students from class (Owner only)
+// Remove students from class — sabab majburiy, jurnalga yoziladi
 const removeStudentsFromClass = asyncHandler(async (req, res) => {
-  const { studentIds, all } = req.body;
-  const data = await classService.removeStudentsFromClass(req.params.id, {
-    studentIds,
-    all,
-  });
+  const { studentIds, all, reason } = req.body;
+  const data = await classService.removeStudentsFromClass(
+    req.params.id,
+    { studentIds, all: all === true, reason },
+    { actorId: req.user.id },
+  );
 
   res.json({
     success: true,
@@ -82,13 +85,13 @@ const removeStudentsFromClass = asyncHandler(async (req, res) => {
   });
 });
 
-// Move students to another class (Owner only)
+// Move students to another class — sabab majburiy, jurnalga yoziladi
 const moveStudentsToClass = asyncHandler(async (req, res) => {
-  const { studentIds, targetClassId } = req.body;
+  const { studentIds, targetClassId, reason } = req.body;
   const data = await classService.moveStudentsToClass(
     req.params.id,
-    studentIds,
-    targetClassId,
+    { studentIds, targetClassId, reason },
+    { actorId: req.user.id },
   );
 
   res.json({
@@ -96,6 +99,14 @@ const moveStudentsToClass = asyncHandler(async (req, res) => {
     message: "O'quvchilar boshqa sinfga ko'chirildi",
     data,
   });
+});
+
+// Sinf o'zgarishlari jurnali — ko'chirilganlar / chiqarilganlar, sababi bilan
+const getClassChanges = asyncHandler(async (req, res) => {
+  const { data, total, page, limit, totals } =
+    await classChangeService.listClassChanges(req.query);
+
+  res.json({ ...formatPaginationResponse(data, total, page, limit), totals });
 });
 
 // Export class students to Excel
@@ -154,6 +165,7 @@ module.exports = {
   addStudentsToClass,
   removeStudentsFromClass,
   moveStudentsToClass,
+  getClassChanges,
   exportClassStudents,
   exportClasses,
 };

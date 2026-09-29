@@ -128,7 +128,10 @@ const getUser = asyncHandler(async (req, res) => {
 
 // Update user (Owner only)
 const updateUser = asyncHandler(async (req, res) => {
-  const user = await userService.updateUser(req.params.id, req.body);
+  // Aktyor — sinf o'zgarishi jurnali uchun ("kim chiqardi / kim ko'chirdi")
+  const user = await userService.updateUser(req.params.id, req.body, {
+    actorId: req.user.id,
+  });
 
   res.json({
     success: true,

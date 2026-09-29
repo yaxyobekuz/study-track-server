@@ -1,6 +1,8 @@
 const prisma = require("../config/prisma");
 const { formatDateUz } = require("../helpers/date.helpers");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { isValidId } = require("../utils/objectId");
+const classChanges = require("./studentClassChange.service");
 
 // createdBy soft ref (FK emas) larni bir so'rovda yuklab, xaritalash uchun
 async function attachCreators(rows) {
@@ -178,59 +180,137 @@ async function addStudentsToClass(classId, studentIds) {
   return { modified: count };
 }
 
+// Ro'yxat sahifada eskirgan bo'lsa (boshqa oynada allaqachon ko'chirilgan /
+// chiqarilgan) — jim "0 ta" o'rniga aniq xabar
+const NOT_IN_CLASS_MESSAGE =
+  "Tanlangan o'quvchilar bu sinfda topilmadi. Ro'yxatni yangilab, qayta urinib ko'ring";
+
+/** Tanlangan id lar — takrorsiz, matn ko'rinishida. Bo'sh ro'yxat rad etiladi. */
+function normalizeStudentIds(studentIds) {
+  if (!Array.isArray(studentIds) || studentIds.length === 0) {
+    throw new BadRequestError("O'quvchilar tanlanmagan");
+  }
+  return [...new Set(studentIds.map(String))];
+}
+
 /**
  * O'quvchilarni sinfdan chiqarish (tanlangan yoki barchasini).
+ *
+ * ⚠️ SABAB MAJBURIY va har o'quvchi uchun jurnalga yoziladi
+ * (`studentClassChange.service.js`) — a'zolik bilan BITTA tranzaksiyada.
+ *
+ * "Barchasi" — amal boshlangan paytdagi a'zolar: oraliqda qo'shilgan
+ * o'quvchi admin ko'rmagan ro'yxat bilan sababsiz chiqib ketmasligi uchun
+ * faqat qulflangan to'plam chiqariladi.
+ *
+ * @param {string} classId
+ * @param {{ studentIds?: string[], all?: boolean, reason?: string }} payload
+ * @param {{ actorId: string, source?: string }} options
  */
-async function removeStudentsFromClass(classId, { studentIds, all } = {}) {
+async function removeStudentsFromClass(
+  classId,
+  { studentIds, all, reason } = {},
+  { actorId, source = classChanges.CHANGE_SOURCES.CLASS_PAGE } = {},
+) {
   const classData = await prisma.class.findUnique({ where: { id: classId } });
   if (!classData) {
     throw new NotFoundError("Sinf topilmadi");
   }
 
-  const where = { classId };
+  const ids = all ? null : normalizeStudentIds(studentIds);
+  const text = classChanges.normalizeReason(reason);
 
-  if (!all) {
-    if (!Array.isArray(studentIds) || studentIds.length === 0) {
-      throw new BadRequestError("O'quvchilar tanlanmagan");
-    }
-    where.userId = { in: studentIds };
+  const candidates = await prisma.userClass.findMany({
+    where: { classId, ...(ids ? { userId: { in: ids } } : {}) },
+    select: { userId: true },
+  });
+  if (candidates.length === 0) {
+    throw new BadRequestError(NOT_IN_CLASS_MESSAGE);
   }
+  const candidateIds = candidates.map((c) => c.userId);
 
-  const result = await prisma.userClass.deleteMany({ where });
-  return { modified: result.count };
+  const removedIds = await prisma.$transaction(async (tx) => {
+    await classChanges.lockStudentClasses(tx, candidateIds);
+
+    // Qulf ostida qayta o'qiladi — oraliqda boshqa amal chiqargan bo'lishi mumkin
+    const present = await tx.userClass.findMany({
+      where: { classId, userId: { in: candidateIds } },
+      select: { userId: true },
+    });
+    const presentIds = present.map((p) => p.userId);
+    if (presentIds.length === 0) return [];
+
+    await tx.userClass.deleteMany({
+      where: { classId, userId: { in: presentIds } },
+    });
+    await classChanges.recordClassChanges(
+      tx,
+      presentIds.map((studentId) => ({
+        studentId,
+        fromClassIds: [classId],
+        toClassIds: [],
+      })),
+      { reason: text, source, actorId },
+    );
+    return presentIds;
+  });
+
+  if (removedIds.length === 0) {
+    throw new BadRequestError(NOT_IN_CLASS_MESSAGE);
+  }
+  return { modified: removedIds.length };
 }
 
 /**
  * Tanlangan o'quvchilarni boshqa sinfga ko'chirish.
+ *
+ * ⚠️ SABAB MAJBURIY — `removeStudentsFromClass` bilan bir xil jurnal.
+ *
+ * ⚠️ Faqat HAQIQATAN manba sinfda turgan o'quvchi ko'chiriladi. Ilgari
+ * a'zolik tekshirilmasdi: eskirgan tanlovdagi, manba sinfda yo'q o'quvchi
+ * maqsad sinfga jimgina QO'SHILIB ketardi.
+ *
+ * Maqsad sinfda allaqachon bor o'quvchi faqat manbadan chiqadi, lekin
+ * jurnalda "ko'chirildi" bo'lib yoziladi — admin qarori aynan shu edi.
+ *
+ * @param {string} classId - manba sinf
+ * @param {{ studentIds: string[], targetClassId: string, reason: string }} payload
+ * @param {{ actorId: string, source?: string }} options
  */
-async function moveStudentsToClass(classId, studentIds, targetClassId) {
+async function moveStudentsToClass(
+  classId,
+  { studentIds, targetClassId, reason } = {},
+  { actorId, source = classChanges.CHANGE_SOURCES.CLASS_PAGE } = {},
+) {
   if (!targetClassId) {
     throw new BadRequestError("Maqsadli sinf tanlanmagan");
+  }
+  if (!isValidId(String(targetClassId))) {
+    throw new BadRequestError("Noto'g'ri maqsadli sinf formati");
   }
 
   if (String(targetClassId) === String(classId)) {
     throw new BadRequestError("O'quvchilar allaqachon shu sinfda");
   }
 
-  if (!Array.isArray(studentIds) || studentIds.length === 0) {
-    throw new BadRequestError("O'quvchilar tanlanmagan");
-  }
+  const ids = normalizeStudentIds(studentIds);
+  const text = classChanges.normalizeReason(reason);
 
-  const [source, target] = await Promise.all([
+  const [sourceClass, targetClass] = await Promise.all([
     prisma.class.findUnique({ where: { id: classId } }),
     prisma.class.findUnique({ where: { id: targetClassId } }),
   ]);
 
-  if (!source) {
+  if (!sourceClass) {
     throw new NotFoundError("Sinf topilmadi");
   }
-  if (!target) {
+  if (!targetClass) {
     throw new NotFoundError("Maqsadli sinf topilmadi");
   }
 
   // Arxivlangan o'quvchilarni boshqa sinfga ko'chirib bo'lmaydi
   const archivedCount = await prisma.user.count({
-    where: { id: { in: studentIds }, role: "student", isArchived: true },
+    where: { id: { in: ids }, role: "student", isArchived: true },
   });
   if (archivedCount > 0) {
     throw new BadRequestError(
@@ -238,24 +318,44 @@ async function moveStudentsToClass(classId, studentIds, targetClassId) {
     );
   }
 
-  const eligible = await prisma.user.findMany({
-    where: { id: { in: studentIds }, role: "student", isArchived: false },
-    select: { id: true },
-  });
-  const eligibleIds = eligible.map((s) => s.id);
+  const movedIds = await prisma.$transaction(async (tx) => {
+    await classChanges.lockStudentClasses(tx, ids);
 
-  // $pull + $addToSet → transaction ichida atomik
-  const [, added] = await prisma.$transaction([
-    prisma.userClass.deleteMany({
-      where: { classId, userId: { in: eligibleIds } },
-    }),
-    prisma.userClass.createMany({
-      data: eligibleIds.map((id) => ({ userId: id, classId: targetClassId })),
+    // Qulf ostida: faqat hozir manba sinfda turgan faol o'quvchilar
+    const present = await tx.userClass.findMany({
+      where: {
+        classId,
+        userId: { in: ids },
+        user: { role: "student", isArchived: false },
+      },
+      select: { userId: true },
+    });
+    const presentIds = present.map((p) => p.userId);
+    if (presentIds.length === 0) return [];
+
+    await tx.userClass.deleteMany({
+      where: { classId, userId: { in: presentIds } },
+    });
+    await tx.userClass.createMany({
+      data: presentIds.map((userId) => ({ userId, classId: targetClassId })),
       skipDuplicates: true,
-    }),
-  ]);
+    });
+    await classChanges.recordClassChanges(
+      tx,
+      presentIds.map((studentId) => ({
+        studentId,
+        fromClassIds: [classId],
+        toClassIds: [targetClassId],
+      })),
+      { reason: text, source, actorId },
+    );
+    return presentIds;
+  });
 
-  return { modified: added.count };
+  if (movedIds.length === 0) {
+    throw new BadRequestError(NOT_IN_CLASS_MESSAGE);
+  }
+  return { modified: movedIds.length };
 }
 
 /**
