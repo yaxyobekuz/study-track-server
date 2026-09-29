@@ -499,6 +499,7 @@ model User {
 
   profileImage     Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
   classes          UserClass[]
+  classChanges     StudentClassChange[] @relation("StudentClassChanges")
   subjects         UserSubject[]
   achievements     StudentAchievement[] @relation("StudentAchievements")
   clubMemberships  ClubMember[]         @relation("ClubMemberships")
@@ -528,6 +529,65 @@ model UserClass {
   @@id([userId, classId])
   @@index([classId])
   @@map("user_classes")
+}
+
+// O'QUVCHI SINFI O'ZGARISHI JURNALI — sinfdan CHIQARISH va boshqa sinfga
+// KO'CHIRISH, sababi va aktyori bilan.
+//
+// `UserClass` sanasiz va tarixsiz (`education.md` §5): "nega bu o'quvchi
+// sinfsiz qoldi / nega 5-A dan 6-B ga o'tdi" degan savolga faqat shu jadval
+// javob beradi. Shuning uchun SABAB MAJBURIY — sababsiz o'zgarish yozilmaydi.
+//
+// Faqat o'quvchi sinfini YO'QOTGAN amal yoziladi (bitta qator = bitta
+// o'quvchi, bitta amal):
+//   · `moved`   — sinf(lar)dan chiqdi VA boshqasiga qo'shildi;
+//   · `removed` — sinf(lar)dan chiqdi, o'rniga hech narsa yo'q.
+// Sof qo'shish (sinfsiz o'quvchiga sinf berish, yana bitta sinf qo'shish)
+// yozilmaydi va sabab talab qilmaydi — u hech kimni sinfidan mahrum qilmaydi.
+//
+// ⚠️ APPEND-ONLY: tahrirlash ham, o'chirish ham yo'q — bu audit.
+// ⚠️ SINF NOMI MUHRLANADI (`*ClassNames`): sinf keyin qayta nomlansa yoki
+// o'chirilsa ham yozuv o'sha paytdagi holatni aytadi
+// (`studentSnapshot.className` bilan bir xil doktrina). `*ClassIds` — faqat
+// filtr uchun, ko'rsatish nomlardan.
+// ⚠️ ARXIVLASHDA sinfdan chiqish bu yerga YOZILMAYDI: uning sababi
+// `User.archiveNote` da, registri — O'quvchilar → Arxiv. Ikki joyda yozilsa
+// bitta hodisa ikki ro'yxatda ikki xil sabab bilan turib qolardi.
+model StudentClassChange {
+  id        String                   @id @db.Char(24)
+  studentId String                   @map("student_id") @db.Char(24)
+  type      StudentClassChangeType
+  // Amal qayerdan qilingani — "profildan" yoki "sinf sahifasidan"
+  source    StudentClassChangeSource
+
+  // Chiqqan sinflar (har doim kamida bitta) va qo'shilgan sinflar
+  // (`removed` da bo'sh). Parallel massivlar: `fromClassIds[i]` ↔ `fromClassNames[i]`.
+  fromClassIds   String[] @map("from_class_ids")
+  fromClassNames String[] @map("from_class_names")
+  toClassIds     String[] @default([]) @map("to_class_ids")
+  toClassNames   String[] @default([]) @map("to_class_names")
+
+  reason    String
+  // soft ref → User (aktyor). FK yo'q: xodim o'chirilsa ham yozuv qoladi.
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  student User @relation("StudentClassChanges", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([type, createdAt])
+  @@index([studentId, createdAt])
+  @@map("student_class_changes")
+}
+
+enum StudentClassChangeType {
+  moved
+  removed
+}
+
+enum StudentClassChangeSource {
+  profile // O'quvchi profili → "Sinflar" kartasi
+  class_page // Sinf sahifasi → "Ko'chirish" / "Sinfdan chiqarish"
+  assistant // AI yordamchi (egasi tasdiqlagan taklif)
 }
 
 // User ↔ Subject M2M junction — "bu o'qituvchi shu fanlardan dars beradi".
