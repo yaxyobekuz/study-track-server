@@ -59,6 +59,7 @@ const {
   accumulateGrade,
   accumulateAggregate,
   buildOverview,
+  buildRankings,
   buildOverviewNarrative,
   shiftDay,
 } = require("../helpers/gradeAnalysis");
@@ -956,17 +957,59 @@ function formatRun(run, labels) {
   return labels ? { ...base, ...labels } : base;
 }
 
+/**
+ * Yig'ma + REYTING. Reyting (`overview.rankings`) 2026-09-29 dan tahlil
+ * tugaganda yig'maga yoziladi. Undan oldingi tahlillarda u yo'q — o'shalar
+ * uchun MUHRLANGAN hisobotlardan o'qishda quriladi va BAZAGA YOZILMAYDI
+ * (tayyor tahlilning yig'masi o'zgarmaydi). Hisob `buildRankings` — ikkala
+ * yo'lda bitta funksiya.
+ */
+async function overviewWithRankings(run) {
+  const overview = run.overview;
+  if (!overview || overview.rankings || run.status !== STATUS.COMPLETED) return overview;
+
+  const reports = await prisma.gradeAnalysisReport.findMany({
+    where: { runId: run.id, ...PUBLISHABLE },
+    select: {
+      id: true,
+      studentId: true,
+      studentSnapshot: true,
+      classId: true,
+      level: true,
+      average: true,
+      previousAverage: true,
+      gradeCount: true,
+    },
+  });
+
+  const rankings = buildRankings(
+    reports.map((report) => ({
+      studentId: report.studentId,
+      reportId: report.id,
+      name: fullName(report.studentSnapshot),
+      className: report.studentSnapshot?.className ?? null,
+      classId: report.classId,
+      level: report.level,
+      average: report.average,
+      previousAverage: report.previousAverage,
+      gradeCount: report.gradeCount,
+    })),
+  );
+  return { ...overview, rankings };
+}
+
 /** Tahlil + yig'ma + xulosa (dashboard). */
 async function getRun(id) {
   const run = await getRunOrThrow(id);
-  const [labels, publishedCount, publishable] = await Promise.all([
+  const [labels, publishedCount, publishable, overview] = await Promise.all([
     describeScope(run),
     prisma.gradeAnalysisReport.count({ where: { runId: id, isPublished: true } }),
     prisma.gradeAnalysisReport.count({ where: { runId: id, ...PUBLISHABLE } }),
+    overviewWithRankings(run),
   ]);
   return {
     ...formatRun(run, labels),
-    overview: run.overview,
+    overview,
     narrative: run.narrative,
     publishedCount,
     publishableCount: publishable,

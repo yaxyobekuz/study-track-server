@@ -11,7 +11,9 @@
  * Qamrov (maktab / sinflar) uchun:
  *   4. `buildOverview`      — dashboard yig'masi (fanlar, sinf×fan xaritasi,
  *                             zaif mavzular, sabablar, xavf ostidagilar)
- *   5. `buildOverviewNarrative` — rahbariyat uchun qoidalar xulosasi
+ *   5. `buildRankings`      — eng yaxshi / eng past natijalar: sinf kesimida
+ *                             va ulardan yig'ilgan maktab reytingi
+ *   6. `buildOverviewNarrative` — rahbariyat uchun qoidalar xulosasi
  *
  * ⚠️ RAQAMNI FAQAT SHU FAYL HISOBLAYDI. AI qatlami (`gradeAnalysisAi.service.js`)
  * shu faktlardan faqat MATN yozadi va har bir sonini shu faktlar bilan
@@ -115,6 +117,11 @@ const THRESHOLDS = Object.freeze({
   diagMinWrong: 3,
   // Xavf
   riskAlert: 50,
+  // Maqsad: bir davrda realistik o'sish (o'rtacha ball)
+  maxTargetStep: 1.0,
+  // Reyting
+  rankSize: 3,
+  rankMinGradesShare: 0.5, // sinfdagi baholar soni medianasining shuncha ulushi
 });
 
 /* ─────────────────────────── YORDAMCHILAR ─────────────────────────── */
@@ -181,6 +188,35 @@ const subjectStatusOf = (average, count) => {
   if (average >= THRESHOLDS.weakAverage) return "watch";
   if (average >= THRESHOLDS.criticalAverage) return "weak";
   return "critical";
+};
+
+/**
+ * Fan bo'yicha MAQSAD — keyingi davr uchun o'lchanadigan o'rtacha baho.
+ * Tavsiya "natijani ko'taring" emas, "3.50 ga yetkazing" deb aytishi uchun.
+ *
+ * Nomzodlar: keyingi daraja chegarasi (3.5 → 3.9 → 4.5), sinfdan ortda
+ * qolgan bo'lsa — sinf o'rtachasi, pasaygan bo'lsa — davr boshidagi
+ * o'rtacha. Eng kattasi olinadi, lekin bir davrda `maxTargetStep` dan
+ * ortiq emas: 2.40 olgan o'quvchiga "4.30 ga chiqing" deyish qo'l
+ * yetmaydigan maqsad bo'lib, ruhni tushirardi.
+ *
+ * ⚠️ Maqsad FAKTLARDA turadi: AI qatlami uni matnga yozadi va har bir
+ * soni faktlar bilan tekshiriladi — boshqa joyda hisoblanmaydi.
+ * @returns {number|null} maqsad yoki `null` (baho kam / o'sish shart emas)
+ */
+const subjectTargetOf = (subject) => {
+  if (subject.status === "insufficient" || subject.average == null) return null;
+
+  const goals = [];
+  if (subject.average < THRESHOLDS.weakAverage) goals.push(THRESHOLDS.weakAverage);
+  else if (subject.average < THRESHOLDS.goodAverage) goals.push(THRESHOLDS.goodAverage);
+  else if (subject.average < THRESHOLDS.strongAverage) goals.push(THRESHOLDS.strongAverage);
+  if (subject.vsClass != null && subject.vsClass <= -THRESHOLDS.classGap) goals.push(subject.classAverage);
+  if (subject.change != null && subject.change <= -THRESHOLDS.trendDelta) goals.push(subject.firstHalf);
+  if (goals.length === 0) return null;
+
+  const target = round(Math.min(5, subject.average + THRESHOLDS.maxTargetStep, Math.max(...goals)));
+  return target > subject.average ? target : null;
 };
 
 /** Davr ichidagi dinamika: xronologik birinchi yarmi → ikkinchi yarmi. */
@@ -277,7 +313,7 @@ function buildStudentFacts(input) {
     const lastGrades = list.slice(-5);
     const tail = list.slice(-THRESHOLDS.lowStreakLength);
 
-    subjects.push({
+    const row = {
       id: subjectId,
       name: nameOf(subjectId),
       average,
@@ -299,7 +335,9 @@ function buildStudentFacts(input) {
       lowStreak:
         tail.length === THRESHOLDS.lowStreakLength && tail.every((grade) => grade <= THRESHOLDS.lowStreakMax),
       status: subjectStatusOf(average, list.length),
-    });
+    };
+    row.target = subjectTargetOf(row);
+    subjects.push(row);
   }
 
   // Tartib — O'RTACHA bo'yicha kamayish (alifbo emas): ekranda fanlar
@@ -749,142 +787,364 @@ const SUBJECT_CAUSE_TEXT = {
 };
 
 /**
- * Uch auditoriya uchun tavsiyalar katalogi. Har bir yozuv topilmadan
- * `{ student, parent, staff }` qaytaradi (keraksizi `null`).
+ * TAVSIYALAR — "eng keraklisi birinchi, har biri bajariladigan".
  *
- * ⚠️ Tavsiya SABABGA bog'langan: "ko'proq o'qing" kabi umumiy gap yo'q.
- * Har biri nima qilinishini, qancha va kim bilan aytadi.
+ * Har bir tavsiya uch qismdan: SABAB (faktdagi raqam bilan) → MAQSAD
+ * (`target`, o'lchanadigan o'rtacha) → QADAMLAR (`steps`: nima, qachon,
+ * qancha, kim bilan). "Ko'proq o'qing" kabi umumiy gap yo'q.
+ *
+ * ⚠️ BITTA FAN — BITTA TAVSIYA (`buildSubjectPlans`). Ilgari har bir
+ * topilma alohida tavsiya edi: bitta Matematika uchun "sinfdan ortda",
+ * "ketma-ket past" va uchta "zaif mavzu" — beshta karta chiqib, eng
+ * muhimi ro'yxatning oxiriga tushib qolardi. Endi fanning hamma sababi
+ * bitta rejaga yig'iladi, rejalar esa og'irligi bo'yicha saralanadi.
+ *
+ * ⚠️ `code` — asosiy sabab (mobil va admin ikonka tanlaydi, kodlar
+ * `FINDING_CODES` dan — yangi kod qo'shilmaydi). `steps` va `target` —
+ * qo'shimcha maydonlar: eski muhrlangan hisobotlarda ular yo'q.
+ */
+
+const MAX_STEPS = 4;
+const MAX_PLAN_TOPICS = 3;
+
+/** "«A» mavzusini" / "«A», «B» mavzularini". */
+const topicsPhrase = (topics) =>
+  `${topics.map((topic) => `«${topic.name}»`).join(", ")} ${topics.length > 1 ? "mavzularini" : "mavzusini"}`;
+
+/** Fan topilmalari — bitta fan uchun BITTA rejaga yig'iladi. */
+const SUBJECT_PLAN_CODES = new Set([
+  FINDING_CODES.BELOW_CLASS,
+  FINDING_CODES.CLASS_WIDE_DIFFICULTY,
+  FINDING_CODES.DECLINING_SUBJECT,
+  FINDING_CODES.LOW_STREAK,
+  FINDING_CODES.UNSTABLE_SUBJECT,
+  FINDING_CODES.WEAK_SUBJECT,
+  FINDING_CODES.WEAK_TOPIC,
+]);
+
+/**
+ * Asosiy sabab tartibi — rejaning `code` i va sarlavhasi shundan.
+ * "Nega" ni eng aniq tushuntiradigani birinchi: sinf bilan taqqoslash
+ * (shaxsiy bo'shliqmi yoki fan hammaga qiyinmi), keyin dinamika, keyin
+ * belgilar, oxirida umumiy "past fan".
+ */
+const SUBJECT_ROOT_ORDER = [
+  FINDING_CODES.BELOW_CLASS,
+  FINDING_CODES.CLASS_WIDE_DIFFICULTY,
+  FINDING_CODES.DECLINING_SUBJECT,
+  FINDING_CODES.LOW_STREAK,
+  FINDING_CODES.UNSTABLE_SUBJECT,
+  FINDING_CODES.WEAK_SUBJECT,
+  FINDING_CODES.WEAK_TOPIC,
+];
+
+/** Qaysi fan birinchi — sabablar og'irligi yig'indisi. */
+const SUBJECT_CAUSE_WEIGHT = {
+  [FINDING_CODES.LOW_STREAK]: 4,
+  [FINDING_CODES.BELOW_CLASS]: 3,
+  [FINDING_CODES.DECLINING_SUBJECT]: 3,
+  [FINDING_CODES.WEAK_SUBJECT]: 3,
+  [FINDING_CODES.UNSTABLE_SUBJECT]: 2,
+  [FINDING_CODES.CLASS_WIDE_DIFFICULTY]: 1,
+  [FINDING_CODES.WEAK_TOPIC]: 1,
+};
+
+/** Asosiy sabab bo'yicha sarlavha va "nega" jumlasi. */
+const SUBJECT_ROOT_TEXT = {
+  [FINDING_CODES.BELOW_CLASS]: {
+    student: { title: (s) => `${s}: sinfdoshlaringizga yetib oling`, why: "Sinf mavzularni o'zlashtirgan — farq shaxsiy tayyorgarlikda." },
+    parent: { title: (s) => `${s}: farzandingiz sinfdan ortda qolmoqda`, why: "Muammo sinfda emas, shaxsiy o'zlashtirishda." },
+  },
+  [FINDING_CODES.CLASS_WIDE_DIFFICULTY]: {
+    student: { title: (s) => `${s}: qo'shimcha yordam oling`, why: "Fan butun sinfga qiyin kechmoqda — bu faqat sizga taalluqli emas." },
+    parent: { title: (s) => `${s}: fan butun sinfga qiyin`, why: "Sinf o'rtachasi ham past — bu faqat farzandingizga taalluqli emas." },
+  },
+  [FINDING_CODES.DECLINING_SUBJECT]: {
+    student: { title: (s) => `${s}: pasayishni to'xtating`, why: "Pasayish shu davrda boshlangan — so'nggi mavzular o'zlashtirilmayapti." },
+    parent: { title: (s) => `${s}: baholar pasaymoqda`, why: "Pasayish shu davrda boshlangan — sababini hozir aniqlash oson." },
+  },
+  [FINDING_CODES.LOW_STREAK]: {
+    student: { title: (s) => `${s}: oxirgi baholar past — kechiktirmang`, why: "Ketma-ket past baholar — mavzu tushunilmay qolganining belgisi." },
+    parent: { title: (s) => `${s}: ketma-ket past baholar`, why: "Bu o'z-o'zidan to'g'rilanmaydi — hozir aralashish kerak." },
+  },
+  [FINDING_CODES.UNSTABLE_SUBJECT]: {
+    student: { title: (s) => `${s}: natijani barqarorlashtiring`, why: "Bilim bor, lekin tayyorgarlik muntazam emas." },
+    parent: { title: (s) => `${s}: natija beqaror`, why: "Bilim bor, lekin tayyorgarlik muntazam emas." },
+  },
+  [FINDING_CODES.WEAK_SUBJECT]: {
+    student: { title: (s) => `${s}: natijani ko'taring`, why: "" },
+    parent: { title: (s) => `${s}: natija past`, why: "" },
+  },
+  [FINDING_CODES.WEAK_TOPIC]: {
+    student: { title: (s) => `${s}: zaif mavzularni yoping`, why: "Fan umuman yomon emas, lekin ayrim mavzular o'zlashtirilmagan." },
+    parent: { title: (s) => `${s}: zaif mavzular bor`, why: "Fan umuman yomon emas, lekin ayrim mavzular o'zlashtirilmagan." },
+  },
+};
+
+/** Natijasi yaxshi fandagi yumshoq belgi — "o'zlashtirilmayapti" deyilmaydi. */
+const SOFT_ROOT_TEXT = {
+  [FINDING_CODES.DECLINING_SUBJECT]: {
+    student: { title: (s) => `${s}: natijani ushlab qoling`, why: "Natija yuqori, lekin davr oxirida tushgan — hozir ushlab qolish oson." },
+    parent: { title: (s) => `${s}: natija biroz tushgan`, why: "Natija yaxshi, lekin davr oxirida tushgan — hozir ushlab qolish oson." },
+  },
+  [FINDING_CODES.UNSTABLE_SUBJECT]: {
+    student: { title: (s) => `${s}: natijani barqarorlashtiring`, why: "Natija yaxshi, lekin baholar bir tekis emas." },
+    parent: { title: (s) => `${s}: natija bir tekis emas`, why: "Natija yaxshi, lekin baholar bir tekis emas." },
+  },
+};
+
+/** Xodim uchun amal va mas'ul — asosiy sabab bo'yicha. */
+const SUBJECT_STAFF_ACTION = {
+  [FINDING_CODES.BELOW_CLASS]: { action: "individual ishlash, zaif mavzular bo'yicha qayta so'rov", owner: (s) => `${s} o'qituvchisi` },
+  [FINDING_CODES.CLASS_WIDE_DIFFICULTY]: { action: "o'qitish uslubini ko'rib chiqish, sinfga qo'shimcha dars", owner: () => "O'quv bo'limi" },
+  [FINDING_CODES.DECLINING_SUBJECT]: { action: "pasayish sababini aniqlash uchun o'quvchi bilan suhbat", owner: () => "Sinf rahbari" },
+  [FINDING_CODES.LOW_STREAK]: { action: "shu hafta o'quvchi bilan suhbat va qayta topshirish imkoni", owner: (s) => `${s} o'qituvchisi` },
+  [FINDING_CODES.UNSTABLE_SUBJECT]: { action: "uy vazifasi bajarilishini muntazam nazorat qilish", owner: (s) => `${s} o'qituvchisi` },
+  [FINDING_CODES.WEAK_SUBJECT]: { action: "qo'shimcha dars va uy vazifasi nazorati", owner: (s) => `${s} o'qituvchisi` },
+  [FINDING_CODES.WEAK_TOPIC]: { action: "zaif mavzularni takrorlash", owner: (s) => `${s} o'qituvchisi` },
+};
+
+/** Rejaning fakt jumlasi: o'rtacha, sinf, dinamika, oxirgi baholar, mavzular. */
+const planFactsText = (plan, voice) => {
+  const parts = [];
+  if (plan.average != null) {
+    parts.push(voice === "parent" ? `Farzandingizning o'rtachasi ${fmt(plan.average)}` : `O'rtachangiz ${fmt(plan.average)}`);
+  }
+  if (plan.classAverage != null) parts.push(`sinf o'rtachasi ${fmt(plan.classAverage)}`);
+  if (plan.codes.has(FINDING_CODES.DECLINING_SUBJECT) && plan.firstHalf != null) {
+    parts.push(`davr boshida ${fmt(plan.firstHalf)} edi`);
+  }
+  if (plan.codes.has(FINDING_CODES.LOW_STREAK) && plan.streak?.length) parts.push(`oxirgi baholar: ${plan.streak.join(", ")}`);
+  if (plan.codes.has(FINDING_CODES.UNSTABLE_SUBJECT) && plan.min != null) {
+    parts.push(`baholar ${plan.min} dan ${plan.max} gacha tebranadi`);
+  }
+
+  const sentences = [];
+  if (parts.length) sentences.push(`${parts.join(", ")}.`);
+  if (plan.topics.length) {
+    sentences.push(`Zaif mavzular: ${plan.topics.map((topic) => `«${topic.name}» (${fmt(topic.average)})`).join(", ")}.`);
+  }
+  return sentences.join(" ");
+};
+
+const planGoalText = (plan, voice) => {
+  if (plan.target == null) return "";
+  return voice === "parent"
+    ? `Maqsad — keyingi davrda o'rtachani ${fmt(plan.target)} ga chiqarish.`
+    : `Maqsad — keyingi davrda o'rtachani ${fmt(plan.target)} ga yetkazish.`;
+};
+
+/** O'quvchi qadamlari — sabablar tartibida, eng keraklisi birinchi. */
+const studentSteps = (plan) => {
+  const steps = [];
+  const has = (code) => plan.codes.has(code);
+  if (has(FINDING_CODES.LOW_STREAK)) {
+    steps.push("Shu hafta o'qituvchidan oxirgi past baholar sababini so'rang va mavzuni qayta topshirishni kelishing");
+  }
+  if (plan.topics.length) {
+    steps.push(`${topicsPhrase(plan.topics)} qayta ishlang: har biri uchun darslikdan qisqa konspekt va kamida 10 ta mashq`);
+  }
+  if (has(FINDING_CODES.BELOW_CLASS)) {
+    steps.push("O'qituvchidan shu davrda o'tilgan mavzular ro'yxatini oling, tushunmaganlaringizni belgilab, birma-bir yoping");
+  }
+  if (has(FINDING_CODES.CLASS_WIDE_DIFFICULTY)) {
+    steps.push("Maktabdagi qo'shimcha dars yoki konsultatsiyaga yoziling, darsda tushunmagan mavzuni o'sha kuni qayta ishlang");
+  }
+  if (has(FINDING_CODES.DECLINING_SUBJECT)) {
+    steps.push("So'nggi 2 haftada o'tilgan mavzularni tartib bilan takrorlang — yangi mavzu eskisiga tayanadi");
+  }
+  if (has(FINDING_CODES.UNSTABLE_SUBJECT)) {
+    steps.push("Har darsdan oldingi kun 15 daqiqa shu fandan tayyorlaning, uy vazifasini kechiktirmang");
+  }
+  if (plan.root === FINDING_CODES.WEAK_SUBJECT) {
+    steps.push("Shu hafta o'qituvchidan qaysi mavzularni qayta ishlash kerakligini so'rab, ro'yxat qiling va har kuni bittasini yoping");
+  }
+  steps.push("Har kuni 20–30 daqiqa shu fandan mashq qiling, hafta oxirida o'zingizni 5 ta savol bilan tekshiring");
+  return steps.slice(0, MAX_STEPS);
+};
+
+/** Ota-ona qadamlari. */
+const parentSteps = (plan) => {
+  const steps = [];
+  const has = (code) => plan.codes.has(code);
+  if (has(FINDING_CODES.LOW_STREAK)) {
+    steps.push(`Shu hafta ${plan.subject} o'qituvchisi bilan bog'lanib, past baholar sababini va qayta topshirish imkonini aniqlang`);
+  }
+  if (plan.topics.length) {
+    steps.push(
+      `${topicsPhrase(plan.topics)} farzandingiz bilan takrorlang — mavzuni sizga o'zi tushuntirib bersin: tushuntira olsa, o'zlashtirgan`,
+    );
+  }
+  if (has(FINDING_CODES.BELOW_CLASS) && !has(FINDING_CODES.LOW_STREAK)) {
+    steps.push(`${plan.subject} o'qituvchisi bilan uchrashib, qaysi mavzularda ortda qolganini aniqlang`);
+  }
+  if (has(FINDING_CODES.CLASS_WIDE_DIFFICULTY)) {
+    steps.push("Maktabdan shu fan bo'yicha qo'shimcha dars bor-yo'qligini so'rang");
+  }
+  if (has(FINDING_CODES.DECLINING_SUBJECT)) {
+    steps.push("Farzandingiz bilan nima o'zgarganini xotirjam gaplashing: yangi mavzu, charchoq yoki qiziqish yo'qolishi");
+  }
+  if (has(FINDING_CODES.UNSTABLE_SUBJECT)) {
+    steps.push("Uy vazifasi uchun har kuni aniq vaqt belgilang va bajarilganini tekshiring");
+  }
+  if (plan.root === FINDING_CODES.WEAK_SUBJECT) {
+    steps.push(`${plan.subject} o'qituvchisi bilan bog'lanib, qaysi mavzular qiyin ekanini aniqlang va uyda shu mavzularni birga takrorlang`);
+  }
+  steps.push(`Har hafta kundalikdagi ${plan.subject} baholarini birga ko'rib chiqing va har bir yaxshilanishni rag'batlantiring`);
+  return steps.slice(0, MAX_STEPS);
+};
+
+/**
+ * Fan rejalari — har bir fan uchun bitta tavsiya, og'irligi bo'yicha.
+ * @returns {Array<object>} tavsiya xomashyosi (`toView` shu shaklni kutadi)
+ */
+function buildSubjectPlans(facts, findings) {
+  const bySubject = new Map();
+  for (const finding of findings) {
+    if (!SUBJECT_PLAN_CODES.has(finding.code) || !finding.subjectId) continue;
+    if (!bySubject.has(finding.subjectId)) bySubject.set(finding.subjectId, []);
+    bySubject.get(finding.subjectId).push(finding);
+  }
+
+  const plans = [];
+  for (const [subjectId, list] of bySubject) {
+    const subject = facts.subjects.find((row) => row.id === subjectId);
+    const codes = new Set(list.map((finding) => finding.code));
+    const root = SUBJECT_ROOT_ORDER.find((code) => codes.has(code));
+    const name = subject?.name ?? list[0].subject ?? "Fan";
+    const streak = list.find((finding) => finding.code === FINDING_CODES.LOW_STREAK)?.metrics?.lastGrades ?? null;
+
+    const plan = {
+      subjectId,
+      subject: name,
+      root,
+      codes,
+      average: subject?.average ?? null,
+      classAverage: subject?.classAverage ?? null,
+      firstHalf: subject?.firstHalf ?? null,
+      min: subject?.min ?? null,
+      max: subject?.max ?? null,
+      streak,
+      target: subject?.target ?? null,
+      topics: list
+        .filter((finding) => finding.code === FINDING_CODES.WEAK_TOPIC)
+        .sort((a, b) => a.metrics.average - b.metrics.average)
+        .slice(0, MAX_PLAN_TOPICS)
+        .map((finding) => ({ name: finding.topic, average: finding.metrics.average })),
+    };
+
+    const critical = list.some((finding) => finding.tone === TONES.CRITICAL);
+    // ⚠️ Natijasi yaxshi fandagi YUMSHOQ belgi (pasayish, beqarorlik) —
+    // "past" ustuvorlik: 4.80 dagi kichik tushish 2.80 dagi fan bilan bir
+    // qatorda turib, eng keraklisini ro'yxatdan siqib chiqarmasin.
+    const soft = !critical && plan.average != null && plan.average >= THRESHOLDS.goodAverage;
+    let score = soft ? 15 : 50;
+    for (const code of codes) score += SUBJECT_CAUSE_WEIGHT[code] ?? 0;
+    if (plan.average != null && plan.target != null) score += (plan.target - plan.average) * 2;
+
+    const text = soft ? { ...SUBJECT_ROOT_TEXT[root], ...SOFT_ROOT_TEXT[root] } : SUBJECT_ROOT_TEXT[root];
+    const staff = SUBJECT_STAFF_ACTION[root];
+    const staffNumbers =
+      plan.average != null
+        ? ` (o'rtacha ${fmt(plan.average)}${plan.classAverage != null ? `, sinf ${fmt(plan.classAverage)}` : ""})`
+        : "";
+    const staffTopics = plan.topics.length ? `; mavzular: ${plan.topics.map((topic) => `«${topic.name}»`).join(", ")}` : "";
+
+    const detail = (voice) =>
+      [planFactsText(plan, voice), text[voice].why, planGoalText(plan, voice)].filter(Boolean).join(" ");
+
+    plans.push({
+      code: root,
+      priority: critical ? "high" : soft ? "low" : "medium",
+      score,
+      subject: name,
+      target: plan.target,
+      student: { title: text.student.title(name), detail: detail("student"), steps: studentSteps(plan) },
+      parent: { title: text.parent.title(name), detail: detail("parent"), steps: parentSteps(plan) },
+      staff: {
+        title: `${name}${staffNumbers}${staffTopics} — ${staff.action}`,
+        owner: staff.owner(name),
+      },
+    });
+  }
+  return plans;
+}
+
+/**
+ * Diagnostikadagi zaif mavzular — BITTA tavsiyaga (har mavzuga alohida
+ * karta emas).
+ */
+function buildDiagnosticTopicsPlan(findings) {
+  const list = findings.filter((finding) => finding.code === FINDING_CODES.DIAG_WEAK_TOPIC);
+  if (!list.length) return null;
+
+  const subjects = [...new Set(list.map((finding) => finding.subject).filter(Boolean))];
+  const subject = subjects.length === 1 ? subjects[0] : null;
+  const items = list
+    .map((finding) => `${!subject && finding.subject ? `${finding.subject} — ` : ""}«${finding.topic}» (${finding.metrics.score}%)`)
+    .join(", ");
+  const prefix = subject ? `${subject}: ` : "";
+
+  return {
+    code: FINDING_CODES.DIAG_WEAK_TOPIC,
+    priority: "medium",
+    score: 26,
+    subject,
+    target: null,
+    student: {
+      title: `${prefix}diagnostikada zaif mavzular`,
+      detail: `Diagnostika testida javoblarning ko'pi noto'g'ri bo'lgan mavzular: ${items}.`,
+      steps: [
+        "Har bir mavzuni darslikdan qayta o'qing va shu mavzudan mashq testini qayta ishlang",
+        "Xato qilgan savollaringizni daftarga yozib, to'g'ri yechimini tushunib oling",
+      ],
+    },
+    parent: {
+      title: `${prefix}diagnostikada zaif mavzular`,
+      detail: `Diagnostika testida natija past bo'lgan mavzular: ${items}.`,
+      steps: ["Shu mavzularni farzandingiz bilan birga takrorlang va xato qilgan savollarini qayta yechtirib ko'ring"],
+    },
+    staff: {
+      title: `${prefix}diagnostikada zaif mavzular: ${items} — mavzularni takrorlash`,
+      owner: subject ? `${subject} o'qituvchisi` : "Fan o'qituvchilari",
+    },
+  };
+}
+
+/**
+ * Fanga bog'lanmagan tavsiyalar katalogi (davomat, umumiy dinamika,
+ * diagnostika odatlari). Har bir yozuv `{ priority, score, student,
+ * parent, staff }` qaytaradi (keraksizi `null`).
+ *
+ * `score` — bir xil ustuvorlik ichida tartib: dars qoldirish — ko'pincha
+ * boshqa sabablarning ILDIZI, shuning uchun eng yuqorida.
  */
 const RECOMMENDATIONS = {
-  [FINDING_CODES.BELOW_CLASS]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject}: sinfdoshlaringizga yetib oling`,
-      detail:
-        `Sinf o'rtachasi ${fmt(f.metrics.classAverage)}, sizniki ${fmt(f.metrics.average)}. Sinf mavzularni o'zlashtirgan, ` +
-        "demak ayrim mavzular o'tkazib yuborilgan. Har kuni 20–30 daqiqa shu fandan mashq qiling va tushunmagan " +
-        "joyingizni darsdan keyin o'qituvchidan so'rang.",
-    },
-    parent: {
-      title: `${f.subject}: farzandingiz sinfdan ortda qolmoqda`,
-      detail:
-        `Sinf o'rtachasi ${fmt(f.metrics.classAverage)}, farzandingizniki ${fmt(f.metrics.average)}. Muammo sinfda emas, ` +
-        `shaxsiy o'zlashtirishda. Uy vazifasini har kuni tekshiring va ${f.subject} o'qituvchisi bilan uchrashib, ` +
-        "qaysi mavzularda qiynalayotganini aniqlang.",
-    },
-    staff: {
-      title: `${f.subject}: o'quvchi bilan individual ishlash (o'quvchi ${fmt(f.metrics.average)}, sinf ${fmt(f.metrics.classAverage)})`,
-      owner: `${f.subject} o'qituvchisi`,
-    },
-  }),
-
-  [FINDING_CODES.CLASS_WIDE_DIFFICULTY]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject}: fan butun sinf uchun qiyin kechmoqda`,
-      detail:
-        `Sinf o'rtachasi ham past (${fmt(f.metrics.classAverage)}). Qo'shimcha dars yoki konsultatsiyalarda qatnashing, ` +
-        "darsda tushunmagan mavzuni o'sha kuni darslikdan qayta ishlang.",
-    },
-    parent: {
-      title: `${f.subject}: fan butun sinfga qiyin`,
-      detail:
-        `Sinf o'rtachasi ham past (${fmt(f.metrics.classAverage)}) — bu faqat farzandingizga taalluqli emas. ` +
-        "Maktabdan shu fan bo'yicha qo'shimcha dars bor-yo'qligini so'rang va uyda mavzularni birga takrorlang.",
-    },
-    staff: {
-      title: `${f.subject}: sinf o'rtachasi ${fmt(f.metrics.classAverage)} — o'qitish uslubi va mavzu murakkabligini ko'rib chiqish, qo'shimcha dars`,
-      owner: "O'quv bo'limi",
-    },
-  }),
-
-  [FINDING_CODES.DECLINING_SUBJECT]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject}: pasayishni to'xtating`,
-      detail:
-        `Davr boshida o'rtacha ${fmt(f.metrics.firstHalf)}, oxirida ${fmt(f.metrics.secondHalf)}. Pasayish yaqinda ` +
-        "boshlangan — so'nggi mavzularni takrorlang va uy vazifalarini kechiktirmang.",
-    },
-    parent: {
-      title: `${f.subject}: baholar pasaymoqda`,
-      detail:
-        `Davr boshida ${fmt(f.metrics.firstHalf)}, oxirida ${fmt(f.metrics.secondHalf)}. Farzandingiz bilan nima ` +
-        "o'zgarganini gaplashing (yangi mavzu, charchoq, qiziqish) va so'nggi mavzularni birga takrorlang.",
-    },
-    staff: {
-      title: `${f.subject}: pasayish sababini aniqlash (${fmt(f.metrics.firstHalf)} → ${fmt(f.metrics.secondHalf)})`,
-      owner: "Sinf rahbari",
-    },
-  }),
-
-  [FINDING_CODES.UNSTABLE_SUBJECT]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject}: natijani barqarorlashtiring`,
-      detail:
-        `Baholaringiz ${f.metrics.min} dan ${f.metrics.max} gacha tebranadi. Bilim bor, lekin tayyorgarlik muntazam ` +
-        "emas — har darsga oldindan tayyorlanishni odat qiling.",
-    },
-    parent: {
-      title: `${f.subject}: natija beqaror`,
-      detail:
-        `Baholar ${f.metrics.min} dan ${f.metrics.max} gacha tebranadi — tayyorgarlik muntazam emas. Uy vazifasi uchun ` +
-        "har kuni aniq vaqt belgilang va bajarilganini tekshiring.",
-    },
-    staff: null,
-  }),
-
-  [FINDING_CODES.LOW_STREAK]: (f) => ({
-    priority: "high",
-    student: {
-      title: `${f.subject}: oxirgi baholar past — kechiktirmang`,
-      detail:
-        `Oxirgi baholar: ${f.metrics.lastGrades.join(", ")}. Shu hafta o'qituvchi bilan gaplashing va o'tkazib ` +
-        "yuborilgan mavzularni to'ldiring.",
-    },
-    parent: {
-      title: `${f.subject}: ketma-ket past baholar`,
-      detail:
-        `Oxirgi baholar: ${f.metrics.lastGrades.join(", ")}. Shu hafta ${f.subject} o'qituvchisi bilan bog'laning.`,
-    },
-    staff: {
-      title: `${f.subject}: ketma-ket past baholar (${f.metrics.lastGrades.join(", ")}) — shu hafta o'quvchi bilan suhbat`,
-      owner: `${f.subject} o'qituvchisi`,
-    },
-  }),
-
-  [FINDING_CODES.WEAK_TOPIC]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject} — «${f.topic}» mavzusini qayta ishlang`,
-      detail: `Bu mavzu bo'yicha o'rtacha ${fmt(f.metrics.average)}. Mavzuni darslikdan qayta o'qing va shu mavzuga oid mashqlarni bajaring.`,
-    },
-    parent: {
-      title: `${f.subject} — «${f.topic}» mavzusi`,
-      detail: `Bu mavzu bo'yicha o'rtacha ${fmt(f.metrics.average)}. Mavzuni farzandingiz bilan birga takrorlang.`,
-    },
-    staff: {
-      title: `${f.subject} — «${f.topic}» mavzusini takrorlash (o'rtacha ${fmt(f.metrics.average)})`,
-      owner: `${f.subject} o'qituvchisi`,
-    },
-  }),
-
   [FINDING_CODES.ABSENCE_IMPACT]: (f) => ({
     priority: "high",
+    score: 100,
     student: {
-      title: "Darslarni qoldirmang",
+      title: "Darslarni qoldirmang — baholaringizga ta'sir qilmoqda",
       detail:
         `Bu davrda ${f.metrics.absent} kun darsga kelmadingiz. Qoldirilgan kunlardan keyingi baholar o'rtachasi ` +
-        `${fmt(f.metrics.afterAbsenceAverage)}, boshqa kunlarda ${fmt(f.metrics.regularAverage)}. Kelmagan kuningiz ` +
-        "mavzusini o'sha hafta o'qituvchidan so'rab, daftarni to'ldiring.",
+        `${fmt(f.metrics.afterAbsenceAverage)}, boshqa kunlarda ${fmt(f.metrics.regularAverage)} — har bir qoldirilgan ` +
+        "dars keyingi mavzuni ham qiyinlashtiradi.",
+      steps: [
+        "Kelmagan har bir kuningiz mavzusini o'sha hafta o'qituvchidan so'rab, daftarni to'ldiring",
+        "Sinfdoshingizdan o'sha kungi uy vazifasini olib, bajarib qo'ying",
+        "Sababsiz qoldirmang: har bir dars keyingi mavzuga asos",
+      ],
     },
     parent: {
       title: "Davomatga e'tibor bering",
       detail:
         `Farzandingiz ${f.metrics.absent} kun darsga kelmagan (davomat ${f.metrics.rate}%). Qoldirilgan kunlardan keyin ` +
-        `baholar o'rtachasi ${fmt(f.metrics.afterAbsenceAverage)} ga tushgan (boshqa kunlarda ${fmt(f.metrics.regularAverage)}). ` +
-        "Sababsiz qoldirishlarni nazorat qiling va o'tkazib yuborilgan mavzularni birga ko'rib chiqing.",
+        `baholar o'rtachasi ${fmt(f.metrics.afterAbsenceAverage)} ga tushgan (boshqa kunlarda ${fmt(f.metrics.regularAverage)}).`,
+      steps: [
+        "Har bir kelmagan kun sababini sinf rahbari bilan aniqlang",
+        "Sababsiz qoldirishlarni to'xtating: ertalabki tartibni nazorat qiling",
+        "O'tkazib yuborilgan mavzularni hafta oxirida farzandingiz bilan birga ko'rib chiqing",
+      ],
     },
     staff: {
       title: `Davomat: ${f.metrics.absent} kun kelmagan, qoldirishdan keyin baholar pasaygan — ota-ona bilan bog'lanish`,
@@ -894,17 +1154,21 @@ const RECOMMENDATIONS = {
 
   [FINDING_CODES.LOW_ATTENDANCE]: (f) => ({
     priority: "medium",
+    score: 45,
     student: {
       title: "Davomatni yaxshilang",
       detail:
         `Bu davrda ${f.metrics.absent} kun darsga kelmadingiz (davomat ${f.metrics.rate}%). Har bir qoldirilgan dars — ` +
-        "o'tkazib yuborilgan mavzu: kelmagan kuningiz mavzusini o'qituvchidan so'rab oling.",
+        "o'tkazib yuborilgan mavzu.",
+      steps: [
+        "Kelmagan kuningiz mavzusini o'qituvchidan so'rab oling va daftarni to'ldiring",
+        "Sababsiz qoldirmang — mavzular bir-biriga tayanadi",
+      ],
     },
     parent: {
       title: "Davomat past",
-      detail:
-        `Farzandingiz ${f.metrics.absent} kun darsga kelmagan (davomat ${f.metrics.rate}%). Sabablarini aniqlang va ` +
-        "sinf rahbari bilan bog'laning.",
+      detail: `Farzandingiz ${f.metrics.absent} kun darsga kelmagan (davomat ${f.metrics.rate}%).`,
+      steps: ["Kelmagan kunlar sababini aniqlang va sinf rahbari bilan bog'laning", "Ertalabki tartibni nazorat qiling"],
     },
     staff: {
       title: `Davomat ${f.metrics.rate}% (${f.metrics.absent} kun kelmagan) — ota-ona bilan bog'lanish`,
@@ -912,86 +1176,26 @@ const RECOMMENDATIONS = {
     },
   }),
 
-  [FINDING_CODES.DIAG_WEAK_TOPIC]: (f) => ({
-    priority: "medium",
-    student: {
-      title: `${f.subject ? `${f.subject} — ` : ""}«${f.topic}»: diagnostika ${f.metrics.score}%`,
-      detail: "Diagnostika testida bu mavzu bo'yicha javoblarning ko'pi noto'g'ri. Mavzuni qayta o'qib, shu mavzudan mashq testini qayta ishlang.",
-    },
-    parent: {
-      title: `${f.subject ? `${f.subject} — ` : ""}«${f.topic}» mavzusi zaif`,
-      detail: `Diagnostika testida bu mavzu bo'yicha natija ${f.metrics.score}%. Mavzuni farzandingiz bilan birga takrorlang.`,
-    },
-    staff: {
-      title: `${f.subject ? `${f.subject} — ` : ""}«${f.topic}»: diagnostika ${f.metrics.score}% — mavzuni takrorlash`,
-      owner: f.subject ? `${f.subject} o'qituvchisi` : "Fan o'qituvchisi",
-    },
-  }),
-
-  [FINDING_CODES.DIAG_RUSHING]: (f) => ({
-    priority: "medium",
-    student: {
-      title: "Shoshilmang",
-      detail:
-        `Diagnostika testlaridagi xatolarning ${f.metrics.share}% i shoshilish sabab — savolga odatdagidan ancha tez ` +
-        "javob berilgan. Javob berishdan oldin shartni qayta o'qib, natijani tekshiring.",
-    },
-    parent: {
-      title: "Farzandingiz test topshirishda shoshiladi",
-      detail:
-        `Xatolarning ${f.metrics.share}% i shoshilish sabab. Uyda mashq qilganda vaqtni emas, har bir javobni ` +
-        "tekshirishni odat qildiring.",
-    },
-    staff: null,
-  }),
-
-  [FINDING_CODES.DIAG_MISREAD]: (f) => ({
-    priority: "medium",
-    student: {
-      title: "Savol shartini diqqat bilan o'qing",
-      detail:
-        `Diagnostika xatolarining ${f.metrics.share}% i shartni noto'g'ri tushunish sabab. Savolni ikki marta o'qing, ` +
-        "nima so'ralayotganini tagiga chizib oling.",
-    },
-    parent: {
-      title: "Savolni diqqatsiz o'qish",
-      detail:
-        `Xatolarning ${f.metrics.share}% i savol shartini noto'g'ri tushunishdan. Matnni diqqat bilan o'qish ` +
-        "(masalan, masala shartini ovoz chiqarib o'qish) mashqini qiling.",
-    },
-    staff: null,
-  }),
-
-  [FINDING_CODES.DIAG_KNOWLEDGE]: (f) => ({
-    priority: "medium",
-    student: {
-      title: "Bilim bo'shliqlarini to'ldiring",
-      detail:
-        `Diagnostika xatolarining ${f.metrics.share}% i mavzuni bilmaslik sabab — bu shoshilish emas, o'rganilmagan ` +
-        "mavzu. Zaif mavzularni ro'yxat qilib, har haftada bittasini yoping.",
-    },
-    parent: {
-      title: "Bilim bo'shliqlari bor",
-      detail:
-        `Xatolarning ${f.metrics.share}% i mavzuni bilmaslik sabab. Zaif mavzular bo'yicha qo'shimcha mashg'ulotni ` +
-        "o'ylab ko'ring.",
-    },
-    staff: null,
-  }),
-
   [FINDING_CODES.OVERALL_DECLINING]: (f) => ({
     priority: "medium",
+    score: 30,
     student: {
       title: "Umumiy natija pasaydi",
-      detail:
-        `O'tgan davrda o'rtacha ${fmt(f.metrics.previousAverage)} edi, hozir ${fmt(f.metrics.average)}. Kun tartibingizni ` +
-        "ko'rib chiqing: uy vazifasi va dam olish uchun aniq vaqt ajrating.",
+      detail: `O'tgan davrda o'rtacha ${fmt(f.metrics.previousAverage)} edi, hozir ${fmt(f.metrics.average)}.`,
+      steps: [
+        "Kun tartibingizni yozib chiqing: uy vazifasi, dam olish va uyqu uchun aniq vaqt ajrating",
+        "Telefon va o'yinlarni uy vazifasidan keyinga qoldiring",
+        "Eng ko'p pasaygan fandan boshlang — shu haftaning o'zida",
+      ],
     },
     parent: {
       title: "Umumiy natija pasaydi",
-      detail:
-        `O'tgan davrda o'rtacha ${fmt(f.metrics.previousAverage)}, hozir ${fmt(f.metrics.average)}. Farzandingiz bilan ` +
-        "gaplashing: pasayish ko'pincha kun tartibi, charchoq yoki qiziqish yo'qolishidan boshlanadi.",
+      detail: `O'tgan davrda o'rtacha ${fmt(f.metrics.previousAverage)}, hozir ${fmt(f.metrics.average)}.`,
+      steps: [
+        "Farzandingiz bilan xotirjam gaplashing: pasayish ko'pincha kun tartibi, charchoq yoki qiziqish yo'qolishidan boshlanadi",
+        "Kechki uyqu va telefon vaqtini kuzating",
+        "Sinf rahbari bilan bog'lanib, maktabdagi holatini so'rang",
+      ],
     },
     staff: {
       title: `Umumiy pasayish (${fmt(f.metrics.previousAverage)} → ${fmt(f.metrics.average)}) — o'quvchi va ota-ona bilan suhbat`,
@@ -999,26 +1203,132 @@ const RECOMMENDATIONS = {
     },
   }),
 
-  [FINDING_CODES.WEAK_SUBJECT]: (f) => ({
-    priority: f.tone === TONES.CRITICAL ? "high" : "medium",
+  [FINDING_CODES.DIAG_KNOWLEDGE]: (f) => ({
+    priority: "medium",
+    score: 28,
     student: {
-      title: `${f.subject}: natijani ko'taring`,
+      title: "Bilim bo'shliqlarini to'ldiring",
       detail:
-        `Bu fanda o'rtacha ${fmt(f.metrics.average)}. Har kuni shu fandan qisqa takrorlash qiling va har hafta ` +
-        "o'qituvchidan tushunmagan savollaringizni so'rang.",
+        `Diagnostika xatolarining ${f.metrics.share}% i mavzuni bilmaslik sabab — bu shoshilish emas, o'rganilmagan mavzu.`,
+      steps: ["Zaif mavzularni ro'yxat qilib, har haftada bittasini yoping", "Mavzuni yopgach, shu mavzudan qisqa test ishlab tekshiring"],
     },
     parent: {
-      title: `${f.subject}: natija past`,
+      title: "Bilim bo'shliqlari bor",
+      detail: `Xatolarning ${f.metrics.share}% i mavzuni bilmaslik sabab.`,
+      steps: ["Zaif mavzular bo'yicha qo'shimcha mashg'ulotni o'ylab ko'ring"],
+    },
+    staff: null,
+  }),
+
+  [FINDING_CODES.DIAG_RUSHING]: (f) => ({
+    priority: "medium",
+    score: 24,
+    student: {
+      title: "Shoshilmang",
       detail:
-        `Bu fanda o'rtacha ${fmt(f.metrics.average)}. ${f.subject} o'qituvchisi bilan bog'lanib, qaysi mavzular ` +
-        "qiyin ekanini aniqlang va uyda shu mavzularni birga takrorlang.",
+        `Diagnostika testlaridagi xatolarning ${f.metrics.share}% i shoshilish sabab — savolga odatdagidan ancha tez javob berilgan.`,
+      steps: ["Javob berishdan oldin shartni qayta o'qing", "Topshirishdan oldin har bir javobni bir marta tekshiring"],
     },
-    staff: {
-      title: `${f.subject}: o'rtacha ${fmt(f.metrics.average)} — qo'shimcha dars va uy vazifasi nazorati`,
-      owner: `${f.subject} o'qituvchisi`,
+    parent: {
+      title: "Farzandingiz test topshirishda shoshiladi",
+      detail: `Xatolarning ${f.metrics.share}% i shoshilish sabab.`,
+      steps: ["Uyda mashq qilganda vaqtni emas, har bir javobni tekshirishni odat qildiring"],
     },
+    staff: null,
+  }),
+
+  [FINDING_CODES.DIAG_MISREAD]: (f) => ({
+    priority: "medium",
+    score: 24,
+    student: {
+      title: "Savol shartini diqqat bilan o'qing",
+      detail: `Diagnostika xatolarining ${f.metrics.share}% i shartni noto'g'ri tushunish sabab.`,
+      steps: ["Savolni ikki marta o'qing", "Nima so'ralayotganini tagiga chizib oling"],
+    },
+    parent: {
+      title: "Savolni diqqatsiz o'qish",
+      detail: `Xatolarning ${f.metrics.share}% i savol shartini noto'g'ri tushunishdan.`,
+      steps: ["Masala shartini ovoz chiqarib o'qish mashqini qiling"],
+    },
+    staff: null,
   }),
 };
+
+/**
+ * Muammo topilmagan o'quvchi — baribir ANIQ o'sish yo'nalishi: eng past
+ * (lekin a'lo bo'lmagan) fanni keyingi pog'onaga ko'tarish va eng kuchli
+ * fanni chuqurlashtirish. "Natijani saqlang" yolg'iz o'zi tavsiya emas.
+ */
+function buildGrowthPlans(facts) {
+  const plans = [];
+  const growth = facts.subjects
+    .filter((subject) => subject.status !== "strong" && subject.status !== "insufficient" && subject.target != null)
+    .sort((a, b) => a.average - b.average)[0];
+  const best = facts.subjects.find((subject) => subject.status === "strong");
+
+  if (growth) {
+    plans.push({
+      code: "keep_going",
+      priority: "low",
+      score: 20,
+      subject: growth.name,
+      target: growth.target,
+      student: {
+        title: `${growth.name}: keyingi pog'onaga chiqing`,
+        detail: `Eng past faningiz — ${growth.name} (${fmt(growth.average)}). Maqsad — keyingi davrda ${fmt(growth.target)}.`,
+        steps: [
+          "Shu fandan har hafta bitta qiyinroq mavzuni tanlab, qo'shimcha mashq qiling",
+          "Darsda faol bo'ling: savol bering va javob berishga chiqing",
+        ],
+      },
+      parent: {
+        title: `${growth.name}: o'sish imkoniyati`,
+        detail: `Eng past fan — ${growth.name} (${fmt(growth.average)}). Maqsad — keyingi davrda ${fmt(growth.target)}.`,
+        steps: ["Shu fan bo'yicha haftalik baholarni birga ko'rib chiqing va har bir yaxshilanishni rag'batlantiring"],
+      },
+      staff: null,
+    });
+  }
+
+  // O'sish rejasi bor-u kuchli fan yo'q — umumiy "saqlang" qo'shilmaydi
+  if (!best && plans.length) return plans;
+
+  plans.push({
+    code: "keep_going",
+    priority: "low",
+    score: 10,
+    subject: best?.name ?? null,
+    target: null,
+    student: best
+      ? {
+          title: `${best.name}: chuqurlashtiring`,
+          detail: `${best.name} fanidagi natijangiz (${fmt(best.average)}) — olimpiada yoki chuqurlashtirilgan mashg'ulotlar uchun yaxshi asos.`,
+          steps: [
+            "O'qituvchidan olimpiada yoki murakkabroq topshiriqlar so'rang",
+            "Sinfdoshlaringizga shu fandan yordam bering — tushuntirish bilimni mustahkamlaydi",
+          ],
+        }
+      : {
+          title: "Natijani saqlang",
+          detail: "Uy vazifalarini o'z vaqtida bajarishda davom eting va har hafta o'tilgan mavzularni qisqa takrorlang.",
+          steps: [],
+        },
+    parent: best
+      ? {
+          title: `${best.name}: iqtidorni rivojlantiring`,
+          detail: `${best.name} fanidagi natija (${fmt(best.average)}) — farzandingizni olimpiada yoki to'garakka yo'naltirish uchun yaxshi asos.`,
+          steps: ["Farzandingiz bilan shu fan bo'yicha to'garak yoki olimpiada tayyorgarligini muhokama qiling"],
+        }
+      : {
+          title: "Natija barqaror",
+          detail: "Farzandingizning kun tartibini saqlang va yutuqlarini rag'batlantiring.",
+          steps: [],
+        },
+    staff: null,
+  });
+
+  return plans;
+}
 
 /** Kuchli tomonlar matni (o'quvchi va ota-ona). */
 const STRENGTH_TEXT = {
@@ -1083,16 +1393,11 @@ const HEADLINE = {
   critical: (avg) => `Jiddiy e'tibor kerak: umumiy o'rtacha ${fmt(avg)}`,
 };
 
-/** Fan uchun ANIQ sabablar — ular bor bo'lsa "past fan" umumiy tavsiyasi chiqmaydi. */
-const SPECIFIC_SUBJECT_CAUSES = new Set([
-  FINDING_CODES.BELOW_CLASS,
-  FINDING_CODES.CLASS_WIDE_DIFFICULTY,
-  FINDING_CODES.DECLINING_SUBJECT,
-  FINDING_CODES.UNSTABLE_SUBJECT,
-  FINDING_CODES.LOW_STREAK,
-]);
-
-const MAX_RECOMMENDATIONS = 6;
+/**
+ * Ko'pi bilan nechta tavsiya. ⚠️ Kam — ataylab: beshtadan ortig'ini
+ * hech kim bajarmaydi, eng muhimi esa ro'yxat ichida yo'qoladi.
+ */
+const MAX_RECOMMENDATIONS = 5;
 const MAX_STRENGTHS = 4;
 const MAX_STAFF_ACTIONS = 5;
 
@@ -1197,61 +1502,23 @@ function buildViews(facts, findings, { level, riskScore, className } = {}) {
 
   const sorted = [...findings].sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone]);
 
-  // ── Tavsiyalar: sababga bog'langan, takrorlanmaydi ──
-  const recs = [];
+  // ── Tavsiyalar: sababga bog'langan, fan bo'yicha yig'ilgan, eng keraklisi birinchi ──
+  const recs = [...buildSubjectPlans(facts, findings)];
+  const diagnosticTopics = buildDiagnosticTopicsPlan(findings);
+  if (diagnosticTopics) recs.push(diagnosticTopics);
+
   const seen = new Set();
-  for (const finding of sorted) {
+  for (const finding of findings) {
     const build = RECOMMENDATIONS[finding.code];
-    if (!build) continue;
-
-    const key = `${finding.code}|${finding.subjectId ?? ""}|${finding.topic ?? ""}`;
-    if (seen.has(key)) continue;
-
-    // "Past fan" — UMUMIY tavsiya. Shu fan uchun aniqroq sabab (sinfdan
-    // ortda, butun sinfga qiyin, pasayish, beqarorlik, ketma-ket past)
-    // topilgan bo'lsa, umumiysi qo'shilmaydi: aks holda bitta fanga ikki
-    // xil gap chiqib, aniq sabab umumiy gap orasida yo'qolardi.
-    if (
-      finding.code === FINDING_CODES.WEAK_SUBJECT &&
-      sorted.some(
-        (other) =>
-          other !== finding &&
-          other.subjectId === finding.subjectId &&
-          SPECIFIC_SUBJECT_CAUSES.has(other.code),
-      )
-    ) {
-      continue;
-    }
-
-    seen.add(key);
-    recs.push({ ...build(finding), subject: finding.subject ?? null, code: finding.code });
+    if (!build || seen.has(finding.code)) continue;
+    seen.add(finding.code);
+    recs.push({ ...build(finding), subject: finding.subject ?? null, target: null, code: finding.code });
   }
 
-  recs.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
-  const top = recs.slice(0, MAX_RECOMMENDATIONS);
+  recs.sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] || b.score - a.score);
 
-  // Hamma narsa yaxshi — baribir bitta ANIQ yo'nalish beriladi
-  if (top.length === 0) {
-    const best = facts.subjects.find((subject) => subject.status === "strong");
-    top.push({
-      priority: "low",
-      subject: best?.name ?? null,
-      code: "keep_going",
-      student: {
-        title: "Natijani saqlang",
-        detail: best
-          ? `${best.name} fanidagi natijangiz (${fmt(best.average)}) — olimpiada yoki chuqurlashtirilgan mashg'ulotlar uchun yaxshi asos.`
-          : "Uy vazifalarini o'z vaqtida bajarishda davom eting va har hafta o'tilgan mavzularni qisqa takrorlang.",
-      },
-      parent: {
-        title: "Natija barqaror",
-        detail: best
-          ? `${best.name} fanidagi natija (${fmt(best.average)}) — farzandingizni olimpiada yoki to'garakka yo'naltirish uchun yaxshi asos.`
-          : "Farzandingizning kun tartibini saqlang va yutuqlarini rag'batlantiring.",
-      },
-      staff: null,
-    });
-  }
+  // Muammo topilmadi — baribir ANIQ o'sish yo'nalishi beriladi
+  const top = recs.length ? recs.slice(0, MAX_RECOMMENDATIONS) : buildGrowthPlans(facts);
 
   const strengths = sorted
     .filter((finding) => finding.tone === TONES.POSITIVE && STRENGTH_TEXT[finding.code])
@@ -1270,6 +1537,8 @@ function buildViews(facts, findings, { level, riskScore, className } = {}) {
       code: item.code,
       subject: item.subject,
       priority: item.priority,
+      target: item.target ?? null,
+      steps: [],
       ...item[voice],
     })),
   });
@@ -1616,9 +1885,144 @@ function buildOverview(input) {
       .sort((a, b) => b.riskScore - a.riskScore)
       .slice(0, 12)
       .map(brief),
+    rankings: buildRankings(students, classNames),
   };
 
   return overview;
+}
+
+/* ───────────────────────── 5. REYTING ───────────────────────── */
+
+const median = (values) => {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+
+/**
+ * Tartib: o'rtacha baho; teng bo'lsa — BAHOLAR SONI (ko'p baho bilan
+ * ushlab turilgan natija yuqorida); teng bo'lsa — ism (faqat tartib
+ * barqaror bo'lishi uchun, o'rin baribir ulashiladi).
+ *
+ * ⚠️ ENG PAST — ENG YAXSHINING AYNAN TESKARISI. Tenglikni boshqacha
+ * ajratsa (masalan "past ro'yxatda ko'p baholi oldinda"), o'rtachasi teng
+ * ikki o'quvchidan sinfda 9-o'rindagisi maktab ro'yxatida 8-o'rindagidan
+ * YUQORIROQ "eng past" bo'lib chiqardi — o'rinlar bir-biriga zid.
+ */
+const byName = (a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), "uz");
+const compareBest = (a, b) => b.average - a.average || b.gradeCount - a.gradeCount || byName(a, b);
+const compareWorst = (a, b) => a.average - b.average || a.gradeCount - b.gradeCount || byName(b, a);
+
+/** O'rin: o'rtacha VA baholar soni teng bo'lsa — bir xil o'rin ("1, 1, 3"). */
+const assignPlaces = (sorted, field) => {
+  let place = 0;
+  return sorted.map((row, index) => {
+    const prev = sorted[index - 1];
+    if (!prev || prev.average !== row.average || prev.gradeCount !== row.gradeCount) place = index + 1;
+    return { ...row, [field]: place };
+  });
+};
+
+/**
+ * ENG YAXSHI VA ENG PAST NATIJALAR — sinf kesimida va maktab bo'yicha.
+ *
+ * SINF: har sinfning eng yaxshi `rankSize` (3) va eng past 3 o'quvchisi,
+ * sinfdagi o'rni bilan ("28 tadan 1-o'rin").
+ *
+ * MAKTAB: har sinfning eng yaxshi 3 taligi bitta ro'yxatga yig'ilib qayta
+ * tartiblanadi va o'rin beriladi; eng past — xuddi shunday. Maktabning
+ * haqiqiy eng yaxshi uchtaligi o'z sinfining ham eng yaxshi uchtaligida
+ * bo'lgani uchun yuqori o'rinlar — haqiqiy maktab o'rinlari.
+ *
+ * ⚠️ REYTINGGA KIRISH SHARTI: baholar soni sinf medianasining yarmidan
+ * (`rankMinGradesShare`) va `minGradesOverall` dan kam bo'lmasligi kerak.
+ * Aks holda 3 ta "5" olgan o'quvchi 40 ta bahoda 4.95 olgandan yuqori
+ * turib, maktab reytingini boshqarib qo'yardi. Chetda qolganlar soni
+ * (`excluded`) ekranda aytiladi — jim yo'qolmaydi.
+ *
+ * ⚠️ ENG YAXSHI VA ENG PAST KESISHMAYDI: kichik sinfda ro'yxatlar yarmidan
+ * bo'linadi (5 o'quvchi → 3 + 2) — bitta bola ham "eng yaxshi", ham "eng
+ * past" ro'yxatida turmasin.
+ *
+ * ⚠️ Sinfsiz o'quvchi reytingga kirmaydi (sinf kesimi bilan AYNI qoida),
+ * sinf nomi — hisobot surati (`studentSnapshot.className`, `education.md`
+ * §5): o'quvchi keyin boshqa sinfga o'tsa ham o'tgan reyting o'zgarmaydi.
+ *
+ * @param {Array<{studentId, reportId, name, className, classId, level, average, previousAverage, gradeCount}>} students
+ * @param {Map<string,string>} [classNames] - surat bo'lmasa zaxira nom
+ */
+function buildRankings(students, classNames = new Map()) {
+  const size = THRESHOLDS.rankSize;
+
+  const byClass = new Map();
+  for (const student of students) {
+    if (!student.classId || student.level === INSUFFICIENT_LEVEL.key || student.average == null) continue;
+    if (!byClass.has(student.classId)) byClass.set(student.classId, []);
+    byClass.get(student.classId).push({
+      studentId: student.studentId,
+      reportId: student.reportId ?? null,
+      name: student.name ?? "—",
+      className: student.className ?? classNames.get(student.classId) ?? null,
+      classId: student.classId,
+      level: student.level,
+      average: student.average,
+      gradeCount: student.gradeCount ?? 0,
+      delta:
+        student.average != null && student.previousAverage != null
+          ? round(student.average - student.previousAverage)
+          : null,
+    });
+  }
+
+  const classes = [];
+  for (const [classId, rows] of byClass) {
+    const minGrades = Math.max(
+      THRESHOLDS.minGradesOverall,
+      Math.ceil(median(rows.map((row) => row.gradeCount)) * THRESHOLDS.rankMinGradesShare),
+    );
+    const eligible = rows.filter((row) => row.gradeCount >= minGrades);
+    if (!eligible.length) continue;
+
+    const ranked = assignPlaces([...eligible].sort(compareBest), "classPlace").map((row) => ({
+      ...row,
+      classSize: eligible.length,
+    }));
+    const bestCount = Math.min(size, Math.ceil(ranked.length / 2));
+    const worstCount = Math.min(size, Math.floor(ranked.length / 2));
+
+    classes.push({
+      classId,
+      name: rows[0].className ?? classNames.get(classId) ?? "—",
+      students: rows.length,
+      ranked: ranked.length,
+      excluded: rows.length - ranked.length,
+      minGrades,
+      best: ranked.slice(0, bestCount).map((row) => ({ ...row, place: row.classPlace })),
+      worst: ranked
+        .slice(ranked.length - worstCount)
+        .sort(compareWorst)
+        .map((row) => ({ ...row, place: row.classPlace })),
+    });
+  }
+
+  classes.sort((a, b) => a.name.localeCompare(b.name, "uz", { numeric: true }));
+
+  const merge = (key, compare) =>
+    assignPlaces(
+      classes.flatMap((cls) => cls[key]).sort(compare),
+      "place",
+    );
+
+  return {
+    size,
+    classes,
+    school: {
+      classes: classes.length,
+      best: merge("best", compareBest),
+      worst: merge("worst", compareWorst),
+    },
+  };
 }
 
 /**
@@ -1725,6 +2129,7 @@ module.exports = {
   accumulateGrade,
   accumulateAggregate,
   buildOverview,
+  buildRankings,
   buildOverviewNarrative,
   // Sinov va AI qatlami uchun
   fmt,
