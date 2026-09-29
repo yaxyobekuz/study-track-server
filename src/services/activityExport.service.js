@@ -21,132 +21,21 @@
 const prisma = require("../config/prisma");
 const ExcelService = require("./excel.service");
 const activityDashboard = require("./activityDashboard.service");
-const { getTashkentDateUtc } = require("../helpers/date.helpers");
-
-const BORDER = { style: "thin", color: { argb: "FFE5E7EB" } };
-const HEADER_ROW = 4;
 
 const COLOR = {
-  title: "FF1F2937",
-  sub: "FF6B7280",
   header: "FF7030A0", // violet — faollik bo'limining rangi
   zebra: "FFF7F5FC",
   good: "FF047857",
   warn: "FFB45309",
-  muted: "FF9CA3AF",
 };
 
-/**
- * Sarlavha bloki (2 qator) + ustun sarlavhalari (4-qator) bilan varaq.
- *
- * @param {import("exceljs").Workbook} workbook
- * @param {object} config
- * @returns {import("exceljs").Worksheet}
- */
-function addSheet(workbook, { name, title, subtitle, columns }) {
-  const sheet = ExcelService.addWorksheet(workbook, name, { freezeHeader: false });
+// Varaq sarlavhasi va qatorlari — umumiy `ExcelService.addTitledSheet` /
+// `fillTitledRows`, faqat bo'lim ranglari bilan.
+const addSheet = (workbook, config) =>
+  ExcelService.addTitledSheet(workbook, { ...config, headerColor: COLOR.header });
 
-  columns.forEach((column, index) => {
-    sheet.getColumn(index + 1).width = column.width;
-  });
-
-  sheet.mergeCells(1, 1, 1, columns.length);
-  const titleCell = sheet.getCell(1, 1);
-  titleCell.value = title;
-  titleCell.font = { bold: true, size: 14, color: { argb: COLOR.title } };
-  titleCell.alignment = { vertical: "middle", horizontal: "left" };
-  sheet.getRow(1).height = 26;
-
-  sheet.mergeCells(2, 1, 2, columns.length);
-  const subCell = sheet.getCell(2, 1);
-  subCell.value = subtitle;
-  subCell.font = { size: 11, color: { argb: COLOR.sub } };
-  sheet.getRow(2).height = 20;
-
-  const headerRow = sheet.getRow(HEADER_ROW);
-  headerRow.values = columns.map((column) => column.header);
-  headerRow.height = 22;
-  headerRow.eachCell((cell) => {
-    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR.header } };
-    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
-    cell.border = { top: BORDER, left: BORDER, bottom: BORDER, right: BORDER };
-  });
-
-  sheet.views = [{ state: "frozen", ySplit: HEADER_ROW }];
-
-  return sheet;
-}
-
-/**
- * Ma'lumot qatorlari. Bo'sh ro'yxatda bitta izoh qatori yoziladi —
- * faqat sarlavhadan iborat varaq "fayl buzilgan" deb o'qilardi.
- */
-function fillRows(sheet, columns, rows, { emptyText, styleCell } = {}) {
-  if (rows.length === 0) {
-    const index = HEADER_ROW + 1;
-    sheet.mergeCells(index, 1, index, columns.length);
-    const cell = sheet.getCell(index, 1);
-    cell.value = emptyText;
-    cell.font = { italic: true, color: { argb: COLOR.muted } };
-    cell.alignment = { vertical: "middle", horizontal: "center" };
-    return;
-  }
-
-  rows.forEach((row, rowIndex) => {
-    const excelRow = sheet.addRow(columns.map((column) => row[column.key] ?? ""));
-
-    if (rowIndex % 2 === 1) {
-      excelRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: COLOR.zebra } };
-    }
-
-    excelRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      const column = columns[colNumber - 1];
-      cell.border = { top: BORDER, left: BORDER, bottom: BORDER, right: BORDER };
-      cell.alignment = {
-        vertical: "middle",
-        horizontal: column.align ?? "left",
-      };
-      styleCell?.(cell, column, row);
-    });
-  });
-
-  sheet.autoFilter = {
-    from: { row: HEADER_ROW, column: 1 },
-    to: { row: HEADER_ROW, column: columns.length },
-  };
-}
-
-/**
- * `Content-Disposition` — ASCII zaxira nom + UTF-8 asl nom (RFC 5987).
- *
- * ⚠️ Sinf nomi kirillcha yoki apostrofli bo'lishi mumkin ("1-sinf
- * o'zbek"). Node sarlavhada 255 dan katta belgini rad etadi (500),
- * qo'shtirnoqsiz nomda esa bo'shliqdan keyingisi yo'qolardi. Admin paneli `filename*` ni
- * birinchi o'qiydi (`downloadBlob`).
- */
-async function sendWithName(res, workbook, baseName) {
-  const day = getTashkentDateUtc().toISOString().slice(0, 10);
-  const utf8Name = `${baseName}_${day}.xlsx`;
-  const asciiName =
-    `${baseName.normalize("NFKD").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/_-+|-+_/g, "_").replace(/^-+|-+$/g, "") || "sinf"}_${day}.xlsx`;
-  const encoded = encodeURIComponent(utf8Name).replace(
-    /['()*]/g,
-    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
-  );
-
-  res.setHeader(
-    "Content-Type",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  );
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`,
-  );
-
-  await workbook.xlsx.write(res);
-  res.end();
-}
+const fillRows = (sheet, columns, rows, options = {}) =>
+  ExcelService.fillTitledRows(sheet, columns, rows, { ...options, zebraColor: COLOR.zebra });
 
 /**
  * SINF BOT QAMROVI → EXCEL.
@@ -266,7 +155,9 @@ async function exportClassToExcel(res, classId, { days } = {}) {
     { emptyText: "Bu sinfning hamma o'quvchisi botga bog'langan" },
   );
 
-  await sendWithName(res, workbook, `bot-qamrovi_${info.name}`);
+  await ExcelService.sendWorkbookAs(res, workbook, `bot-qamrovi_${info.name}`, {
+    fallbackName: "sinf",
+  });
 }
 
 module.exports = { exportClassToExcel };

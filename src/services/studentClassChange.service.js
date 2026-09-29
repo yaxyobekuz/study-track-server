@@ -20,6 +20,7 @@
 const prisma = require("../config/prisma");
 const { isValidId } = require("../utils/objectId");
 const { BadRequestError } = require("../utils/errors");
+const { buildNameSearchWhere } = require("../helpers/nameSearch.helpers");
 
 const REASON_MIN = 3;
 const REASON_MAX = 500;
@@ -34,10 +35,6 @@ const CHANGE_SOURCES = Object.freeze({
 
 const PAGE_LIMIT_DEFAULT = 20;
 const PAGE_LIMIT_MAX = 100;
-
-// Qidiruvda nechta so'z hisobga olinadi ("Valiyev Ali" — ikki so'z). Cheksiz
-// so'z har biri uchun uchta `ILIKE` shartini ko'paytirardi.
-const SEARCH_TERMS_MAX = 4;
 
 /**
  * Sababni tekshiradi va normallashtiradi. Bo'sh / juda qisqa / juda uzun
@@ -165,30 +162,6 @@ function optionalId(value, label) {
 }
 
 /**
- * O'quvchi ismi bo'yicha qidiruv sharti. Har so'z ism, familiya yoki
- * logindan BIRIGA mos kelishi kerak — "Valiyev Ali" ham, "Ali Valiyev" ham
- * topiladi (bitta `contains` bilan ikkalasi ham topilmasdi).
- */
-function studentSearchWhere(search) {
-  const terms = String(search ?? "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, SEARCH_TERMS_MAX);
-  if (terms.length === 0) return null;
-
-  return {
-    AND: terms.map((term) => ({
-      OR: [
-        { firstName: { contains: term, mode: "insensitive" } },
-        { lastName: { contains: term, mode: "insensitive" } },
-        { username: { contains: term, mode: "insensitive" } },
-      ],
-    })),
-  };
-}
-
-/**
  * Jurnal registri — sahifalangan, eng yangisi birinchi.
  *
  * Qidiruv, sinf va o'quvchi filtri SQL darajasida (xotirada emas). Sinf
@@ -219,7 +192,7 @@ async function listClassChanges(query = {}) {
   if (classId) {
     base.OR = [{ fromClassIds: { has: classId } }, { toClassIds: { has: classId } }];
   }
-  const studentWhere = studentSearchWhere(search);
+  const studentWhere = buildNameSearchWhere(search);
   if (studentWhere) base.student = studentWhere;
 
   const where = type ? { ...base, type } : base;

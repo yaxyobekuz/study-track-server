@@ -1,4 +1,5 @@
 const ExcelJS = require("exceljs");
+const { getTashkentDateUtc } = require("../helpers/date.helpers");
 
 /**
  * Excel Service - Excel fayllarni yaratish uchun yordamchi service
@@ -209,7 +210,194 @@ class ExcelService {
 
     return worksheet;
   }
+
+  /**
+   * SARLAVHALI VARAQ — hisobot ko'rinishi: 1-qator sarlavha, 2-qator izoh
+   * (sanoqlar, davr), 4-qator ustun sarlavhalari. Qatorlar `fillTitledRows`
+   * bilan to'ldiriladi.
+   *
+   * ⚠️ Sarlavha va izoh faylning O'ZIDA turishi shart: varaq chop etilganda
+   * yoki boshqa odamga yuborilganda "bu qaysi sinf, qaysi holat" degan
+   * savolga javob faqat shu qatorlar.
+   *
+   * @param {ExcelJS.Workbook} workbook
+   * @param {object} config
+   * @param {string} config.name - varaq nomi (≤ 31 belgi)
+   * @param {string} config.title
+   * @param {string} config.subtitle
+   * @param {Array<{header: string, key: string, width: number, align?: string}>} config.columns
+   * @param {string} [config.headerColor] - ustun sarlavhasi foni (ARGB)
+   * @returns {ExcelJS.Worksheet}
+   */
+  static addTitledSheet(
+    workbook,
+    { name, title, subtitle, columns, headerColor = TITLED.header },
+  ) {
+    const sheet = this.addWorksheet(workbook, name, { freezeHeader: false });
+
+    columns.forEach((column, index) => {
+      sheet.getColumn(index + 1).width = column.width;
+    });
+
+    sheet.mergeCells(1, 1, 1, columns.length);
+    const titleCell = sheet.getCell(1, 1);
+    titleCell.value = title;
+    titleCell.font = { bold: true, size: 14, color: { argb: TITLED.title } };
+    titleCell.alignment = { vertical: "middle", horizontal: "left" };
+    sheet.getRow(1).height = 26;
+
+    // Tor varaqda (3-4 ustun) uzun sarlavha birlashtirilgan katakdan
+    // sig'maydi va Excel uni KESIB tashlaydi (qo'shni katakka o'tmaydi) —
+    // shunday bo'lsa matn qatorga o'raladi va qator balandlashadi.
+    const capacity = columns.reduce((sum, column) => sum + (column.width ?? 10), 0);
+    wrapIfOverflow(sheet, 1, { text: title, capacity, charWidth: 1.4, lineHeight: 20 });
+
+    sheet.mergeCells(2, 1, 2, columns.length);
+    const subCell = sheet.getCell(2, 1);
+    subCell.value = subtitle;
+    subCell.font = { size: 11, color: { argb: TITLED.sub } };
+    sheet.getRow(2).height = 20;
+    wrapIfOverflow(sheet, 2, { text: subtitle, capacity, charWidth: 1.05, lineHeight: 15 });
+
+    const headerRow = sheet.getRow(TITLED_HEADER_ROW);
+    headerRow.values = columns.map((column) => column.header);
+    headerRow.height = 22;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: headerColor } };
+      cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      cell.border = { top: TITLED_BORDER, left: TITLED_BORDER, bottom: TITLED_BORDER, right: TITLED_BORDER };
+    });
+
+    sheet.views = [{ state: "frozen", ySplit: TITLED_HEADER_ROW }];
+
+    return sheet;
+  }
+
+  /**
+   * `addTitledSheet` varag'ining ma'lumot qatorlari.
+   *
+   * ⚠️ Bo'sh ro'yxatda bitta izoh qatori yoziladi — faqat sarlavhadan
+   * iborat varaq "fayl buzilgan" deb o'qilardi.
+   *
+   * @param {ExcelJS.Worksheet} sheet
+   * @param {Array<{key: string, align?: string}>} columns
+   * @param {object[]} rows - `row[column.key]` qiymatlari
+   * @param {object} [options]
+   * @param {string} [options.emptyText]
+   * @param {(cell: ExcelJS.Cell, column: object, row: object) => void} [options.styleCell]
+   * @param {string} [options.zebraColor] - juft qatorlar foni (ARGB)
+   */
+  static fillTitledRows(
+    sheet,
+    columns,
+    rows,
+    { emptyText = "Ma'lumot yo'q", styleCell, zebraColor = TITLED.zebra } = {},
+  ) {
+    if (rows.length === 0) {
+      const index = TITLED_HEADER_ROW + 1;
+      sheet.mergeCells(index, 1, index, columns.length);
+      const cell = sheet.getCell(index, 1);
+      cell.value = emptyText;
+      cell.font = { italic: true, color: { argb: TITLED.muted } };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+      return;
+    }
+
+    rows.forEach((row, rowIndex) => {
+      const excelRow = sheet.addRow(columns.map((column) => row[column.key] ?? ""));
+
+      if (rowIndex % 2 === 1) {
+        excelRow.fill = { type: "pattern", pattern: "solid", fgColor: { argb: zebraColor } };
+      }
+
+      excelRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const column = columns[colNumber - 1];
+        cell.border = { top: TITLED_BORDER, left: TITLED_BORDER, bottom: TITLED_BORDER, right: TITLED_BORDER };
+        cell.alignment = {
+          vertical: "middle",
+          horizontal: column.align ?? "left",
+        };
+        styleCell?.(cell, column, row);
+      });
+    });
+
+    sheet.autoFilter = {
+      from: { row: TITLED_HEADER_ROW, column: 1 },
+      to: { row: TITLED_HEADER_ROW, column: columns.length },
+    };
+  }
+
+  /**
+   * Faylni yuborish — nomi `<baseName>_<Toshkent kuni>.xlsx`.
+   *
+   * `Content-Disposition` — ASCII zaxira nom + UTF-8 asl nom (RFC 5987).
+   *
+   * ⚠️ Nom sinf nomidan yig'iladi va u kirillcha yoki apostrofli bo'lishi
+   * mumkin ("1-sinf o'zbek"). Node sarlavhada 255 dan katta belgini rad
+   * etadi (500), qo'shtirnoqsiz nomda esa bo'shliqdan keyingisi yo'qolardi.
+   * Admin paneli `filename*` ni birinchi o'qiydi (`downloadBlob`).
+   *
+   * @param {import("express").Response} res
+   * @param {ExcelJS.Workbook} workbook
+   * @param {string} baseName
+   * @param {{ fallbackName?: string }} [options] - ASCII ga aylantirilgan nom bo'sh qolsa
+   */
+  static async sendWorkbookAs(res, workbook, baseName, { fallbackName = "hisobot" } = {}) {
+    const day = getTashkentDateUtc().toISOString().slice(0, 10);
+    const utf8Name = `${baseName}_${day}.xlsx`;
+    const asciiName =
+      `${baseName.normalize("NFKD").replace(/[^A-Za-z0-9_-]+/g, "-").replace(/_-+|-+_/g, "_").replace(/^-+|-+$/g, "") || fallbackName}_${day}.xlsx`;
+    const encoded = encodeURIComponent(utf8Name).replace(
+      /['()*]/g,
+      (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  }
 }
+
+/**
+ * Birlashtirilgan sarlavha katagi: matn ustunlar kengligidan oshsa —
+ * qatorga o'raladi va qator shuncha balandlashadi (Excel birlashtirilgan
+ * katak balandligini o'zi moslamaydi). Sig'sa hech narsa o'zgarmaydi.
+ *
+ * `charWidth` — shriftning bir belgisi taxminan necha ustun birligi
+ * (11-o'lcham ≈ 1, 14-o'lcham qalin ≈ 1.4).
+ */
+function wrapIfOverflow(sheet, rowNumber, { text, capacity, charWidth, lineHeight }) {
+  const needed = String(text ?? "").length * charWidth;
+  if (needed <= capacity) return;
+
+  const lines = Math.ceil(needed / capacity);
+  const cell = sheet.getCell(rowNumber, 1);
+  cell.alignment = { ...cell.alignment, wrapText: true };
+  const row = sheet.getRow(rowNumber);
+  row.height = row.height + (lines - 1) * lineHeight;
+}
+
+// Sarlavhali varaq (`addTitledSheet`) — ustun sarlavhalari qatori va ranglari
+const TITLED_HEADER_ROW = 4;
+const TITLED_BORDER = { style: "thin", color: { argb: "FFE5E7EB" } };
+const TITLED = {
+  title: "FF1F2937",
+  sub: "FF6B7280",
+  header: "FF4472C4",
+  zebra: "FFF2F2F2",
+  muted: "FF9CA3AF",
+};
+
+ExcelService.TITLED_HEADER_ROW = TITLED_HEADER_ROW;
 
 // Oldindan belgilangan ranglar
 ExcelService.COLORS = {
