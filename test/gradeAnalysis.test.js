@@ -9,6 +9,7 @@ const {
   accumulateAggregate,
   buildOverview,
   buildRankings,
+  buildStudentResults,
   FINDING_CODES,
 } = require("../src/helpers/gradeAnalysis");
 const { topicNumberForLesson } = require("../src/helpers/lessonTopic");
@@ -353,4 +354,67 @@ test("tavsiya: har bir fan rejasida kamida 2 ta aniq qadam (faqat 'past fan' bo'
     assert.equal(rec.code, FINDING_CODES.WEAK_SUBJECT);
     assert.ok(rec.steps.length >= 2, `${voice}: qadamlar yetarli emas`);
   }
+});
+
+test("natijalar (jonli): baho yig'indilaridan reyting, sinf o'rtachasi va yig'ma", () => {
+  const students = [
+    { id: "a", firstName: "Ali", lastName: "V", classId: "c1", className: "5-A" },
+    { id: "b", firstName: "Bek", lastName: "V", classId: "c1", className: "5-A" },
+    { id: "c", firstName: "Say", lastName: "V", classId: "c1", className: "5-A" },
+    { id: "d", firstName: "Dil", lastName: "V", classId: "c1", className: "5-A" },
+    { id: "e", firstName: "Eli", lastName: "V", classId: "c1", className: "5-A" }, // bahosi yo'q
+    { id: "f", firstName: "Fot", lastName: "V", classId: null, className: null }, // sinfsiz
+  ];
+  const current = new Map([
+    ["a", { sum: 45, count: 10 }], // 4.5
+    ["b", { sum: 40, count: 10 }], // 4
+    ["c", { sum: 35, count: 10 }], // 3.5
+    ["d", { sum: 30, count: 10 }], // 3
+    ["f", { sum: 50, count: 10 }],
+    ["archived", { sum: 50, count: 10 }], // ro'yxatda yo'q — hisobga olinmaydi
+  ]);
+  const previous = new Map([
+    ["a", { sum: 16, count: 4 }], // 4.0 → +0.5
+    ["b", { sum: 8, count: 2 }], // kam baho — o'tgan o'rtacha yo'q
+  ]);
+
+  const { summary, rankings } = buildStudentResults({ students, current, previous });
+
+  assert.deepEqual(summary, {
+    students: 6,
+    graded: 5,
+    gradeCount: 50,
+    average: 4, // (45+40+35+30+50) / 50
+    ranked: 4,
+    classes: 1,
+    rankedClasses: 1,
+    withoutClass: 1,
+  });
+
+  const [cls] = rankings.classes;
+  assert.equal(cls.total, 5);
+  assert.equal(cls.ranked, 4);
+  assert.equal(cls.average, 3.75); // 150 / 40 — barcha baholardan
+  assert.deepEqual(cls.best.map((row) => [row.studentId, row.place]), [["a", 1], ["b", 2]]);
+  assert.deepEqual(cls.worst.map((row) => [row.studentId, row.place]), [["d", 4], ["c", 3]]);
+  assert.equal(cls.best[0].delta, 0.5);
+  assert.equal(cls.best[1].delta, null);
+  assert.equal(cls.best[0].reportId, null);
+  assert.equal(rankings.school.best[0].studentId, "a");
+});
+
+test("natijalar (jonli): tahlil reytingi bilan AYNI qoida", () => {
+  const students = [1, 2, 3, 4, 5, 6, 7].map((n) => ({ id: `s${n}`, firstName: `O'quvchi ${n}`, classId: "c", className: "7-B" }));
+  const current = new Map(students.map((s, i) => [s.id, { sum: (5 - i * 0.25) * 8, count: 8 }]));
+  const { rankings } = buildStudentResults({ students, current });
+
+  const direct = buildRankings(
+    students.map((s) => {
+      const { sum, count } = current.get(s.id);
+      return { studentId: s.id, name: s.firstName, classId: "c", className: "7-B", level: levelOf(sum / count, count).key, average: sum / count, gradeCount: count };
+    }),
+  );
+  const ids = (list) => list.map((row) => `${row.studentId}:${row.place}`);
+  assert.deepEqual(ids(rankings.classes[0].best), ids(direct.classes[0].best));
+  assert.deepEqual(ids(rankings.classes[0].worst), ids(direct.classes[0].worst));
 });

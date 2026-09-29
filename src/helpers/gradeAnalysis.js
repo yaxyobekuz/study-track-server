@@ -2025,6 +2025,95 @@ function buildRankings(students, classNames = new Map()) {
   };
 }
 
+/* ───────────────────────── 6. O'QUVCHILAR NATIJALARI (jonli) ───────────────────────── */
+
+/**
+ * O'QUVCHILAR NATIJALARI — eng yuqori va eng past natijalar, maktab va
+ * sinflar kesimida, BAHO YIG'INDILARIDAN (tahlilsiz, AI'siz).
+ *
+ * ⚠️ QOIDALAR TAHLIL REYTINGI BILAN AYNI: `buildRankings` shu yerdan ham
+ * chaqiriladi, o'rtacha va o'tgan davr o'rtachasi `buildStudentFacts`
+ * bilan AYNI yaxlitlanadi (2 xona). Aks holda bir o'quvchi "AI tahlil" va
+ * "O'quvchilar natijalari" tablarida bir davr uchun ikki xil o'rinda
+ * turardi.
+ *
+ * Sinf o'rtachasi — sinf o'quvchilarining shu davrdagi BARCHA baholaridan
+ * (o'quvchilar o'rtachalarining o'rtachasi EMAS): 2 ta baholi bola 40 ta
+ * baholi bola bilan teng og'irlik olmasin.
+ *
+ * @param {object} input
+ * @param {Array<{id: string, firstName?: string, lastName?: string, classId: string|null, className: string|null}>} input.students
+ *   joriy (arxivlanmagan) o'quvchilar — faqat shular hisobga olinadi
+ * @param {Map<string, {sum: number, count: number}>} input.current - davrdagi baholar, o'quvchi bo'yicha
+ * @param {Map<string, {sum: number, count: number}>} [input.previous] - o'tgan davr
+ * @returns {{summary: object, rankings: object}}
+ */
+function buildStudentResults({ students, current, previous = new Map() }) {
+  const rows = students.map((student) => {
+    const now = current.get(student.id);
+    const before = previous.get(student.id);
+    const count = now?.count ?? 0;
+    const average = count ? round(now.sum / count) : null;
+    return {
+      studentId: student.id,
+      name: [student.firstName, student.lastName].filter(Boolean).join(" ").trim() || "—",
+      classId: student.classId ?? null,
+      className: student.className ?? null,
+      level: levelOf(average, count).key,
+      average,
+      previousAverage:
+        before && before.count >= THRESHOLDS.minGradesOverall ? round(before.sum / before.count) : null,
+      gradeCount: count,
+    };
+  });
+
+  const classStats = new Map();
+  let sum = 0;
+  let count = 0;
+  let graded = 0;
+  for (const row of rows) {
+    const now = current.get(row.studentId);
+    if (now?.count) {
+      graded += 1;
+      sum += now.sum;
+      count += now.count;
+    }
+    if (!row.classId) continue;
+    const stat = classStats.get(row.classId) ?? { students: 0, sum: 0, count: 0 };
+    stat.students += 1;
+    if (now?.count) {
+      stat.sum += now.sum;
+      stat.count += now.count;
+    }
+    classStats.set(row.classId, stat);
+  }
+
+  const rankings = buildRankings(rows);
+  const classes = rankings.classes.map((cls) => {
+    const stat = classStats.get(cls.classId);
+    return {
+      ...cls,
+      // Sinfdagi barcha o'quvchi (baho olmaganlari ham) — "28 tadan 24 tasi reytingda"
+      total: stat?.students ?? cls.students,
+      average: stat?.count ? round(stat.sum / stat.count) : null,
+    };
+  });
+
+  return {
+    summary: {
+      students: rows.length,
+      graded,
+      gradeCount: count,
+      average: count ? round(sum / count) : null,
+      ranked: classes.reduce((total, cls) => total + cls.ranked, 0),
+      classes: classStats.size,
+      rankedClasses: classes.length,
+      withoutClass: rows.filter((row) => !row.classId).length,
+    },
+    rankings: { ...rankings, classes },
+  };
+}
+
 /**
  * Rahbariyat uchun QOIDALAR xulosasi (AI ishlamasa ko'rsatiladi).
  * @returns {{summary: string, highlights: Array<{tone, text}>, priorities: Array<{title, owner, priority}>}}
@@ -2130,6 +2219,7 @@ module.exports = {
   accumulateAggregate,
   buildOverview,
   buildRankings,
+  buildStudentResults,
   buildOverviewNarrative,
   // Sinov va AI qatlami uchun
   fmt,

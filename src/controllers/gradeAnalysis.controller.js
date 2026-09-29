@@ -22,6 +22,11 @@ const createRun = asyncHandler(async (req, res) => {
   res.status(202).json({ success: true, message: "Tahlil boshlandi", data });
 });
 
+const getStudentResults = asyncHandler(async (req, res) => {
+  const data = await gradeAnalysisService.getStudentResults(req.query);
+  res.json({ success: true, data });
+});
+
 const listRuns = asyncHandler(async (req, res) => {
   const result = await gradeAnalysisService.listRuns(req.query);
   res.json({ success: true, ...result });
@@ -108,6 +113,7 @@ module.exports = {
   getOptions,
   searchStudents,
   createRun,
+  getStudentResults,
   listRuns,
   getRun,
   listRunReports,

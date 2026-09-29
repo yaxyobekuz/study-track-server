@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getOptions,
   searchStudents,
+  getStudentResults,
   createRun,
   listRuns,
   getRun,
@@ -54,6 +55,10 @@ router.get(
   authorizePermission(PERMISSIONS.GRADEANALYSIS_VIEW),
   getStudentHistory,
 );
+
+// O'quvchilar natijalari — baholardan JONLI eng yuqori / eng past natijalar
+// (tahlilsiz, AI'siz). Faqat o'qish: ko'rish huquqi yetadi.
+router.get("/results", authorizePermission(PERMISSIONS.GRADEANALYSIS_VIEW), getStudentResults);
 
 router.get("/settings", authorizePermission(PERMISSIONS.GRADEANALYSIS_VIEW), getSettings);
 router.put("/settings", authorizePermission(PERMISSIONS.GRADEANALYSIS_SETTINGS), updateSettings);

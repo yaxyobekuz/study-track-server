@@ -60,6 +60,7 @@ const {
   accumulateAggregate,
   buildOverview,
   buildRankings,
+  buildStudentResults,
   buildOverviewNarrative,
   shiftDay,
 } = require("../helpers/gradeAnalysis");
@@ -1016,22 +1017,11 @@ async function getRun(id) {
   };
 }
 
-/**
- * Tahlillar tarixi (yig'masiz — ro'yxat yengil qolsin).
- *
- * `scope` — bitta yoki vergul bilan bir nechta qamrov (`school,classes`):
- * sahifa tepasidagi reyting oxirgi MAKTAB/SINF tahlilini shu bilan topadi —
- * tanlangan tahlil bitta o'quvchiniki bo'lsa ham reyting ko'rinib tursin.
- */
-async function listRuns({ page = 1, limit = 12, status, trigger, scope } = {}) {
+/** Tahlillar tarixi (yig'masiz — ro'yxat yengil qolsin). */
+async function listRuns({ page = 1, limit = 12, status, trigger } = {}) {
   const where = {};
   if (status && Object.values(STATUS).includes(status)) where.status = status;
   if (trigger && Object.values(TRIGGERS).includes(trigger)) where.trigger = trigger;
-  const scopes = String(scope || "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => SCOPE_KEYS.includes(value));
-  if (scopes.length) where.scope = { in: [...new Set(scopes)] };
 
   const take = Math.min(50, Math.max(1, Number(limit) || 12));
   const skip = (Math.max(1, Number(page) || 1) - 1) * take;
@@ -1352,6 +1342,64 @@ async function searchStudents({ q, classId } = {}) {
   }));
 }
 
+/* ─────────────────────────── O'QUVCHILAR NATIJALARI (jonli) ─────────────────────────── */
+
+const RESULTS_DEFAULT_PERIOD = "month";
+
+/** Davrdagi baholar yig'indisi va soni — o'quvchi bo'yicha, bitta GROUP BY. */
+async function gradeSumsByStudent(from, to) {
+  const rows = await prisma.grade.groupBy({
+    by: ["studentId"],
+    where: { date: instantRange(from, to) },
+    _sum: { grade: true },
+    _count: { _all: true },
+  });
+  return new Map(rows.map((row) => [row.studentId, { sum: row._sum.grade ?? 0, count: row._count._all }]));
+}
+
+/**
+ * O'QUVCHILAR NATIJALARI — maktab bo'yicha va har sinfda eng yuqori 3 va
+ * eng past 3 natija, QO'YILGAN BAHOLARDAN JONLI.
+ *
+ * ⚠️ TAHLILGA (run) BOG'LIQ EMAS va AI YO'Q. Tahlil — ishga tushiriladigan,
+ * muhrlangan hisobot; bu yerda esa har so'rovda baho jadvalidan
+ * hisoblanadi: bugun qo'yilgan baho darhol ko'rinadi, hech narsa yozilmaydi.
+ * Ilgari reyting faqat tahlil ichida edi — tahlil o'tkazilmasa (yoki bitta
+ * o'quvchi bo'yicha o'tkazilsa) natijalar umuman ko'rinmasdi.
+ *
+ * Qoidalar (`buildStudentResults` → `buildRankings`) tahlil bilan AYNI.
+ * O'quvchi va sinfi — tahlil qamrovi bilan AYNI tanlov (`resolveStudents`):
+ * arxivlangan o'quvchi kirmaydi (`education.md` §4), bir nechta sinfdagi
+ * o'quvchi nom bo'yicha birinchi sinfida. Arxivlanganlarning baholari
+ * yig'indida bo'lsa ham o'quvchilar ro'yxatida yo'qligi uchun tushib qoladi.
+ *
+ * @param {{period?: string}} [query] - `GRADE_ANALYSIS_PERIODS` kaliti (sukut — 1 oy)
+ */
+async function getStudentResults({ period } = {}) {
+  const key = PERIOD_KEYS.includes(period) ? period : RESULTS_DEFAULT_PERIOD;
+  const window = periodWindow(key);
+
+  const [students, current, previous] = await Promise.all([
+    resolveStudents({ scope: SCOPES.SCHOOL }),
+    gradeSumsByStudent(window.from, window.to),
+    gradeSumsByStudent(window.previousFrom, window.previousTo),
+  ]);
+
+  return {
+    period: {
+      key,
+      label: window.label,
+      title: window.title,
+      from: window.from,
+      to: window.to,
+      rangeLabel: window.rangeLabel,
+    },
+    periods: PERIOD_KEYS.map((periodKey) => ({ key: periodKey, label: GRADE_ANALYSIS_PERIODS[periodKey].label })),
+    generatedAt: new Date().toISOString(),
+    ...buildStudentResults({ students, current, previous }),
+  };
+}
+
 /* ─────────────────────────── MOBIL (o'quvchi / ota-ona) ─────────────────────────── */
 
 /**
@@ -1475,6 +1523,7 @@ module.exports = {
   // Admin
   getOptions,
   searchStudents,
+  getStudentResults,
   createRun,
   listRuns,
   getRun,
