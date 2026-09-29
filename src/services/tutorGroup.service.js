@@ -559,6 +559,10 @@ const getClassOptions = async ({ tutorId, month, endMonth } = {}) => {
  * GURUH MANZARASI — o'quvchilar, bugungi davomat, oylik davomat va baholar,
  * qo'shimcha oylik.
  *
+ * KUNLIK TARIX: har o'quvchining `attendance.days` — oyning har o'quv kunidagi
+ * holati (faqat u kutilgan kunlar), `attendance.byDay` — kun yig'indisi.
+ * Tyutor sinfining davomatini kunma-kun ko'radi.
+ *
  * Davomat oylik ko'rsatkichlari davomat hisobotining O'ZIDAN olinadi
  * (`attendanceReport.getClassReport`) — "kutilgan kun" va foiz qoidasi bitta
  * joyda qoladi, tyutor ekranida boshqa foiz chiqmaydi.
@@ -604,6 +608,8 @@ const getGroupOverview = async (groupId, { month } = {}, viewer) => {
       period: "month",
       month: monthKey % 100,
       year: Math.trunc(monthKey / 100),
+      // Kunlik tarix (o'quvchi × kun) — oylik foiz bilan AYNI tsikldan
+      includeDays: true,
     }),
     loadArchivedStudentScope(),
     prisma.payrollEntry.findFirst({
@@ -740,6 +746,7 @@ const getGroupOverview = async (groupId, { month } = {}, viewer) => {
               excused: monthRow.excused,
               missed: monthRow.missed,
               maxStreak: monthRow.maxStreak,
+              days: monthRow.days ?? [],
             }
           : null,
         grades: {

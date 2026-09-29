@@ -671,10 +671,14 @@ async function loadSchoolDays(start, end) {
  *
  * @param {string} classId
  * @param {{period?: "day"|"month"|"year", date?: string,
- *          month?: number|string, year?: number|string}} [options]
+ *          month?: number|string, year?: number|string,
+ *          includeDays?: boolean}} [options]
  *   `day`   — `date` ("YYYY-MM-DD", default bugun)
  *   `month` — `month` + `year` (default joriy oy)
  *   `year`  — `year` (kalendar yili: o'quv yili tushunchasi yo'q, `education.md` §1)
+ *   `includeDays` — faqat `month`: har o'quvchiga KUNMA-KUN holati (`days`).
+ *     Oylik yig'indi bilan AYNI tsikldan yoziladi — tyutorning kunlik
+ *     tarixidagi katak va oylik foiz bir-biridan uzoqlashmaydi.
  */
 async function getClassReport(classId, options = {}) {
   if (!isValidId(classId)) throw new NotFoundError("Sinf topilmadi");
@@ -684,6 +688,7 @@ async function getClassReport(classId, options = {}) {
     throw new BadRequestError(`Noto'g'ri davr: ${period}`);
   }
   const range = resolveClassPeriod(period, options);
+  const includeDays = period === "month" && Boolean(options.includeDays);
 
   const [classDoc, resolver, scope] = await Promise.all([
     prisma.class.findUnique({
@@ -760,11 +765,20 @@ async function getClassReport(classId, options = {}) {
           streak: 0,
           maxStreak: 0,
           record: null,
+          ...(includeDays ? { days: [] } : {}),
         });
       }
       const s = perStudent.get(studentId);
       tallyEntry(s, record);
       s.record = record;
+      // Faqat KUTILGAN kunlar: darsi bo'lmagan kun katagi bo'sh qoladi
+      if (includeDays) {
+        s.days.push({
+          date: key,
+          status: record?.status || null,
+          excuseReason: record?.excuseReason || null,
+        });
+      }
 
       // Ketma-ketlik faqat shu o'quvchi KUTILGAN kunlar bo'yicha: darsi
       // bo'lmagan kun zanjirni uzmaydi ham, cho'zmaydi ham
