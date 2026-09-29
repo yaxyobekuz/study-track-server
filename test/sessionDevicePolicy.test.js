@@ -59,6 +59,12 @@ const fakePlatformPrisma = {
       rows.forEach((row) => Object.assign(row, data));
       return { count: rows.length };
     },
+    // `checkSession` kanalni shu UPDATE dan oladi (`req.sessionChannel`)
+    updateManyAndReturn: async ({ where, data }) => {
+      const rows = db.sessions.filter((row) => matches(row, where));
+      rows.forEach((row) => Object.assign(row, data));
+      return rows.map((row) => ({ channel: row.channel ?? "admin" }));
+    },
   },
   loginAttempt: { count: async () => 0, deleteMany: async () => ({ count: 0 }) },
   securityAlert: {
@@ -412,6 +418,77 @@ test("harakatsiz: 5 kunlik seans bilan so'rov — 401 (false) va `lastSeenAt` ya
 
   // Qatori yo'q eski token avvalgidek o'tadi
   assert.equal(await security.touchSession("jti-unknown-legacy"), true);
+});
+
+test("seans kanali: `touchSessionState` kanalni qaytaradi — bazadan ham, oynadan ham", async () => {
+  reset();
+  security.forgetSeenCache();
+  const parent = seed("parent-phone", STUDENT.id, 0.01, { channel: "parent" });
+
+  assert.deepEqual(await security.touchSessionState(parent.jti), {
+    alive: true,
+    channel: "parent",
+  });
+  // Ikkinchi so'rov oyna ichida — baza o'zgarsa ham oynadagi kanal qaytadi
+  rowOf("parent-phone").channel = "student";
+  assert.deepEqual(await security.touchSessionState(parent.jti), {
+    alive: true,
+    channel: "parent",
+  });
+
+  // Qatori yo'q eski token — kanal noma'lum
+  assert.deepEqual(await security.touchSessionState("jti-unknown-legacy-2"), {
+    alive: true,
+    channel: null,
+  });
+  // `jti` siz token
+  assert.deepEqual(await security.touchSessionState(null), { alive: true, channel: null });
+});
+
+test("seans kanali: baza xatosidagi javob keshlanmaydi — keyingi so'rov haqiqiy kanalni oladi", async () => {
+  reset();
+  security.forgetSeenCache();
+  const parent = seed("parent-flaky", STUDENT.id, 0.01, { channel: "parent" });
+
+  const original = fakePlatformPrisma.userSession.updateManyAndReturn;
+  fakePlatformPrisma.userSession.updateManyAndReturn = async () => {
+    throw new Error("connection reset");
+  };
+  try {
+    // Baza yiqilgan — hech kim tizimdan chiqmaydi, kanal esa noma'lum
+    assert.deepEqual(await security.touchSessionState(parent.jti), { alive: true, channel: null });
+  } finally {
+    fakePlatformPrisma.userSession.updateManyAndReturn = original;
+  }
+
+  // "Noma'lum" 2 daqiqa oynada qolmagan — ota-ona qayta login qilmaydi
+  assert.deepEqual(await security.touchSessionState(parent.jti), {
+    alive: true,
+    channel: "parent",
+  });
+});
+
+test("ota-ona nazorati: ota-ona telefoni (parent) va bola telefoni (student) bir-birini YOPMAYDI", async () => {
+  reset();
+  const child = await login(STUDENT, { channel: "student", device: ANDROID, deviceId: PHONE_A });
+  const parent = await login(STUDENT, { channel: "parent", device: ANDROID, deviceId: PHONE_B });
+  // Ota-ona ilovasi ham, o'quvchi ilovasi ham AYNI telefonda bo'lsa ham
+  // (bir xil `deviceId`) — kanal boshqa, ya'ni ikki ilova
+  const parentOnChildPhone = await login(STUDENT, {
+    channel: "parent",
+    device: ANDROID,
+    deviceId: PHONE_A,
+  });
+
+  assert.deepEqual(
+    liveIds(STUDENT.id).sort(),
+    [child.id, parent.id, parentOnChildPhone.id].sort(),
+  );
+  assert.equal(db.sessions.find((row) => row.id === child.id).endReason, "active");
+
+  // Kechki supurgi ham ularni bitta qurilma deb birlashtirmaydi
+  const closed = await security.dedupeLiveSessions();
+  assert.equal(closed, 0);
 });
 
 test("harakatsiz: limitda — 4 tadan bittasi 5 kun harakatsiz bo'lsa yangi login o'tadi", async () => {

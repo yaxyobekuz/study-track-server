@@ -66,6 +66,8 @@ const {
 const { startSecuritySweepCron } = require("./src/jobs/securitySweep.job");
 const { startPushTokenProbeCron } = require("./src/jobs/pushTokenProbe.job");
 const { startScheduleSheetSyncCron } = require("./src/jobs/scheduleSheetSync.job");
+const { startDeviceSweepCron } = require("./src/jobs/deviceSweep.job");
+const { startParentalWatchdogCron } = require("./src/jobs/parentalWatchdog.job");
 
 // ================================
 
@@ -118,7 +120,20 @@ app.use(
 // xavfsizlik jurnaliga `username` yozilishi kerak. Tana hajmi
 // `express.json()` ning standart 100kb chegarasi bilan cheklangan,
 // shuning uchun bu qo'shimcha yuk ahamiyatsiz.
-app.use(express.json());
+//
+// ⚠️ OTA-ONA NAZORATI — bolaning telefoni katta paket yuboradi: ilovalar
+// ro'yxati ikonkalari bilan (500 ta, har biri ≤ 20 KB PNG base64), kunlik
+// statistika (1000 qator, iOS tokeni 2 KB gacha). Standart 100 KB ularga
+// sig'masdi. Shu yo'llarning tanasi bu yerda O'QILMAYDI — uni
+// `parental.routes.js` AUTENTIFIKATSIYADAN KEYIN kattaroq chegara bilan
+// o'qiydi (va `xss()` ni o'zi qo'llaydi). Aks holda 10 MB lik tana
+// tokensiz so'rovda ham xotiraga olinardi.
+const jsonParser = express.json();
+// `i` — Express yo'llari registrga sezgir emas (`/api/Parental/...` ham o'sha router)
+const PARENTAL_DEVICE_PATH = /^\/api\/parental\/device(\/|$)/i;
+app.use((req, res, next) =>
+  PARENTAL_DEVICE_PATH.test(req.path) ? next() : jsonParser(req, res, next),
+);
 app.use(express.urlencoded({ extended: true }));
 
 app.use(xss());
@@ -230,6 +245,10 @@ const bootstrap = async () => {
   startPushTokenProbeCron();
   // Dars jadvali: Google Sheets manbasini avtomatik tekshirish (faqat sheet rejimida)
   startScheduleSheetSyncCron();
+  // Qurilma nazorati: muddati o'tgan ochishlar/kodlar va eski ekran vaqti hisoboti
+  startDeviceSweepCron();
+  // Ota-ona nazorati: jim qurilma, muddati o'tgan so'rov/blok va eski statistika
+  startParentalWatchdogCron();
 
   // Tizimga o'tishdan oldingi (sentabr, 2026 dan avvalgi) fantom oylik
   // majburiyatlarini bir marta tozalaydi + polni o'rnatadi. Bloklamaydi.

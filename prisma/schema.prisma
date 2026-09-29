@@ -426,15 +426,15 @@ model User {
   // ── OYLIK (payroll-v2) biriktirish (soft ref) ──
   //   positionId       — staff xodim uchun LAVOZIM (maosh lavozimdan)
   //   salaryCategoryId — teaching o'qituvchi uchun TOIFA (KPI toifadan)
-  positionId       String? @map("position_id") @db.Char(24)
-  salaryCategoryId String? @map("salary_category_id") @db.Char(24)
+  positionId       String?        @map("position_id") @db.Char(24)
+  salaryCategoryId String?        @map("salary_category_id") @db.Char(24)
   //   customBaseSalary — SHU XODIMNING shaxsiy maoshi: lavozim qoladi (nomi va
   //                      bo'limi), lekin `Position.baseSalary` o'rniga shu
   //                      summa olinadi. null → lavozim maoshi. Faqat lavozim
   //                      bilan ma'noga ega: lavozim o'zgarsa/olinsa tozalanadi.
   //                      ⚠️ Engine uni BAZADAN o'zi o'qiydi (`loadContext`),
   //                      chaqiruvchining `select` idan emas.
-  customBaseSalary Decimal? @map("custom_base_salary") @db.Decimal(14, 2)
+  customBaseSalary Decimal?       @map("custom_base_salary") @db.Decimal(14, 2)
   // QO'SHIMCHA ROLLAR — bitta odam bir nechta rolda bo'lishi mumkin
   // (o'qituvchi + ma'muriyat). `role` ASOSIY bo'lib qoladi va uning
   // ma'nosi o'zgarmaydi: butun tizimda 160 dan ortiq joy unga qarab
@@ -497,11 +497,13 @@ model User {
   createdAt        DateTime       @default(now()) @map("created_at")
   updatedAt        DateTime       @updatedAt @map("updated_at")
 
-  profileImage    Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
-  classes         UserClass[]
-  subjects        UserSubject[]
-  achievements    StudentAchievement[] @relation("StudentAchievements")
-  clubMemberships ClubMember[]         @relation("ClubMemberships")
+  profileImage     Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
+  classes          UserClass[]
+  subjects         UserSubject[]
+  achievements     StudentAchievement[] @relation("StudentAchievements")
+  clubMemberships  ClubMember[]         @relation("ClubMemberships")
+  // Ota-ona nazorati sozlamasi (PIN, "hammasini bloklash") — o'quvchi hisobiga bittadan.
+  parentalSettings ParentalSettings?
 
   @@index([role, isActive])
   @@index([role, isArchived])
@@ -2330,23 +2332,23 @@ model EmojiConfig {
 model StudentTariff {
   // soft ref → User (role = "student"). FK YO'Q: moliyaviy tarix o'quvchi
   // o'chirilsa ham qolishi kerak (StudentAttendance.studentId uslubi).
-  id         String   @id @db.Char(24)
-  studentId  String   @map("student_id") @db.Char(24)
+  id           String   @id @db.Char(24)
+  studentId    String   @map("student_id") @db.Char(24)
   // soft ref → Tariff. FK YO'Q — bu cross-entity bog'lanish, Tariff bu
   // qatorning egasi emas (MarketOrder.productId uslubi).
-  tariffId   String   @map("tariff_id") @db.Char(24)
-  startMonth Int      @map("start_month")
+  tariffId     String   @map("tariff_id") @db.Char(24)
+  startMonth   Int      @map("start_month")
   // null → butun o'qish davri. startMonth === endMonth → faqat o'sha oy.
-  endMonth   Int?     @map("end_month")
+  endMonth     Int?     @map("end_month")
   // INDIVIDUAL (maxsus) narx — kategoriya biriktirilgan bo'lsa ham o'quvchi
   // shu davrda AYNAN shu summani to'laydi (katalog versiya narxi o'rniga).
   // null → katalog narxi. Chegirmalar ustiga qo'llanaveradi. Doimiy (davr
   // bo'yicha) — bitta oy uchun bo'lsa StudentMonthOverride ishlatiladi.
   customAmount Decimal? @map("custom_amount") @db.Decimal(14, 2)
-  note       String   @default("")
-  createdBy  String   @map("created_by") @db.Char(24)
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
+  note         String   @default("")
+  createdBy    String   @map("created_by") @db.Char(24)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   // `status` enum YO'Q — davrning o'zi holat. Biriktirish tugatilsa endMonth
   // qo'yiladi; xato kelajakdagi biriktirish o'chiriladi.
@@ -2937,7 +2939,7 @@ model MonthlyInvoice {
   // (Proratsiyagacha bu `baseAmount − discountAmount` edi.)
   // Hech qachon qayta hisoblanmaydi; keyingi to'g'rilash keyingi oydan
   // amal qiladi. Invariantni financeReconcile job har kecha tekshiradi.
-  amount     Decimal @db.Decimal(14, 2)
+  amount Decimal @db.Decimal(14, 2)
 
   // OY OVERRIDE'i snapshoti — summa qo'lda o'zgartirilgan bo'lsa NEGA
   // (StudentMonthOverride.reasonCode/note). Hisobotda "kech qo'shilgan"
@@ -3160,13 +3162,13 @@ model Department {
 }
 
 model Position {
-  id           String  @id @db.Char(24)
-  departmentId String  @map("department_id") @db.Char(24)
+  id           String   @id @db.Char(24)
+  departmentId String   @map("department_id") @db.Char(24)
   name         String
-  baseSalary   Decimal @default(0) @map("base_salary") @db.Decimal(14, 2)
-  sortOrder    Int     @default(0) @map("sort_order")
-  isActive     Boolean @default(true) @map("is_active")
-  createdBy    String  @map("created_by") @db.Char(24)
+  baseSalary   Decimal  @default(0) @map("base_salary") @db.Decimal(14, 2)
+  sortOrder    Int      @default(0) @map("sort_order")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdBy    String   @map("created_by") @db.Char(24)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -3178,21 +3180,21 @@ model Position {
 }
 
 model SalaryCategory {
-  id           String    @id @db.Char(24)
-  departmentId String?   @map("department_id") @db.Char(24) // teaching bo'lim (soft ref; legacy = null)
-  name         String
-  perHourRate  Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
-  monthlyPerHour Decimal @default(0) @map("monthly_per_hour") @db.Decimal(14, 2)
-  hoursPerStavka Int     @default(0) @map("hours_per_stavka")
-  baseSalary   Decimal   @default(0) @map("base_salary") @db.Decimal(14, 2)
-  description  String    @default("")
-  sortOrder    Int       @default(0) @map("sort_order")
-  isActive     Boolean   @default(true) @map("is_active")
-  isArchived   Boolean   @default(false) @map("is_archived")
-  archivedAt   DateTime? @map("archived_at")
-  createdBy    String    @map("created_by") @db.Char(24)
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @updatedAt @map("updated_at")
+  id             String    @id @db.Char(24)
+  departmentId   String?   @map("department_id") @db.Char(24) // teaching bo'lim (soft ref; legacy = null)
+  name           String
+  perHourRate    Decimal   @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  monthlyPerHour Decimal   @default(0) @map("monthly_per_hour") @db.Decimal(14, 2)
+  hoursPerStavka Int       @default(0) @map("hours_per_stavka")
+  baseSalary     Decimal   @default(0) @map("base_salary") @db.Decimal(14, 2)
+  description    String    @default("")
+  sortOrder      Int       @default(0) @map("sort_order")
+  isActive       Boolean   @default(true) @map("is_active")
+  isArchived     Boolean   @default(false) @map("is_archived")
+  archivedAt     DateTime? @map("archived_at")
+  createdBy      String    @map("created_by") @db.Char(24)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   department Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
@@ -3202,11 +3204,11 @@ model SalaryCategory {
 }
 
 model PayrollBonus {
-  id       String        @id @db.Char(24)
-  staffId  String        @map("staff_id") @db.Char(24)
-  label    String        @default("")
-  type     AllowanceKind @default(fixed)
-  value    Decimal       @default(0) @db.Decimal(14, 2)
+  id      String        @id @db.Char(24)
+  staffId String        @map("staff_id") @db.Char(24)
+  label   String        @default("")
+  type    AllowanceKind @default(fixed)
+  value   Decimal       @default(0) @db.Decimal(14, 2)
 
   // Amal qilish davri (oy aniqligida). endMonth = null → muddatsiz.
   startMonth Int  @map("start_month")
@@ -3296,9 +3298,9 @@ model PayrollSuspension {
 
   component PayrollSuspensionComponent
   // component = item: `tutor:<classId>` | `bonus:<bonusId>` | `rule:<label>`
-  itemKey   String @default("") @map("item_key")
+  itemKey   String                     @default("") @map("item_key")
   // Qo'shimcha nomi (yaratilgan paytdagi) — ro'yxat va eski muhr uchun
-  itemLabel String @default("") @map("item_label")
+  itemLabel String                     @default("") @map("item_label")
 
   // Davr — IKKALASI HAM MAJBURIY: muddatsiz to'xtatish jimgina oylikni
   // abadiy o'chirib qo'yardi.
@@ -3413,7 +3415,7 @@ model PayrollAudit {
 }
 
 model StaffSalary {
-  id String @id @db.Char(24)
+  id      String @id @db.Char(24)
   // soft ref → User (role != student). FK YO'Q: xodim arxivlansa ham
   // moliyaviy tarix qolishi kerak (StudentTariff uslubi).
   staffId String @map("staff_id") @db.Char(24)
@@ -3459,7 +3461,7 @@ model StaffSalary {
 // ⚠️ Kun proratsiyasi YO'Q. "Fiksa" — qat'iy summa, oy aniqligida. Oy
 // o'rtasida ishga kirgan xodim uchun `startMonth` keyingi oydan qo'yiladi.
 model PayrollEntry {
-  id String @id @db.Char(24)
+  id      String @id @db.Char(24)
   staffId String @map("staff_id") @db.Char(24)
   month   Int // YYYYMM
 
@@ -3474,19 +3476,19 @@ model PayrollEntry {
   //   allowanceAmount — ustamalar (foizlilar fiksadan) yig'indisi
   //   kpiAmount       — perHourRate × lessonHours (stavka toifadan yoki qo'lda)
   // Schedule/toifa keyin o'zgarsa bu qatorga tegilmaydi (hisob-faktura doktrinasi).
-  fixedAmount        Decimal @default(0) @map("fixed_amount") @db.Decimal(14, 2)
-  allowanceAmount    Decimal @default(0) @map("allowance_amount") @db.Decimal(14, 2)
-  kpiAmount          Decimal @default(0) @map("kpi_amount") @db.Decimal(14, 2)
-  lessonHours        Decimal @default(0) @map("lesson_hours") @db.Decimal(10, 2)
-  perHourRate        Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
+  fixedAmount         Decimal @default(0) @map("fixed_amount") @db.Decimal(14, 2)
+  allowanceAmount     Decimal @default(0) @map("allowance_amount") @db.Decimal(14, 2)
+  kpiAmount           Decimal @default(0) @map("kpi_amount") @db.Decimal(14, 2)
+  lessonHours         Decimal @default(0) @map("lesson_hours") @db.Decimal(10, 2)
+  perHourRate         Decimal @default(0) @map("per_hour_rate") @db.Decimal(14, 2)
   // Ustama qoidalarining muhrlangan tafsiloti: [{label,type,value,amount}]
-  allowanceBreakdown Json    @default("[]") @map("allowance_breakdown")
+  allowanceBreakdown  Json    @default("[]") @map("allowance_breakdown")
   // Ushlab qolish (`PayrollDeduction`): jami va tafsiloti [{id,reason,type,value,amount}].
   // ⚠️ Yagona istisno muhr qoidasidan: bir so'm ham to'lanmagan qatorda
   // ushlab qolish qo'shilsa/bekor qilinsa, faqat shu ikki maydon va `amount`
   // qayta yoziladi (yalpi qismlar tegilmaydi) — `payrollDeduction.service`.
-  deductionAmount    Decimal @default(0) @map("deduction_amount") @db.Decimal(14, 2)
-  deductionBreakdown Json    @default("[]") @map("deduction_breakdown")
+  deductionAmount     Decimal @default(0) @map("deduction_amount") @db.Decimal(14, 2)
+  deductionBreakdown  Json    @default("[]") @map("deduction_breakdown")
   // To'xtatilgan oylik (`PayrollSuspension`): hisoblanmaydigan qismlar jami va
   // tafsiloti [{id,component,itemKey,label,reason,amount}]. Yalpi qismlar
   // (fixed/kpi/allowance) O'ZGARMAYDI — to'xtatish bekor qilinsa oylik to'liq
@@ -3494,9 +3496,9 @@ model PayrollEntry {
   suspendedAmount     Decimal @default(0) @map("suspended_amount") @db.Decimal(14, 2)
   suspensionBreakdown Json    @default("[]") @map("suspension_breakdown")
   // Toifa / lavozim / bo'lim nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
-  categoryName       String  @default("") @map("category_name")
-  positionName       String  @default("") @map("position_name")
-  departmentName     String  @default("") @map("department_name")
+  categoryName        String  @default("") @map("category_name")
+  positionName        String  @default("") @map("position_name")
+  departmentName      String  @default("") @map("department_name")
 
   // Xodim arxivlansa/o'chirilsa ham registr o'qilishi kerak
   staffSnapshot Json @map("staff_snapshot")
@@ -3527,7 +3529,7 @@ model PayrollEntry {
 // tushunchasi qo'shilmagani uchun ortiqcha pulni saqlaydigan joy ham
 // kerak emas. Bitta oylikni bir necha marta to'lash esa MUMKIN.
 model SalaryPayment {
-  id String @id @db.Char(24)
+  id        String @id @db.Char(24)
   staffId   String @map("staff_id") @db.Char(24)
   accountId String @map("account_id") @db.Char(24)
 
@@ -3559,7 +3561,7 @@ model SalaryPayment {
 
 // To'lov qaysi oylikni yopdi — `PaymentAllocation` ning ko'zgusi.
 model SalaryAllocation {
-  id String @id @db.Char(24)
+  id             String @id @db.Char(24)
   paymentId      String @map("payment_id") @db.Char(24)
   payrollEntryId String @map("payroll_entry_id") @db.Char(24)
   staffId        String @map("staff_id") @db.Char(24)
@@ -3827,14 +3829,14 @@ model PaymentAllocation {
   // yaratiladi. Balans harakatlari tarixi shu bo'yicha tuziladi.
   appliedAt DateTime         @map("applied_at")
 
-  isVoided  Boolean   @default(false) @map("is_voided")
-  voidedAt  DateTime? @map("voided_at")
+  isVoided   Boolean   @default(false) @map("is_voided")
+  voidedAt   DateTime? @map("voided_at")
   // Faqat yechim ALOHIDA bekor qilinganda / tahrirlanganda to'ldiriladi
   // (`studentAccount.reworkAllocation`). Chek yoki hisob-faktura bilan birga
   // bekor qilinganda sabab o'sha qatorning o'zida — bu yerda bo'sh qoladi.
-  voidedBy   String? @map("voided_by") @db.Char(24)
-  voidReason String  @default("") @map("void_reason")
-  createdAt DateTime  @default(now()) @map("created_at")
+  voidedBy   String?   @map("voided_by") @db.Char(24)
+  voidReason String    @default("") @map("void_reason")
+  createdAt  DateTime  @default(now()) @map("created_at")
 
   payment Payment        @relation(fields: [paymentId], references: [id], onDelete: Cascade)
   invoice MonthlyInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -4891,14 +4893,14 @@ model GradeAnalysisRun {
 
   // ⚠️ `VarChar`, `Char` EMAS — cron aktyorsiz yozadi va bo'sh satr
   // CHAR(24) da 24 ta probelga aylanardi (`AcademicInsight.createdBy`).
-  createdBy  String    @default("") @map("created_by") @db.VarChar(24)
-  startedAt  DateTime? @map("started_at")
-  finishedAt DateTime? @map("finished_at")
+  createdBy   String    @default("") @map("created_by") @db.VarChar(24)
+  startedAt   DateTime? @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
   // Ishlov berayotgan jarayonning "yurak urishi" — to'xtab qolgan tahlil
   // shu bo'yicha aniqlanadi va qayta navbatga qo'yiladi.
   heartbeatAt DateTime? @map("heartbeat_at")
-  createdAt  DateTime  @default(now()) @map("created_at")
-  updatedAt  DateTime  @updatedAt @map("updated_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
 
   reports GradeAnalysisReport[]
 
@@ -5203,6 +5205,9 @@ enum ActivityChannel {
   student
   reception
   worker
+  // Ota-ona MOBIL ilovasi (ota-ona nazorati) — o'quvchi hisobi bilan kiradi,
+  // `bot` dan farqi shu: bu yerda aktyor `userId`, `telegramId` emas.
+  parent
 }
 
 /**
@@ -5469,16 +5474,13 @@ model DiagnosticTest {
   /**
    * SAVOLLAR TAQSIMOTI — "qaysi fandan, qaysi sinf bazasidan, nechta
    * yengil / o'rta / og'ir savol".
-   *
    * Shakli: `[{ subjectId, grade, easy, medium, hard }]`.
-   *
    * ⚠️ BU REJA, NATIJA EMAS. Tanlangan savollar `DiagnosticTestQuestion`
    * ga MUHRLANADI; blueprint esa "nima so'ralgani" yozuvi bo'lib
    * qoladi. Ikkisi ajralishi mumkin (bankda savol yetmasa) va aynan
    * shu farq ogohlantirishga aylanadi — reja saqlanmasa, testni keyin
    * tahrirlashda "avval nima so'ralgan edi" degan savol javobsiz
    * qolardi.
-   *
    * ⚠️ FAN QATORI TAKRORLANISHI MUMKIN: bitta fanni turli sinf
    * bazasidan olish odatiy hol ("Matematika 7-sinf + Matematika
    * 6-sinf"), shuning uchun bu massiv, obyekt emas.
@@ -5812,4 +5814,672 @@ model DiagnosticSettings {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("diagnostic_settings")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// QURILMA NAZORATI — O'QUVCHI TELEFONI
+// ═════════════════════════════════════════════════════════════════════
+//
+// To'liq qoidalar: `.claude/rules/devices.md`. Eng muhimi shu yerda ham
+// takrorlanadi, chunki sxemani o'qigan odam qoidalar faylini ochmasligi
+// mumkin:
+//
+//   ⚠️ YASHIRIN KUZATUV EMAS. O'quvchi o'ziga qo'llangan qoidani o'z
+//      panelida to'liq ko'radi. Server faqat ILOVA NOMI + DAQIQA +
+//      OCHILISH SONI ni saqlaydi — xabar, kontakt, surat, brauzer tarixi
+//      va uzluksiz joylashuv YIG'ILMAYDI va bunday ustun qo'shilmaydi.
+//
+//   ⚠️ FAVQULODDA QO'NG'IROQ DOIM OCHIQ (`isEssential`) — sozlama emas.
+//
+//   ⚠️ CHEKLOVNI QURILMA BAJARADI, server faqat PROFIL beradi. OS ruxsati
+//      qaytarib olinsa qurilma `enforcing: false` deb aytadi va panel
+//      buni yashirmaydi.
+//
+// Modellar: katalog → siyosat (+ ilova qoidalari, vaqt oynalari) →
+// biriktirish → qurilma (+ kod) → foydalanish → vaqtinchalik ochish →
+// audit → sozlama.
+
+// Ilova qoidasi. Tartib MA'NOLI: yumshoqdan qattiqqa.
+enum DeviceAppMode {
+  always // oyna tashqarisida ham ochiq (lekin umumiy limitdan ozod EMAS)
+  allowed // oyna ichida ochiq, vaqt chegarasi yo'q
+  limited // oyna ichida ochiq, `dailyMinutes` gacha
+  blocked // hech qachon
+}
+
+// Ro'yxatda YO'Q ilovaga nima bo'ladi.
+enum DevicePolicyDefaultMode {
+  block // oq ro'yxat: faqat sanab o'tilganlar ishlaydi (sukut)
+  allow // qora ro'yxat: faqat sanab o'tilganlar bloklanadi
+}
+
+// Qurilma internetsiz qolganda.
+enum DeviceOfflinePolicy {
+  keepLast // oxirgi profil kuchda qoladi (sukut)
+  lockDown // faqat `always` ilovalar
+}
+
+// Biriktirish qamrovi. Tartib MA'NOLI: `resolvePolicy` shu tartibda
+// eng TOR qamrovni tanlaydi (student → class → school).
+enum DevicePolicyScope {
+  student
+  class
+  school
+}
+
+enum StudentDeviceStatus {
+  active // cheklov ishlayapti
+  paused // vaqtincha to'xtatilgan, qurilma ro'yxatda qoladi
+  removed // biriktirish olib tashlangan (o'chirilmaydi — tarix qoladi)
+}
+
+enum DeviceUnlockKind {
+  full // butun chekov to'xtaydi
+  app // bitta ilovaga qo'shimcha daqiqa
+}
+
+enum DeviceUnlockStatus {
+  active
+  cancelled
+  expired
+}
+
+// ILOVALAR KATALOGI — "biz qaysi ilovalar haqida gapira olamiz".
+//
+// ⚠️ BITTA ILOVA — BITTA QATOR, ikkala identifikator bilan. Admin
+// "YouTube" ni tanlaydi, server qurilma platformasiga mos identifikatorni
+// yuboradi. Ikki alohida qator bo'lsa siyosatni ikki marta sozlash kerak
+// bo'lardi va biri unutilardi.
+model DeviceApp {
+  id String @id @db.Char(24)
+
+  name     String
+  // Guruhlash uchun: "ta'lim" | "ijtimoiy" | "video" | "o'yin" | "xabar" |
+  // "tizim" | "boshqa". Erkin matn — katalog filiallarga xos.
+  category String @default("boshqa")
+
+  androidPackage String? @map("android_package")
+  iosBundleId    String? @map("ios_bundle_id")
+
+  // ⚠️ HECH QACHON BLOKLANMAYDI (raqam terish, favqulodda, MBSI ilovasi).
+  // Siyosat buni bekor qila olmaydi — bloklangan telefon bolani yordam
+  // so'rashdan mahrum qila olmaydi.
+  isEssential Boolean @default(false) @map("is_essential")
+
+  // Qurilmadan kelgan, hali nomlanmagan ilova. ⚠️ Avtomat ruxsat OLMAYDI:
+  // oq ro'yxat siyosatida baribir bloklangan bo'lib qoladi.
+  isDiscovered Boolean @default(false) @map("is_discovered")
+
+  isArchived Boolean @default(false) @map("is_archived")
+
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  policyApps DevicePolicyApp[]
+  unlocks    DeviceUnlock[]
+
+  @@unique([androidPackage])
+  @@unique([iosBundleId])
+  @@index([isArchived, category, name])
+  @@index([isDiscovered])
+  @@map("device_apps")
+}
+
+// SIYOSAT — qoidalar to'plami. Biriktirilgunicha HECH KIMGA ta'sir
+// qilmaydi (`DevicePolicyAssignment`).
+model DevicePolicy {
+  id String @id @db.Char(24)
+
+  name        String  @unique
+  description String  @default("")
+  color       String? // panelda ajratish uchun (ixtiyoriy)
+
+  defaultMode DevicePolicyDefaultMode @default(block) @map("default_mode")
+
+  // Butun qurilma uchun kunlik ekran vaqti. null → chegara yo'q.
+  // ⚠️ `always` ilovalar bunga KIRMAYDI: ota-onaga qo'ng'iroq qilish
+  // kunlik limitni yeb qo'ymasligi kerak.
+  dailyLimitMinutes Int? @map("daily_limit_minutes")
+
+  offlinePolicy DeviceOfflinePolicy @default(keepLast) @map("offline_policy")
+
+  // ⚠️ Har tahrirda OSHADI — qurilma shuni taqqoslab yangilanadi.
+  version Int @default(1)
+
+  // ⚠️ O'CHIRILMAYDI — arxivlanadi. Biriktirilgan siyosat arxivlanmaydi:
+  // avval biriktirish olib tashlanadi (jim qulfsizlanish bo'lmasin).
+  isArchived Boolean   @default(false) @map("is_archived")
+  archivedAt DateTime? @map("archived_at")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  apps        DevicePolicyApp[]
+  windows     DevicePolicyWindow[]
+  assignments DevicePolicyAssignment[]
+
+  @@index([isArchived, name])
+  @@map("device_policies")
+}
+
+// Siyosatdagi bitta ilova qoidasi.
+model DevicePolicyApp {
+  id       String @id @db.Char(24)
+  policyId String @map("policy_id") @db.Char(24)
+  appId    String @map("app_id") @db.Char(24)
+
+  mode         DeviceAppMode @default(allowed)
+  // Faqat `limited` uchun. null/0 → chegarasiz (service `limited` da
+  // majburiy qiladi).
+  dailyMinutes Int?          @map("daily_minutes")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  policy DevicePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  app    DeviceApp    @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  // Bitta siyosatda bitta ilovaga BITTA qoida.
+  @@unique([policyId, appId])
+  @@index([appId])
+  @@map("device_policy_apps")
+}
+
+// VAQT OYNASI — qaysi kunning qaysi soatida telefon umuman ishlaydi.
+//
+// ⚠️ Oyna BITTA HAM bo'lmasa vaqt cheklovi YO'Q. Bo'sh ro'yxatni "hech
+// qachon ishlamaydi" deb o'qish yangi siyosatni jimgina qulfga aylantirardi.
+//
+// ⚠️ YARIM TUNDAN OSHADIGAN OYNA IKKI QATORGA BO'LINADI (22:00–24:00 +
+// 00:00–07:00). `start > end` holatiga ruxsat berilsa, har bir tekshiruvda
+// ikki xil shoxlanish paydo bo'lardi va biri unutilardi.
+model DevicePolicyWindow {
+  id       String @id @db.Char(24)
+  policyId String @map("policy_id") @db.Char(24)
+
+  // 0 = yakshanba ... 6 = shanba — `DAYS_UZ` indeksi va JS `getDay()`
+  // bilan AYNI (yangi konvensiya kiritilmaydi).
+  weekday     Int
+  // Toshkent devor-soati, daqiqada: 0..1440. `endMinute` EKSKLYUZIV.
+  startMinute Int    @map("start_minute")
+  endMinute   Int    @map("end_minute")
+  label       String @default("")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  policy DevicePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([policyId, weekday])
+  @@map("device_policy_windows")
+}
+
+// BIRIKTIRISH — siyosat kimga qo'llanadi.
+//
+// ⚠️ ENG TOR QAMROV YUTADI va siyosatlar QO'SHILMAYDI: o'quvchiga aynan
+// bitta siyosat, to'liq holida. "Eng kech boshlangani yutadi" naqshi
+// (`finance.md` §1) bu yerga KO'CHIRILMAYDI — shaxsiy istisno umumiy
+// qoidadan ustun turishi kerak.
+//
+// ⚠️ `targetKey` ATAYLAB: PostgreSQL da NULL lar teng emas, ya'ni
+// `(scope, classId, studentId)` yagona indeksi maktab qamrovida takrorni
+// TO'SMASDI. Kalit — "school" | "class:<id>" | "student:<id>".
+model DevicePolicyAssignment {
+  id       String @id @db.Char(24)
+  policyId String @map("policy_id") @db.Char(24)
+
+  scope     DevicePolicyScope
+  classId   String?           @map("class_id") @db.Char(24)
+  // soft ref → User (FK yo'q: o'quvchi arxivlansa ham tarix qoladi)
+  studentId String?           @map("student_id") @db.Char(24)
+
+  // "school" | "class:<id>" | "student:<id>" — har nishonga BITTA biriktirish.
+  targetKey String @unique @map("target_key")
+
+  // Teng qamrovda (o'quvchi ikki sinfda) kattasi yutadi.
+  priority Int     @default(0)
+  isActive Boolean @default(true) @map("is_active")
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  policy DevicePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([scope, isActive])
+  @@index([classId])
+  @@index([studentId])
+  @@index([policyId])
+  @@map("device_policy_assignments")
+}
+
+// QURILMA — biriktirilgan telefon/planshet.
+//
+// ⚠️ `deviceUid` YAGONA: shu telefon boshqa o'quvchiga biriktirilsa qator
+// unga KO'CHADI (`PushDevice` bilan bir xil qaror) — aks holda avvalgi
+// egasining qoidasi yangi bolada qolib ketardi.
+//
+// ⚠️ `enforcing` ni faqat QURILMA biladi va u xabar qiladi. Server buni
+// taxmin QILMAYDI: soxta "bloklangan" yozuvi ishonchni yo'q qilardi.
+model StudentDevice {
+  id String @id @db.Char(24)
+
+  // soft ref → User
+  studentId String @map("student_id") @db.Char(24)
+
+  // Ilova o'rnatilganda generatsiya qiladigan barqaror identifikator.
+  deviceUid String @unique @map("device_uid") @db.VarChar(64)
+
+  label        String  @default("") // "Redmi Note 12" — odam qo'yadigan nom
+  platform     String  @default("android") @db.VarChar(16) // "android" | "ios"
+  manufacturer String? @db.VarChar(64)
+  model        String? @db.VarChar(64)
+  osVersion    String? @map("os_version") @db.VarChar(32)
+  appVersion   String? @map("app_version") @db.VarChar(32)
+
+  status StudentDeviceStatus @default(active)
+
+  // Cheklov HAQIQATDA ishlayaptimi (OS ruxsati bor-yo'qligi).
+  enforcing       Boolean @default(false)
+  enforcementNote String  @default("") @map("enforcement_note")
+
+  // Qurilma oxirgi marta qachon ko'rindi / profilni qachon oldi.
+  lastSeenAt           DateTime? @map("last_seen_at")
+  lastSyncAt           DateTime? @map("last_sync_at")
+  // Qurilmada AMALDAGI profil versiyasi — paneldagi "yangilanmagan" belgisi.
+  appliedPolicyVersion Int?      @map("applied_policy_version")
+  batteryLevel         Int?      @map("battery_level")
+
+  enrolledBy   String?   @map("enrolled_by") @db.Char(24)
+  enrolledAt   DateTime  @default(now()) @map("enrolled_at")
+  removedAt    DateTime? @map("removed_at")
+  removedBy    String?   @map("removed_by") @db.Char(24)
+  removeReason String    @default("") @map("remove_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  usage   DeviceUsageDay[]
+  unlocks DeviceUnlock[]
+
+  @@index([studentId, status])
+  @@index([status, lastSeenAt(sort: Desc)])
+  @@map("student_devices")
+}
+
+// BIR MARTALIK BIRIKTIRISH KODI.
+//
+// ⚠️ Qurilma faqat O'QUVCHINING O'Z hisobidan, shu kod bilan bog'lanadi:
+// masofadan, o'quvchi bilmagan holda qurilma biriktirib bo'lmaydi.
+model DeviceEnrollmentCode {
+  id String @id @db.Char(24)
+
+  code      String @unique @db.VarChar(12)
+  studentId String @map("student_id") @db.Char(24)
+
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  usedBy    String?   @map("used_by") @db.Char(24) // hosil bo'lgan qurilma id si
+
+  // Yangi kod eskisini bekor qiladi — bir o'quvchida bir vaqtda bitta faol kod.
+  revokedAt DateTime? @map("revoked_at")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([studentId, createdAt(sort: Desc)])
+  @@index([expiresAt])
+  @@map("device_enrollment_codes")
+}
+
+// KUNLIK FOYDALANISH — YIG'MA.
+//
+// ⚠️ Har bir ochilishning VAQTI saqlanmaydi: "soat 23:40 da qaysi ilovani
+// ochdi" — bu kuzatuv, chekov emas (`devices.md` §0).
+//
+// ⚠️ `(deviceId, day, appKey)` yagona va qayta yuborilsa USTIGA yoziladi:
+// tarmoq uzilganda ilova qayta urinadi, takroriy qator paydo bo'lmasligi kerak.
+model DeviceUsageDay {
+  id String @id @db.Char(24)
+
+  deviceId  String @map("device_id") @db.Char(24)
+  studentId String @map("student_id") @db.Char(24)
+
+  // Toshkent kunining UTC yarim tuni (`getUTC*` bilan o'qiladi).
+  day DateTime @db.Date
+
+  // Xom identifikator (paket nomi yoki bundle id) — katalogda bo'lmasa ham
+  // hisobot yo'qolmasligi uchun.
+  appKey String  @map("app_key") @db.VarChar(180)
+  appId  String? @map("app_id") @db.Char(24) // katalogda topilgan bo'lsa
+
+  minutes Int @default(0)
+  opens   Int @default(0)
+  // Cheklov tufayli to'silgan urinishlar soni — "qoida ishlayaptimi" javobi.
+  blocked Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  device StudentDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, day, appKey])
+  @@index([studentId, day])
+  @@index([day])
+  @@map("device_usage_days")
+}
+
+// VAQTINCHALIK OCHISH.
+//
+// ⚠️ DAVR IKKALA TOMONDAN MAJBURIY va ko'pi bilan 24 soat: muddatsiz
+// ochish chekovni jimgina abadiy o'chirib qo'yardi (`PayrollSuspension`
+// dagi "ko'pi bilan 12 oy" bilan bir xil mulohaza).
+//
+// ⚠️ O'CHIRILMAYDI — bekor qilinadi (sabab + aktyor).
+model DeviceUnlock {
+  id String @id @db.Char(24)
+
+  studentId String  @map("student_id") @db.Char(24)
+  // null → o'quvchining BARCHA qurilmalari
+  deviceId  String? @map("device_id") @db.Char(24)
+
+  kind         DeviceUnlockKind @default(full)
+  // `kind = app` uchun
+  appId        String?          @map("app_id") @db.Char(24)
+  extraMinutes Int?             @map("extra_minutes")
+
+  startsAt DateTime @map("starts_at")
+  endsAt   DateTime @map("ends_at")
+
+  reason String
+  note   String @default("")
+
+  status       DeviceUnlockStatus @default(active)
+  cancelReason String             @default("") @map("cancel_reason")
+  cancelledAt  DateTime?          @map("cancelled_at")
+  cancelledBy  String?            @map("cancelled_by") @db.Char(24)
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  device StudentDevice? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  app    DeviceApp?     @relation(fields: [appId], references: [id])
+
+  @@index([studentId, status, endsAt])
+  @@index([status, endsAt])
+  @@map("device_unlocks")
+}
+
+// AUDIT — bolaning qurilmasiga tegadigan HAR amal yozib boriladi.
+//
+// ⚠️ Alohida jadval, chunki bu modulda "kim ruxsat berdi / kim qulfladi"
+// degan savolga javob bo'lishi shart: chekov o'quvchining kunini
+// o'zgartiradi va u har doim atributlangan bo'lishi kerak.
+model DeviceAudit {
+  id String @id @db.Char(24)
+
+  // "policy.create" | "policy.update" | "assignment.set" | "assignment.clear"
+  // | "device.enroll" | "device.pause" | "device.resume" | "device.remove"
+  // | "unlock.create" | "unlock.cancel" | "settings.update" | "app.upsert"
+  action String @db.VarChar(40)
+
+  // Nishon (bo'lsa)
+  studentId String? @map("student_id") @db.Char(24)
+  deviceId  String? @map("device_id") @db.Char(24)
+  policyId  String? @map("policy_id") @db.Char(24)
+
+  // Odam o'qiydigan qisqa bayon: "8-A sinfga «Dars vaqti» siyosati yoqildi"
+  summary String @default("")
+  reason  String @default("")
+  // O'zgarish tafsiloti (eski → yangi). Tushuntirish uchun, ikkinchi
+  // haqiqat manbai EMAS.
+  meta    Json?
+
+  actorId   String   @map("actor_id") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([studentId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("device_audits")
+}
+
+// Filial singletoni.
+model DeviceSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // ⚠️ FAVQULODDA TUGMA. `false` → profil bo'sh chekov qaytaradi (hamma
+  // narsa ochiq), lekin SIYOSATLAR VA BIRIKTIRISHLAR JOYIDA QOLADI:
+  // yoqilganda hammasi tiklanadi.
+  enabled Boolean @default(false)
+
+  // Biriktirish kodining amal qilish muddati.
+  enrollmentCodeTtlMinutes Int @default(15) @map("enrollment_code_ttl_minutes")
+
+  // Shuncha daqiqa ko'rinmagan qurilma panelda "Oflayn".
+  offlineGraceMinutes Int @default(120) @map("offline_grace_minutes")
+
+  // Qurilma internetsiz qolganda (siyosatda ko'rsatilmagan bo'lsa).
+  offlinePolicy DeviceOfflinePolicy @default(keepLast) @map("offline_policy")
+
+  // Foydalanish hisoboti shuncha kun saqlanadi, undan eskisi supuriladi.
+  // ⚠️ Cheksiz saqlash — asossiz ma'lumot to'plash.
+  usageRetentionDays Int @default(180) @map("usage_retention_days")
+
+  // Qurilma profilni shu oraliqda qayta so'raydi (push kelmasa ham).
+  syncIntervalMinutes Int @default(30) @map("sync_interval_minutes")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("device_settings")
+}
+
+// ─────────────────────────────────────────────
+// OTA-ONA NAZORATI (o'quvchi telefonidagi ilovalar — ota-ona boshqaradi)
+// ─────────────────────────────────────────────
+//
+// ⚠️ Maktabning "Qurilma nazorati" (`Device*`) moduli BILAN ARALASHMAYDI:
+// u yerda qoidani MAKTAB yozadi va admin panel boshqaradi, bu yerda esa
+// OTA-ONA o'z ilovasidan boshqaradi. Ikkalasi alohida jadvallarda — bittasini
+// o'chirish ikkinchisiga tegmaydi.
+//
+// ⚠️ Ota-ona ilovasi O'QUVCHI HISOBI bilan kiradi: ota-ona telefoni va bola
+// telefoni — bitta `userId`. Ularni seans KANALI ajratadi (`SessionChannel.parent`
+// / `student`), himoyani esa PIN beradi (`parental.middleware.js`).
+//
+// ⚠️ MAZMUN O'QILMAYDI: faqat ilova nomi, daqiqa va ochilish soni saqlanadi
+// (`devices.md` §0.2 bilan bir xil etik pol).
+
+enum ParentalPlatform {
+  android
+  ios
+}
+
+enum ParentalRequestStatus {
+  pending
+  approved
+  denied
+  expired
+}
+
+/**
+ * O'quvchining ota-ona nazorati sozlamasi — hisobga BITTA qator.
+ * ⚠️ PIN'NING O'ZI HECH QAYERDA YO'Q: faqat PBKDF2-HMAC-SHA256 hosilasi.
+ * Algoritm ataylab mobil qurilmada INTERNETSIZ takrorlanadigan tanlangan
+ * (`parentalPin.helpers.js`): bloklangan ilovani ochish uchun telefon PIN'ni
+ * o'zi tekshiradi.
+ * ⚠️ `policyVersion` — qurilma bilan SHARTNOMA: har qanday qoida o'zgarishi
+ * (blok, limit, "hammasini bloklash", PIN) uni oshiradi va bolaning
+ * telefoniga jim push ketadi. Qurilma `GET /parental/device/policy?version=N`
+ * bilan solishtiradi.
+ * `lockedUntil` — PIN terish BLOKI (ketma-ket xatolar) va bitta tekshiruvning
+ * qisqa "ijarasi" (parallel urinishlar navbatga turadi).
+ */
+model ParentalSettings {
+  id             String    @id @db.Char(24)
+  studentId      String    @unique @map("student_id") @db.Char(24)
+  pinHash        String?   @map("pin_hash") @db.VarChar(64)
+  pinSalt        String?   @map("pin_salt") @db.VarChar(32)
+  // Hash qaysi iteratsiya bilan olingan — env keyin o'zgarsa ham eski
+  // PIN tekshirilaveradi.
+  pinIterations  Int       @default(100000) @map("pin_iterations")
+  pinUpdatedAt   DateTime? @map("pin_updated_at")
+  // Ketma-ket xato PIN — to'g'ri PIN bilan 0 ga tushadi.
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  lockedUntil    DateTime? @map("locked_until")
+  // "Hammasini bloklash" — `lockAllUntil` o'tgach avtomat yechiladi
+  // (so'rovda ham, cron'da ham — `expireLockAllIfDue`).
+  lockAll        Boolean   @default(false) @map("lock_all")
+  lockAllUntil   DateTime? @map("lock_all_until")
+  // Telefonda PIN kiritilgach blok shuncha daqiqaga ochiladi.
+  unlockMinutes  Int       @default(30) @map("unlock_minutes")
+  policyVersion  Int       @default(1) @map("policy_version")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  student User @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([lockAll, lockAllUntil])
+  @@map("parental_settings")
+}
+
+/**
+ * Bolaning telefoni (o'quvchi ilovasi o'rnatilgan qurilma).
+ * `deviceId` — `X-Device-Id` sarlavhasi. ⚠️ Faqat O'SHA o'quvchi ichida
+ * yagona: bitta telefon boshqa o'quvchiga o'tsa unga yangi qator ochiladi,
+ * avvalgi egasining tarixi aralashmaydi.
+ * `protected` — `health` dan hisoblanadi (`PARENTAL_REQUIRED_HEALTH`):
+ * cheklov HAQIQATDA ishlayaptimi. Buni faqat qurilma biladi.
+ */
+model ParentalDevice {
+  id             String           @id @db.Char(24)
+  studentId      String           @map("student_id") @db.Char(24)
+  deviceId       String           @map("device_id") @db.VarChar(64)
+  platform       ParentalPlatform
+  model          String?          @db.VarChar(120)
+  osVersion      String?          @map("os_version") @db.VarChar(40)
+  appVersion     String?          @map("app_version") @db.VarChar(40)
+  health         Json             @default("{}")
+  protected      Boolean          @default(false)
+  lastSeenAt     DateTime         @map("last_seen_at")
+  // Watchdog "oflayn" ogohlantirishini yuborgan payt. Qurilma qaytib
+  // kelsa (har qanday device so'rovi) `null` — keyingi jimlikda yana bir marta.
+  offlineAlertAt DateTime?        @map("offline_alert_at")
+  createdAt      DateTime         @default(now()) @map("created_at")
+
+  @@unique([studentId, deviceId])
+  @@index([lastSeenAt])
+  @@map("parental_devices")
+}
+
+/**
+ * Bolaning telefonidagi ilova — o'quvchi bo'yicha katalog.
+ * `appKey` — Android paket nomi yoki iOS tokeni (uzun base64). ⚠️ API'da
+ * ilova `appKeyHash` (sha256, `appId` deb) bilan aniqlanadi: iOS tokenini
+ * yagona indeks va URL'da ishlatib bo'lmaydi.
+ */
+model ParentalApp {
+  id            String           @id @db.Char(24)
+  studentId     String           @map("student_id") @db.Char(24)
+  platform      ParentalPlatform
+  appKey        String           @map("app_key") @db.VarChar(2048)
+  appKeyHash    String           @map("app_key_hash") @db.Char(64)
+  appName       String?          @map("app_name") @db.VarChar(200)
+  iconUrl       String?          @map("icon_url") @db.VarChar(500)
+  blocked       Boolean          @default(false)
+  dailyLimitMin Int?             @map("daily_limit_min")
+  installed     Boolean          @default(true)
+  firstSeenAt   DateTime         @default(now()) @map("first_seen_at")
+
+  @@unique([studentId, appKeyHash])
+  @@map("parental_apps")
+}
+
+/**
+ * Kunlik foydalanish — ilova + daqiqa + ochilish soni (faqat yig'ma).
+ * ⚠️ IDEMPOTENT: qurilma kun yakunini qayta yuborsa qator USTIGA YOZILADI,
+ * qo'shilmaydi (tarmoq uzilganda ilova qayta urinadi).
+ * ⚠️ Yagona kalitda `studentId` HAM bor: `deviceId` faqat o'quvchi ichida
+ * yagona (`ParentalDevice`), telefon boshqa o'quvchiga o'tsa uning hisoboti
+ * avvalgi egasining qatorini ustidan yozib yubormasligi kerak.
+ */
+model AppUsageDaily {
+  id         String   @id @db.Char(24)
+  studentId  String   @map("student_id") @db.Char(24)
+  deviceId   String   @map("device_id") @db.VarChar(64)
+  // Toshkent kuni, UTC yarim tunida (`@db.Date`, faqat `getUTC*`).
+  date       DateTime @db.Date
+  appKeyHash String   @map("app_key_hash") @db.Char(64)
+  minutes    Int      @default(0)
+  // iOS: tizim aniq vaqtni bermaydi — "kamida N daqiqa".
+  minMinutes Boolean  @default(false) @map("min_minutes")
+  openCount  Int      @default(0) @map("open_count")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([studentId, deviceId, date, appKeyHash])
+  @@index([studentId, date])
+  @@index([date])
+  @@map("app_usage_daily")
+}
+
+/**
+ * Hodisalar tarixi — qurilmadan (ruxsat olib tashlandi, o'chirishga urinish,
+ * xato PIN...) va serverdan (oflayn, PIN tiklandi...).
+ * `occurredAt` — qurilmadagi vaqt (oflayn navbat keyin keladi), `createdAt`
+ * — server qabul qilgan vaqt. Takroriy ogohlantirishni cheklash `createdAt`
+ * va `alerted` bo'yicha (qo'shimcha jadval shart emas).
+ */
+model ParentalEvent {
+  id            String   @id @db.Char(24)
+  studentId     String   @map("student_id") @db.Char(24)
+  deviceId      String?  @map("device_id") @db.VarChar(64)
+  type          String   @db.VarChar(40)
+  payload       Json     @default("{}")
+  // Ota-onaga push YUBORILDIMI — cheklash oynasi shu bayroqqa qaraydi.
+  alerted       Boolean  @default(false)
+  // Qurilma bergan identifikator (`eventId`) — oflayn navbat paketni qayta
+  // yuborsa hodisa IKKI MARTA yozilmaydi. Server hodisalarida `null`
+  // (PostgreSQL da `NULL` lar yagonalikka xalal bermaydi).
+  clientEventId String?  @map("client_event_id") @db.VarChar(64)
+  occurredAt    DateTime @map("occurred_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([studentId, clientEventId])
+  @@index([studentId, occurredAt])
+  @@index([studentId, type, createdAt])
+  @@index([createdAt])
+  @@map("parental_events")
+}
+
+/**
+ * Bolaning "ruxsat bering" so'rovi. Bir vaqtda bitta `pending` (yangisi
+ * eskisini `expired` qiladi), 15 daqiqadan keyin o'zi `expired`.
+ * `approvedMinutes` / `unlockUntil` — ota-ona tasdiqlagan muddat (so'ralgandan
+ * farq qilishi mumkin). ⚠️ Tasdiq POLICY ga ham tushadi (`unlocks`): push
+ * yetib bormasa ham qurilma keyingi sinxronizatsiyada ochishni oladi.
+ */
+model ParentalUnlockRequest {
+  id              String                @id @db.Char(24)
+  studentId       String                @map("student_id") @db.Char(24)
+  deviceId        String                @map("device_id") @db.VarChar(64)
+  // `null` — butun telefon ("hammasini bloklash" ostida).
+  appKeyHash      String?               @map("app_key_hash") @db.Char(64)
+  minutes         Int
+  status          ParentalRequestStatus @default(pending)
+  decidedAt       DateTime?             @map("decided_at")
+  approvedMinutes Int?                  @map("approved_minutes")
+  unlockUntil     DateTime?             @map("unlock_until")
+  expiresAt       DateTime              @map("expires_at")
+  createdAt       DateTime              @default(now()) @map("created_at")
+
+  @@index([studentId, status])
+  @@index([studentId, createdAt])
+  @@index([status, expiresAt])
+  @@map("parental_unlock_requests")
 }

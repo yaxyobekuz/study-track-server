@@ -161,6 +161,21 @@ const config = {
   // ilova ping'ni noma'lum xabar sifatida ko'rsatishi mumkin.
   pushTokenProbeEnabled: process.env.PUSH_TOKEN_PROBE_ENABLED === "true",
 
+  // Ota-ona nazorati — PIN hash'i (PBKDF2-HMAC-SHA256) iteratsiyalari.
+  // ⚠️ Yangi PIN'larga ta'sir qiladi: har hash o'z iteratsiyasini qatorda
+  // saqlaydi (`pinIterations`), shuning uchun eski PIN'lar tekshirilaveradi.
+  // Chegara 10 000..1 000 000: pastrog'i hash'ni oflayn terishni osonlashtiradi,
+  // balandrog'i esa telefonda PIN tekshiruvini sekinlashtiradi.
+  parentalPinIterations: Math.min(
+    1000000,
+    Math.max(10000, parseInt(process.env.PARENTAL_PIN_ITERATIONS, 10) || 100000),
+  ),
+  // PIN bilan olinadigan boshqaruv tokenining umri (daqiqa), 1..60.
+  parentalTokenTtlMin: Math.min(
+    60,
+    Math.max(1, parseInt(process.env.PARENTAL_TOKEN_TTL_MIN, 10) || 15),
+  ),
+
   // Message queue
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,
 

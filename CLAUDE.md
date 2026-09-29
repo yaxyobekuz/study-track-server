@@ -115,6 +115,14 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
 - Message text/`data` for tasks: `helpers/taskPush.helpers.js`. The `data`
   keys (`type`, `event`, `taskId`, `status`, `branchId`) are a contract
   with the mobile app.
+- `sendToUsers(ids, { channels, silent })`: `channels` routes by the SESSION
+  channel of each device (`PushDevice.jti` → `UserSession.channel`) and is
+  STRICT — devices whose channel is unknown (no `jti`, session not found)
+  are skipped. Without `channels`, `parent` sessions are EXCLUDED (the parent
+  app only gets pushes explicitly addressed to it); only `probeDevices` pings
+  every channel. `silent` = data-only (no `notification`). Parental control
+  depends on both: parent and child phones share one `userId`
+  (`.claude/rules/parental.md`, contract in `docs/parental-control-api.md`).
 - Mobile API: `POST /api/push/devices { token, platform }` after every login
   and token refresh, `DELETE /api/push/devices { token }` before logout.
 - ⚠️ `data.type = "ping"` — silent data-only probe (`probeDevices`,

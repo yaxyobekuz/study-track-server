@@ -82,7 +82,11 @@ const logger = require("../utils/logger");
  */
 const SEEN_WINDOW_MS = 2 * 60 * 1000;
 
-/** Xotiradagi oyna: `jti` → oxirgi yozuv vaqti. */
+/**
+ * Xotiradagi oyna: `jti` → `{ at, channel }` (oxirgi yozuv vaqti va seans
+ * kanali). Kanal shu yerda turadi, chunki `auth.middleware` uni har
+ * so'rovda `req.sessionChannel` ga chiqaradi — oyna ichida bazaga bormasdan.
+ */
 const seenWindow = new Map();
 const SEEN_LIMIT = 5000;
 
@@ -1074,29 +1078,35 @@ async function checkFailedStreak({ username, userId, branchId, client = {} }) {
 /**
  * SEANS "KO'RINDI" — `auth.middleware` har so'rovda chaqiradi.
  *
- * ⚠️ Bekor qilingan seansni ANIQLAB BERADI: qaytgan qiymat `false`
+ * ⚠️ Bekor qilingan seansni ANIQLAB BERADI: qaytgan `alive` qiymati `false`
  * bo'lsa, chaqiruvchi 401 tashlaydi. Aynan shu bitta qator "seansni
  * tugat" tugmasini haqiqiy qiladi — usiz tugma faqat ro'yxatdan qatorni
  * o'chirgan bo'lardi.
  *
- * ⚠️ Oyna ichida bo'lsa BAZAGA UMUMAN BORMAYDI va `true` qaytaradi.
+ * ⚠️ Oyna ichida bo'lsa BAZAGA UMUMAN BORMAYDI va `alive: true` qaytaradi.
  * Ya'ni bekor qilish eng ko'pi bilan 2 daqiqada kuchga kiradi. Bu
  * ataylab: har so'rovda seansni o'qish auth'ni ikki barobar
  * qimmatlashtirardi, 2 daqiqa esa amaliyotda yetarli.
  *
+ * `channel` — seans ochilgan paytdagi kanal (`X-Client`, login'da yozilgan).
+ * Qo'shimcha so'rovsiz: tekshiruvning o'zi uni qaytaradi va oynada saqlanadi.
+ * `null` — qatori yo'q eski token (kanal noma'lum).
+ *
  * @param {string} jti
- * @returns {Promise<boolean>} - seans amal qiladimi
+ * @returns {Promise<{ alive: boolean, channel: string|null }>}
  */
-async function touchSession(jti) {
-  if (!jti) return true;
+async function touchSessionState(jti) {
+  if (!jti) return { alive: true, channel: null };
 
   const now = Date.now();
   const last = seenWindow.get(jti);
-  if (last && now - last < SEEN_WINDOW_MS) return true;
+  if (last && now - last.at < SEEN_WINDOW_MS) {
+    return { alive: true, channel: last.channel };
+  }
 
   if (seenWindow.size > SEEN_LIMIT) {
-    for (const [key, at] of seenWindow) {
-      if (now - at > SEEN_WINDOW_MS) seenWindow.delete(key);
+    for (const [key, entry] of seenWindow) {
+      if (now - entry.at > SEEN_WINDOW_MS) seenWindow.delete(key);
     }
     if (seenWindow.size > SEEN_LIMIT) seenWindow.clear();
   }
@@ -1107,10 +1117,26 @@ async function touchSession(jti) {
   // keyingi ikki daqiqadagi so'rovlar bazaga umuman bormasdan
   // O'TIB KETARDI — ya'ni "seansni tugat" tugmasi bir marta ishlab,
   // darhol o'z ta'sirini yo'qotardi.
-  const alive = await checkSession(jti);
-  if (alive) seenWindow.set(jti, now);
+  //
+  // ⚠️ BAZA XATOSIDAGI javob (`transient`) HAM keshlanmaydi: u "tirik,
+  // kanal noma'lum" deydi va 2 daqiqa oynada tursa, ota-ona ilovasi shu
+  // vaqt davomida `parent_channel_required` olib, qayta login qilishga
+  // majbur bo'lardi. Keyingi so'rov bazani qayta so'raydi.
+  const state = await checkSession(jti);
+  if (state.alive && !state.transient) seenWindow.set(jti, { at: now, channel: state.channel });
   else seenWindow.delete(jti);
 
+  return { alive: state.alive, channel: state.channel };
+}
+
+/**
+ * `touchSessionState` ning faqat "tirikmi" qismi — eski chaqiruvchilar uchun.
+ *
+ * @param {string} jti
+ * @returns {Promise<boolean>} - seans amal qiladimi
+ */
+async function touchSession(jti) {
+  const { alive } = await touchSessionState(jti);
   return alive;
 }
 
@@ -1122,13 +1148,15 @@ async function touchSession(jti) {
  * savolga javob berish qiyin edi.
  *
  * @param {string} jti
- * @returns {Promise<boolean>} - seans amal qiladimi
+ * @returns {Promise<{ alive: boolean, channel: string|null, transient?: boolean }>}
+ *   `transient` — baza xatosi (javob taxminiy, keshlanmaydi)
  */
 async function checkSession(jti) {
   try {
-    // ⚠️ `updateMany` — `update` qator topilmasa xato tashlaydi, bu yerda
+    // ⚠️ `updateMany…` — `update` qator topilmasa xato tashlaydi, bu yerda
     // esa "qator yo'q" normal holat: eski token yoki boshqa filialning
-    // seansi.
+    // seansi. `AndReturn` — kanalni SHU BITTA UPDATE dan olish uchun
+    // (`req.sessionChannel`), qo'shimcha SELECT'siz.
     //
     // ⚠️ `expiresAt` HAM tekshiriladi: cron muddati o'tgan seanslarni
     // 03:40 da yopadi, ya'ni oralig'da `endReason` hamon `active`
@@ -1140,26 +1168,27 @@ async function checkSession(jti) {
     // o'tib `lastSeenAt` ni yangilab qo'yardi va harakatsiz seans
     // jimgina "tirilib" ketardi. Shart `where` ICHIDA: tekshiruv va
     // yangilash bitta atomar UPDATE, oraliqda poyga yo'q.
-    const { count } = await platformPrisma.userSession.updateMany({
+    const touched = await platformPrisma.userSession.updateManyAndReturn({
       where: { jti, ...liveStateWhere() },
       data: { lastSeenAt: new Date() },
+      select: { channel: true },
     });
 
-    if (count === 1) return true;
+    if (touched.length === 1) return { alive: true, channel: touched[0].channel ?? null };
 
     // Qator yangilanmadi — yo umuman yo'q (eski token: o'tkazamiz), yo
     // tugatilgan / muddati o'tgan / harakatsiz (o'tkazmaymiz).
     const exists = await platformPrisma.userSession.findUnique({
       where: { jti },
-      select: { endReason: true, expiresAt: true, lastSeenAt: true },
+      select: { endReason: true, expiresAt: true, lastSeenAt: true, channel: true },
     });
 
-    if (!exists) return true;
-    return isSessionLive(exists);
+    if (!exists) return { alive: true, channel: null };
+    return { alive: isSessionLive(exists), channel: exists.channel ?? null };
   } catch (error) {
     // Baza yiqilsa hamma tizimdan chiqib ketmasligi kerak
     logger.warn(`[security] seans yangilanmadi: ${error.message}`);
-    return true;
+    return { alive: true, channel: null, transient: true };
   }
 }
 
@@ -1420,6 +1449,7 @@ module.exports = {
   runSessionRules,
   checkFailedStreak,
   touchSession,
+  touchSessionState,
   closeSession,
   closeSessions,
   closeIdleSessions,

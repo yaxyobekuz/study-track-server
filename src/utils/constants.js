@@ -24,6 +24,9 @@ const ACTIVITY_CHANNELS = [
   "student",
   "reception",
   "worker",
+  // Ota-ona mobil ilovasi (ota-ona nazorati). ⚠️ O'quvchi hisobi bilan
+  // kiradi — bola telefonidan (`student`) faqat shu kanal ajratadi.
+  "parent",
 ];
 
 /** Kanal → foydalanuvchiga ko'rinadigan nom. */
@@ -34,7 +37,54 @@ const ACTIVITY_CHANNEL_LABELS = {
   student: "O'quvchi paneli",
   reception: "Qabulxona",
   worker: "Xodim paneli",
+  parent: "Ota-ona ilovasi",
 };
+
+/* ───────────────────────── OTA-ONA NAZORATI ───────────────────────── */
+
+/**
+ * HECH QACHON BLOKLANMAYDIGAN ilovalar — raqam terish, SMS, favqulodda.
+ *
+ * ⚠️ SOZLAMA EMAS, DOIMIY (`devices.md` §0.3 bilan bir xil etik pol):
+ * bloklangan telefon bolani yordam so'rashdan mahrum qila olmaydi. Server
+ * bularni bloklash / limit qo'yishni RAD ETADI, policy'da esa qurilmaga
+ * `alwaysAllowed` bo'lib boradi. O'quvchi ilovasining o'z paketini
+ * qurilmaning o'zi qo'shadi (u paket nomini server bilmaydi).
+ */
+const PARENTAL_ALWAYS_ALLOWED = Object.freeze([
+  "com.android.dialer",
+  "com.google.android.dialer",
+  "com.android.mms",
+  "com.google.android.apps.messaging",
+  "com.android.emergency",
+]);
+
+/**
+ * "HIMOYALANGAN" DEGANI — qaysi ruxsatlar BIRGA yoqilgan bo'lishi kerak.
+ *
+ * Qurilma `PUT /parental/device/health` da har bir ruxsatning holatini
+ * yuboradi, `protected` esa SHU ro'yxatdan hisoblanadi (bitta joy).
+ * `batteryOk` ataylab kirmaydi: batareya optimizatsiyasi fon ishini
+ * sekinlashtiradi, lekin blokni o'chirmaydi — u faqat maslahat.
+ */
+const PARENTAL_REQUIRED_HEALTH = Object.freeze({
+  android: Object.freeze(["usageAccess", "accessibility", "deviceAdmin", "overlay"]),
+  ios: Object.freeze(["familyControls"]),
+});
+
+/** Hodisa turi → ota-onaga ko'rinadigan nom (`GET /parental/events`). */
+const PARENTAL_EVENT_LABELS = Object.freeze({
+  permission_revoked: "Himoya o'chirildi",
+  protection_restored: "Himoya tiklandi",
+  uninstall_attempt: "Ilovani o'chirishga urinish",
+  wrong_pin: "Noto'g'ri PIN",
+  unlocked: "PIN bilan ochildi",
+  offline: "Telefon aloqaga chiqmadi",
+  unlock_request: "Ruxsat so'rovi",
+  pin_set: "PIN o'rnatildi",
+  pin_changed: "PIN almashtirildi",
+  pin_reset: "PIN tiklandi (parol bilan)",
+});
 
 // Days of the week
 const DAYS = {
@@ -129,6 +179,9 @@ module.exports = {
   ROLES,
   ACTIVITY_CHANNELS,
   ACTIVITY_CHANNEL_LABELS,
+  PARENTAL_ALWAYS_ALLOWED,
+  PARENTAL_REQUIRED_HEALTH,
+  PARENTAL_EVENT_LABELS,
   DAYS,
   DAYS_UZ,
   WORK_TIME_SOURCE,

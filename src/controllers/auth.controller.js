@@ -34,10 +34,17 @@ const getMe = asyncHandler(async (req, res) => {
 // ⚠️ `req.tokenJti` — `auth.middleware` qo'yadi. Eski seans shu qiymat
 // bilan yopiladi, aks holda bir odamning bitta brauzerdagi ishi "ikkita
 // bir vaqtdagi seans" bo'lib ko'rinardi.
+//
+// ⚠️ KANAL ESKI SEANSDAN MEROS (`req.sessionChannel`), so'rovdagi `X-Client`
+// dan EMAS: aks holda filial almashtirish parolsiz "kanal almashtirish"
+// yo'liga aylanardi — bola telefonidagi o'quvchi seansi `X-Client: parent`
+// bilan ota-ona seansiga o'tib, push'lari ham o'sha yoqqa ko'chardi.
+// `jti` siz eski tokenda kanal noma'lum — sarlavhaga tushadi.
 const switchBranch = asyncHandler(async (req, res) => {
   const { branchId } = req.body;
+  const client = clientInfo(req);
   const data = await authService.switchBranch(req.user, branchId, {
-    client: clientInfo(req),
+    client: { ...client, channel: req.sessionChannel ?? client.channel },
     currentJti: req.tokenJti,
   });
 

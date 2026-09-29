@@ -7,6 +7,19 @@
  *   2. Yuborish — `sendToUsers(userIds, message)`.
  *   3. Tekshiruv — `probeDevices()`: ovozsiz "ping" (`pushTokenProbe.job.js`).
  *
+ * ⚠️ KANAL BO'YICHA MARSHRUT (2026-09-29, ota-ona nazorati). Ota-ona ilovasi
+ * o'quvchi hisobi bilan kiradi — ota-ona telefoni va bola telefoni BITTA
+ * `userId`. `channels` berilsa push faqat seansi shu kanalda ochilgan
+ * qurilmalarga boradi (`PushDevice.jti` → `UserSession.channel`): bolaga
+ * ketadigan jim `parental_policy` ota-ona telefoniga, ota-onaga ketadigan
+ * `parental_alert` esa bola telefoniga TUSHMAYDI.
+ *
+ * ⚠️ OTA-ONA TELEFONI FAQAT O'ZIGA ATALGANINI OLADI (`OPT_IN_CHANNELS`):
+ * `channels` siz yuborilgan o'quvchi push'lari (maktab qurilma nazorati,
+ * baholar tahlili...) ota-ona ilovasiga TUSHMAYDI — aks holda bolaga
+ * atalgan "Telefoningizga yangi qoida qo'llandi" ota-onaning ekranida
+ * chiqardi. Ota-ona telefoni faqat `channels: ["parent"]` bilan oladi.
+ *
  * ⚠️ O'LIK TOKEN SEANSNI HAM YOPISHI MUMKIN (2026-09-19). Ilova telefondan
  * o'chirilsa logout chaqirilmaydi — serverga yetadigan yagona signal
  * Firebase'ning `registration-token-not-registered` javobi. Qaror bitta
@@ -68,6 +81,12 @@ const PING_MESSAGE = Object.freeze({
     payload: { aps: { contentAvailable: true } },
   },
 });
+
+/**
+ * Faqat ANIQ so'ralganda push oladigan seans kanallari. `channels` siz
+ * chaqiruv ularni o'tkazib yuboradi (yuqoridagi izoh).
+ */
+const OPT_IN_CHANNELS = Object.freeze(["parent"]);
 
 // undefined — hali urinilmagan, null — o'chiq (kalit yo'q yoki yaroqsiz)
 let messaging;
@@ -207,20 +226,50 @@ function moveSession(oldJti, { jti, branchId }) {
  * qator yoki `user_sessions` da topilmagan `jti` o'tadi (eski token),
  * yopilgan, muddati o'tgan yoki harakatsiz (`SESSION_IDLE_DAYS`) seans
  * o'tmaydi — u seans bilan kelgan so'rov baribir 401 oladi.
+ *
+ * ⚠️ `channels` BERILSA QOIDA QAT'IY: faqat seansi TOPILGAN, tirik va kanali
+ * ro'yxatda bo'lgan qurilma qoladi. `jti` siz yoki seansi topilmagan qator
+ * (eski token) CHIQARILADI — uning kanali noma'lum, ya'ni u bola telefoni
+ * ham, ota-ona telefoni ham bo'lishi mumkin. Shubhada yubormaslik kerak:
+ * noto'g'ri telefonga ketgan push ota-ona nazoratining butun mohiyatini
+ * buzardi (bolaga "ota-ona ogohlantirishi" yoki ota-onaga jim policy).
+ *
+ * ⚠️ `channels` BERILMASA — `excludeChannels` (sukut: `OPT_IN_CHANNELS`)
+ * dagi seanslar chiqariladi. Faqat ovozsiz tekshiruv (`probeDevices`) hamma
+ * kanalni oladi: o'chirilgan ota-ona ilovasi ham aniqlanishi kerak.
+ *
+ * @param {Array<{ token: string, jti: string|null }>} devices
+ * @param {{ channels?: string[]|null, excludeChannels?: string[] }} [options]
  */
-async function filterLiveDevices(devices) {
+async function filterLiveDevices(
+  devices,
+  { channels = null, excludeChannels = OPT_IN_CHANNELS } = {},
+) {
+  const strict = Array.isArray(channels) && channels.length > 0;
   const jtis = [...new Set(devices.map((d) => d.jti).filter(Boolean))];
-  if (jtis.length === 0) return devices;
+  if (jtis.length === 0) return strict ? [] : devices;
 
   const sessions = await platformPrisma.userSession.findMany({
     where: { jti: { in: jtis } },
-    select: { jti: true, endReason: true, expiresAt: true, lastSeenAt: true },
+    select: { jti: true, endReason: true, expiresAt: true, lastSeenAt: true, channel: true },
   });
-  const dead = new Set(
-    sessions.filter((s) => !securityService.isSessionLive(s)).map((s) => s.jti),
+
+  if (strict) {
+    const allowed = new Set(
+      sessions
+        .filter((s) => securityService.isSessionLive(s) && channels.includes(s.channel))
+        .map((s) => s.jti),
+    );
+    return devices.filter((d) => d.jti && allowed.has(d.jti));
+  }
+
+  const skip = new Set(
+    sessions
+      .filter((s) => !securityService.isSessionLive(s) || excludeChannels.includes(s.channel))
+      .map((s) => s.jti),
   );
 
-  return devices.filter((d) => !d.jti || !dead.has(d.jti));
+  return devices.filter((d) => !d.jti || !skip.has(d.jti));
 }
 
 /* ───────────────────────────── Yuborish ───────────────────────────── */
@@ -354,13 +403,52 @@ async function closeOrphanedSessions(jtis) {
 }
 
 /**
+ * FCM xabarini quradi — ko'rinadigan yoki jim (data-only).
+ *
+ * ⚠️ JIM XABARDA `notification` BLOKI YO'Q: telefon hech narsa ko'rsatmaydi,
+ * ilova esa fonda uyg'onib `data` ni o'qiydi (`PING_MESSAGE` bilan bir xil
+ * shakl). Android'da `high` — aks holda Doze rejimidagi telefonga soatlab
+ * yetib bormasdi; iOS'da `content-available` + `background` / `5` — APNs
+ * fon xabarini boshqacha qabul qilmaydi.
+ *
+ * @param {{ title?: string, body?: string, data?: object, channelId?: string, silent?: boolean }} message
+ * @returns {object} - `tokens` siz multicast xabari
+ */
+function buildMessage({ title, body, data, channelId, silent = false }) {
+  if (silent) {
+    return {
+      data: stringifyData(data),
+      android: { priority: "high" },
+      apns: {
+        headers: { "apns-push-type": "background", "apns-priority": "5" },
+        payload: { aps: { contentAvailable: true } },
+      },
+    };
+  }
+
+  return {
+    notification: { title, body },
+    data: stringifyData(data),
+    android: {
+      priority: "high",
+      notification: { sound: "default", ...(channelId ? { channelId } : {}) },
+    },
+    apns: { payload: { aps: { sound: "default" } } },
+  };
+}
+
+/**
  * Foydalanuvchilarning barcha tirik qurilmalariga push yuboradi.
  *
+ * `channels` — faqat shu seans kanallaridagi qurilmalarga (`["student"]`,
+ * `["parent"]`); berilmasa — hammasiga (avvalgidek). `silent` — jim
+ * (data-only) xabar, `title`/`body` kerak emas.
+ *
  * @param {string[]} userIds
- * @param {{ title: string, body: string, data?: object, channelId?: string }} message
+ * @param {{ title?: string, body?: string, data?: object, channelId?: string, channels?: string[], silent?: boolean }} message
  * @returns {Promise<{ sent: number, failed: number, removed: number, closed: number, skipped?: string }>}
  */
-async function sendToUsers(userIds, { title, body, data, channelId }) {
+async function sendToUsers(userIds, { title, body, data, channelId, channels, silent = false }) {
   const result = { sent: 0, failed: 0, removed: 0, closed: 0 };
 
   try {
@@ -375,21 +463,14 @@ async function sendToUsers(userIds, { title, body, data, channelId }) {
         where: { userId: { in: ids } },
         select: { token: true, jti: true },
       }),
+      { channels },
     );
     if (devices.length === 0) return { ...result, skipped: "no_devices" };
 
     const outcome = await sendInBatches(
       client,
       devices.map((d) => d.token),
-      {
-        notification: { title, body },
-        data: stringifyData(data),
-        android: {
-          priority: "high",
-          notification: { sound: "default", ...(channelId ? { channelId } : {}) },
-        },
-        apns: { payload: { aps: { sound: "default" } } },
-      },
+      buildMessage({ title, body, data, channelId, silent }),
     );
 
     result.sent = outcome.sent;
@@ -427,6 +508,7 @@ async function probeDevices() {
 
     const devices = await filterLiveDevices(
       await platformPrisma.pushDevice.findMany({ select: { token: true, jti: true } }),
+      { excludeChannels: [] },
     );
     if (devices.length === 0) return { ...result, skipped: "no_devices" };
 
@@ -461,4 +543,5 @@ module.exports = {
   // test uchun
   _filterLiveDevices: filterLiveDevices,
   _stringifyData: stringifyData,
+  _buildMessage: buildMessage,
 };

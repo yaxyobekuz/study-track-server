@@ -481,6 +481,9 @@ enum SessionChannel {
   student
   reception
   worker
+  // Ota-ona mobil ilovasi. ⚠️ Faqat MARSHRUT (push qaysi telefonga boradi),
+  // himoya emas: qiymatni mijoz yozadi (`X-Client`). Himoya — PIN.
+  parent
 }
 
 /**

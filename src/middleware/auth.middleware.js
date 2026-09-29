@@ -100,8 +100,15 @@ const protect = asyncHandler(async (req, res, next) => {
     //
     // ⚠️ Tekshiruv 2 daqiqalik oyna bilan siqilgan (`security.service.js`):
     // har so'rovda seansni o'qish auth'ni ikki barobar qimmatlashtirardi.
+    //
+    // ⚠️ Kanal (`req.sessionChannel`) SHU tekshiruvdan keladi — qo'shimcha
+    // so'rovsiz. U login paytidagi `X-Client` (mijoz yozadi), ya'ni faqat
+    // MARSHRUT uchun: ota-ona nazoratida "bu ota-ona telefonimi" degan
+    // savolga javob beradi, himoya esa PIN'da (`parental.middleware.js`).
+    let sessionChannel = null;
     if (decoded.jti) {
-      const alive = await securityService.touchSession(decoded.jti);
+      const { alive, channel } = await securityService.touchSessionState(decoded.jti);
+      sessionChannel = channel;
       if (!alive) {
         const error = new UnauthorizedError(
           "Seans tugatilgan — qaytadan tizimga kiring",
@@ -117,6 +124,8 @@ const protect = asyncHandler(async (req, res, next) => {
     req.branch = branch;
     // Filial almashtirish eski seansni shu qiymat bilan yopadi
     req.tokenJti = decoded.jti || null;
+    // Seans kanali (`SessionChannel`) — `null`: `jti` siz eski token
+    req.sessionChannel = sessionChannel;
 
     // ── FAOLLIK ─────────────────────────────────────────────────────
     // ⚠️ "Yozib qo'y va unut": 5 daqiqalik oynaga siqilgan va so'rovni

@@ -79,6 +79,8 @@ const activityRoutes = require("./activity.routes");
 const securityRoutes = require("./security.routes");
 const aiAssistantRoutes = require("./aiAssistant.routes");
 const pushRoutes = require("./push.routes");
+const deviceRoutes = require("./device.routes");
+const parentalRoutes = require("./parental.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -167,6 +169,14 @@ router.use("/security", securityRoutes);
 router.use("/ai-assistant", aiAssistantRoutes);
 // MOBIL PUSH — FCM qurilma tokenlari (topshiriq bildirishnomalari)
 router.use("/push", pushRoutes);
+// QURILMA NAZORATI — o'quvchi telefonidagi ilovalar va ekran vaqti.
+// ⚠️ Yashirin kuzatuv EMAS: o'quvchi o'ziga qo'llangan qoidani
+// `GET /devices/me/status` orqali to'liq ko'radi (`.claude/rules/devices.md`).
+router.use("/devices", deviceRoutes);
+// OTA-ONA NAZORATI — ota-ona ilovasi (PIN, blok, statistika) va bolaning
+// telefoni (`/parental/device/*`). Maktabning "Qurilma nazorati" dan ALOHIDA:
+// u yerda qoidani maktab, bu yerda ota-ona yozadi.
+router.use("/parental", parentalRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

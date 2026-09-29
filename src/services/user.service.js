@@ -1259,6 +1259,23 @@ async function archiveUser(id, options = {}) {
     debtWriteOff = await writeOffStudentDebt(id, { note, userId: actorId });
   }
 
+  // ⚠️ ARXIVLANGAN O'QUVCHINING TELEFONI CHEKOVDAN CHIQADI. U endi maktab
+  // o'quvchisi emas va uning shaxsiy qurilmasini cheklab turish huquqimiz
+  // yo'q (`.claude/rules/devices.md` §5). Qarz tushirishdan FARQLI o'laroq
+  // bu ixtiyoriy emas — u huquqiy chegara, sozlama emas.
+  //
+  // ⚠️ Xato arxivlashni orqaga QAYTARMAYDI (qarz tushirish bilan bir xil
+  // qaror): qurilma tozalanmagani uchun butun amal yiqilsa, arxivlash
+  // umuman qilinmay qolardi.
+  if (user.role === ROLES.STUDENT) {
+    try {
+      const { releaseForStudent } = require("./deviceEnrollment.service");
+      await releaseForStudent(id, actorId, "O'quvchi arxivlandi");
+    } catch (error) {
+      logger.warn(`[devices] arxivlashda qurilma chiqarilmadi (${id}): ${error.message}`);
+    }
+  }
+
   const archived = await loadUser(id);
   return debtWriteOff ? { ...archived, debtWriteOff } : archived;
 }

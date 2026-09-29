@@ -66,4 +66,77 @@ const verifyToken = (token) => {
   }
 };
 
-module.exports = { generateToken, verifyToken, generateJti };
+/* ───────────────────── OTA-ONA NAZORATI TOKENI ───────────────────── */
+
+/** Parental token maqsadi — `purpose` da majburiy. */
+const PARENTAL_PURPOSE = "parental";
+
+/**
+ * PARENTAL TOKEN KALITI — `JWT_SECRET` dan HOSILA, o'zi EMAS.
+ *
+ * ⚠️ Ikki qavatli ajratish: kalit boshqa bo'lgani uchun oddiy access token
+ * parental token o'rniga (va aksincha) imzo bosqichidayoq rad etiladi,
+ * `purpose` tekshiruvi esa ikkinchi qavat. Bitta kalit bo'lsa, kalit
+ * tekshiruvi `purpose` ni unutgan birinchi yangi kodda teshik ochardi.
+ *
+ * ⚠️ Yangi env EMAS: kalit `JWT_SECRET` bilan birga aylanadi (rotatsiya),
+ * alohida sirni unutib qoldirish imkonsiz.
+ */
+const parentalSecret = () =>
+  crypto.createHmac("sha256", String(config.jwtSecret)).update("parental-token:v1").digest("hex");
+
+/**
+ * PIN bilan tasdiqlangan boshqaruv tokeni — `X-Parental-Token`.
+ *
+ * ⚠️ SEANSGA BOG'LANGAN (`jti`): boshqa telefondagi (boshqa seans) so'rov
+ * bu token bilan o'tmaydi (`parental.middleware.js`). Filial ham yuk ichida.
+ *
+ * ⚠️ PIN VERSIYASIGA BOG'LANGAN (`pv` — `pinUpdatedAt`): PIN almashsa yoki
+ * tiklansa, eski PIN bilan olingan tokenlar DARHOL o'ladi — PIN tarqalib
+ * ketgani uchun almashtirilgan bo'lsa, tarqalgan token 15 daqiqa ishlab
+ * turmasligi kerak.
+ *
+ * @param {{ userId: string, jti: string, branchId: string|null, pinVersion: number }} input
+ * @returns {{ token: string, expiresAt: Date }}
+ */
+const generateParentalToken = ({ userId, jti, branchId, pinVersion }) => {
+  const ttlSec = config.parentalTokenTtlMin * 60;
+  const token = jwt.sign(
+    {
+      purpose: PARENTAL_PURPOSE,
+      sub: String(userId),
+      jti: String(jti),
+      br: branchId ?? null,
+      pv: Number(pinVersion) || 0,
+    },
+    parentalSecret(),
+    { algorithm: "HS256", expiresIn: ttlSec },
+  );
+  const { exp } = jwt.decode(token);
+  return { token, expiresAt: new Date(exp * 1000) };
+};
+
+/**
+ * Parental tokenni tekshiradi. Imzo, muddat yoki `purpose` mos kelmasa `null`.
+ *
+ * @param {string} token
+ * @returns {{ sub: string, jti: string, br: string|null, pv: number, exp: number }|null}
+ */
+const verifyParentalToken = (token) => {
+  if (!token || typeof token !== "string") return null;
+  try {
+    const decoded = jwt.verify(token, parentalSecret(), { algorithms: ["HS256"] });
+    return decoded?.purpose === PARENTAL_PURPOSE ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
+module.exports = {
+  generateToken,
+  verifyToken,
+  generateJti,
+  generateParentalToken,
+  verifyParentalToken,
+  PARENTAL_PURPOSE,
+};

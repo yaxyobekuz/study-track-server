@@ -239,6 +239,21 @@ async function getPremiumSettings() {
   return settings;
 }
 
+/**
+ * QURILMA NAZORATI sozlamalari (`devices.md`).
+ *
+ * ⚠️ `enabled` sukut bo'yicha FALSE: modul o'rnatilgani bilan birorta
+ * o'quvchining telefonini cheklamaydi. Yoqish — ongli qaror va u admin
+ * paneldan qilinadi.
+ */
+async function getDeviceSettings() {
+  return prisma.deviceSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 module.exports = {
   getCoinSettings,
   getScheduleSettings,
@@ -255,6 +270,7 @@ module.exports = {
   getPremiumSettings,
   getFinanceSettings,
   getInventorySettings,
+  getDeviceSettings,
   getChangelogSettings,
   DEFAULT_NAME_COLORS,
 };

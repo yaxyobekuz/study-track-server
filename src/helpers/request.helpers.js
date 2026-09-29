@@ -187,6 +187,7 @@ function clientInfo(req) {
 }
 
 module.exports = {
+  DEVICE_ID_PATTERN,
   trustedProxyIp,
   clientIp,
   userAgent,

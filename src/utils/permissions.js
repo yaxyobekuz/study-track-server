@@ -60,6 +60,7 @@ const SECTIONS = {
   LEADS: "leads",
   ACTIVITY: "activity",
   SECURITY: "security",
+  DEVICES: "devices",
 };
 
 // Tez-tez takrorlanadigan amal nomlari (qisqartma uchun).
@@ -840,6 +841,45 @@ const PERMISSION_SECTIONS = [
       { key: "revoke", label: "Seansni tugatish" },
       { key: "alerts", label: "Ogohlantirishlarni boshqarish" },
       A.export,
+    ],
+  },
+  {
+    // QURILMA NAZORATI — "o'quvchi telefonida nima ochiladi va qancha vaqt".
+    //
+    // ⚠️ Bu bo'lim BOLANING SHAXSIY QURILMASINI cheklaydi, shuning uchun
+    // amallari eng mayda bo'linganlaridan: har biri boshqa og'irlikdagi
+    // qaror va ularni bitta kalitga yig'ish "ro'yxatni ko'rsin" degan
+    // ruxsatni "butun maktabni qulflasin" ga aylantirardi.
+    //
+    //   `policies` — qoida YOZISH. Hali hech kimga tegmaydi: siyosat
+    //                biriktirilgunicha bir o'quvchining ham telefoniga
+    //                ta'sir qilmaydi.
+    //   `assign`   — o'sha qoidani YOQISH (maktab / sinf / o'quvchi).
+    //                ⚠️ `policies` DAN ALOHIDA — `payroll.assign` va
+    //                `payroll.deduct` ajratilgani bilan AYNI mulohaza:
+    //                qoida yozish va uni butun maktabga yoqish boshqa-boshqa
+    //                qaror. "Barcha o'quvchilar" uchun server alohida
+    //                tasdiq ham talab qiladi (`confirmAll`).
+    //   `enroll`   — qurilma biriktirish / olib tashlash.
+    //   `unlock`   — vaqtinchalik ochish. Cheklovni YUMSHATADI, shuning
+    //                uchun qoida yozishdan alohida: "bugun kechqurun ochib
+    //                ber" degan qaror boshqa odamda bo'lishi mumkin.
+    //   `reports`  — foydalanish hisoboti. ⚠️ `view` DAN ALOHIDA va bu
+    //                `security.sessions` bilan bir xil mulohaza:
+    //                qurilmalar ro'yxati texnik ish, bolaning qaysi
+    //                ilovada qancha o'tirgani esa SHAXSIY MA'LUMOT.
+    key: SECTIONS.DEVICES,
+    label: "Qurilma nazorati",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "policies", label: "Siyosat yaratish / tahrirlash" },
+      { key: "assign", label: "Siyosatni biriktirish (yoqish)" },
+      { key: "enroll", label: "Qurilma biriktirish / olib tashlash" },
+      { key: "unlock", label: "Vaqtinchalik ochish" },
+      { key: "apps", label: "Ilovalar katalogi" },
+      { key: "reports", label: "Foydalanish hisoboti" },
+      A.settings,
     ],
   },
 ];

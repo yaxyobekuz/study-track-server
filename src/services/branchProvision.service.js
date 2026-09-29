@@ -126,6 +126,7 @@ const seedBranch = async (branch) => {
       settingsService.getPremiumSettings(),
       settingsService.getFinanceSettings(),
       settingsService.getInventorySettings(),
+      settingsService.getDeviceSettings(),
     ]);
   });
 
