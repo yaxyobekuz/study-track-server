@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const activityDashboard = require("../services/activityDashboard.service");
+const activityExport = require("../services/activityExport.service");
 const {
   hasPermission,
   hasRole,
@@ -60,4 +61,15 @@ const getClass = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-module.exports = { getOverview, getSubject, getClass };
+/**
+ * BITTA SINFNING BOT QAMROVI → EXCEL (bog'langanlar / bog'lanmaganlar).
+ *
+ * ⚠️ Davr modal bilan AYNI (`days`): fayl ekrandagi ro'yxatning nusxasi.
+ */
+const exportClass = asyncHandler(async (req, res) => {
+  await activityExport.exportClassToExcel(res, req.params.classId, {
+    days: req.query.days,
+  });
+});
+
+module.exports = { getOverview, getSubject, getClass, exportClass };

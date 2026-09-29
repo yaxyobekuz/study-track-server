@@ -25,6 +25,7 @@ const {
   getOverview,
   getSubject,
   getClass,
+  exportClass,
 } = require("../controllers/activity.controller");
 const { validateObjectId } = require("../middleware/validate.middleware");
 
@@ -49,6 +50,20 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.ACTIVITY_ROSTER),
   getClass,
+);
+
+// Sinf kesimi → Excel.
+//
+// ⚠️ `roster` VA `export` — IKKALASI HAM. Fayl o'sha ism ro'yxati (ustiga
+// telefonlar), ya'ni `roster` siz uni ochib bo'lmaydi; `export` esa
+// ro'yxatni maktabdan tashqariga olib chiqish — alohida qaror. Bittasi
+// yetsa, eksport tugmasi orqali ro'yxat huquqi oshirib olinardi.
+router.get(
+  "/classes/:classId/export",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.ACTIVITY_ROSTER),
+  authorizePermission(PERMISSIONS.ACTIVITY_EXPORT),
+  exportClass,
 );
 
 module.exports = router;
