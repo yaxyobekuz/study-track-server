@@ -8,6 +8,7 @@ const branchRoutes = require("./branch.routes");
 const userRoutes = require("./user.routes");
 const subjectRoutes = require("./subject.routes");
 const classRoutes = require("./class.routes");
+const studentSystemRoutes = require("./studentSystem.routes");
 const scheduleRoutes = require("./schedule.routes");
 const plannerRoutes = require("./planner.routes");
 const scheduleSyncRoutes = require("./scheduleSync.routes");
@@ -88,6 +89,8 @@ router.use("/branches", branchRoutes);
 router.use("/users", userRoutes);
 router.use("/subjects", subjectRoutes);
 router.use("/classes", classRoutes);
+// ERP va Kundalik.com — o'quvchi tashqi tizimlarda bormi (belgi + Excel)
+router.use("/student-systems", studentSystemRoutes);
 router.use("/schedules", scheduleRoutes);
 router.use("/planner", plannerRoutes);
 router.use("/schedule-sync", scheduleSyncRoutes);

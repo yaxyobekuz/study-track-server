@@ -31,6 +31,7 @@ const SECTIONS = {
   TUTORS: "tutors",
   TOPICS: "topics",
   CLASSES: "classes",
+  STUDENT_SYSTEMS: "studentSystems",
   SUBJECTS: "subjects",
   TESTS: "tests",
   DIAGNOSTICS: "diagnostics",
@@ -303,6 +304,25 @@ const PERMISSION_SECTIONS = [
       // Chiqarish / ko'chirish SABABLARI registri — alohida: sinf
       // ro'yxatini ko'rish huquqi "nega chiqarildi" izohlarini ochmasin
       { key: "history", label: "Sinf o'zgarishlari tarixi (sabablari bilan)" },
+      A.export,
+    ],
+  },
+  {
+    // ERP VA KUNDALIK.COM — o'quvchi shu ikki tashqi tizimga kiritilganmi.
+    //
+    // ⚠️ `classes` / `users` DAN ALOHIDA bo'lim: belgini tashqi tizimga
+    // kirituvchi mas'ul xodim qo'yadi va unga o'quvchi profilini tahrirlash
+    // yoki sinf tarkibini o'zgartirish huquqi kerak emas.
+    //
+    // `mark` — "bor / yo'q" belgisini qo'yish va olish; `view` bilan
+    // berilmaydi: ro'yxatni ko'radigan har kim belgini o'zgartirsa,
+    // "kiritildi" degan belgiga ishonib bo'lmay qolardi.
+    key: SECTIONS.STUDENT_SYSTEMS,
+    label: "ERP va Kundalik.com",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "mark", label: "Bor / yo'q belgilash" },
       A.export,
     ],
   },

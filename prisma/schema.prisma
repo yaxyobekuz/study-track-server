@@ -505,6 +505,8 @@ model User {
   clubMemberships  ClubMember[]         @relation("ClubMemberships")
   // Ota-ona nazorati sozlamasi (PIN, "hammasini bloklash") — o'quvchi hisobiga bittadan.
   parentalSettings ParentalSettings?
+  // Tashqi tizimlarda (ERP, Kundalik.com) bor-yo'qligi belgisi — `StudentSystemMark`.
+  systemMarks      StudentSystemMark[]  @relation("StudentSystemMarks")
 
   @@index([role, isActive])
   @@index([role, isArchived])
@@ -588,6 +590,41 @@ enum StudentClassChangeSource {
   profile // O'quvchi profili → "Sinflar" kartasi
   class_page // Sinf sahifasi → "Ko'chirish" / "Sinfdan chiqarish"
   assistant // AI yordamchi (egasi tasdiqlagan taklif)
+}
+
+// O'QUVCHI TASHQI TIZIMDA BORMI — ERP va Kundalik.com.
+//
+// Maktab o'quvchilarni ikki tashqi tizimga (davlat ERP i va Kundalik.com)
+// qo'lda kiritadi; bu jadval "kim kiritilgan, kim hali yo'q" degan savolga
+// javob beradi. Belgini mas'ul xodim qo'yadi (`studentSystems.mark`).
+//
+// ⚠️ QATOR BOR = "BOR", QATOR YO'Q = "YO'Q". Uchinchi holat (null) yo'q:
+// sukutda hech kim belgilanmagan va "yo'q" ro'yxati to'liq chiqadi —
+// yangi o'quvchi ham o'z-o'zidan "yo'q" larga tushadi, alohida yozuv
+// kerak emas. Belgini olish qatorni o'chiradi.
+//
+// ⚠️ Bir o'quvchi × bir tizim — BITTA qator (`@@id`): ikki marta bosish
+// ikkinchi qator yozmaydi va birinchi belgilagan odam o'zgarmaydi.
+//
+// Yangi tizim qo'shilsa — faqat `ExternalSystem` enumiga (va panel/server
+// yorliqlariga) qiymat: jadval shakli o'zgarmaydi.
+model StudentSystemMark {
+  studentId String         @map("student_id") @db.Char(24)
+  system    ExternalSystem
+  // soft ref → User (belgilagan xodim). FK yo'q: xodim o'chirilsa ham belgi qoladi.
+  markedBy  String         @map("marked_by") @db.Char(24)
+  markedAt  DateTime       @default(now()) @map("marked_at")
+
+  student User @relation("StudentSystemMarks", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, system])
+  @@index([system])
+  @@map("student_system_marks")
+}
+
+enum ExternalSystem {
+  erp
+  kundalik // Kundalik.com
 }
 
 // User ↔ Subject M2M junction — "bu o'qituvchi shu fanlardan dars beradi".
