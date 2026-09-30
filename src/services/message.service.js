@@ -242,10 +242,53 @@ async function sendMessage({ actor, messageText, recipientType, classId, student
 
   assertCanSend(actor, recipientType);
 
-  const text = messageText.trim();
+  const resolved = await resolveRecipients({ recipientType, classId, studentId });
 
+  return persistAndQueue({
+    actor,
+    text: messageText.trim(),
+    recipientType,
+    recipients: resolved.recipients,
+    recipientIds: resolved.recipientIds,
+    classId: resolved.classId,
+    studentId: resolved.studentId,
+    file,
+  });
+}
+
+/**
+ * PAST DARAJALI YUBORISH — qabul qiluvchilar ALLAQACHON aniqlangan bo'lganda.
+ *
+ * `Message` + yetkazish holatlari yoziladi, fayl (bo'lsa) Spaces'ga yuklanadi
+ * va har bir Telegram ID navbatga qo'yiladi. Ruxsat/egalik tekshiruvi
+ * CHAQIRUVCHIDA (bu funksiya faqat texnik yuborishni bajaradi):
+ *   - `sendMessage` — `assertCanSend` + `resolveRecipients` bilan;
+ *   - tyutor xabari (`tutorGroup.service.sendTutorMessage`) — o'z guruhidagi
+ *     o'quvchilarni aniqlab, egalikni tekshirib.
+ *
+ * @param {object} params
+ * @param {object} params.actor - `req.user` (`id`)
+ * @param {string} params.text - tozalangan matn
+ * @param {string} params.recipientType - `MessageRecipientType` (enum) qiymati
+ * @param {Array<{id: string, telegramIds: string[]}>} params.recipients
+ * @param {string[]} params.recipientIds - hamma telegram ID lar (tekis)
+ * @param {string|null} [params.classId]
+ * @param {string|null} [params.studentId]
+ * @param {object|null} [params.file] - multer fayli
+ * @returns {Promise<object>} yaratilgan `Message`
+ */
+async function persistAndQueue({
+  actor,
+  text,
+  recipientType,
+  recipients,
+  recipientIds,
+  classId = null,
+  studentId = null,
+  file = null,
+}) {
   // Guard against accidental duplicate submits: reject an identical message
-  // (same sender + same text) created within the last few seconds.
+  // (same sender + same text + type) created within the last few seconds.
   const recentDuplicate = await prisma.message.findFirst({
     where: {
       sentBy: actor.id,
@@ -259,9 +302,6 @@ async function sendMessage({ actor, messageText, recipientType, classId, student
   if (recentDuplicate) {
     throw new BadRequestError("Bu xabar hozirgina yuborildi. Iltimos, biroz kuting.");
   }
-
-  const resolved = await resolveRecipients({ recipientType, classId, studentId });
-  const { recipients, recipientIds } = resolved;
 
   // Prepare delivery status (child jadval — position massiv indeksidan)
   const deliveryStatus = [];
@@ -283,8 +323,8 @@ async function sendMessage({ actor, messageText, recipientType, classId, student
       sentBy: actor.id,
       recipientType,
       recipientIds,
-      classId: resolved.classId,
-      studentId: resolved.studentId,
+      classId,
+      studentId,
       totalRecipients: recipientIds.length,
       deliveryStatus: { create: deliveryStatus },
     },
@@ -474,6 +514,7 @@ module.exports = {
   assertCanSend,
   resolveRecipients,
   sendMessage,
+  persistAndQueue,
   getMessages,
   getMessageById,
   cancelMessage,

@@ -54,6 +54,28 @@ const getMyGroupOverview = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+/**
+ * O'ZIMNING guruhimdagi o'quvchilarga xabar yuboraman — tyutor paneli.
+ * Ruxsat kaliti yo'q, tyutor id tokendan (`/tutor-groups/my` bilan bir xil).
+ * `studentId` berilsa — faqat o'sha o'quvchi (u mening guruhimda bo'lishi shart).
+ */
+const sendMyStudentsMessage = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Xabar yuborish faqat xodimlar uchun");
+  }
+  const message = await tutorGroupService.sendTutorMessage({
+    actor: req.user,
+    messageText: req.body.messageText,
+    studentId: req.body.studentId || null,
+    file: req.file || null,
+  });
+  res.status(201).json({
+    success: true,
+    message: "Xabar navbatga qo'yildi",
+    data: { id: message.id, totalRecipients: message.totalRecipients },
+  });
+});
+
 /** Jonli hisob — hech narsa yozilmaydi. */
 const previewAmount = asyncHandler(async (req, res) => {
   const data = await tutorGroupService.previewAmount(req.body);
@@ -85,6 +107,7 @@ module.exports = {
   getGroupOverview,
   getMyGroups,
   getMyGroupOverview,
+  sendMyStudentsMessage,
   previewAmount,
   createGroup,
   updateGroup,

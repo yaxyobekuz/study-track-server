@@ -180,6 +180,7 @@ enum MessageRecipientType {
   class
   student
   season
+  tutor
 }
 
 enum MessageDeliveryStatusEnum {

@@ -1191,6 +1191,107 @@ const removeGroup = async (id, { effective = "next" } = {}, actorId) => {
   };
 };
 
+/**
+ * TYUTOR O'Z GURUHIDAGI O'QUVCHILARGA XABAR YUBORADI.
+ *
+ * Qabul qiluvchi — tyutorning JORIY OY uchun faol guruhlaridagi (sinflaridagi)
+ * o'quvchilar (arxivlanmagan, Telegram ID si bor). `studentId` berilsa — faqat
+ * o'sha o'quvchi, LEKIN u tyutorning guruhida bo'lishi SHART (egalik tekshiruvi
+ * — `getGroupOverview` dagi `viewer.onlyOwn` bilan bir mantiq).
+ *
+ * Xabar mavjud oqim orqali ketadi (`message.service` → navbat → Telegram):
+ * o'quvchining ota-onasi botda ulagan Telegram akkauntlariga. Alohida kanal
+ * ochilmaydi — tizimdagi yagona "o'quvchiga xabar" yo'li shu.
+ *
+ * @param {object} params
+ * @param {object} params.actor - `req.user` (tyutor)
+ * @param {string} params.messageText
+ * @param {string} [params.studentId] - bitta o'quvchiga yuborish uchun
+ * @param {object|null} [params.file] - ixtiyoriy rasm/hujjat (multer fayli)
+ * @returns {Promise<object>} yaratilgan `Message`
+ */
+const sendTutorMessage = async ({ actor, messageText, studentId = null, file = null }) => {
+  if (!messageText || !messageText.trim()) {
+    throw new BadRequestError("Xabar matni majburiy");
+  }
+
+  // Tyutorning joriy oy uchun faol guruhlari → sinflari
+  const groups = await prisma.tutorGroup.findMany({
+    where: { tutorId: actor.id, ...coveringMonthWhere(currentMonthKey()) },
+    select: { classId: true },
+  });
+  const classIds = [...new Set(groups.map((g) => g.classId))];
+  if (classIds.length === 0) {
+    throw new BadRequestError("Sizga hali guruh biriktirilmagan — xabar yuborib bo'lmaydi");
+  }
+
+  const recipientSelect = {
+    id: true,
+    telegramIds: true,
+    firstName: true,
+    lastName: true,
+    role: true,
+    isArchived: true,
+  };
+
+  let recipients;
+  let recipientType;
+  let messageStudentId = null;
+
+  if (studentId) {
+    // ⚠️ EGALIK: o'quvchi tyutorning sinflaridan birida bo'lishi shart. Aks
+    // holda tyutor begona o'quvchiga xabar yuborardi.
+    const student = await prisma.user.findFirst({
+      where: {
+        id: studentId,
+        role: ROLES.STUDENT,
+        isArchived: false,
+        classes: { some: { classId: { in: classIds } } },
+      },
+      select: recipientSelect,
+    });
+    if (!student) {
+      throw new ForbiddenError("Bu o'quvchi sizning guruhingizga biriktirilmagan");
+    }
+    if (!student.telegramIds || student.telegramIds.length === 0) {
+      throw new BadRequestError("O'quvchining Telegram ID si mavjud emas (ota-ona bog'lanmagan)");
+    }
+    recipients = [student];
+    recipientType = "student";
+    messageStudentId = student.id;
+  } else {
+    // BARCHA o'quvchilar — bir nechta sinfda bo'lsa ham `findMany` bir marta beradi
+    recipients = await prisma.user.findMany({
+      where: {
+        role: ROLES.STUDENT,
+        isArchived: false,
+        classes: { some: { classId: { in: classIds } } },
+        telegramIds: { isEmpty: false },
+      },
+      select: recipientSelect,
+    });
+    if (recipients.length === 0) {
+      throw new BadRequestError("Guruhingizda Telegram ID si bor o'quvchi topilmadi");
+    }
+    recipientType = "tutor";
+  }
+
+  const recipientIds = recipients.reduce((acc, u) => [...acc, ...u.telegramIds], []);
+
+  // Yuborishning texnik qismi — mavjud `message.service` da (Message + navbat).
+  // Egalik/ruxsat SHU YERDA tekshirildi, shuning uchun past darajali primitiv.
+  const messageService = require("./message.service");
+  return messageService.persistAndQueue({
+    actor,
+    text: messageText.trim(),
+    recipientType,
+    recipients,
+    recipientIds,
+    studentId: messageStudentId,
+    file,
+  });
+};
+
 module.exports = {
   loadTutorRoleValues,
   isTutorUser,
@@ -1205,4 +1306,5 @@ module.exports = {
   createGroup,
   updateGroup,
   removeGroup,
+  sendTutorMessage,
 };

@@ -5,6 +5,7 @@ const router = express.Router();
 // Middleware
 const { protect, authorizePermission } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
+const { createSingleFileUpload, handleFileUploadError } = require("../middleware/fileUpload.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 
 // Controller
@@ -14,6 +15,7 @@ const {
   getGroupOverview,
   getMyGroups,
   getMyGroupOverview,
+  sendMyStudentsMessage,
   previewAmount,
   createGroup,
   updateGroup,
@@ -25,6 +27,15 @@ router.use(protect);
 // O'zimniki — ruxsatsiz, faqat o'zi. `/:id` dan OLDIN turadi.
 router.get("/my", getMyGroups);
 router.get("/my/:id/overview", validateObjectId("id"), getMyGroupOverview);
+
+// O'z guruhimdagi o'quvchilarga xabar (barchaga yoki `studentId` bo'lsa bittasiga).
+// Ixtiyoriy rasm/hujjat ilova qilinadi (mavjud xabar oqimi bilan bir xil).
+router.post(
+  "/my/message",
+  createSingleFileUpload({ categories: ["image", "document"] }),
+  handleFileUploadError,
+  sendMyStudentsMessage,
+);
 
 // Admin
 // Tanlagich `assign` bilan: u faqat biriktirish oynasida kerak
