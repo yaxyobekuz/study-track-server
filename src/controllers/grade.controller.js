@@ -14,7 +14,11 @@ const { isHoliday } = require("../services/holiday.service");
 const gradeService = require("../services/grade.service");
 const { loadArchivedStudentScope } = require("../services/archivedStudentScope.service");
 const { attachGradeRefs } = gradeService;
-const { resolveLessonAccess, scheduleDayOf } = require("../helpers/teacherAccess");
+const {
+  resolveLessonAccess,
+  scheduleDayOf,
+  hasGradingGrantFor,
+} = require("../helpers/teacherAccess");
 const { findActiveUnlock } = require("../services/gradingUnlock.service");
 const { assertAtSchool } = require("../services/gradingPresence.service");
 // Baholar tahlili uchun dars mavzusi — xato tashlamaydi (servis izohiga qarang)
@@ -35,6 +39,9 @@ const {
 } = require("../helpers/date.helpers");
 
 const HOUR_MS = 3600 * 1000;
+
+const GRANT_CLOSED_MESSAGE =
+  "Bu sinf va fanga baho qo'yish ruxsatingiz yopilgan — bahoni o'zgartirib bo'lmaydi";
 
 /** Instantning Toshkent kuni — UTC yarim tuni (`currentDayDate` bilan bir o'lchov). */
 const tashkentDayOf = (instant) => {
@@ -305,7 +312,7 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  // DARSGA HUQUQ — o'z darsi YOKI o'rinbosarlik.
+  // DARSGA HUQUQ — o'z darsi, o'rinbosarlik YOKI boshliq bergan fanga ruxsat.
   //
   // ⚠️ Qoida `helpers/teacherAccess.js` da, bu yerda EMAS. U ikki tomonga
   // ishlaydi: o'rinbosarga huquq ochadi va dars egasidan AYNAN o'sha dars
@@ -326,12 +333,12 @@ const createGrade = asyncHandler(async (req, res) => {
     );
   }
 
-  const teacherLessons = access.lessons;
+  const allowedLessons = access.lessons;
 
   // Validate lessonOrder if provided
   const parsedLessonOrder = lessonOrder ? Number(lessonOrder) : null;
-  const finalLessonOrder = parsedLessonOrder || teacherLessons[0].order;
-  const lessonExists = teacherLessons.find(
+  const finalLessonOrder = parsedLessonOrder || allowedLessons[0].order;
+  const lessonExists = allowedLessons.find(
     (l) => l.order === finalLessonOrder,
   );
 
@@ -347,9 +354,24 @@ const createGrade = asyncHandler(async (req, res) => {
     }
 
     throw new BadRequestError(
-      `Dars tartibi noto'g'ri. Sizning darslaringiz: ${teacherLessons.map((l) => l.order).join(", ")}`,
+      `Dars tartibi noto'g'ri. Sizning darslaringiz: ${allowedLessons.map((l) => l.order).join(", ")}`,
     );
   }
+
+  // BAHO QAYSI DARSLARGA TARQALADI — faqat tanlangan dars bilan BIR XIL
+  // yo'l bilan ochilganlariga.
+  //
+  // ⚠️ O'z darsidagi baho RUXSAT darsiga tarqalmaydi (va aksincha): ruxsat
+  // darsi boshqa o'qituvchining darsi — u yerga avtomatik baho yozilsa,
+  // dars egasi o'sha o'quvchiga baho qo'ya olmay qolardi ("allaqachon
+  // qo'yilgan"). O'z darslari orasidagi tarqalish avvalgidek qoladi.
+  const viaGrant = lessonExists.access === "grant";
+  const teacherLessons = allowedLessons.filter(
+    (l) => (l.access === "grant") === viaGrant,
+  );
+  const grantIdByOrder = new Map(
+    teacherLessons.map((l) => [l.order, l.grantId ?? null]),
+  );
 
   // Vaqt: bugungi darsga — dars BOSHLANGANDAN "Men ketdim" gacha (dars
   // tugashi yopmaydi, `checkGradingTimeWindow`). Faqat sozlamada yoqilgan bo'lsa.
@@ -446,6 +468,8 @@ const createGrade = asyncHandler(async (req, res) => {
     lessonOrder: order,
     comment,
     topicId: topicByOrder.get(order) ?? null,
+    // Ruxsat bilan qo'yilgan baho — dars egasining oyligida hisoblanmaydi
+    gradingGrantId: grantIdByOrder.get(order) ?? null,
   }));
 
   await prisma.grade.createMany({ data: gradesToCreate });
@@ -505,6 +529,12 @@ const updateGrade = asyncHandler(async (req, res) => {
 
   if (!isTodayGrade && !unlockedPast) {
     throw new ForbiddenError("Faqat bugungi baholarni tahrirlash mumkin");
+  }
+
+  // Ruxsat bilan qo'yilgan baho — faqat ruxsat hali AMALDA bo'lsa
+  // (`hasGradingGrantFor` izohi): yopilgan ruxsat boshqaning jurnalini ham yopadi
+  if (gradeDoc.gradingGrantId && !(await hasGradingGrantFor(gradeDoc, gradeDay))) {
+    throw new ForbiddenError(GRANT_CLOSED_MESSAGE);
   }
 
   // Bugungi bahoni ham faqat maktabda turib o'zgartiradi
@@ -631,6 +661,11 @@ const deleteGrade = asyncHandler(async (req, res) => {
       throw new ForbiddenError("Faqat bugungi baholarni o'chirish mumkin");
     }
 
+    // Ruxsat bilan qo'yilgan baho — faqat ruxsat hali amalda bo'lsa (`updateGrade` bilan AYNI)
+    if (grade.gradingGrantId && !(await hasGradingGrantFor(grade, gradeDay))) {
+      throw new ForbiddenError(GRANT_CLOSED_MESSAGE);
+    }
+
     // Bugungi bahoni ham faqat maktabda turib o'chiradi
     if (isTodayGrade) await assertAtSchool(req.user);
   }
@@ -712,13 +747,15 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     lessons: todaySchedule.lessons,
   });
 
-  // Ruxsat etilgan dars tartiblari — pastdagi ikkala siklda ishlatiladi
-  const allowedOrders = new Set(access.lessons.map((l) => l.order));
+  // Ruxsat etilgan darslar — jadval qatori `id` si bo'yicha (pastdagi ikkala
+  // siklda). Har birida `access`: o'z darsi / o'rinbosarlik / fanga ruxsat —
+  // panel ruxsat bilan ochilgan darsni alohida belgilaydi.
+  const allowedById = new Map(access.lessons.map((l) => [l.id, l]));
 
   // Get unique subject IDs for progress lookup
   const teacherSubjectIds = new Set();
   todaySchedule.lessons.forEach((item) => {
-    if (allowedOrders.has(item.order)) {
+    if (allowedById.has(item.id)) {
       teacherSubjectIds.add(item.subjectId);
     }
   });
@@ -748,7 +785,8 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
   }
 
   todaySchedule.lessons.forEach((item) => {
-    if (allowedOrders.has(item.order)) {
+    const allowed = allowedById.get(item.id);
+    if (allowed) {
       const subjectId = item.subjectId;
 
       // Increment count for this subject
@@ -766,6 +804,8 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
         order: item.order,
         lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
         currentTopicNumber: progressMap.get(subjectId) || 1,
+        // "own" | "substitution" | "grant" — qaysi yo'l bilan ochilgan
+        access: allowed.access,
       });
     }
   });
@@ -778,6 +818,22 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     data: teacherSubjects,
     day: todayDayName,
   });
+});
+
+/**
+ * BAHO QO'YISH MUMKIN BO'LGAN SINFLAR — bugun yoki ochilgan o'tgan kun
+ * (`?date=YYYY-MM-DD`). O'z darsi, o'rinbosarlik va fanga ruxsat — baho
+ * yozish bilan AYNI hal qiluvchidan (`grade.service.js`).
+ */
+const getTeacherGradingClasses = asyncHandler(async (req, res) => {
+  if (!hasRole(req.user, ROLES.TEACHER)) {
+    throw new ForbiddenError("Faqat o'qituvchilar uchun");
+  }
+
+  const day = await resolveGradingDay(req.user, req.query.date);
+  const data = await gradeService.getTeacherGradingClasses(req.user, day.date);
+
+  res.json({ success: true, data });
 });
 
 // Get students with their grades for a class, subject and date
@@ -1071,5 +1127,6 @@ module.exports = {
   getStudentsWithGrades,
   getGradesByClassAndDate,
   getTeacherSubjectsInClass,
+  getTeacherGradingClasses,
   exportGrades,
 };

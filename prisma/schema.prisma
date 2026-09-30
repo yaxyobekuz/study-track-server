@@ -1503,6 +1503,15 @@ model Grade {
   // saqlanmagan, faqat joriy raqam bor). Baholar tahlili mavzu kesimini
   // faqat mavzusi bor baholardan quradi va qamrovni ochiq aytadi.
   topicId     String?  @map("topic_id") @db.Char(24)
+  // RUXSAT BILAN QO'YILGAN BAHO (soft ref → GradingGrant). Boshliq
+  // o'qituvchiga O'ZINIKI BO'LMAGAN sinf+fan darsiga baho qo'yishni ochgan
+  // bo'lsa, o'sha yo'l bilan yozilgan baho shu ustun bilan belgilanadi.
+  //
+  // ⚠️ Baho oddiy baho: o'rtacha, jurnal, hisobotlarga kiradi. Lekin u dars
+  // EGASINING ishi emas — oylikdagi "dars o'tildimi" (`loadLessonFacts`) va
+  // "Men ketdim" darvozasi uni HISOBLAMAYDI. Aks holda boshqa odamning
+  // bahosi bilan dars egasiga soat (pul) yozilardi.
+  gradingGrantId String? @map("grading_grant_id") @db.Char(24)
   isEdited    Boolean  @default(false) @map("is_edited")
   // editHistory[] — { previousGrade, editedAt, editedBy } (faqat audit)
   editHistory Json     @default("[]") @map("edit_history")
@@ -3513,6 +3522,59 @@ model GradingUnlock {
   @@index([dateFrom, dateTo])
   @@index([expiresAt])
   @@map("grading_unlocks")
+}
+
+// FANGA BAHO QO'YISH RUXSATI — "kim, qaysi sinfda, qaysi fanga, qachongacha".
+//
+// Boshliq (`gradeGrants.manage`) o'qituvchiga O'ZINIKI BO'LMAGAN sinf + fan
+// darslariga baho qo'yishni ochadi: masalan ingliz tili sertifikati bor
+// o'quvchini ona tili o'qituvchisi tayyorlaydi va ingliz tili darsida unga
+// baho qo'yadi. Ikki shakl:
+//   · MUDDAT — `lessonOrder = null`: davr ichidagi shu sinf+fanning HAMMA
+//     darslari (1 hafta / 1 oy / 1 yil / sana);
+//   · BITTA DARS — `dateFrom = dateTo`, `lessonOrder` — aynan o'sha kungi dars.
+//
+// ⚠️ QO'SHIMCHA huquq, KO'CHIRISH EMAS (`LessonSubstitution` dan farqi): dars
+// egasi o'z darsiga baho qo'yishda davom etadi, ruxsat egasi esa unga
+// qo'shiladi. Huquq qoidasi `helpers/teacherAccess.js` da (yagona joy).
+// ⚠️ Darsga `scheduleLessonId` bilan ishora QILINMAYDI (jadval qayta
+// saqlanadi) — kalit: sinf + fan + (ixtiyoriy) tartib + kun.
+// ⚠️ Pulga ta'sir QILMAYDI: bu yo'l bilan qo'yilgan baho (`Grade.gradingGrantId`)
+// dars egasining darsini oylikda "o'tilgan" qilmaydi, ruxsat egasiga ham
+// soat yozilmaydi.
+// ⚠️ O'CHIRILMAYDI — yopiladi (`revokedAt`): baholar unga ishora qiladi.
+model GradingGrant {
+  id        String @id @db.Char(24)
+  // soft ref'lar — FK yo'q: xodim arxivlansa ham tarix o'qilishi kerak
+  teacherId String @map("teacher_id") @db.Char(24)
+  classId   String @map("class_id") @db.Char(24)
+  subjectId String @map("subject_id") @db.Char(24)
+
+  // KUN ANIQLIGIDA, INKLYUZIV — Toshkent kunining UTC yarim tuni
+  // (`StudentEnrollment` / `GradingUnlock` bilan bir xil qoida, faqat `getUTC*`)
+  dateFrom DateTime @map("date_from") @db.Date
+  dateTo   DateTime @map("date_to") @db.Date
+  // null — davrdagi shu fanning barcha darslari; son — faqat shu tartibdagi dars
+  lessonOrder Int? @map("lesson_order")
+
+  reason   String @default("")
+  // { teacherName, className, subjectName } — xodim/sinf o'zgarsa ham
+  // registr o'qilishi uchun (`teacherSnapshot` doktrinasi)
+  snapshot Json
+
+  grantedBy    String    @map("granted_by") @db.Char(24)
+  revokedAt    DateTime? @map("revoked_at")
+  revokedBy    String?   @map("revoked_by") @db.Char(24)
+  revokeReason String    @default("") @map("revoke_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Huquq tekshiruvi HAR BIR baho yozishda ishlaydi — o'qituvchi + sana indeksi
+  @@index([teacherId, dateFrom, dateTo])
+  @@index([classId, subjectId])
+  @@index([createdAt])
+  @@map("grading_grants")
 }
 
 model PayrollRequest {

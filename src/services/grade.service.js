@@ -18,7 +18,10 @@ const prisma = require("../config/prisma");
 const { isHoliday } = require("./holiday.service");
 const {
   getSubstitutionCells,
+  getGradingGrants,
   effectiveTeacherOf,
+  resolveLessonAccess,
+  scheduleDayOf,
 } = require("../helpers/teacherAccess");
 // ⚠️ TOSHKENT KUNI. `teacherAccess` sanani FAQAT `getUTC*` bilan o'qiydi,
 // jadval esa Toshkent devor-soati bilan olinadi — `new Date()` berilsa
@@ -415,8 +418,85 @@ async function getStudentGrades(studentId, { date, from, to } = {}) {
   };
 }
 
+/**
+ * O'QITUVCHI BAHO QO'YA OLADIGAN SINFLAR — berilgan kunda.
+ *
+ * ⚠️ MANBA — `resolveLessonAccess` NING O'ZI (baho yozish bilan bitta
+ * qoida): o'z darsi, o'rinbosarlik va boshliq bergan fanga ruxsat. Ilgari
+ * ro'yxat faqat o'z jadvalidan (`/schedules/my-today`) olinardi — o'rinbosar
+ * va ruxsat oluvchi huquqi bor sinfni tanlay olmasdi.
+ *
+ * Nomzod sinflar uch manbadan yig'iladi, keyin HAR biri hal qiluvchidan
+ * o'tadi (kataklar va ruxsatlar bir marta yuklanadi — qo'shimcha so'rovsiz).
+ *
+ * @param {{id: string}} actor - `req.user`
+ * @param {Date} date - Toshkent kuni (UTC yarim tun)
+ * `grantOnly` — sinf FAQAT fanga ruxsat bilan ochilgan (o'z darsi ham,
+ * o'rinbosarligi ham yo'q). Aralash sinfda belgi qo'yilmaydi: qaysi dars
+ * ruxsat bilan ekanini fan ro'yxati (`access`) aytadi.
+ *
+ * @returns {Promise<Array<{id: string, name: string, grantOnly: boolean}>>}
+ */
+async function getTeacherGradingClasses(actor, date) {
+  const day = scheduleDayOf(date);
+  if (!day) return [];
+
+  const [ownLessons, cells, grants] = await Promise.all([
+    prisma.scheduleLesson.findMany({
+      where: { teacherId: actor.id, schedule: { day } },
+      select: { schedule: { select: { classId: true } } },
+    }),
+    getSubstitutionCells(date),
+    getGradingGrants(actor.id, date),
+  ]);
+
+  const classIds = new Set(ownLessons.map((l) => l.schedule.classId));
+  for (const cell of cells.values()) {
+    if (cell.substituteTeacherId === actor.id) classIds.add(cell.classId);
+  }
+  for (const grant of grants) classIds.add(grant.classId);
+  if (classIds.size === 0) return [];
+
+  const [schedules, classes] = await Promise.all([
+    prisma.schedule.findMany({
+      where: { day, classId: { in: [...classIds] } },
+      include: { lessons: { orderBy: { position: "asc" } } },
+    }),
+    prisma.class.findMany({
+      where: { id: { in: [...classIds] } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const classMap = new Map(classes.map((c) => [c.id, c.name]));
+
+  const result = [];
+  for (const schedule of schedules) {
+    const name = classMap.get(schedule.classId);
+    if (!name) continue;
+
+    const access = await resolveLessonAccess({
+      actor,
+      classId: schedule.classId,
+      date,
+      lessons: schedule.lessons,
+      cells,
+      grants,
+    });
+    if (!access.allowed) continue;
+
+    result.push({
+      id: schedule.classId,
+      name,
+      grantOnly: access.lessons.every((l) => l.access === "grant"),
+    });
+  }
+
+  return result.sort((a, b) => a.name.localeCompare(b.name, "uz", { numeric: true }));
+}
+
 module.exports = {
   getMissingGradesToday,
   attachGradeRefs,
   getStudentGrades,
+  getTeacherGradingClasses,
 };

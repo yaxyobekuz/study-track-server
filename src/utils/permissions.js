@@ -20,6 +20,7 @@ const SECTIONS = {
   STATISTICS: "statistics",
   ATTENDANCE: "attendance",
   GRADES: "grades",
+  GRADE_GRANTS: "gradeGrants",
   EDUCATION: "education",
   GRADE_ANALYSIS: "gradeAnalysis",
   ACHIEVEMENTS: "achievements",
@@ -166,6 +167,22 @@ const PERMISSION_SECTIONS = [
       // sababli kun baho bilan to'lanadi (`gradingUnlock.service.js`)
       { key: "unlock", label: "O'tgan kunlarga baho qo'yishni ochish" },
     ],
+  },
+  {
+    // FANGA BAHO RUXSATI — o'qituvchiga O'ZINIKI BO'LMAGAN sinf+fanga baho
+    // qo'yishni ochish (`gradingGrant.service.js`).
+    //
+    // ⚠️ ALOHIDA BO'LIM, `grades` ichidagi amal EMAS. Eski yozuvlardagi bare
+    // "grades" kaliti bo'limning HAMMA amalini beradi (`hasPermission`,
+    // `expandLegacyKeys`): bu amal o'sha yerda bo'lsa, baholar jurnaliga eski
+    // umumiy huquqi bor har kim boshqalarga jurnal ochib bera olardi — owner
+    // hech kimga bermagan bo'lsa ham (`scheduleSync` bilan AYNI sabab).
+    //
+    // `manage` — ruxsat berish va yopish; `view` — faqat registr.
+    key: SECTIONS.GRADE_GRANTS,
+    label: "Fanga baho ruxsati",
+    group: "Ta'lim",
+    actions: [A.view, { key: "manage", label: "Ruxsat berish va yopish" }],
   },
   {
     // TA'LIM DASHBOARDI — bitta ekranda butun maktabning o'quv manzarasi.

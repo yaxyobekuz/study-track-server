@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const unlockService = require("../services/gradingUnlock.service");
+const grantService = require("../services/gradingGrant.service");
 
 /** Boshliq: oynalar ro'yxati (`?status=active|expired|revoked`, sahifalanadi). */
 const listUnlocks = asyncHandler(async (req, res) => {
@@ -26,13 +27,17 @@ const revokeUnlock = asyncHandler(async (req, res) => {
 });
 
 /**
- * O'qituvchi: baho qo'yish huquqi — bugun maktabdami, ochiq oynalar va
- * ochiq kunlardagi baho qo'yilmagan darslar.
+ * O'qituvchi: baho qo'yish huquqi — bugun maktabdami, ochiq oynalar,
+ * ochiq kunlardagi baho qo'yilmagan darslar va boshliq bergan fanga
+ * ruxsatlar (`grants`, amaldagi va kutilayotgan).
  * Identifikator tokendan — boshqa odamning huquqini ko'rib bo'lmaydi.
  */
 const getMyAccess = asyncHandler(async (req, res) => {
-  const data = await unlockService.getMyAccess(req.user);
-  res.json({ success: true, data });
+  const [data, grants] = await Promise.all([
+    unlockService.getMyAccess(req.user),
+    grantService.listMyGrants(req.user.id),
+  ]);
+  res.json({ success: true, data: { ...data, grants } });
 });
 
 module.exports = { listUnlocks, getTeacherOptions, createUnlock, revokeUnlock, getMyAccess };

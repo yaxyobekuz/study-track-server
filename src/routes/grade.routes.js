@@ -9,6 +9,7 @@ const {
   deleteGrade,
   getStudentGrades,
   getTeacherSubjectsInClass,
+  getTeacherGradingClasses,
   getStudentsWithGrades,
   exportGrades,
 } = require("../controllers/grade.controller");
@@ -39,6 +40,30 @@ router.post(
   unlockController.revokeUnlock,
 );
 
+// ── Fanga baho ruxsati: o'qituvchiga o'ziniki bo'lmagan sinf+fanga ──
+// Alohida bo'lim `gradeGrants` (`permissions.js` izohi): ro'yxat — `view`,
+// berish/yopish va ularning tanlov ma'lumotlari — `manage`.
+const grantController = require("../controllers/gradingGrant.controller");
+router.get("/grants", authorizePermission(PERMISSIONS.GRADEGRANTS_VIEW), grantController.listGrants);
+router.get(
+  "/grants/options",
+  authorizePermission(PERMISSIONS.GRADEGRANTS_MANAGE),
+  grantController.getOptions,
+);
+router.get(
+  "/grants/class-lessons/:classId",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.GRADEGRANTS_MANAGE),
+  grantController.getClassLessons,
+);
+router.post("/grants", authorizePermission(PERMISSIONS.GRADEGRANTS_MANAGE), grantController.createGrant);
+router.post(
+  "/grants/:id/revoke",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.GRADEGRANTS_MANAGE),
+  grantController.revokeGrant,
+);
+
 // Export grades to Excel
 router.get("/export", authorizePermission(PERMISSIONS.GRADES_EXPORT, ROLES.TEACHER), exportGrades);
 
@@ -49,6 +74,8 @@ router.get("/missing-today", authorizePermission(PERMISSIONS.GRADES_VIEW), getMi
 router.get("/student/my-grades", authorize(ROLES.STUDENT), getStudentGrades);
 
 // Teacher specific endpoints
+// Baho qo'yish mumkin bo'lgan sinflar — o'z darsi, o'rinbosarlik, fanga ruxsat
+router.get("/teacher/classes", authorize(ROLES.TEACHER), getTeacherGradingClasses);
 router.get(
   "/teacher/subjects/:classId",
   validateObjectId("classId"),

@@ -9,6 +9,12 @@
  *   2. O'RINBOSARLIK — `LessonSubstitution` amalda bo'lsa, huquq KO'CHADI:
  *                 o'rinbosarga ochiladi, egasiga esa AYNAN o'sha dars uchun
  *                 YOPILADI (u faqat ko'rish rejimida qoladi).
+ *   3. FANGA RUXSAT — `GradingGrant`: boshliq o'qituvchiga O'ZINIKI BO'LMAGAN
+ *                 sinf+fan darslariga baho qo'yishni muddat bilan ochgan.
+ *                 Bu QO'SHIMCHA huquq: dars egasidan hech narsa olinmaydi.
+ *                 Faqat baho uchun — shu sabab faqat `resolveLessonAccess`
+ *                 (baho yozish) uni o'qiydi; `effectiveTeacherOf` (jarima,
+ *                 hisobot, "kim o'tishi kerak edi") unga QARAMAYDI.
  *
  * ⚠️ HUQUQ IKKI TOMONGA HARAKAT QILADI. Faqat ochilsa, ikkala o'qituvchi
  * ham bitta jurnalga yozadigan bo'lib qolardi va "kim o'tdi" degan savolga
@@ -18,8 +24,11 @@
  * DARSLAR TO'PLAMINI hisoblaydi. Darsning egasi har doim o'qituvchi bo'ladi,
  * shuning uchun owner/qabulxona uchun to'plam baribir bo'sh chiqadi — bu
  * esa AYNAN bugungi xatti-harakat (`grade.controller.js` allaqachon
- * `teacherId === req.user.id` bo'yicha filtrlaydi). Ya'ni bu qatlam hech
- * kimga yangi huquq bermaydi, faqat o'rinbosarlik farqini qo'shadi.
+ * `teacherId === req.user.id` bo'yicha filtrlaydi). Ya'ni bu qatlam o'z-
+ * o'zidan hech kimga yangi huquq bermaydi: yangi huquq faqat boshliq
+ * yozgan qarordan keladi (o'rinbosarlik yoki fanga ruxsat). Fanga ruxsat
+ * ham rolga qaramaydi — `createGrade` darvozasi baribir o'qituvchi rolini
+ * talab qiladi, ruxsat esa faqat o'qituvchiga beriladi.
  *
  * ⚠️ NIMA UCHUN HELPER, SERVICE EMAS: chaqiruvchilari controller
  * (`grade.controller.js`), service (`studentAttendance.service.js`) va cron
@@ -76,6 +85,7 @@ function toDayDate(value) {
  * @param {object} [filter]
  * @param {string} [filter.classId] - faqat shu sinf
  * @returns {Promise<Map<string, {
+ *   classId: string,
  *   substitutionId: string,
  *   originalTeacherId: string,
  *   substituteTeacherId: string,
@@ -115,6 +125,7 @@ async function getSubstitutionCells(date, filter = {}) {
 
   for (const item of items) {
     map.set(cellKey(item.classId, item.day, item.lessonOrder), {
+      classId: item.classId,
       substitutionId: item.substitution.id,
       originalTeacherId: item.substitution.originalTeacherId,
       substituteTeacherId: item.substitution.substituteTeacherId,
@@ -126,6 +137,47 @@ async function getSubstitutionCells(date, filter = {}) {
 
   return map;
 }
+
+/**
+ * O'QITUVCHINING SHU KUNDA AMALDAGI FANGA RUXSATLARI (`GradingGrant`).
+ *
+ * Yopilmagan (`revokedAt = null`) va kunni qamragan ruxsatlar — bitta
+ * so'rov; chaqiruvchi ko'p sinfni tekshirsa ham natijani qayta ishlatadi.
+ *
+ * @param {string} teacherId
+ * @param {Date} date - kun (instant ham bo'lishi mumkin — kunga keltiriladi)
+ * @param {object} [filter]
+ * @param {string} [filter.classId] - faqat shu sinf
+ * @returns {Promise<Array<{id: string, classId: string, subjectId: string, lessonOrder: number|null}>>}
+ */
+async function getGradingGrants(teacherId, date, filter = {}) {
+  const target = toDayDate(date);
+
+  return prisma.gradingGrant.findMany({
+    where: {
+      teacherId,
+      revokedAt: null,
+      dateFrom: { lte: target },
+      dateTo: { gte: target },
+      ...(filter.classId ? { classId: filter.classId } : {}),
+    },
+    select: { id: true, classId: true, subjectId: true, lessonOrder: true },
+    orderBy: { createdAt: "asc" },
+  });
+}
+
+/**
+ * Dars shu ruxsatga TUSHADIMI: sinf va fan mos, bitta darsga berilgan
+ * bo'lsa — tartib ham.
+ *
+ * @param {{classId: string, subjectId: string, lessonOrder: number|null}} grant
+ * @param {string} classId
+ * @param {{subjectId: string, order: number}} lesson
+ */
+const grantCovers = (grant, classId, lesson) =>
+  grant.classId === classId &&
+  grant.subjectId === lesson.subjectId &&
+  (grant.lessonOrder == null || grant.lessonOrder === lesson.order);
 
 /**
  * DARSNING AMALDAGI O'QITUVCHISI — o'rinbosarlik hisobga olingan holda.
@@ -157,6 +209,17 @@ function effectiveTeacherOf(lesson, cells) {
  * bir nechta dars bo'lishi mumkin va chaqiruvchi `lessonOrder` ni shu
  * ro'yxatdan tekshiradi.
  *
+ * Har bir ruxsat etilgan dars — jadval qatorining NUSXASI, ustiga
+ * `access` ("own" | "substitution" | "grant") va `grantId` qo'shilgan:
+ * chaqiruvchi bahoni qaysi yo'l bilan yozayotganini aynan shu darsdan
+ * biladi (ruxsat bilan qo'yilgan baho `Grade.gradingGrantId` oladi).
+ *
+ * ⚠️ USTUNLIK TARTIBI: o'z darsi → o'rinbosarlik → fanga ruxsat. Ruxsat
+ * faqat BOSHQA yo'l bilan ochilmagan darsga qo'llanadi — o'z darsidagi baho
+ * ruxsat bahosi bo'lib belgilanib, oylikdan tushib qolmasligi uchun.
+ * ⚠️ O'RINBOSARGA BERILGAN O'Z DARSINI RUXSAT QAYTA OCHMAYDI: o'rinbosarlik
+ * AYNAN shu dars uchun aniqroq qaror ("egasiga yopiladi").
+ *
  * @param {object} params
  * @param {object} params.actor - `req.user`
  * @param {string} params.classId
@@ -165,10 +228,11 @@ function effectiveTeacherOf(lesson, cells) {
  * @param {Array} params.lessons - o'sha kungi sinf darslari
  *   (`{ subjectId, teacherId, order }`), allaqachon yuklangan bo'lsa
  * @param {Map} [params.cells] - `getSubstitutionCells` natijasi (batch uchun)
+ * @param {Array} [params.grants] - `getGradingGrants` natijasi (batch uchun)
  * @returns {Promise<{
  *   allowed: boolean,
- *   via: "own"|"substitution"|null,
- *   lessons: Array,
+ *   via: "own"|"substitution"|"grant"|null,
+ *   lessons: Array<object & {access: "own"|"substitution"|"grant", grantId: string|null}>,
  *   blocked: Array,
  *   blockedMessage: string|null,
  *   substitutionId: string|null,
@@ -182,6 +246,7 @@ async function resolveLessonAccess({
   date,
   lessons = [],
   cells = null,
+  grants = null,
 }) {
   const day = scheduleDayOf(toDayDate(date));
   if (!day) {
@@ -196,7 +261,10 @@ async function resolveLessonAccess({
     };
   }
 
-  const cellMap = cells ?? (await getSubstitutionCells(date, { classId }));
+  const [cellMap, grantList] = await Promise.all([
+    cells ?? getSubstitutionCells(date, { classId }),
+    grants ?? getGradingGrants(actor.id, date, { classId }),
+  ]);
 
   const scoped = subjectId
     ? lessons.filter((l) => l.subjectId === subjectId)
@@ -204,13 +272,14 @@ async function resolveLessonAccess({
 
   const own = [];
   const blocked = [];
-  const granted = [];
+  const substituted = [];
+  const viaGrant = [];
   let substitutionId = null;
 
   for (const lesson of scoped) {
     const cell = cellMap.get(cellKey(classId, day, lesson.order));
 
-    // ⚠️ ESKIRGAN KATAK — grant BERILMAYDI. Yozuv tuzilgandan keyin sinf
+    // ⚠️ ESKIRGAN KATAK — o'rinbosarlik huquqi BERILMAYDI. Yozuv tuzilgandan keyin sinf
     // jadvali qayta saqlanib, dars boshqa o'qituvchiga o'tgan bo'lishi
     // mumkin. U holda o'rinbosarlik o'z ma'nosini yo'qotadi: u FALON
     // o'qituvchining o'rniga chiqish edi, "bu katakka egalik" emas.
@@ -221,23 +290,28 @@ async function resolveLessonAccess({
 
     // O'RNIGA CHIQQAN — huquq ochiq
     if (cellIsCurrent && cell.substituteTeacherId === actor.id) {
-      granted.push(lesson);
+      substituted.push({ ...lesson, access: "substitution", grantId: null });
       substitutionId = cell.substitutionId;
       continue;
     }
 
-    if (lesson.teacherId !== actor.id) continue;
+    if (lesson.teacherId === actor.id) {
+      // O'Z DARSI, LEKIN BOSHQAGA BERILGAN — huquq yopiq
+      if (cellIsCurrent && cell.originalTeacherId === actor.id) {
+        blocked.push({ ...lesson, substitutionId: cell.substitutionId });
+        continue;
+      }
 
-    // O'Z DARSI, LEKIN BOSHQAGA BERILGAN — huquq yopiq
-    if (cellIsCurrent && cell.originalTeacherId === actor.id) {
-      blocked.push({ ...lesson, substitutionId: cell.substitutionId });
+      own.push({ ...lesson, access: "own", grantId: null });
       continue;
     }
 
-    own.push(lesson);
+    // BOSHQANING DARSI — faqat boshliq ochgan ruxsat bilan (qo'shimcha huquq)
+    const grant = grantList.find((g) => grantCovers(g, classId, lesson));
+    if (grant) viaGrant.push({ ...lesson, access: "grant", grantId: grant.id });
   }
 
-  const allowedLessons = [...own, ...granted];
+  const allowedLessons = [...own, ...substituted, ...viaGrant];
 
   // ⚠️ "BERIB YUBORILGAN DARS" XABARI HAR DOIM HISOBLANADI, hatto ruxsat
   // berilgan bo'lsa ham. Sabab: o'qituvchida ikkita dars bo'lib, faqat
@@ -258,13 +332,14 @@ async function resolveLessonAccess({
       : null;
 
   if (allowedLessons.length > 0) {
+    const via = own.length > 0 ? "own" : substituted.length > 0 ? "substitution" : "grant";
     return {
       allowed: true,
-      via: own.length > 0 ? "own" : "substitution",
+      via,
       lessons: allowedLessons,
       blocked,
       blockedMessage,
-      substitutionId: own.length > 0 ? null : substitutionId,
+      substitutionId: via === "substitution" ? substitutionId : null,
       message: null,
     };
   }
@@ -293,11 +368,34 @@ async function resolveLessonAccess({
   };
 }
 
+/**
+ * RUXSAT BILAN QO'YILGAN BAHONI TAHRIRLASH/O'CHIRISH HUQUQI.
+ *
+ * Baho `gradingGrantId` bilan yozilgan bo'lsa, uni o'zgartirish uchun shu
+ * sinf+fan+tartib+kunni qamragan AMALDAGI ruxsat kerak (yozilgandagisi
+ * shart emas — boshliq uni yopib, yangisini ochgan bo'lishi mumkin).
+ * ⚠️ `GradingUnlock` dan farqi ataylab: u o'z darsiga platforma nosozligini
+ * to'g'rilash, bu esa BOSHQANING jurnaliga kirish. Ruxsat yopilgach
+ * boshqaning jurnalidagi bahoni o'zgartirish ham yopiladi.
+ *
+ * @param {{teacherId: string, classId: string, subjectId: string, lessonOrder: number}} grade
+ * @param {Date} day - bahoning Toshkent kuni (UTC yarim tun)
+ * @returns {Promise<boolean>}
+ */
+async function hasGradingGrantFor(grade, day) {
+  const grants = await getGradingGrants(grade.teacherId, day, { classId: grade.classId });
+  return grants.some((g) =>
+    grantCovers(g, grade.classId, { subjectId: grade.subjectId, order: grade.lessonOrder }),
+  );
+}
+
 module.exports = {
   cellKey,
   scheduleDayOf,
   toDayDate,
   getSubstitutionCells,
+  getGradingGrants,
   effectiveTeacherOf,
   resolveLessonAccess,
+  hasGradingGrantFor,
 };

@@ -248,6 +248,10 @@ async function getMonthCalendar(month, { asOfDayOfMonth = null } = {}) {
  * bor dars davomatdan qat'i nazar o'tilgan (`judgeLesson`). Oyna holati
  * (yopilgan, muddati o'tgan) ATAYLAB filtrlanmaydi.
  *
+ * ⚠️ FANGA RUXSAT BILAN QO'YILGAN BAHO (`gradingGrantId`) FAKT EMAS: uni
+ * dars egasi emas, boshqa o'qituvchi qo'ygan. U hisobga olinsa, egasi bir
+ * baho ham qo'ymagan darsning soati (puli) unga yozilardi.
+ *
  * Uchala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
  *
  * @param {number} month - YYYYMM
@@ -262,7 +266,7 @@ async function loadLessonFacts(month, teacherIds, classIds) {
   const [grades, absences, unlocks] = await Promise.all([
     classIds.length
       ? prisma.grade.findMany({
-          where: { classId: { in: classIds }, date: { gte: from, lte: to } },
+          where: { classId: { in: classIds }, date: { gte: from, lte: to }, gradingGrantId: null },
           select: { classId: true, subjectId: true, lessonOrder: true, date: true },
         })
       : [],

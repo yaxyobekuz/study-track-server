@@ -221,8 +221,10 @@ async function loadTeacherLessons(userId, day, { nowMin }) {
       where: { classId: { in: classIds }, user: { role: ROLES.STUDENT, isActive: true } },
       select: { classId: true, userId: true },
     }),
+    // ⚠️ Fanga ruxsat bilan (boshqa o'qituvchi) qo'ygan baho bu o'qituvchining
+    // ishi emas — oylikdagi "dars o'tildimi" bilan AYNI (`loadLessonFacts`)
     prisma.grade.findMany({
-      where: { classId: { in: classIds }, date: { gte: from, lt: to } },
+      where: { classId: { in: classIds }, date: { gte: from, lt: to }, gradingGrantId: null },
       select: { classId: true, subjectId: true, lessonOrder: true, studentId: true },
     }),
   ]);
