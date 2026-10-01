@@ -288,12 +288,16 @@ async function persistAndQueue({
   file = null,
 }) {
   // Guard against accidental duplicate submits: reject an identical message
-  // (same sender + same text + type) created within the last few seconds.
+  // (same sender + same text + same target) created within the last few seconds.
+  // The target includes class/student: the same text sent to two classes in a
+  // row is two messages, not a double click.
   const recentDuplicate = await prisma.message.findFirst({
     where: {
       sentBy: actor.id,
       messageText: text,
       recipientType,
+      classId,
+      studentId,
       createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) },
     },
     select: { id: true },
