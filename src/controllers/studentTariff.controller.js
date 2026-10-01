@@ -1,5 +1,8 @@
 const asyncHandler = require("../middleware/async.middleware");
 const studentTariffService = require("../services/studentTariff.service");
+const { ForbiddenError } = require("../utils/errors");
+const { PERMISSIONS, hasPermission } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 
 const getAssignments = asyncHandler(async (req, res) => {
   const result = await studentTariffService.getAssignments(req);
@@ -57,10 +60,27 @@ const closeAssignment = asyncHandler(async (req, res) => {
 });
 
 const changeTariff = asyncHandler(async (req, res) => {
+  const force = req.query.force === "true";
+
+  // O'TGAN oydan almashtirish — alohida, yuqoriroq ruxsat. Route'dagi
+  // `tariffs.assign` bunga yetarli emas: kelasi oydan tarif biriktirish va
+  // muhrlangan oylarning hisob-fakturasini qayta yozish bir xil huquq emas
+  // (`tariff.controller.js` → `updateVersion` dagi naqsh bilan bir xil).
+  if (
+    force &&
+    req.user.role !== ROLES.OWNER &&
+    !hasPermission(req.user.permissions, PERMISSIONS.TARIFFS_ADJUST)
+  ) {
+    throw new ForbiddenError(
+      "Amaldagi yozuvni to'g'rilash uchun ruxsatingiz yo'q",
+    );
+  }
+
   const result = await studentTariffService.changeTariff(
     req.params.id,
     req.body,
     req.user.id,
+    { force },
   );
   res.json({ success: true, data: result });
 });

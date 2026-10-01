@@ -29,7 +29,8 @@ const {
   coveringMonthWhere,
   overlappingPeriodWhere,
 } = require("../helpers/month.helpers");
-const { formatAmount, parseAmount } = require("../helpers/money.helpers");
+const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers");
+const logger = require("../utils/logger");
 
 /**
  * Individual (maxsus) narxni tekshiradi — bo'sh/null bo'lsa null (katalog
@@ -53,7 +54,7 @@ const autoRegen = async (studentIds, fromMonth) => {
     const { regenerateForStudents } = require("./invoice.service");
     await regenerateForStudents(studentIds, { fromMonth });
   } catch (error) {
-    require("../utils/logger").warn(`[auto-regen] ${error.message}`);
+    logger.warn(`[auto-regen] ${error.message}`);
   }
 };
 const { resolveManyForMonth } = require("./tariffResolution.service");
@@ -176,27 +177,67 @@ const collectWarnings = async (tariffId, startMonth) => {
 };
 
 /**
- * Tarif joriy (yoki kelajakdagi, lekin allaqachon shakllangan) oydan
- * almashtirilganda o'sha oyning hisob-fakturasi eski narx bilan MUHRLANGAN
- * bo'lishi mumkin. U qayta hisoblanmaydi (§5) — admin uni qayta
- * shakllantirishi kerak, shuning uchun jim qolmaymiz.
+ * Almashtirish qamragan oylarda ALLAQACHON shakllangan hisob-fakturalar
+ * bo'lsa ogohlantiradi. Ular `autoRegen` tomonidan yangi tarif bo'yicha
+ * qayta hisoblanadi, shuning uchun jim qolmaymiz — ayniqsa O'TGAN oydan
+ * almashtirilganda (`force`): u yerda muhrlangan tarix qayta yoziladi.
+ *
+ * TO'LOV TUSHGAN oylar alohida qatorda: ular cancel+recreate emas, JOYIDA
+ * tuzatiladi (`amendPaidInvoice`) — summa oshsa qarz paydo bo'ladi,
+ * kamaysa ortiqcha pul depozitga qaytadi. Bu pul harakati admin uchun
+ * ko'rinmas bo'lib qolmasligi kerak.
  *
  * @param {string} studentId
- * @param {number} month
+ * @param {number} fromMonth
+ * @param {number} toMonth - inklyuziv (odatda joriy oy)
  * @returns {Promise<string[]>}
  */
-const collectSealedInvoiceWarnings = async (studentId, month) => {
-  const invoice = await prisma.monthlyInvoice.findFirst({
-    where: { studentId, month, status: { not: "cancelled" } },
-    select: { id: true },
-  });
+const collectSealedInvoiceWarnings = async (studentId, fromMonth, toMonth) => {
+  if (toMonth < fromMonth) return [];
 
-  return invoice
-    ? [
-        `${formatMonthKey(month)} uchun hisob-faktura allaqachon shakllangan — ` +
-          "yangi tarif narxi unga qo'llanishi uchun uni qayta shakllantiring",
-      ]
-    : [];
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: {
+      studentId,
+      month: { gte: fromMonth, lte: toMonth },
+      status: { not: "cancelled" },
+    },
+    select: { month: true, paidAmount: true },
+    orderBy: { month: "asc" },
+  });
+  if (invoices.length === 0) return [];
+
+  const warnings = [];
+  const now = currentMonthKey();
+
+  // `autoRegen` faqat JORIY oygacha tushadi — kelajakdagi (allaqachon
+  // shakllangan) faktura avtomat qayta hisoblanmaydi, uni admin bosadi.
+  const auto = invoices.filter((i) => i.month <= now);
+  const manual = invoices.filter((i) => i.month > now);
+
+  if (auto.length > 0) {
+    warnings.push(
+      `${formatMonthRange(auto[0].month, auto[auto.length - 1].month)} uchun ` +
+        `${auto.length} ta hisob-faktura allaqachon shakllangan — ` +
+        "ular yangi tarif narxi bo'yicha qayta hisoblanadi",
+    );
+  }
+
+  if (manual.length > 0) {
+    warnings.push(
+      `${manual.map((i) => formatMonthKey(i.month)).join(", ")} uchun hisob-faktura ` +
+        "allaqachon shakllangan — yangi narx qo'llanishi uchun uni qayta shakllantiring",
+    );
+  }
+
+  const paid = invoices.filter((i) => new Decimal(i.paidAmount).greaterThan(0));
+  if (paid.length > 0) {
+    warnings.push(
+      `${paid.map((i) => formatMonthKey(i.month)).join(", ")} oyiga to'lov tushgan — ` +
+        "summa oshsa qarz paydo bo'ladi, kamaysa ortiqchasi depozitga qaytadi",
+    );
+  }
+
+  return warnings;
 };
 
 // ─────────────────────────────────────────────
@@ -577,12 +618,18 @@ const closeAssignment = async (id, endMonth) =>
  * boshlanish oyi bilan ustma-ust tushsa, u yopilmaydi, o'chiriladi
  * (`replaced: true`): nol oylik davr saqlanmaydi.
  *
+ * O'TGAN oydan almashtirish uchun `force` kerak — alohida `tariffs.adjust`
+ * ruxsati talab qilinadi (controller) va logga yoziladi.
+ *
  * @param {string} id
- * @param {object} data - { tariffId, fromMonth }
+ * @param {object} data - { tariffId, fromMonth, customAmount, note }
  * @param {string} userId
+ * @param {{force?: boolean}} [options]
  * @returns {Promise<object>} { replaced, closed, created, warnings }
  */
-const changeTariff = async (id, data, userId) => {
+const changeTariff = async (id, data, userId, options = {}) => {
+  const { force = false } = options;
+
   const assignment = await prisma.studentTariff.findUnique({ where: { id } });
   if (!assignment) throw new NotFoundError("Biriktirish topilmadi");
 
@@ -591,15 +638,21 @@ const changeTariff = async (id, data, userId) => {
   const fromMonth = parseMonthKey(data.fromMonth, "Boshlanish oyi");
   const now = currentMonthKey();
 
-  // O'TGAN oy yopiq: u yerdagi hisob-fakturalar muhrlangan fakt va ularning
-  // narx provenansiyasini keyin o'zgartirish tarixni qayta yozardi.
-  // JORIY oy esa OCHIQ — narx bugun kelishilgani uchun almashtirish ko'pincha
-  // aynan shu oyga kerak bo'ladi. Bu oy hisob-fakturasi allaqachon
-  // shakllangan bo'lsa, u qayta hisoblanmaydi (§5) — buning o'rniga
-  // ogohlantirish qaytariladi va admin uni `regenerate` qiladi.
-  if (fromMonth < now) {
+  // O'TGAN oy ODATDA yopiq: u yerdagi hisob-fakturalar muhrlangan fakt va
+  // ularning narx provenansiyasini keyin o'zgartirish tarixni qayta yozadi.
+  // JORIY oy esa OCHIQ — narx bugun kelishilgani uchun almashtirish
+  // ko'pincha aynan shu oyga kerak bo'ladi.
+  //
+  // `force` — haqiqiy kiritish xatosini to'g'rilash uchun teshik (xato tarif
+  // biriktirilgan va oylar shu bilan yopilib ketgan). `tariffs.adjust` ruxsati
+  // talab qilinadi (controller tekshiradi) va amal logga yoziladi. Qamralgan
+  // oylarning fakturalari `autoRegen` tomonidan qayta hisoblanadi; to'lov
+  // tushganlari cancel+recreate emas, JOYIDA tuzatiladi (`amendPaidInvoice`).
+  const isRetroactive = fromMonth < now;
+  if (isRetroactive && !force) {
     throw new BadRequestError(
-      `Tarifni almashtirish ${formatMonthKey(now)} oyidan oldin boshlanishi mumkin emas`,
+      `Tarifni almashtirish ${formatMonthKey(now)} oyidan oldin boshlanishi uchun ` +
+        `"Amaldagi yozuvni to'g'rilash" ruxsati kerak`,
     );
   }
 
@@ -643,6 +696,17 @@ const changeTariff = async (id, data, userId) => {
   // qoida, shuning uchun yopilmaydi, ALMASHTIRILADI.
   const replaced = fromMonth === assignment.startMonth;
 
+  if (isRetroactive) {
+    logger.warn(
+      `[student-tariffs] O'tgan oydan tarif almashtirildi: assignment=${id} ` +
+        `student=${assignment.studentId} actor=${userId} dan=${formatMonthKey(fromMonth)} ` +
+        `oldingi=${assignment.tariffId}/${formatMonthRange(
+          assignment.startMonth,
+          assignment.endMonth,
+        )} yangi=${data.tariffId}`,
+    );
+  }
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const closed = replaced
@@ -670,10 +734,16 @@ const changeTariff = async (id, data, userId) => {
 
     const warnings = [
       ...(await collectWarnings(data.tariffId, fromMonth)),
-      ...(await collectSealedInvoiceWarnings(assignment.studentId, fromMonth)),
+      ...(await collectSealedInvoiceWarnings(
+        assignment.studentId,
+        fromMonth,
+        Math.max(fromMonth, now),
+      )),
     ];
 
-    // Joriy oy hisob-fakturasini avtomat yangilaymiz
+    // Qamralgan oylar (`fromMonth`..joriy oy) hisob-fakturalarini avtomat
+    // yangilaymiz — o'tgan oydan almashtirilganda ham, aks holda yangi tarif
+    // faqat qog'ozda qolib, fakturalarda eski narx turib qolardi.
     await autoRegen([assignment.studentId], fromMonth);
 
     return {
