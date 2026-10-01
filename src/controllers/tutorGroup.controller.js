@@ -57,7 +57,8 @@ const getMyGroupOverview = asyncHandler(async (req, res) => {
 /**
  * O'ZIMNING guruhimdagi o'quvchilarga xabar yuboraman — tyutor paneli.
  * Ruxsat kaliti yo'q, tyutor id tokendan (`/tutor-groups/my` bilan bir xil).
- * `studentId` berilsa — faqat o'sha o'quvchi (u mening guruhimda bo'lishi shart).
+ * `classId` berilsa — faqat o'sha sinf, `studentId` berilsa — faqat o'sha
+ * o'quvchi (ikkalasi ham mening guruhimda bo'lishi shart).
  */
 const sendMyStudentsMessage = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
@@ -66,6 +67,7 @@ const sendMyStudentsMessage = asyncHandler(async (req, res) => {
   const message = await tutorGroupService.sendTutorMessage({
     actor: req.user,
     messageText: req.body.messageText,
+    classId: req.body.classId || null,
     studentId: req.body.studentId || null,
     file: req.file || null,
   });

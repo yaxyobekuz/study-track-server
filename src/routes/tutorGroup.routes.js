@@ -28,7 +28,8 @@ router.use(protect);
 router.get("/my", getMyGroups);
 router.get("/my/:id/overview", validateObjectId("id"), getMyGroupOverview);
 
-// O'z guruhimdagi o'quvchilarga xabar (barchaga yoki `studentId` bo'lsa bittasiga).
+// O'z guruhimdagi o'quvchilarga xabar: barchaga, `classId` bo'lsa bitta sinfga,
+// `studentId` bo'lsa bitta o'quvchiga.
 // Ixtiyoriy rasm/hujjat ilova qilinadi (mavjud xabar oqimi bilan bir xil).
 router.post(
   "/my/message",

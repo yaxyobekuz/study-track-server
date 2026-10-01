@@ -1195,9 +1195,12 @@ const removeGroup = async (id, { effective = "next" } = {}, actorId) => {
  * TYUTOR O'Z GURUHIDAGI O'QUVCHILARGA XABAR YUBORADI.
  *
  * Qabul qiluvchi — tyutorning JORIY OY uchun faol guruhlaridagi (sinflaridagi)
- * o'quvchilar (arxivlanmagan, Telegram ID si bor). `studentId` berilsa — faqat
- * o'sha o'quvchi, LEKIN u tyutorning guruhida bo'lishi SHART (egalik tekshiruvi
- * — `getGroupOverview` dagi `viewer.onlyOwn` bilan bir mantiq).
+ * o'quvchilar (arxivlanmagan, Telegram ID si bor). Uch qamrov:
+ *   - hech narsa berilmasa — BARCHA guruhlaridagi o'quvchilar;
+ *   - `classId` — faqat o'sha sinf (u tyutorning guruhi bo'lishi SHART);
+ *   - `studentId` — faqat o'sha o'quvchi, LEKIN u tyutorning guruhida bo'lishi
+ *     SHART (`classId` bilan birga kelsa — aynan o'sha sinfda).
+ * Egalik tekshiruvi — `getGroupOverview` dagi `viewer.onlyOwn` bilan bir mantiq.
  *
  * Xabar mavjud oqim orqali ketadi (`message.service` → navbat → Telegram):
  * o'quvchining ota-onasi botda ulagan Telegram akkauntlariga. Alohida kanal
@@ -1206,11 +1209,12 @@ const removeGroup = async (id, { effective = "next" } = {}, actorId) => {
  * @param {object} params
  * @param {object} params.actor - `req.user` (tyutor)
  * @param {string} params.messageText
+ * @param {string} [params.classId] - bitta sinfga (guruhga) yuborish uchun
  * @param {string} [params.studentId] - bitta o'quvchiga yuborish uchun
  * @param {object|null} [params.file] - ixtiyoriy rasm/hujjat (multer fayli)
  * @returns {Promise<object>} yaratilgan `Message`
  */
-const sendTutorMessage = async ({ actor, messageText, studentId = null, file = null }) => {
+const sendTutorMessage = async ({ actor, messageText, classId = null, studentId = null, file = null }) => {
   if (!messageText || !messageText.trim()) {
     throw new BadRequestError("Xabar matni majburiy");
   }
@@ -1225,6 +1229,13 @@ const sendTutorMessage = async ({ actor, messageText, studentId = null, file = n
     throw new BadRequestError("Sizga hali guruh biriktirilmagan — xabar yuborib bo'lmaydi");
   }
 
+  // ⚠️ EGALIK: tanlangan sinf tyutorning joriy guruhlaridan biri bo'lishi
+  // shart, aks holda tyutor istalgan sinfga xabar yuborardi.
+  if (classId && !classIds.includes(classId)) {
+    throw new ForbiddenError("Bu sinf sizga tyutor guruhi sifatida biriktirilmagan");
+  }
+  const scopeClassIds = classId ? [classId] : classIds;
+
   const recipientSelect = {
     id: true,
     telegramIds: true,
@@ -1236,6 +1247,7 @@ const sendTutorMessage = async ({ actor, messageText, studentId = null, file = n
 
   let recipients;
   let recipientType;
+  let messageClassId = null;
   let messageStudentId = null;
 
   if (studentId) {
@@ -1246,12 +1258,16 @@ const sendTutorMessage = async ({ actor, messageText, studentId = null, file = n
         id: studentId,
         role: ROLES.STUDENT,
         isArchived: false,
-        classes: { some: { classId: { in: classIds } } },
+        classes: { some: { classId: { in: scopeClassIds } } },
       },
       select: recipientSelect,
     });
     if (!student) {
-      throw new ForbiddenError("Bu o'quvchi sizning guruhingizga biriktirilmagan");
+      throw new ForbiddenError(
+        classId
+          ? "Bu o'quvchi tanlangan sinfda emas"
+          : "Bu o'quvchi sizning guruhingizga biriktirilmagan",
+      );
     }
     if (!student.telegramIds || student.telegramIds.length === 0) {
       throw new BadRequestError("O'quvchining Telegram ID si mavjud emas (ota-ona bog'lanmagan)");
@@ -1260,20 +1276,28 @@ const sendTutorMessage = async ({ actor, messageText, studentId = null, file = n
     recipientType = "student";
     messageStudentId = student.id;
   } else {
-    // BARCHA o'quvchilar — bir nechta sinfda bo'lsa ham `findMany` bir marta beradi
+    // Bitta sinf yoki BARCHA guruhlar — bir nechta sinfdagi o'quvchini `findMany`
+    // bir marta beradi
     recipients = await prisma.user.findMany({
       where: {
         role: ROLES.STUDENT,
         isArchived: false,
-        classes: { some: { classId: { in: classIds } } },
+        classes: { some: { classId: { in: scopeClassIds } } },
         telegramIds: { isEmpty: false },
       },
       select: recipientSelect,
     });
     if (recipients.length === 0) {
-      throw new BadRequestError("Guruhingizda Telegram ID si bor o'quvchi topilmadi");
+      throw new BadRequestError(
+        classId
+          ? "Bu sinfda Telegram ID si bor o'quvchi topilmadi"
+          : "Guruhingizda Telegram ID si bor o'quvchi topilmadi",
+      );
     }
-    recipientType = "tutor";
+    // Bitta sinf — oddiy sinf xabari kabi (`classId` bilan), xabarlar tarixida
+    // sinf bo'yicha filtrlanadi
+    recipientType = classId ? "class" : "tutor";
+    messageClassId = classId;
   }
 
   const recipientIds = recipients.reduce((acc, u) => [...acc, ...u.telegramIds], []);
@@ -1287,6 +1311,7 @@ const sendTutorMessage = async ({ actor, messageText, studentId = null, file = n
     recipientType,
     recipients,
     recipientIds,
+    classId: messageClassId,
     studentId: messageStudentId,
     file,
   });
