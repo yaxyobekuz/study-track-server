@@ -2478,8 +2478,12 @@ const forgivePartialInvoice = async (invoice, { reason, userId }) => {
  *
  * ⚠️ TO'LOV TUSHGANLARI (paidAmount > 0) TEGILMAYDI — summani o'zgartirish
  * taqsimotni yolg'onga aylantirardi; ular muhrlangan qoladi.
- * ⚠️ O'TGAN OY ham tegilmaydi (`fromMonth` joriy oygacha qisiladi) — sealed
- * tarixni jimgina qayta yozmaslik uchun; tarif o'zgarishi keyingi oydan.
+ * ⚠️ O'TGAN OY FAQAT CHAQIRUVCHI so'raganda tegiladi: `fromMonth` o'tgan
+ * oy bo'lsa, oraliq o'sha oydan boshlanadi. Buni ataylab so'raydigan yagona
+ * joy — `tariffs.adjust` ruxsati bilan o'tgan oydan qilingan tarif
+ * almashtirishi (`studentTariff.service.js` → `changeTariff` + `force`).
+ * `fromMonth` berilmasa oraliq joriy oydan boshlanadi, ya'ni sealed tarix
+ * jimgina qayta yozilmaydi.
  *
  * ⚠️ NOL SUMMALI "paid" FAKTURA HAM NOMZOD. 0 so'mlik faktura darhol
  * "to'langan" bo'lib yopiladi (buildInvoiceRow: isZero → paid) — unda
@@ -2499,8 +2503,9 @@ const regenerateForStudents = async (studentIds, { fromMonth } = {}) => {
   if (ids.length === 0) return { regenerated: 0 };
 
   const now = currentMonthKey();
-  // O'tgan oyga tushmaymiz — sealed. Joriy oydan yuqoriga chiqmaymiz — u oy
-  // hali shakllanmagan (uning invoice'i yo'q).
+  // Joriy oydan yuqoriga chiqmaymiz — u oy hali shakllanmagan (invoice'i yo'q).
+  // Pastga esa `fromMonth` qanchagacha so'rasa tushamiz: o'tgan oydan qilingan
+  // tarif almashtirishi aynan shu oylarni qayta hisoblanishini talab qiladi.
   const from = fromMonth != null ? Math.min(fromMonth, now) : now;
 
   // unpaid → cancel+recreate; paid/partial (to'lov tushgan) → JOYIDA tuzatish
