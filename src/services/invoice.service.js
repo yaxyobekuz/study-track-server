@@ -970,6 +970,12 @@ const getDebtorsForExport = async ({ classId } = {}) => {
  * "amount - paid_amount" ayirmasini SQL darajasida saralash uchun xom so'rov
  * kerak bo'lardi va u filial schema'si bilan bog'liq xavf tug'dirardi.
  *
+ * `month` (YYYYMM) berilsa — faqat O'SHA OYNING qarzi. Berilmasa (sukut) —
+ * barcha oylar bo'yicha UMUMIY qarz. Filtr guruhlashdan OLDIN, `where` ichida
+ * qo'llanadi: shunda `_sum` ham, `_count` ham, sahifalash ham o'sha oyniki
+ * bo'ladi. Xotirada filtrlansa "jami qarz" umumiy, qatorlar esa oylik bo'lib,
+ * ikki raqam bir-biriga mos kelmay qolardi.
+ *
  * @param {object} req
  * @returns {Promise<object>}
  */
@@ -979,6 +985,8 @@ const getDebtors = async (req) => {
   const search = query.search?.trim();
   // Qarz "yoshi" (necha oy turgani) shunga nisbatan hisoblanadi
   const currentMonth = currentMonthKey();
+  // Tanlangan oy — bo'lmasa `null` ("Umumiy qarz")
+  const month = parseOptionalMonthKey(query.month, "Oy");
 
   // Qidiruv/sinf filtri bo'lsa avval o'quvchilar aniqlanadi
   let studentFilter = null;
@@ -1004,6 +1012,8 @@ const getDebtors = async (req) => {
       return {
         ...formatPaginationResponse([], 0, page, limit),
         currentMonth,
+        month,
+        monthLabel: month ? formatMonthKey(month) : null,
         totals: EMPTY_DEBT_TOTALS,
       };
     }
@@ -1013,6 +1023,7 @@ const getDebtors = async (req) => {
     by: ["studentId"],
     where: {
       status: { in: ["unpaid", "partial"] },
+      ...(month ? { month } : {}),
       ...(studentFilter ? { studentId: { in: studentFilter } } : {}),
     },
     _sum: { amount: true, paidAmount: true },
@@ -1024,12 +1035,20 @@ const getDebtors = async (req) => {
   // hisob-faktura "paid" bo'lib yopiladi, lekin bekor qilingan/tuzatilgan
   // holatlarda ayirma nolga tushib qolishi mumkin.
   const rows = grouped
-    .map((row) => ({
-      studentId: row.studentId,
-      debt: new Decimal(row._sum.amount ?? 0).minus(row._sum.paidAmount ?? 0),
-      unpaidCount: row._count._all,
-      oldestMonth: row._min.month,
-    }))
+    .map((row) => {
+      const charged = new Decimal(row._sum.amount ?? 0);
+      const paid = new Decimal(row._sum.paidAmount ?? 0);
+      return {
+        studentId: row.studentId,
+        charged,
+        paid,
+        debt: charged.minus(paid),
+        // Oy tanlanganda bu har doim 1 bo'ladi — guruhlash o'sha oygacha
+        // toraytirilgan. Ro'yxatda ustun shu sababli yashiriladi.
+        unpaidCount: row._count._all,
+        oldestMonth: row._min.month,
+      };
+    })
     .filter((row) => row.debt.greaterThan(0));
 
   const totalDebt = rows.reduce((sum, row) => sum.plus(row.debt), new Decimal(0));
@@ -1052,6 +1071,8 @@ const getDebtors = async (req) => {
     return {
       ...formatPaginationResponse([], rows.length, page, limit),
       currentMonth,
+      month,
+      monthLabel: month ? formatMonthKey(month) : null,
       totals: {
         totalDebt: formatAmount(totalDebt),
         debtorCount: rows.length,
@@ -1094,6 +1115,10 @@ const getDebtors = async (req) => {
           .filter(Boolean)
           .join(", ") || null,
       debt: formatAmount(row.debt),
+      // Oy kesimida "qancha hisoblangan / qancha yopilgan" ko'rsatiladi:
+      // bitta oyda qisman to'lov odatiy hol va "qolgan qarz" uni yashiradi
+      charged: formatAmount(row.charged),
+      paid: formatAmount(row.paid),
       unpaidCount: row.unpaidCount,
       oldestMonth: row.oldestMonth,
       oldestMonthLabel: formatMonthKey(row.oldestMonth),
@@ -1103,6 +1128,8 @@ const getDebtors = async (req) => {
   return {
     ...formatPaginationResponse(items, rows.length, page, limit),
     currentMonth,
+    month,
+    monthLabel: month ? formatMonthKey(month) : null,
     totals: {
       totalDebt: formatAmount(totalDebt),
       debtorCount: rows.length,
