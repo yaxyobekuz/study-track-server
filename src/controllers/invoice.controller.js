@@ -54,20 +54,43 @@ const getDebtors = asyncHandler(async (req, res) => {
 });
 
 /**
- * Qarzdorlar ro'yxatini Excel'ga yuklab olish (butun maktab yoki bitta sinf).
+ * Qarzdorlar ro'yxatini Excel'ga yuklab olish.
+ *
+ * ⚠️ EKRANDAGI FILTRLAR BILAN ISHLAYDI (oy, sinf, qidiruv, saralash) —
+ * fayl ro'yxatning aynan nusxasi bo'lishi kerak. Sahifalash esa YO'Q:
+ * faylga barcha qatorlar tushadi, chunki Excel'ni ochgan odam uni
+ * sahifalab o'qimaydi.
+ *
  * Chiroyli formatli xlsx: sarlavha, jami qatori, telefonlar bilan.
  */
 const exportDebtors = asyncHandler(async (req, res) => {
   const ExcelService = require("../services/excel.service");
-  const { formatMonthKey, currentMonthKey } = require("../helpers/month.helpers");
+  const {
+    formatMonthKey,
+    currentMonthKey,
+    parseOptionalMonthKey,
+  } = require("../helpers/month.helpers");
+
+  // Oy tanlanmagan bo'lsa — umumiy qarz (barcha oylar)
+  const month = parseOptionalMonthKey(req.query.month, "Oy");
 
   const { rows, totals, className } = await invoiceService.getDebtorsForExport({
+    month,
     classId: req.query.classId || null,
+    search: req.query.search || null,
+    sort: req.query.sort || null,
   });
 
   const scopeLabel = className ? className : "Butun maktab";
-  const monthLabel = formatMonthKey(currentMonthKey());
+  // Oy tanlangan bo'lsa fayl O'SHA OYNIKI; aks holda "umumiy qarz"
+  // holati joriy oyga nisbatan ko'rsatiladi
+  const monthLabel = month
+    ? `${formatMonthKey(month)} oyi uchun`
+    : `Umumiy qarz (holat: ${formatMonthKey(currentMonthKey())})`;
 
+  // Oy tanlanganda "qarzdor oylar" har doim 1, "eng eski qarz" esa o'sha
+  // oyning o'zi bo'lardi — ikkala ustun ham olib tashlanadi (ekrandagi
+  // jadval ham xuddi shunday qiladi)
   const columns = [
     { header: "№", key: "no", width: 6 },
     { header: "Ism", key: "firstName", width: 18 },
@@ -75,12 +98,23 @@ const exportDebtors = asyncHandler(async (req, res) => {
     { header: "Sinf", key: "className", width: 12 },
     { header: "Telefon", key: "phone", width: 18 },
     { header: "Ota-ona tel.", key: "parentPhone", width: 18 },
-    { header: "Qarzdor oylar", key: "unpaidCount", width: 14 },
-    { header: "Eng eski qarz", key: "oldestMonthLabel", width: 18 },
+    ...(month
+      ? []
+      : [
+          { header: "Qarzdor oylar", key: "unpaidCount", width: 14 },
+          { header: "Eng eski qarz", key: "oldestMonthLabel", width: 18 },
+        ]),
     { header: "Hisoblangan", key: "charged", width: 16 },
     { header: "To'langan", key: "paid", width: 16 },
     { header: "Qolgan qarz", key: "debt", width: 16 },
   ];
+
+  // Jami qatori va rang berish ustun RAQAMIGA emas, kalitiga bog'lanadi:
+  // ustunlar oyga qarab o'zgargani uchun qotib qolgan indeks (8, 11)
+  // noto'g'ri katakni bo'yab qo'yardi
+  const colIndex = (key) => columns.findIndex((c) => c.key === key) + 1;
+  const debtColIndex = colIndex("debt");
+  const firstMoneyIndex = colIndex("charged");
 
   const workbook = ExcelService.createWorkbook();
   const worksheet = ExcelService.addWorksheet(workbook, "Qarzdorlar", {
@@ -97,9 +131,12 @@ const exportDebtors = asyncHandler(async (req, res) => {
 
   worksheet.mergeCells(2, 1, 2, columns.length);
   const subCell = worksheet.getCell(2, 1);
+  // Qidiruv ham yozib qo'yiladi: filtrlangan fayl keyinroq "nega bu yerda
+  // atigi 3 ta odam bor" degan savol tug'dirmasligi uchun
   subCell.value =
-    `Holat: ${monthLabel} · Qarzdorlar: ${totals.debtorCount} ta · ` +
-    `Jami qarz: ${totals.totalDebt} so'm`;
+    `${monthLabel} · Qarzdorlar: ${totals.debtorCount} ta · ` +
+    `Jami qarz: ${totals.totalDebt} so'm` +
+    (req.query.search ? ` · Qidiruv: "${req.query.search}"` : "");
   subCell.font = { size: 11, color: { argb: "FF6B7280" } };
   worksheet.getRow(2).height = 20;
 
@@ -150,16 +187,19 @@ const exportDebtors = asyncHandler(async (req, res) => {
     });
   });
 
-  // Jami qatori
-  const totalRow = worksheet.addRow([
-    "", "", "", "", "", "", "", "JAMI:",
-    totals.totalCharged, totals.totalPaid, totals.totalDebt,
-  ]);
+  // Jami qatori — "JAMI:" yorlig'i pul ustunlaridan oldingi katakda
+  const totalValues = new Array(columns.length).fill("");
+  totalValues[firstMoneyIndex - 2] = "JAMI:";
+  totalValues[firstMoneyIndex - 1] = totals.totalCharged;
+  totalValues[firstMoneyIndex] = totals.totalPaid;
+  totalValues[debtColIndex - 1] = totals.totalDebt;
+
+  const totalRow = worksheet.addRow(totalValues);
   totalRow.eachCell((cell, colNumber) => {
-    if (colNumber >= 8) {
+    if (colNumber >= firstMoneyIndex - 1) {
       cell.font = {
         bold: true,
-        color: { argb: colNumber === 11 ? "FFB91C1C" : "FF1F2937" },
+        color: { argb: colNumber === debtColIndex ? "FFB91C1C" : "FF1F2937" },
       };
       cell.alignment = { vertical: "middle", horizontal: "right" };
       cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFEF3C7" } };
@@ -173,7 +213,14 @@ const exportDebtors = asyncHandler(async (req, res) => {
   worksheet.views = [{ state: "frozen", ySplit: headerRowIndex }];
 
   const safeScope = (className || "butun-maktab").replace(/[^\p{L}\p{N}_-]+/gu, "-");
-  const filename = ExcelService.generateFileName(`qarzdorlar_${safeScope}`);
+  // Oy fayl nomida ISO ko'rinishida (`2026-09`) — bu MASHINA uchun nom,
+  // ekranga chiqmaydi, shuning uchun sana formati qoidasiga zid emas
+  const monthPart = month
+    ? `_${Math.trunc(month / 100)}-${String(month % 100).padStart(2, "0")}`
+    : "";
+  const filename = ExcelService.generateFileName(
+    `qarzdorlar_${safeScope}${monthPart}`,
+  );
   await ExcelService.sendWorkbook(res, workbook, filename);
 });
 

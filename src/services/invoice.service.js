@@ -849,22 +849,47 @@ const describeEnrollmentForStudent = (periods) => {
  * `getDebtors` bilan bir xil qarz manbai (unpaid+partial fakturalar), lekin
  * telefon/sinf qo'shilgan va sahifalanmagan.
  *
- * @param {{classId?: string}} options
+ * ⚠️ FILTRLAR RO'YXAT BILAN BIR XIL (`month`, `classId`, `search`, `sort`).
+ * Fayl — ekranda ko'rinib turgan ro'yxatning o'zi bo'lishi kerak: xodim
+ * sinfni tanlab, oyni tanlab, keyin yuklab olganda boshqa ro'yxat tushsa,
+ * u qaysi biriga ishonishni bilmasdi.
+ *
+ * @param {{month?: number|null, classId?: string, search?: string, sort?: string}} options
  * @returns {Promise<{rows: object[], totals: object, className: string|null}>}
  */
-const getDebtorsForExport = async ({ classId } = {}) => {
-  // Sinf filtri — avval o'quvchi id'lari
-  let studentFilter = null;
+const getDebtorsForExport = async ({ month = null, classId, search, sort } = {}) => {
+  const trimmedSearch = search?.trim();
+
+  // Sinf nomi — faylning sarlavhasida ko'rsatiladi
   let className = null;
   if (classId) {
-    const [klass, matched] = await Promise.all([
-      prisma.class.findUnique({ where: { id: classId }, select: { name: true } }),
-      prisma.user.findMany({
-        where: { role: ROLES.STUDENT, classes: { some: { classId } } },
-        select: { id: true },
-      }),
-    ]);
+    const klass = await prisma.class.findUnique({
+      where: { id: classId },
+      select: { name: true },
+    });
     className = klass?.name ?? null;
+  }
+
+  // Sinf/qidiruv filtri — avval o'quvchi id'lari (ro'yxatdagi shart bilan
+  // bir xil, shuning uchun natija ham bir xil bo'ladi)
+  let studentFilter = null;
+  if (classId || trimmedSearch) {
+    const matched = await prisma.user.findMany({
+      where: {
+        role: ROLES.STUDENT,
+        ...(classId ? { classes: { some: { classId } } } : {}),
+        ...(trimmedSearch
+          ? {
+              OR: [
+                { firstName: { contains: trimmedSearch, mode: "insensitive" } },
+                { lastName: { contains: trimmedSearch, mode: "insensitive" } },
+                { username: { contains: trimmedSearch, mode: "insensitive" } },
+              ],
+            }
+          : {}),
+      },
+      select: { id: true },
+    });
     studentFilter = matched.map((s) => s.id);
     if (studentFilter.length === 0) {
       return { rows: [], className, totals: { totalCharged: "0.00", totalPaid: "0.00", totalDebt: "0.00", debtorCount: 0 } };
@@ -875,6 +900,7 @@ const getDebtorsForExport = async ({ classId } = {}) => {
     by: ["studentId"],
     where: {
       status: { in: ["unpaid", "partial"] },
+      ...(month ? { month } : {}),
       ...(studentFilter ? { studentId: { in: studentFilter } } : {}),
     },
     _sum: { amount: true, paidAmount: true },
@@ -895,9 +921,16 @@ const getDebtorsForExport = async ({ classId } = {}) => {
         oldestMonth: row._min.month,
       };
     })
-    .filter((row) => row.debt.greaterThan(0))
-    // Eng katta qarz tepada
-    .sort((a, b) => b.debt.comparedTo(a.debt) || a.oldestMonth - b.oldestMonth);
+    .filter((row) => row.debt.greaterThan(0));
+
+  // Saralash ro'yxatdagi bilan bir xil: faylni ochgan xodim qatorlarni
+  // ekrandagi tartibda ko'rishi kerak
+  const byOldest = sort === "oldest";
+  debtRows.sort((a, b) =>
+    byOldest
+      ? a.oldestMonth - b.oldestMonth || b.debt.comparedTo(a.debt)
+      : b.debt.comparedTo(a.debt) || a.oldestMonth - b.oldestMonth,
+  );
 
   if (debtRows.length === 0) {
     return { rows: [], className, totals: { totalCharged: "0.00", totalPaid: "0.00", totalDebt: "0.00", debtorCount: 0 } };
