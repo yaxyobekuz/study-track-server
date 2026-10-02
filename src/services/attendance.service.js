@@ -19,12 +19,19 @@ const {
   ValidationError,
 } = require("../utils/errors");
 const logger = require("../utils/logger");
-const { WORK_TIME_SOURCE } = require("../utils/constants");
+const {
+  WORK_TIME_SOURCE,
+  SCHEDULE_ARRIVAL_LEAD_MINUTES,
+} = require("../utils/constants");
 const {
   getScheduleWorkTime,
   getScheduleWorkTimes,
+  getScheduleDayWindow,
+  getScheduleDayWindows,
 } = require("./scheduleWorkTime.service");
 const { resolveCheckout } = require("./checkoutGate.service");
+const { formatDateUz, formatTimeUz } = require("../helpers/date.helpers");
+const { dayKey } = require("../helpers/lessonHours");
 
 function getTodayNormalized() {
   const now = new Date();
@@ -72,24 +79,41 @@ function getWeeklyOverride(weeklySchedule, dayOfWeek) {
   return null;
 }
 
+/** Sana (yoki bo'sh — bugun) → Toshkent kuni, UTC yarim tuni. */
+function tashkentDayOf(forDate) {
+  return forDate ? normalizeDateTashkent(forDate) : getTodayNormalized();
+}
+
 /**
  * Ro'yxat bo'ylab ishlash uchun oldindan yuklangan kontekst.
  *
  * `getEffectiveSchedule()` ni ko'p foydalanuvchi uchun chaqirishdan OLDIN bir
- * marta chaqiriladi: dars jadvalidan ishlaydiganlar bitta so'rovda yig'iladi.
- * Bunday xodim bo'lmasa hech qanday so'rov ketmaydi.
+ * marta chaqiriladi: dars jadvalidan ishlaydiganlarning haftalik shabloni va
+ * O'SHA KUNGI amaldagi oynasi bitta so'rovda yig'iladi. Bunday xodim bo'lmasa
+ * hech qanday so'rov ketmaydi.
+ *
+ * ⚠️ Kontekst BITTA KUNGA bog'langan (`dayKey`): boshqa kun uchun
+ * `getEffectiveSchedule()` uni ishlatmaydi va o'zi yuklaydi — aks holda
+ * dushanba oynasi seshanba yozuvlariga qo'yilib qolardi.
  *
  * @param {Array<{id: string, workTimeSource?: string}>} users
- * @returns {Promise<{scheduleWorkTimes: Map}|null>}
+ * @param {Date} [forDate] - qaysi kun uchun (default: bugun)
+ * @returns {Promise<{dayKey: string, scheduleWorkTimes: Map, scheduleDayWindows: Map}|null>}
  */
-async function buildScheduleContext(users) {
+async function buildScheduleContext(users, forDate) {
   const ids = (users || [])
     .filter((u) => u.workTimeSource === WORK_TIME_SOURCE.SCHEDULE)
     .map((u) => String(u.id));
 
   if (ids.length === 0) return null;
 
-  return { scheduleWorkTimes: await getScheduleWorkTimes(ids) };
+  const day = tashkentDayOf(forDate);
+  const [scheduleWorkTimes, scheduleDayWindows] = await Promise.all([
+    getScheduleWorkTimes(ids),
+    getScheduleDayWindows(ids, day),
+  ]);
+
+  return { dayKey: dayKey(day), scheduleWorkTimes, scheduleDayWindows };
 }
 
 /**
@@ -97,7 +121,10 @@ async function buildScheduleContext(users) {
  *
  * Uch manba, shu tartibda:
  *   1. DARS JADVALI — `workTimeSource === "schedule"` bo'lsa, boshqa hech
- *      narsaga qaralmaydi (`scheduleWorkTime.service.js`);
+ *      narsaga qaralmaydi (`scheduleWorkTime.service.js`). Ish boshlanishi —
+ *      o'sha kuni o'tiladigan birinchi darsdan 10 daqiqa OLDIN (KELISH vaqti),
+ *      tugashi — oxirgi dars tugashi; o'rinbosarlik, bayram va ta'til oyi
+ *      hisobga olingan;
  *   2. FOYDALANUVCHI o'zidagi vaqt (+ shu kunning `weeklySchedule` istisnosi);
  *   3. ROL default'i (platformada, barcha filiallarga umumiy).
  *
@@ -105,33 +132,50 @@ async function buildScheduleContext(users) {
  * kuni emas degan qaror aynan shu yerda amalga oshadi. Qaytish yo'li ochilsa,
  * "dars jadvali = ish jadvali" qoidasi kunma-kun buzilib turardi.
  *
+ * ⚠️ "Bugun ish kunimi" degan savolga `isWorkDay` javob beradi, `workDays`
+ * EMAS: dars jadvalidagi xodimda `workDays` — haftalik SHABLON (ko'rsatish
+ * uchun), o'rinbosarlik va bayramni bilmaydi.
+ *
  * @param {object} user - `workTimeSource`, `workStartTime`, `workEndTime`,
  *   `workDays`, `weeklySchedule`, `role` maydonlari bilan
  * @param {Date} [forDate] - qaysi kun uchun (default: bugun)
- * @param {object} [ctx] - oldindan yuklangan ma'lumot (cron uchun N+1 ga qarshi)
- * @param {Map} [ctx.scheduleWorkTimes] - `getScheduleWorkTimes()` natijasi
- * @returns {Promise<{workStartTime, workEndTime, workDays, source, scheduleMissing?}>}
+ * @param {object} [ctx] - `buildScheduleContext()` natijasi (cron uchun N+1 ga qarshi)
+ * @returns {Promise<{workStartTime, workEndTime, workDays, isWorkDay, source,
+ *   firstLessonTime?, arrivalLeadMinutes?, lessonCount?, closedReason?, scheduleMissing?}>}
  */
 async function getEffectiveSchedule(user, forDate, ctx = null) {
   const dayOfWeek = getDayOfWeekTashkent(forDate);
 
   // ── 1. DARS JADVALIDAN ──────────────────────
   if (user.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
-    const fromSchedule =
-      ctx?.scheduleWorkTimes?.get(String(user.id)) ||
-      (await getScheduleWorkTime(user.id));
+    const userId = String(user.id);
+    const day = tashkentDayOf(forDate);
+    const sameDay = ctx?.dayKey === dayKey(day);
 
-    const day = fromSchedule?.byDay?.get(dayOfWeek) || null;
+    const [week, dayWindow] = await Promise.all([
+      ctx?.scheduleWorkTimes?.get(userId) || getScheduleWorkTime(userId),
+      (sameDay && ctx.scheduleDayWindows?.get(userId)) || getScheduleDayWindow(userId, day),
+    ]);
+
+    const hasLessonsToday = (dayWindow?.lessonCount ?? 0) > 0;
 
     return {
-      workStartTime: day?.startTime ?? null,
-      workEndTime: day?.endTime ?? null,
-      workDays: fromSchedule?.workDays ?? [],
+      // KELISH vaqti — birinchi darsdan `arrivalLeadMinutes` oldin
+      workStartTime: dayWindow?.startTime ?? null,
+      workEndTime: dayWindow?.endTime ?? null,
+      firstLessonTime: dayWindow?.firstLessonTime ?? null,
+      arrivalLeadMinutes: SCHEDULE_ARRIVAL_LEAD_MINUTES,
+      lessonCount: dayWindow?.lessonCount ?? 0,
+      // Dars nega yo'q: "holiday" | "vacation" | "sunday" | null
+      closedReason: dayWindow?.closed ?? null,
+      workDays: week?.workDays ?? [],
+      isWorkDay: hasLessonsToday,
       source: WORK_TIME_SOURCE.SCHEDULE,
       // Jadvali UMUMAN kiritilmagan — bu "dam olish kuni" emas, "ma'lumot
       // to'liq emas". Chaqiruvchi buni ko'rsatishi/log qilishi uchun ochiq
-      // bayroq: aks holda xodim davomatdan jimgina chiqib ketardi.
-      scheduleMissing: !fromSchedule?.hasLessons,
+      // bayroq: aks holda xodim davomatdan jimgina chiqib ketardi. O'z darsi
+      // yo'q-u, bugun o'rinbosar bo'lib dars o'tadigan odam bunga kirmaydi.
+      scheduleMissing: !week?.hasLessons && !hasLessonsToday,
     };
   }
 
@@ -147,13 +191,14 @@ async function getEffectiveSchedule(user, forDate, ctx = null) {
       endTime = dayOverride.endTime;
     }
 
+    const workDays =
+      user.workDays && user.workDays.length > 0 ? user.workDays : [1, 2, 3, 4, 5];
+
     return {
       workStartTime: startTime,
       workEndTime: endTime,
-      workDays:
-        user.workDays && user.workDays.length > 0
-          ? user.workDays
-          : [1, 2, 3, 4, 5],
+      workDays,
+      isWorkDay: workDays.includes(dayOfWeek),
       source: "user",
     };
   }
@@ -171,13 +216,14 @@ async function getEffectiveSchedule(user, forDate, ctx = null) {
     endTime = dayOverride.endTime;
   }
 
+  const workDays =
+    role?.workDays && role.workDays.length > 0 ? role.workDays : [1, 2, 3, 4, 5];
+
   return {
     workStartTime: startTime,
     workEndTime: endTime,
-    workDays:
-      role?.workDays && role.workDays.length > 0
-        ? role.workDays
-        : [1, 2, 3, 4, 5],
+    workDays,
+    isWorkDay: workDays.includes(dayOfWeek),
     source: "role",
   };
 }
@@ -192,11 +238,10 @@ async function getScheduleForUser(userId) {
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
   const schedule = await getEffectiveSchedule(user);
-  const todayDayOfWeek = getDayOfWeekTashkent();
 
   return {
     ...schedule,
-    isWorkDayToday: schedule.workDays.includes(todayDayOfWeek),
+    isWorkDayToday: schedule.isWorkDay,
   };
 }
 
@@ -212,13 +257,25 @@ function isPenaltyPaused(settings, userId, userRole) {
   return false;
 }
 
-async function createAttendancePenalty(userId, givenByUserId, title, points) {
+/**
+ * Avtomatik davomat jarimasi.
+ *
+ * @param {string} userId
+ * @param {string} givenByUserId
+ * @param {string} title - "Kech kelish: 2-oktabr, 2026 (15 daqiqa)"
+ * @param {number} points
+ * @param {string} [details] - nimaga nisbatan hisoblangani (xodim jarimani
+ *   ochganda "nega" degan savolga javob shu yerda bo'lsin)
+ */
+async function createAttendancePenalty(userId, givenByUserId, title, points, details) {
   const penalty = await prisma.penalty.create({
     data: {
       userId,
       givenBy: givenByUserId,
       title,
-      description: "Avtomatik davomat jarimasi",
+      description: details
+        ? `Avtomatik davomat jarimasi. ${details}`
+        : "Avtomatik davomat jarimasi",
       points,
       status: "approved",
       isCustom: true,
@@ -278,6 +335,30 @@ function logSuspiciousLocation(kind, userId, location) {
 }
 
 /**
+ * Kech kelish jarimasining izohi — kechikish NIMAGA nisbatan sanalgani.
+ *
+ * Dars jadvalidagi o'qituvchi uchun kelish vaqti darsdan oldin (08:30 dars →
+ * 08:20 kelish): izohsiz "15 daqiqa kechikdi" uni "darsga 5 daqiqa kechikdim
+ * xolos" degan bahsga olib borardi.
+ *
+ * @param {object} schedule - `getEffectiveSchedule()` natijasi
+ * @param {Date} arrivedAt - kelgan instant
+ * @param {number} graceMin - qo'llangan imtiyoz
+ * @returns {string}
+ */
+function describeLateArrival(schedule, arrivedAt, graceMin) {
+  const lessonPart =
+    schedule.source === WORK_TIME_SOURCE.SCHEDULE && schedule.firstLessonTime
+      ? ` (birinchi dars ${schedule.firstLessonTime} dan ${schedule.arrivalLeadMinutes} daqiqa oldin)`
+      : "";
+
+  return (
+    `Kelish vaqti ${schedule.workStartTime}${lessonPart}, ` +
+    `kelgan vaqt ${formatTimeUz(arrivedAt)}, imtiyoz ${graceMin} daqiqa.`
+  );
+}
+
+/**
  * KELGANLIKNI QAYD ETISH.
  *
  * ⚠️ JOYLASHUV MAJBURIY EMAS. GPS bermagan telefon xodimni davomatdan
@@ -319,17 +400,24 @@ async function checkIn(userId, locationPayload, adminUserId) {
   );
   logSuspiciousLocation("kelish", userId, location);
 
-  // Kech kelish tekshiruvi
-  const schedule = await getEffectiveSchedule(user);
+  // Kech kelish tekshiruvi.
+  // ⚠️ Dars jadvalidagi o'qituvchida `workStartTime` — KELISH vaqti: bugun
+  // o'tadigan birinchi darsidan 10 daqiqa oldin. Kechikish shundan sanaladi,
+  // imtiyoz esa hamma xodimdagi kabi ustiga qo'shiladi (biznes qarori,
+  // 2026-10-02). Bugun darsi yo'q bo'lsa vaqt `null` — kechikish yo'q.
+  const schedule = await getEffectiveSchedule(user, today);
   const now = new Date();
   let isLate = false;
   let lateMinutes = 0;
   let status = "present";
+  let graceMin = 0;
 
   if (schedule.workStartTime) {
     const workStartMin = timeToMinutes(schedule.workStartTime);
     const currentMin = getCurrentMinutesTashkent(now);
-    const graceMin = settings.lateArrivalGraceMinutes || 10;
+    // ⚠️ `??`, `||` EMAS: sozlamada 0 (imtiyozsiz) qo'yilgan bo'lsa u 10 ga
+    // aylanib ketmasin.
+    graceMin = settings.lateArrivalGraceMinutes ?? 10;
     const allowedMin = workStartMin + graceMin;
 
     if (currentMin > allowedMin) {
@@ -375,12 +463,12 @@ async function checkIn(userId, locationPayload, adminUserId) {
   if (isLate && settings.lateArrivalPenaltyPoints > 0) {
     const penaltyPaused = isPenaltyPaused(settings, userId, user.role);
     if (!penaltyPaused) {
-      const dateStr = today.toISOString().split("T")[0];
       const penalty = await createAttendancePenalty(
         userId,
         adminUserId || userId,
-        `Kech kelish: ${dateStr} (${lateMinutes} daqiqa)`,
+        `Kech kelish: ${formatDateUz(today, { utc: true })} (${lateMinutes} daqiqa)`,
         settings.lateArrivalPenaltyPoints,
+        describeLateArrival(schedule, now, graceMin),
       );
       record = await prisma.attendance.update({
         where: { id: record.id },
@@ -444,8 +532,9 @@ async function checkOut(userId, locationPayload, adminUserId) {
   );
   logSuspiciousLocation("ketish", userId, location);
 
-  // Erta ketish tekshiruvi
-  const schedule = await getEffectiveSchedule(user);
+  // Erta ketish tekshiruvi (dars jadvalidagi o'qituvchida — bugun o'tiladigan
+  // oxirgi darsning tugashi)
+  const schedule = await getEffectiveSchedule(user, today);
   const now = new Date();
   let isEarlyOut = false;
   let earlyOutMinutes = 0;
@@ -453,7 +542,8 @@ async function checkOut(userId, locationPayload, adminUserId) {
   if (schedule.workEndTime) {
     const workEndMin = timeToMinutes(schedule.workEndTime);
     const currentMin = getCurrentMinutesTashkent(now);
-    const graceMin = settings.earlyDepartureGraceMinutes || 10;
+    // `??`: sozlamadagi 0 (imtiyozsiz) 10 ga aylanib ketmasin
+    const graceMin = settings.earlyDepartureGraceMinutes ?? 10;
     const allowedMin = workEndMin - graceMin;
 
     if (currentMin < allowedMin) {
@@ -489,11 +579,10 @@ async function checkOut(userId, locationPayload, adminUserId) {
   ) {
     const penaltyPaused = isPenaltyPaused(settings, userId, user.role);
     if (!penaltyPaused) {
-      const dateStr = today.toISOString().split("T")[0];
       const penalty = await createAttendancePenalty(
         userId,
         adminUserId || userId,
-        `Erta ketish: ${dateStr} (${earlyOutMinutes} daqiqa)`,
+        `Erta ketish: ${formatDateUz(today, { utc: true })} (${earlyOutMinutes} daqiqa)`,
         settings.earlyDeparturePenaltyPoints,
       );
       updateData.penaltyApplied = true;
@@ -707,7 +796,7 @@ async function getTodayAllRecords(roleFilter, dateInput) {
 
   // Dars jadvalidan ishlaydigan xodimlarning oynasi BITTA so'rovda — ro'yxat
   // bo'ylab yakka chaqiruv N+1 bo'lib ketardi.
-  const ctx = await buildScheduleContext(allUsers);
+  const ctx = await buildScheduleContext(allUsers, day);
 
   const rows = await Promise.all(
     allUsers.map(async (u) => {
@@ -738,10 +827,13 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         checkOutLocationStatus: rec?.checkOutLocationStatus || null,
         checkInDistance: rec?.checkInDistance ?? null,
         checkOutDistance: rec?.checkOutDistance ?? null,
+        // Dars jadvalidagi o'qituvchida — KELISH vaqti (birinchi darsdan
+        // 10 daqiqa oldin); darsning o'zi `firstLessonTime` da
         expectedStart: schedule.workStartTime || null,
         expectedEnd: schedule.workEndTime || null,
+        firstLessonTime: schedule.firstLessonTime ?? null,
         scheduleSource: schedule.source,
-        isWorkDay: schedule.workDays.includes(getDayOfWeekTashkent(day)),
+        isWorkDay: schedule.isWorkDay,
       };
     }),
   );

@@ -3,13 +3,13 @@ const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
 const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
+const { formatDateUz } = require("../helpers/date.helpers");
 const {
   getTodayNormalized,
   getEffectiveSchedule,
   buildScheduleContext,
   isPenaltyPaused,
   createAttendancePenalty,
-  getDayOfWeekTashkent,
 } = require("../services/attendance.service");
 const { getAttendanceSettings } = require("../services/settings.service");
 
@@ -24,7 +24,6 @@ async function runAbsentMarking(ownerUser) {
   }
 
   const today = getTodayNormalized();
-  const todayDayOfWeek = getDayOfWeekTashkent();
 
   // Bugun bayram kunmi?
   const { isHoliday } = await checkHoliday(today);
@@ -54,9 +53,9 @@ async function runAbsentMarking(ownerUser) {
   let errors = 0;
   let scheduleMissing = 0;
 
-  // Dars jadvalidan ishlaydigan xodimlarning haftalik oynasi — BITTA so'rovda.
+  // Dars jadvalidan ishlaydigan xodimlarning bugungi oynasi — BITTA so'rovda.
   // Sikl ichida yakka chaqiruv har xodimga bitta so'rov qo'shardi.
-  const ctx = await buildScheduleContext(users);
+  const ctx = await buildScheduleContext(users, today);
 
   for (const user of users) {
     try {
@@ -76,8 +75,12 @@ async function runAbsentMarking(ownerUser) {
         continue;
       }
 
-      // Bu foydalanuvchining ish kuni emasa, o'tkazib yuborish
-      if (!schedule.workDays.includes(todayDayOfWeek)) {
+      // Bu foydalanuvchining ish kuni emas bo'lsa, o'tkazib yuborish.
+      // ⚠️ `isWorkDay`, `workDays` EMAS: dars jadvalidagi o'qituvchida bugungi
+      // darslari (o'rinbosarlik va ta'til oyi bilan) hal qiladi — darslari
+      // to'liq o'rinbosarga berilgan kasal o'qituvchi "kelmadi" bo'lmaydi,
+      // o'rinbosar esa o'z darsi yo'q kunda ham davomatga tushadi.
+      if (!schedule.isWorkDay) {
         skipped++;
         continue;
       }
@@ -119,11 +122,10 @@ async function runAbsentMarking(ownerUser) {
         const hasWorkSchedule = !!schedule.workStartTime;
         const penaltyPaused = isPenaltyPaused(settings, user.id, user.role);
         if (hasWorkSchedule && !penaltyPaused && settings.absentPenaltyPoints > 0) {
-          const dateStr = today.toISOString().split("T")[0];
           const penalty = await createAttendancePenalty(
             user.id,
             ownerUser.id,
-            `Kelmaganlik uchun: ${dateStr}`,
+            `Kelmaganlik uchun: ${formatDateUz(today, { utc: true })}`,
             settings.absentPenaltyPoints
           );
           await prisma.attendance.update({

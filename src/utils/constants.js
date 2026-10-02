@@ -104,6 +104,12 @@ const WORK_TIME_SOURCE = {
   SCHEDULE: "schedule",
 };
 
+// DARS JADVALIDAN ishlaydigan o'qituvchi ishga o'sha kuni o'tadigan BIRINCHI
+// darsidan shuncha daqiqa OLDIN kelishi shart (biznes qarori, 2026-10-02).
+// Kechikish shu kelish vaqtidan sanaladi; davomat sozlamasidagi kechikish
+// imtiyozi (`lateArrivalGraceMinutes`) boshqa xodimlardagi kabi ustiga qo'shiladi.
+const SCHEDULE_ARRIVAL_LEAD_MINUTES = 10;
+
 // Hafta kunlari massivi (o'zbek tilida)
 const DAYS_UZ = [
   "yakshanba", // 0 - Sunday
@@ -184,6 +190,7 @@ module.exports = {
   DAYS,
   DAYS_UZ,
   WORK_TIME_SOURCE,
+  SCHEDULE_ARRIVAL_LEAD_MINUTES,
   MONTHS_UZ,
   MONTHS_UZ_CAP,
   MONTHS_UZ_SHORT,

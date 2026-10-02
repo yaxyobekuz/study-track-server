@@ -233,9 +233,11 @@ enum ScheduleDay {
 //
 // `manual`   — `User.workStartTime/workEndTime/workDays` (bo'sh bo'lsa roldan
 //              meros). Butun tizimning eski va standart xatti-harakati.
-// `schedule` — DARS JADVALIDAN hisoblanadi: o'sha kundagi BIRINCHI darsning
-//              boshlanishi ish boshlanishi, OXIRGI darsning tugashi ish
-//              tugashi bo'ladi. Darsi yo'q kun ish kuni sanalmaydi.
+// `schedule` — DARS JADVALIDAN hisoblanadi: ishga KELISH vaqti — o'sha kuni
+//              o'tiladigan BIRINCHI darsdan 10 daqiqa oldin (kechikish shundan
+//              sanaladi), OXIRGI darsning tugashi ish tugashi bo'ladi.
+//              O'rinbosarlik, bayram va ta'til oyi hisobga olinadi; darsi yo'q
+//              kun ish kuni sanalmaydi (`scheduleWorkTime.service.js`).
 //
 // ⚠️ Bu FILIALGA XOS (`permissions` bilan bir xil qoida): odam Chilonzorda
 // o'qituvchi bo'lib dars jadvali bo'yicha, Yunusobodda esa ma'muriyat bo'lib
