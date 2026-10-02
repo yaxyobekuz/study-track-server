@@ -3,6 +3,8 @@
  *
  * FINAL = BASE (lavozim) + FIXED (ixtiyoriy) + TEACHING (toifa × dars soati)
  *         + APPROVED BONUSES + TUTOR GROUPS
+ *         − ABSENCE (kelmagan ish kunlari × fiksaning kunlik summasi,
+ *           `computeAbsenceDeduction`)
  *         − SUSPENDED (to'xtatilgan qismlar, `computeSuspensions`)
  *         − DEDUCTIONS (ushlab qolish, to'lanadigan yalpidan, undan oshmaydi)
  *
@@ -26,9 +28,11 @@ const {
   computeDeductions,
   computeTutorGroupAmount,
   computeSuspensions,
+  computeAbsenceDeduction,
 } = require("../helpers/salaryRules.helpers");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
 const { loadGroupsForPayroll } = require("./tutorGroup.service");
+const { loadAbsenceFacts } = require("./payrollAbsence.service");
 
 const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -94,7 +98,7 @@ const loadContext = async (month, users, preloaded = {}) => {
 
   const teacherIds = hourlyStaffIds(users, salaryRules);
 
-  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows, absence] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -138,6 +142,8 @@ const loadContext = async (month, users, preloaded = {}) => {
     // OYLIKNI TO'XTATISH — shaxsiy va "barcha xodimlar" (`staffId: null`),
     // YARATILISH TARTIBIDA (bir qism ikki marta ayirilmasin)
     staffIds.length ? loadSuspensionsForMonth(month, staffIds) : [],
+    // KELMAGAN KUNLAR — davomat (kelmadi/sababli), ish kunlari va sozlama
+    preloaded.absence || loadAbsenceFacts(month, staffIds),
   ]);
 
   // Faqat O'SHA lavozimda amal qiladi: taxminiy (hypothetical) lavozim
@@ -173,6 +179,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     tutorGroupMap: tutor.groupMap,
     classStudentCounts: tutor.studentCounts,
     suspensions: suspensionRows,
+    absence,
   };
 };
 
@@ -197,6 +204,21 @@ const loadSuspensionsForMonth = (month, staffIds) =>
 /** Xodimga tegishli to'xtatishlar (shaxsiy + "barcha xodimlar"), tartib saqlanadi. */
 const suspensionsFor = (list, staffId) =>
   (list || []).filter((row) => row.staffId == null || row.staffId === staffId);
+
+/**
+ * Xodimning kelmagan kunlari uchun ayirma. Kontekstda fakt bo'lmasa (eski
+ * chaqiruvchi yoki sozlama o'chirilgan) — ayirma yo'q, tafsilot `{}`.
+ *
+ * @param {Decimal} fixedAmount - fiksa (lavozim maoshi + qo'shimcha fiksa)
+ * @returns {{ total: Decimal, breakdown: object }}
+ */
+const absenceFor = (fixedAmount, staffId, ctx) => {
+  if (!ctx.absence?.enabled) return { total: new Decimal(0), breakdown: {} };
+  return computeAbsenceDeduction(fixedAmount, {
+    workDays: ctx.absence.workDays,
+    absences: ctx.absence.byStaff.get(staffId) || [],
+  });
+};
 
 /**
  * Lavozim bazasi: shaxsiy maosh bo'lsa — u, aks holda lavozim maoshi.
@@ -320,12 +342,23 @@ const computeForStaff = (user, month, ctx) => {
 
   const grossAmount = fixedAmount.plus(kpiAmount).plus(allowanceAmount);
 
-  // To'xtatilgan qismlar — yalpi qismlar O'ZGARMAYDI, alohida ayiriladi
+  // KELMAGAN KUNLAR — faqat FIKSA qismdan. Yalpi qismlar O'ZGARMAYDI:
+  // davomat to'g'rilansa ayirma o'zi qaytadi
+  const { total: absenceAmount, breakdown: absenceBreakdown } = absenceFor(
+    fixedAmount,
+    user.id,
+    ctx,
+  );
+
+  // To'xtatilgan qismlar — yalpi qismlar O'ZGARMAYDI, alohida ayiriladi.
+  // ⚠️ Asosiy oylik birligi kelmagan kunlar ayirilgandan KEYINGI fiksadan:
+  // aks holda "asosiy oylik to'xtatildi" + kelmagan kun bir summani ikki
+  // marta ayirardi.
   const { total: suspendedAmount, breakdown: suspensionBreakdown } = computeSuspensions(
-    { fixedAmount, kpiAmount, allowanceBreakdown },
+    { fixedAmount: fixedAmount.minus(absenceAmount), kpiAmount, allowanceBreakdown },
     suspensionsFor(ctx.suspensions, user.id),
   );
-  const payableGrossAmount = grossAmount.minus(suspendedAmount);
+  const payableGrossAmount = grossAmount.minus(absenceAmount).minus(suspendedAmount);
 
   // Ushlab qolish — TO'LANADIGAN yalpidan, oylik manfiy bo'lolmaydi
   const { total: deductionAmount, breakdown: deductionBreakdown } = computeDeductions(
@@ -357,6 +390,8 @@ const computeForStaff = (user, month, ctx) => {
     amount,
     allowanceBreakdown,
     grossAmount,
+    absenceAmount,
+    absenceBreakdown,
     suspendedAmount,
     suspensionBreakdown,
     payableGrossAmount,
@@ -385,6 +420,8 @@ const previewForStaff = (user, month, ctx) => {
     amount: formatAmount(c.amount),
     allowanceBreakdown: c.allowanceBreakdown,
     grossAmount: formatAmount(c.grossAmount),
+    absenceAmount: formatAmount(c.absenceAmount),
+    absenceBreakdown: c.absenceBreakdown,
     suspendedAmount: formatAmount(c.suspendedAmount),
     suspensionBreakdown: c.suspensionBreakdown,
     payableGrossAmount: formatAmount(c.payableGrossAmount),
@@ -402,6 +439,7 @@ module.exports = {
   loadContext,
   loadSuspensionsForMonth,
   suspensionsFor,
+  absenceFor,
   buildTutorLines,
   resolvePositionBase,
   computeForStaff,

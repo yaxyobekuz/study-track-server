@@ -13,11 +13,17 @@ const { getFinanceSettings } = require("./settings.service");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const {
   currentMonthKey,
+  prevMonth,
   parseOptionalMonthKey,
   formatMonthKey,
   coveringMonthWhere,
 } = require("../helpers/month.helpers");
 const { formatAmount } = require("../helpers/money.helpers");
+const logger = require("../utils/logger");
+
+// Kelmagan kun ayirmasi sozlamasi o'zgarganda qayta hisoblanadigan oylar
+// chegarasi — catch-up oynasidan uzoq tarixga avtomat tegilmaydi.
+const MAX_ABSENCE_RESYNC_MONTHS = 12;
 
 
 // Cron ifodasi emas, handler o'qiydigan kun. 28 dan oshmasligi kerak —
@@ -29,6 +35,7 @@ const serializeSettings = (settings) => ({
   ...settings,
   firstInvoiceMonthLabel: formatMonthKey(settings.firstInvoiceMonth),
   firstPayrollMonthLabel: formatMonthKey(settings.firstPayrollMonth),
+  absenceDeductionFromMonthLabel: formatMonthKey(settings.absenceDeductionFromMonth),
   lastGeneratedMonthLabel: formatMonthKey(settings.lastGeneratedMonth),
 });
 
@@ -89,6 +96,42 @@ const getSettings = async () => {
       // degan tushuncha yo'q, shuning uchun bu yerda bayroq ham yo'q.
     },
   };
+};
+
+/**
+ * Kelmagan kun ayirmasi sozlamasi o'zgardi — ta'sirlangan oylardagi MUHRLANGAN
+ * oyliklar qayta hisoblanadi (jonli ekranlar o'zi yangilanadi). Eski va yangi
+ * boshlanish oyining kichigidan joriy oygacha, ko'pi bilan
+ * `MAX_ABSENCE_RESYNC_MONTHS` oy.
+ *
+ * ⚠️ Xato sozlamani orqaga qaytarmaydi — ogohlantirish bo'lib qaytadi,
+ * kunlik oylik passi (06:00) zaxira.
+ *
+ * @returns {Promise<string[]>} ogohlantirishlar
+ */
+const resyncAbsenceMonths = async (before, after) => {
+  const current = currentMonthKey();
+  const bounds = [before, after].filter((m) => m != null && m <= current);
+  if (bounds.length === 0) return [];
+
+  const months = [];
+  for (let m = current; m >= Math.min(...bounds) && months.length < MAX_ABSENCE_RESYNC_MONTHS; m = prevMonth(m)) {
+    months.unshift(m);
+  }
+
+  try {
+    const { resyncSealedEntries } = require("./payrollDeduction.service");
+    const result = await resyncSealedEntries(null, months);
+    return result.locked.length > 0
+      ? [
+          `${result.locked.length} ta oylikka to'lov tushgani uchun kelmagan kun ayirmasi ` +
+            "qo'llanmadi — to'langan summa yangi summadan ko'p",
+        ]
+      : [];
+  } catch (error) {
+    logger.warn(`[financeSettings] Kelmagan kun ayirmasini qayta hisoblab bo'lmadi: ${error.message}`);
+    return ["Oyliklar keyingi kunlik hisobda yangilanadi"];
+  }
 };
 
 /**
@@ -168,6 +211,13 @@ const updateSettings = async (data, userId) => {
     );
   }
 
+  // KELMAGAN KUN UCHUN AYIRMA — null/"" o'chiradi, oy kaliti shu oydan yoqadi
+  if (data.absenceDeductionFromMonth !== undefined) {
+    payload.absenceDeductionFromMonth = parseOptionalMonthKey(
+      data.absenceDeductionFromMonth,
+      "Kelmagan kun ayirmasi boshlanish oyi",
+    );
+  }
 
   if (data.depositAutoApply !== undefined) {
     payload.depositAutoApply = Boolean(data.depositAutoApply);
@@ -223,6 +273,13 @@ const updateSettings = async (data, userId) => {
     where: { id: current.id },
     data: payload,
   });
+
+  if (
+    payload.absenceDeductionFromMonth !== undefined &&
+    payload.absenceDeductionFromMonth !== current.absenceDeductionFromMonth
+  ) {
+    warnings.push(...(await resyncAbsenceMonths(current.absenceDeductionFromMonth, updated.absenceDeductionFromMonth)));
+  }
 
   return {
     settings: {

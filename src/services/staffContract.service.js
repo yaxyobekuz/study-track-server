@@ -39,6 +39,7 @@ const { Decimal, formatAmount, parseAmount } = require("../helpers/money.helpers
 const { normalizeAllowances } = require("../helpers/salaryRules.helpers");
 const { TYPE_LABELS, deriveSalaryType } = require("./staffSalary.service");
 const { loadContext, computeForStaff } = require("./payrollEngine.service");
+const { serializeAbsence } = require("./payrollAbsence.service");
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
 const payrollAudit = require("./payrollAudit.service");
 
@@ -445,6 +446,9 @@ const previewContract = async (staffId, data) => {
     // yuborilmasa oynadagi qatorlar yig'indisi (yalpi) jamidan katta
     // chiqib, "jami noto'g'ri" bo'lib ko'rinardi.
     grossAmount: result ? formatAmount(result.grossAmount) : null,
+    // Kelmagan kunlar (fiksadan kunlik ayirma) ham `amount` dan ayirilgan
+    absenceAmount: result ? formatAmount(result.absenceAmount) : null,
+    absence: result ? serializeAbsence(result.absenceBreakdown, result.absenceAmount) : null,
     // To'xtatilgan qismlar ham `amount` dan ayirilgan — oynada qatorlar
     // yig'indisi jami bilan mos kelishi uchun yuboriladi
     suspendedAmount: result ? formatAmount(result.suspendedAmount) : null,

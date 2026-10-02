@@ -53,6 +53,7 @@ const { formatDateRangeUz } = require("../helpers/date.helpers");
 const { REASON_LABELS } = require("./lessonSubstitution.service");
 const { resolveSalariesForMonth, TYPE_LABELS } = require("./staffSalary.service");
 const { loadContext, computeForStaff } = require("./payrollEngine.service");
+const { serializeAbsence } = require("./payrollAbsence.service");
 const {
   getTeachersHours,
   getMonthCalendar,
@@ -356,6 +357,10 @@ function buildRow(person, projected, accrued, hoursRow, entry, planned = null) {
     projectedHoursAmount: projected ? formatAmount(projected.kpiAmount) : null,
     fixedAmount: projected ? formatAmount(projected.fixedAmount) : null,
     allowanceAmount: projected ? formatAmount(projected.allowanceAmount) : null,
+    // Kelmagan kunlar — fiksadan kunlik ayirma (soatga bog'liq emas, uchala
+    // kontekstda bir xil; `projectedAmount` dan ALLAQACHON ayirilgan)
+    absenceAmount: projected ? formatAmount(projected.absenceAmount) : null,
+    absence: projected ? serializeAbsence(projected.absenceBreakdown, projected.absenceAmount) : null,
 
     // ── Muhrlangan majburiyat (agar bor bo'lsa) ──
     entryId: entry?.id ?? null,

@@ -87,6 +87,9 @@ const regularMonth = () => ({
 });
 
 const prisma = {
+  // Kelmagan kun ayirmasi O'CHIQ — bu fayl boshqa qoidani himoya qiladi
+  // (ayirma: `test/payrollAbsence.test.js`)
+  financeSettings: { upsert: async () => ({ id: "singleton", absenceDeductionFromMonth: null }) },
   user: {
     findUnique: async ({ where }) => db.users.find((u) => u.id === where.id) ?? null,
   },

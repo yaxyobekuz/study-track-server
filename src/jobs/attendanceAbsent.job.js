@@ -12,6 +12,7 @@ const {
   createAttendancePenalty,
 } = require("../services/attendance.service");
 const { getAttendanceSettings } = require("../services/settings.service");
+const { resyncAfterAttendanceChange } = require("../services/payrollAbsence.service");
 
 /**
  * Kun oxirida davomatsiz qolgan xodimlarni "absent" deb belgilaydi va jarima yozadi.
@@ -52,6 +53,8 @@ async function runAbsentMarking(ownerUser) {
   let skipped = 0;
   let errors = 0;
   let scheduleMissing = 0;
+  // Fiksa oylikdan kelmagan kun ayirmasi moliyada darhol yangilansin
+  const markedIds = [];
 
   // Dars jadvalidan ishlaydigan xodimlarning bugungi oynasi — BITTA so'rovda.
   // Sikl ichida yakka chaqiruv har xodimga bitta so'rov qo'shardi.
@@ -114,6 +117,7 @@ async function runAbsentMarking(ownerUser) {
           createdBy: ownerUser.id,
         },
       });
+      markedIds.push(user.id);
 
       if (status === "absent") {
         markedAbsent++;
@@ -141,6 +145,9 @@ async function runAbsentMarking(ownerUser) {
       logger.error(`[AttendanceCron] ${user.id} foydalanuvchi uchun xato:`, error);
     }
   }
+
+  // Kutilmaydi va yiqitmaydi — 06:00 dagi oylik passi zaxira
+  resyncAfterAttendanceChange(markedIds, today);
 
   logger.info(
     `[AttendanceCron] Tugadi: ${markedAbsent} absent, ${markedExcused} excused, ${skipped} o'tkazib yuborildi` +

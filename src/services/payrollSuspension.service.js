@@ -317,8 +317,10 @@ const getUnits = async (staffId, monthInput) => {
     return { month, monthLabel: formatMonthKey(month), sealed: false, base: null, items: [] };
   }
 
+  // Asosiy oylik — kelmagan kunlar ayirilgandan keyin (to'xtatish aynan
+  // shuni oladi, `computeForStaff` / `recomputeSealedEntry` bilan AYNI)
   const units = buildPayUnits({
-    fixedAmount: parts.fixedAmount,
+    fixedAmount: new Decimal(parts.fixedAmount ?? 0).minus(parts.absenceAmount ?? 0),
     kpiAmount: parts.kpiAmount,
     allowanceBreakdown: parts.allowanceBreakdown,
   });

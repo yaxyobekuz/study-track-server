@@ -160,6 +160,90 @@ const computeTutorGroupAmount = (group, studentCount) =>
     .plus(new Decimal(group.perStudentAmount || 0).times(Math.max(0, Number(studentCount) || 0)))
     .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
+/* ─────────────────────── Kelmagan kunlar ─────────────────────── */
+
+// Kelmagan kun deb sanaladigan davomat holatlari (biznes qarori, 2026-10-02):
+// sababsiz HAM, sababli HAM. Kech kelgan — kelgan, ayirilmaydi.
+const ABSENCE_STATUSES = ["absent", "excused"];
+
+const ABSENCE_STATUS_LABELS = {
+  absent: "Kelmagan",
+  excused: "Sababli kelmagan",
+};
+
+/**
+ * KELMAGAN KUNLAR — FIKSA oylikdan kunlik ayirma.
+ *
+ *   ish kunlari  = oy kunlari − yakshanbalar − bayramlar
+ *   kunlik summa = fiksa ÷ ish kunlari, BUTUN SO'MGACHA PASTGA
+ *   ayirma       = Σ kunlik summa har kelmagan ISH kuni uchun, fiksadan oshmaydi
+ *
+ * ⚠️ FORMULA FAQAT SHU YERDA: dvigatel (jonli hisob, vedomost, shakllantirish)
+ * ham, muhrlangan oylikni qayta hisoblash (`recomputeSealedEntry`) ham shuni
+ * chaqiradi — xodim profilida bir raqam, moliyada boshqa raqam chiqmasin.
+ *
+ * Qoidalar:
+ *   · faqat FIKSA qism (lavozim maoshi + qo'shimcha fiksa). Soatbay qism
+ *     o'tilmagan dars orqali allaqachon kamayadi, ustamalar — mustaqil qism;
+ *   · yakshanba yoki bayramdagi belgi SANALMAYDI — u kun maxrajda yo'q;
+ *   · bir kun bir marta (davomat `@@unique([userId, date])`, himoya qavati);
+ *   · kunlik summa butun so'mgacha PASTGA yaxlitlanadi — ataylab maktab
+ *     zarariga (kirish proratsiyasi `roundingUnit` bilan bir xil ruh):
+ *     "kuniga 231 629,63 so'm" tushuntirib bo'lmaydigan raqam, yo'qotish esa
+ *     kuniga 1 so'mdan kam. Fiksa ish kunlaridan kichik bo'lsa (kunlik 0
+ *     chiqardi) 2 xonali summa olinadi — aks holda ayirma jimgina yo'qolardi;
+ *   · ayirma fiksadan oshmaydi — oxirgi kun qoldiqqacha qisqaradi.
+ *
+ * @param {Decimal|string|number} fixedAmount - fiksa (lavozim maoshi + qo'shimcha)
+ * @param {object} facts
+ * @param {string[]} facts.workDays - oyning ish kunlari, "YYYY-MM-DD"
+ * @param {Array<{day: string, status: string}>} facts.absences - shu xodimning
+ *   kelmagan kunlari (`ABSENCE_STATUSES`)
+ * @returns {{ total: Decimal, breakdown: {workDays: number, dailyRate: string,
+ *   days: Array<{date: string, status: string, amount: string}>} }}
+ */
+const computeAbsenceDeduction = (fixedAmount, { workDays = [], absences = [] } = {}) => {
+  const fixed = Decimal.max(new Decimal(fixedAmount || 0), 0);
+  const workDaySet = new Set(workDays);
+  let dailyRate = new Decimal(0);
+  if (workDaySet.size > 0) {
+    const exact = fixed.div(workDaySet.size);
+    dailyRate = exact.toDecimalPlaces(0, Decimal.ROUND_DOWN);
+    if (dailyRate.isZero()) dailyRate = exact.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  }
+
+  const counted = new Map();
+  for (const row of absences) {
+    if (!workDaySet.has(row.day) || !ABSENCE_STATUSES.includes(row.status)) continue;
+    if (!counted.has(row.day)) counted.set(row.day, row.status);
+  }
+
+  let remaining = fixed;
+  let total = new Decimal(0);
+  const days = [];
+  for (const day of [...counted.keys()].sort()) {
+    const applied = Decimal.min(dailyRate, remaining);
+    remaining = remaining.minus(applied);
+    total = total.plus(applied);
+    days.push({ date: day, status: counted.get(day), amount: formatAmount(applied) });
+  }
+
+  return {
+    total,
+    breakdown: { workDays: workDaySet.size, dailyRate: formatAmount(dailyRate), days },
+  };
+};
+
+/** Ayirma tafsilotini taqqoslash kaliti — muhrni qayta yozish kerakmi. */
+const absenceBreakdownKey = (breakdown) => {
+  if (!breakdown || typeof breakdown !== "object" || !Array.isArray(breakdown.days)) return "";
+  return JSON.stringify([
+    breakdown.workDays,
+    breakdown.dailyRate,
+    breakdown.days.map((d) => [d.date, d.status, d.amount]),
+  ]);
+};
+
 /* ─────────────────────── Oylikni to'xtatish ─────────────────────── */
 
 const SUSPENSION_COMPONENTS = ["all", "base", "tutor", "allowances", "item"];
@@ -289,6 +373,10 @@ module.exports = {
   computeAllowances,
   computeDeductions,
   computeTutorGroupAmount,
+  ABSENCE_STATUSES,
+  ABSENCE_STATUS_LABELS,
+  computeAbsenceDeduction,
+  absenceBreakdownKey,
   SUSPENSION_COMPONENTS,
   SUSPENSION_COMPONENT_LABELS,
   payUnitKeyOf,

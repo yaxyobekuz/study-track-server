@@ -53,7 +53,12 @@ const {
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, parseAmount, sumAmounts } = require("../helpers/money.helpers");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
-const { computeDeductions, computeSuspensions } = require("../helpers/salaryRules.helpers");
+const {
+  computeDeductions,
+  computeSuspensions,
+  computeAbsenceDeduction,
+  absenceBreakdownKey,
+} = require("../helpers/salaryRules.helpers");
 const { resolveSalariesForMonth } = require("./staffSalary.service");
 const {
   loadContext,
@@ -63,6 +68,7 @@ const {
   suspensionsFor,
 } = require("./payrollEngine.service");
 const { resolveTutorIdsForMonth, loadGroupsForPayroll } = require("./tutorGroup.service");
+const { loadAbsenceFacts } = require("./payrollAbsence.service");
 const payrollAudit = require("./payrollAudit.service");
 const logger = require("../utils/logger");
 
@@ -380,13 +386,14 @@ const previewDeductions = async (data) => {
 /* ─────────────────────── Muhrni qayta hisoblash ─────────────────────── */
 
 /**
- * Muhrlangan TO'LANADIGAN YALPI — qismlar yig'indisidan to'xtatilgan qism
- * ayirilgan (ushlab qolish shundan olinadi).
+ * Muhrlangan TO'LANADIGAN YALPI — qismlar yig'indisidan kelmagan kunlar va
+ * to'xtatilgan qism ayirilgan (ushlab qolish shundan olinadi).
  */
 const sealedGrossOf = (entry) =>
   new Decimal(entry.fixedAmount)
     .plus(entry.kpiAmount)
     .plus(entry.allowanceAmount)
+    .minus(entry.absenceAmount ?? 0)
     .minus(entry.suspendedAmount ?? 0);
 
 const breakdownKey = (list) =>
@@ -443,31 +450,46 @@ const statusFor = (amount, paidAmount) => {
  * ko'ringan raqam aynan yoziladigan raqam.
  *
  *   yalpi         = fixed + kpi + allowance (tyutor qatorlari yangilangan)
- *   to'xtatilgan  = computeSuspensions(yalpi qismlari)
- *   ushlab qolish = computeDeductions(yalpi − to'xtatilgan)
- *   amount        = yalpi − to'xtatilgan − ushlab qolish
+ *   kelmagan kun  = computeAbsenceDeduction(MUHRDAGI fiksa, amaldagi davomat)
+ *   to'xtatilgan  = computeSuspensions(yalpi qismlari, fiksa − kelmagan kun)
+ *   ushlab qolish = computeDeductions(yalpi − kelmagan kun − to'xtatilgan)
+ *   amount        = yalpi − kelmagan kun − to'xtatilgan − ushlab qolish
+ *
+ * `absence` berilmasa (manba yuklanmagan) — muhrdagi ayirma O'ZGARMAYDI.
  *
  * @param {object} entry - PayrollEntry
- * @param {{ groups: Array, studentCounts: Map, deductions: Array, suspensions: Array }} sources
+ * @param {{ groups: Array, studentCounts: Map, deductions: Array, suspensions: Array,
+ *   absence?: {enabled: boolean, workDays: string[], absences: Array} }} sources
  * @returns {{ changed: boolean, structural: boolean, amount: Decimal, data: object }}
  */
-const recomputeSealedEntry = (entry, { groups, studentCounts, deductions, suspensions }) => {
+const recomputeSealedEntry = (entry, { groups, studentCounts, deductions, suspensions, absence }) => {
   const reseal = resealTutorLines(entry, groups || [], studentCounts);
+  const gross = new Decimal(entry.fixedAmount).plus(entry.kpiAmount).plus(reseal.allowanceAmount);
+
+  // KELMAGAN KUNLAR — davomat to'g'rilansa ayirma qaytadi (yalpi tegilmaydi)
+  const absenceResult = !absence
+    ? { total: new Decimal(entry.absenceAmount ?? 0), breakdown: entry.absenceBreakdown ?? {} }
+    : absence.enabled
+      ? computeAbsenceDeduction(entry.fixedAmount, absence)
+      : { total: new Decimal(0), breakdown: {} };
+
   const parts = {
-    fixedAmount: entry.fixedAmount,
+    fixedAmount: new Decimal(entry.fixedAmount).minus(absenceResult.total),
     kpiAmount: entry.kpiAmount,
     allowanceBreakdown: reseal.allowanceBreakdown,
   };
-  const gross = new Decimal(entry.fixedAmount).plus(entry.kpiAmount).plus(reseal.allowanceAmount);
 
   const suspension = computeSuspensions(parts, suspensions || []);
-  const payable = gross.minus(suspension.total);
+  const payable = gross.minus(absenceResult.total).minus(suspension.total);
 
   // Foizli ushlab qolish TO'LANADIGAN yalpidan olinadi
   const deduction = computeDeductions(payable, deductions || [], {
     perHourRate: entry.perHourRate,
   });
 
+  const absenceChanged =
+    !new Decimal(entry.absenceAmount ?? 0).equals(absenceResult.total) ||
+    absenceBreakdownKey(entry.absenceBreakdown) !== absenceBreakdownKey(absenceResult.breakdown);
   const suspensionChanged =
     !new Decimal(entry.suspendedAmount ?? 0).equals(suspension.total) ||
     breakdownKey(entry.suspensionBreakdown) !== breakdownKey(suspension.breakdown);
@@ -478,15 +500,18 @@ const recomputeSealedEntry = (entry, { groups, studentCounts, deductions, suspen
   const amount = payable.minus(deduction.total);
 
   return {
-    changed: reseal.changed || suspensionChanged || deductionChanged,
-    // Oylik TARKIBI o'zgardi (tyutor yoki to'xtatish) — faqat ushlab qolish emas
-    structural: reseal.changed || suspensionChanged,
+    changed: reseal.changed || absenceChanged || suspensionChanged || deductionChanged,
+    // Oylik TARKIBI o'zgardi (tyutor, kelmagan kun yoki to'xtatish) — faqat
+    // ushlab qolish emas
+    structural: reseal.changed || absenceChanged || suspensionChanged,
     amount,
     data: {
       amount,
       ...(reseal.changed
         ? { allowanceAmount: reseal.allowanceAmount, allowanceBreakdown: reseal.allowanceBreakdown }
         : {}),
+      absenceAmount: absenceResult.total,
+      absenceBreakdown: absenceResult.breakdown,
       suspendedAmount: suspension.total,
       suspensionBreakdown: suspension.breakdown,
       deductionAmount: deduction.total,
@@ -508,11 +533,11 @@ const isResyncBlocked = (entry, result) =>
   (!result.structural || result.amount.lessThan(new Decimal(entry.paidAmount)));
 
 /**
- * Oy uchun qayta hisob manbalari: ushlab qolishlar, tyutor guruhlari va
- * to'xtatishlar — bir marta, xodimlar bo'yicha.
+ * Oy uchun qayta hisob manbalari: ushlab qolishlar, tyutor guruhlari,
+ * to'xtatishlar va kelmagan kunlar — bir marta, xodimlar bo'yicha.
  */
 const loadResyncSources = async (month, staffIds) => {
-  const [deductions, tutor, suspensions] = await Promise.all([
+  const [deductions, tutor, suspensions, absence] = await Promise.all([
     prisma.payrollDeduction.findMany({
       where: {
         staffId: { in: staffIds },
@@ -524,6 +549,7 @@ const loadResyncSources = async (month, staffIds) => {
     }),
     loadGroupsForPayroll(month, staffIds),
     loadSuspensionsForMonth(month, staffIds),
+    loadAbsenceFacts(month, staffIds),
   ]);
   const deductionMap = new Map();
   for (const d of deductions) {
@@ -536,17 +562,24 @@ const loadResyncSources = async (month, staffIds) => {
       studentCounts: tutor.studentCounts,
       deductions: deductionMap.get(staffId) || [],
       suspensions: suspensionsFor(suspensions, staffId),
+      absence: {
+        enabled: absence.enabled,
+        workDays: absence.workDays,
+        absences: absence.byStaff.get(staffId) || [],
+      },
     }),
   };
 };
 
 /**
  * MUHRLANGAN OYLIKNING O'ZGARUVCHAN QISMLARINI qayta hisoblaydi (`finance.md`
- * §10): TYUTOR QATORLARI, TO'XTATISH va USHLAB QOLISH, ulardan kelib chiqib
- * `amount`. Lavozim maoshi va dars soati (`fixedAmount`, `kpiAmount`) muhrdagicha.
+ * §10): TYUTOR QATORLARI, KELMAGAN KUNLAR, TO'XTATISH va USHLAB QOLISH,
+ * ulardan kelib chiqib `amount`. Lavozim maoshi va dars soati (`fixedAmount`,
+ * `kpiAmount`) muhrdagicha.
  *
  * Chaqiriladi: ushlab qolish / to'xtatish qo'shilganda yoki bekor qilinganda,
- * tyutor guruhi biriktirilganda/o'zgarganda/olib tashlanganda va oylik
+ * tyutor guruhi biriktirilganda/o'zgarganda/olib tashlanganda, xodim davomati
+ * o'zgarganda (`payrollAbsence.resyncAfterAttendanceChange`) va oylik
  * shakllantirishda (kunlik cron va "Shakllantirish" tugmasi) zaxira sifatida.
  *
  * TO'LOV TUSHGAN qator — `isResyncBlocked`. Sabab (biznes qarori, 2026-09-17):

@@ -18,7 +18,7 @@
  *
  *   5. PayrollEntry.paidAmount    = Σ (isVoided=false) SalaryAllocation.amount
  *   6. PayrollEntry.amount        = fixedAmount + kpiAmount + allowanceAmount
- *                                   − suspendedAmount − deductionAmount
+ *                                   − absenceAmount − suspendedAmount − deductionAmount
  *
  * Kirim tomonida yo'qolgan yangilanish ertasi kuni topilar, chiqim tomonida
  * esa oylik qayta to'lanib ketishi mumkin edi va buni hech kim aytmasdi.
@@ -274,6 +274,7 @@ async function runFinanceReconcilePass() {
       fixedAmount: true,
       kpiAmount: true,
       allowanceAmount: true,
+      absenceAmount: true,
       suspendedAmount: true,
       deductionAmount: true,
     },
@@ -313,6 +314,7 @@ async function runFinanceReconcilePass() {
       const expectedAmount = new Decimal(entry.fixedAmount)
         .plus(entry.kpiAmount)
         .plus(entry.allowanceAmount)
+        .minus(entry.absenceAmount)
         .minus(entry.suspendedAmount)
         .minus(entry.deductionAmount);
       if (!expectedAmount.equals(entry.amount)) {

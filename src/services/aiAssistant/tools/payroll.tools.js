@@ -156,6 +156,9 @@ const compactPreview = (preview) =>
         perHourRate: preview.perHourRate,
         allowanceAmount: preview.allowanceAmount,
         allowances: preview.allowanceBreakdown,
+        // Kelmagan kunlar (fiksadan kunlik ayirma) — `amount` dan allaqachon ayirilgan
+        absenceAmount: preview.absenceAmount,
+        absence: preview.absenceBreakdown,
         // Oylikni to'xtatish — `amount` dan allaqachon ayirilgan
         suspendedAmount: preview.suspendedAmount,
         suspensions: preview.suspensionBreakdown,
@@ -469,6 +472,7 @@ const payrollProjection = defineTool({
         kpiAmount: row.kpiAmount ?? null,
         lessonHours: row.lessonHours ?? null,
         allowanceAmount: row.allowanceAmount ?? null,
+        absenceAmount: row.absenceAmount ?? null,
         suspendedAmount: row.suspendedAmount ?? null,
         amount: row.amount ?? null,
       })),

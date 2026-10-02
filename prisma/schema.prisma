@@ -2776,6 +2776,11 @@ model FinanceSettings {
   // oldingi oylarga oylik majburiyati (xarajat) yozib qo'yilmaydi.
   firstPayrollMonth Int? @map("first_payroll_month")
 
+  // KELMAGAN KUN UCHUN AYIRMA (biznes qarori, 2026-10-02): shu oydan boshlab
+  // fiksa oylikdan har "kelmadi"/"sababli" ish kuni uchun kunlik summa
+  // ayriladi. null → o'chirilgan. O'tgan oylarga tegmaslik uchun pol.
+  absenceDeductionFromMonth Int? @default(202610) @map("absence_deduction_from_month")
+
   // STANDART TARIF — yangi o'quvchi yaratilganda unga AVTOMAT biriktiriladi.
   //
   // ⚠️ soft ref → platform.Tariff. FK YO'Q va bo'lishi ham mumkin emas:
@@ -3709,9 +3714,16 @@ model PayrollEntry {
   // To'xtatilgan oylik (`PayrollSuspension`): hisoblanmaydigan qismlar jami va
   // tafsiloti [{id,component,itemKey,label,reason,amount}]. Yalpi qismlar
   // (fixed/kpi/allowance) O'ZGARMAYDI — to'xtatish bekor qilinsa oylik to'liq
-  // tiklanishi uchun. amount = fixed + kpi + allowance − suspended − deduction.
+  // tiklanishi uchun. amount = fixed + kpi + allowance − absence − suspended − deduction.
   suspendedAmount     Decimal @default(0) @map("suspended_amount") @db.Decimal(14, 2)
   suspensionBreakdown Json    @default("[]") @map("suspension_breakdown")
+  // KELMAGAN KUNLAR — fiksa oylikdan kunlik ayirma (`computeAbsenceDeduction`,
+  // `finance.md` §10). Tafsilot: { workDays, dailyRate, days: [{date,status,amount}] }.
+  // `{}` — ayirma shu oyda qo'llanmaydi (sozlamadagi boshlanish oyidan oldin).
+  // Yalpi qismlar O'ZGARMAYDI — davomat to'g'rilansa ayirma qaytadi.
+  // amount = fixed + kpi + allowance − absence − suspended − deduction.
+  absenceAmount       Decimal @default(0) @map("absence_amount") @db.Decimal(14, 2)
+  absenceBreakdown    Json    @default("{}") @map("absence_breakdown")
   // Toifa / lavozim / bo'lim nomi snapshot'i (o'zgarsa/o'chsa ham registr o'qiladi)
   categoryName        String  @default("") @map("category_name")
   positionName        String  @default("") @map("position_name")

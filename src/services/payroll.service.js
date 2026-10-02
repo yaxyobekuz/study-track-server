@@ -23,7 +23,9 @@
  * manbadan (oy to'liq, projeksiya). Ilgari oy yopilguncha kechiktirilardi va
  * o'qituvchilar majburiyatlar ro'yxatida ko'rinmasdi.
  *
- * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida.
+ * ⚠️ Kun proratsiyasi YO'Q — "fiksa" qat'iy summa, oy aniqligida. Yagona
+ * kun-aniqligidagi qism — KELMAGAN KUNLAR ayirmasi (davomat fakti,
+ * `computeAbsenceDeduction`): ishga kirish/ketish kuni bo'yicha bo'linmaydi.
  */
 
 const prisma = require("../config/prisma");
@@ -51,6 +53,8 @@ const payrollEngine = require("./payrollEngine.service");
 const { getTeacherHours, getTeachersHours } = require("./lessonHours.service");
 const { getFinanceSettings } = require("./settings.service");
 const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
+const { absenceBreakdownKey } = require("../helpers/salaryRules.helpers");
+const { serializeAbsence } = require("./payrollAbsence.service");
 
 // Payroll uchun user maydonlari — biriktirmalar bilan
 const PAYROLL_USER_SELECT = {
@@ -88,6 +92,9 @@ const serializeEntry = (row, { staff } = {}) => {
     // faqat tushuntirish
     suspendedAmount: formatAmount(row.suspendedAmount ?? 0),
     suspensionBreakdown: Array.isArray(row.suspensionBreakdown) ? row.suspensionBreakdown : [],
+    // Kelmagan kunlar (fiksadan kunlik ayirma) — `amount` dan ALLAQACHON ayirilgan
+    absenceAmount: formatAmount(row.absenceAmount ?? 0),
+    absence: serializeAbsence(row.absenceBreakdown, row.absenceAmount),
     deductionAmount: formatAmount(row.deductionAmount ?? 0),
     deductionBreakdown: Array.isArray(row.deductionBreakdown) ? row.deductionBreakdown : [],
     kpiAmount: formatAmount(row.kpiAmount ?? 0),
@@ -137,6 +144,7 @@ const emptySummary = (month, reason) => ({
   totalAmount: "0.00",
   fixedTotal: "0.00",
   kpiTotal: "0.00",
+  absenceTotal: "0.00",
   deductionTotal: "0.00",
   // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
   skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0, monthOpen: 0 },
@@ -226,7 +234,14 @@ const generateForMonth = async (monthInput, options = {}) => {
   // qatorga TEGILMAYDI: unga allaqachon taqsimot bog'langan (`finance.md` §10).
   const existing = await prisma.payrollEntry.findMany({
     where: { month, staffId: { in: staff.map((s) => s.id) } },
-    select: { id: true, staffId: true, status: true, paidAmount: true, amount: true },
+    select: {
+      id: true,
+      staffId: true,
+      status: true,
+      paidAmount: true,
+      amount: true,
+      absenceBreakdown: true,
+    },
   });
   const restorable = new Map();
   const refreshable = new Map();
@@ -264,6 +279,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
   let kpiTotal = new Decimal(0);
+  let absenceTotal = new Decimal(0);
   let deductionTotal = new Decimal(0);
 
   for (const person of staff) {
@@ -293,6 +309,7 @@ const generateForMonth = async (monthInput, options = {}) => {
     total = total.plus(c.amount);
     fixedTotal = fixedTotal.plus(c.fixedAmount).plus(c.allowanceAmount);
     kpiTotal = kpiTotal.plus(c.kpiAmount);
+    absenceTotal = absenceTotal.plus(c.absenceAmount);
     deductionTotal = deductionTotal.plus(c.deductionAmount);
 
     const facts = {
@@ -300,6 +317,8 @@ const generateForMonth = async (monthInput, options = {}) => {
       fixedAmount: c.fixedAmount,
       allowanceAmount: c.allowanceAmount,
       allowanceBreakdown: c.allowanceBreakdown,
+      absenceAmount: c.absenceAmount,
+      absenceBreakdown: c.absenceBreakdown,
       suspendedAmount: c.suspendedAmount,
       suspensionBreakdown: c.suspensionBreakdown,
       deductionAmount: c.deductionAmount,
@@ -330,9 +349,15 @@ const generateForMonth = async (monthInput, options = {}) => {
         data: { ...facts, paidAt: null, cancelReason: "", cancelledAt: null, cancelledBy: null },
       });
     } else if (existingRefresh) {
-      // QAYTA MUHRLASH — faqat summa haqiqatan o'zgargan bo'lsa (keraksiz
-      // yozuvni oldini oladi). To'lov tushmagani uchun taqsimot buzilmaydi.
-      if (!new Decimal(existingRefresh.amount).equals(c.amount)) {
+      // QAYTA MUHRLASH — faqat summa yoki kelmagan kunlar tafsiloti
+      // haqiqatan o'zgargan bo'lsa (keraksiz yozuvni oldini oladi). Kun
+      // almashsa summa bir xil qolishi mumkin — profil esa kunni ko'rsatadi.
+      // To'lov tushmagani uchun taqsimot buzilmaydi.
+      if (
+        !new Decimal(existingRefresh.amount).equals(c.amount) ||
+        absenceBreakdownKey(existingRefresh.absenceBreakdown) !==
+          absenceBreakdownKey(c.absenceBreakdown)
+      ) {
         refreshes.push({ id: existingRefresh.id, data: facts });
       } else {
         summary.skipped.alreadyExists += 1;
@@ -355,6 +380,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   summary.totalAmount = formatAmount(total);
   summary.fixedTotal = formatAmount(fixedTotal);
   summary.kpiTotal = formatAmount(kpiTotal);
+  summary.absenceTotal = formatAmount(absenceTotal);
   summary.deductionTotal = formatAmount(deductionTotal);
   summary.dryRun = dryRun;
 
@@ -642,9 +668,11 @@ const cancelEntry = async (id, reason, userId) => {
  *   plannedGross — BELGILANGAN OYLIK: hamma dars o'tilganda
  *                  (o'tildi + o'tilmadi + qoldi), ushlab qolish va to'xtatishsiz
  *   missedAmount — o'tilmagan darslar uchun ayirilgani (reja − oy oxirida)
+ *   absenceAmount — kelmagan ish kunlari uchun fiksadan ayirilgani
  *
  * @param {number} month - YYYYMM
- * @returns {Promise<{amount: Decimal, plannedGross: Decimal, missedAmount: Decimal, staffCount: number}>}
+ * @returns {Promise<{amount: Decimal, plannedGross: Decimal, missedAmount: Decimal,
+ *   absenceAmount: Decimal, staffCount: number}>}
  */
 const computeAssignedPayroll = async (month) => {
   const [salaryRules, tutorIds] = await Promise.all([
@@ -670,8 +698,9 @@ const computeAssignedPayroll = async (month) => {
   let amount = new Decimal(0);
   let plannedGross = new Decimal(0);
   let missedAmount = new Decimal(0);
+  let absenceAmount = new Decimal(0);
   let staffCount = 0;
-  if (staff.length === 0) return { amount, plannedGross, missedAmount, staffCount };
+  if (staff.length === 0) return { amount, plannedGross, missedAmount, absenceAmount, staffCount };
 
   // Soat BIR MARTA o'qiladi, undan ikki kontekst: "oy oxirida" va "reja".
   // O'tilmagan darslar `hours` dan allaqachon ayirilgan — reja ularni qaytaradi.
@@ -701,13 +730,14 @@ const computeAssignedPayroll = async (month) => {
     if (!c) continue;
     staffCount += 1;
     if (c.amount.greaterThan(0)) amount = amount.plus(c.amount);
+    absenceAmount = absenceAmount.plus(c.absenceAmount);
 
     const planned = payrollEngine.computeForStaff(person, month, plannedCtx);
     plannedGross = plannedGross.plus(planned.grossAmount);
     const missed = planned.amount.minus(c.amount);
     if (missed.greaterThan(0)) missedAmount = missedAmount.plus(missed);
   }
-  return { amount, plannedGross, missedAmount, staffCount };
+  return { amount, plannedGross, missedAmount, absenceAmount, staffCount };
 };
 
 /**
@@ -777,7 +807,10 @@ const getMySalaryStats = async (userId) => {
       // BELGILANGAN OYLIK — admin belgilagan to'liq summa: hamma dars o'tilganda,
       // ushlab qolish va to'xtatishsiz (fiksa + soat + ustamalar)
       assignedAmount: formatAmount(planned.grossAmount),
-      // Belgilangan oylikdan ayriladiganlar (hamma dars o'tilgan holat bo'yicha)
+      // Belgilangan oylikdan ayriladiganlar (hamma dars o'tilgan holat bo'yicha).
+      // Kelmagan kunlar soatga bog'liq emas — uchala kontekstda bir xil.
+      plannedAbsenceAmount: formatAmount(planned.absenceAmount),
+      absence: serializeAbsence(planned.absenceBreakdown, planned.absenceAmount),
       plannedSuspendedAmount: formatAmount(planned.suspendedAmount),
       suspensions: planned.suspensionBreakdown
         .filter((line) => new Decimal(line.amount || 0).greaterThan(0))
@@ -804,6 +837,8 @@ const getMySalaryStats = async (userId) => {
       kpiAmount: true,
       allowanceAmount: true,
       allowanceBreakdown: true,
+      absenceAmount: true,
+      absenceBreakdown: true,
       suspendedAmount: true,
       suspensionBreakdown: true,
       deductionAmount: true,
@@ -872,6 +907,16 @@ const getMySalaryStats = async (userId) => {
           ? currentEntry.allowanceBreakdown
           : []
         : computed?.allowanceBreakdown ?? [],
+      // Kelmagan kunlar — muhrlangan bo'lsa muhrdan, aks holda jonli: xodim
+      // qaysi kuni kelmagani va har kun uchun qancha ayrilganini ko'radi
+      absenceAmount: formatAmount(
+        currentEntry ? currentEntry.absenceAmount : computed?.absenceAmount ?? 0,
+      ),
+      absence: currentEntry
+        ? serializeAbsence(currentEntry.absenceBreakdown, currentEntry.absenceAmount)
+        : computed
+          ? serializeAbsence(computed.absenceBreakdown, computed.absenceAmount)
+          : null,
       // To'xtatilgan qism — muhrlangan bo'lsa muhrdan, aks holda jonli
       suspendedAmount: formatAmount(
         currentEntry ? currentEntry.suspendedAmount : computed?.suspendedAmount ?? 0,
@@ -928,6 +973,7 @@ module.exports = {
   STATUS_LABELS,
   PAYROLL_USER_SELECT,
   serializeEntry,
+  serializeAbsence,
   generateForMonth,
   getEntries,
   getStaffEntries,

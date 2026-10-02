@@ -30,6 +30,7 @@ const {
   getScheduleDayWindows,
 } = require("./scheduleWorkTime.service");
 const { resolveCheckout } = require("./checkoutGate.service");
+const { resyncAfterAttendanceChange } = require("./payrollAbsence.service");
 const { formatDateUz, formatTimeUz } = require("../helpers/date.helpers");
 const { dayKey } = require("../helpers/lessonHours");
 
@@ -477,6 +478,10 @@ async function checkIn(userId, locationPayload, adminUserId) {
     }
   }
 
+  // Oldindan "sababli" yozilgan kunga kelgan bo'lsa — kelmagan kun ayirmasi
+  // qaytadi (`finance.md` §10, KELMAGAN KUNLAR). Kutilmaydi, yiqitmaydi.
+  if (existing) resyncAfterAttendanceChange(userId, today);
+
   return record;
 }
 
@@ -912,6 +917,13 @@ async function markStaffAttendance({ date, records }, markedBy) {
 
     results.push(updated);
   }
+
+  // Holat o'zgardi — fiksa oylikdagi kelmagan kun ayirmasi moliyada ham
+  // darhol yangilansin (kutilmaydi, xato davomatni yiqitmaydi)
+  resyncAfterAttendanceChange(
+    results.map((row) => row.userId),
+    normalizedDate,
+  );
 
   return results;
 }
@@ -1400,6 +1412,9 @@ async function reviewExcuse(excuseId, status, rejectionReason, reviewedBy) {
         },
       });
     }
+
+    // "Sababli" ham kelmagan kun — fiksa oylikdan ayiriladi (biznes qarori)
+    resyncAfterAttendanceChange(excuse.userId, excuse.date);
   }
 
   return updatedExcuse;

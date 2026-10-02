@@ -114,6 +114,9 @@ const table = (name) => ({
 });
 
 const prisma = {
+  // Kelmagan kun ayirmasi O'CHIQ — bu fayl boshqa qoidani himoya qiladi
+  // (ayirma: `test/payrollAbsence.test.js`)
+  financeSettings: { upsert: async () => ({ id: "singleton", absenceDeductionFromMonth: null }) },
   user: table("users"),
   position: table("positions"),
   salaryCategory: table("categories"),

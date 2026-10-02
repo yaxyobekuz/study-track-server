@@ -1140,6 +1140,8 @@ const buildPayroll = async (month, compareMonth) => {
     plannedGross: formatAmount(assignedRow.plannedGross),
     previousPlannedGross: formatAmount(previousAssignedRow.plannedGross),
     missedAmount: formatAmount(assignedRow.missedAmount),
+    // Kelmagan ish kunlari uchun fiksadan ayirilgani (`finance.md` §10)
+    absenceAmount: formatAmount(assignedRow.absenceAmount),
     staffCount: items.length,
     unpaidCount: items.filter((row) => row.status !== "paid").length,
     previousAccrued: formatAmount(previousAccrued),
@@ -1674,6 +1676,8 @@ const getDashboard = async (query = {}, options = {}) => {
             changeUnit: "percent",
             // Frontend "− X so'm o'tilmagan darslar uchun" deb ko'rsatadi
             missed: payroll.missedAmount,
+            // "− X so'm kelmagan kunlar uchun"
+            absence: payroll.absenceAmount,
             staffCount: payroll.assignedStaffCount,
             sub: `${payroll.assignedStaffCount} ta xodimga belgilangan`,
           },
