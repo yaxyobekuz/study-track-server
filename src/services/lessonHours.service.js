@@ -428,6 +428,10 @@ async function getTeachersHours(teacherIds, month, options = {}) {
     let taughtScheduled = 0;
     const missedLessons = [];
     const missedByReason = { absent: 0, excused: 0, noGrade: 0 };
+    // O'rinbosarga berilgan o'z darslari — "nega soatim kam" degan savolga
+    // javob (kim o'tdi — `substitutionId` orqali). Faqat ko'rsatish uchun:
+    // soat `out` hisobidan allaqachon ayirilgan.
+    const substitutedOutLessons = [];
 
     const bump = (map, id, name, field, delta) => {
       let row = map.get(id);
@@ -483,10 +487,21 @@ async function getTeachersHours(teacherIds, month, options = {}) {
         if (taughtKeys.has(day.key)) taughtScheduled += 1;
 
         const windows = outByKey.get(lesson.key);
-        const movedAway = windows?.some((entry) => withinWindow(day.date, entry));
+        const movedAway = windows?.find((entry) => withinWindow(day.date, entry));
 
         if (movedAway) {
           out += 1;
+          substitutedOutLessons.push({
+            date: day.date,
+            // ⚠️ Sana matni SERVERDA: `day.date` — UTC yarim tuni (`dates.md` §4)
+            dateLabel: formatDateUz(day.date, { utc: true }),
+            classId: lesson.classId,
+            className: classMap.get(lesson.classId) ?? "Noma'lum",
+            subjectId: lesson.subjectId,
+            subjectName: subjectMap.get(lesson.subjectId) ?? "Noma'lum",
+            lessonOrder: lesson.lessonOrder,
+            substitutionId: movedAway.id,
+          });
           bump(byClass, lesson.classId, classMap.get(lesson.classId), "substituted", 1);
           bump(bySubject, lesson.subjectId, subjectMap.get(lesson.subjectId), "substituted", 1);
           continue;
@@ -578,6 +593,7 @@ async function getTeachersHours(teacherIds, month, options = {}) {
       missedHours,
       missedByReason,
       missedLessons,
+      substitutedOutLessons,
       // Qaysi kungacha tekshirildi: `null` — oy to'liq, `0` — hali hech kun
       judgedThroughDay: judgeLimit,
       weeklyHours,

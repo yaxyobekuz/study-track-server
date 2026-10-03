@@ -9,9 +9,10 @@
  *       fiksa + dars soati × narx + ustamalar
  *       − kelmagan kunlar − to'xtatilgan − ushlab qolingan = oylik
  *     (`financeReconcile` invarianti 6 bilan AYNI tenglik);
- *   · NEGA KAM — har bir kamayish SABABI va KUNI bilan: kelmagan ish kuni
- *     (fiksadan kunlik summa) va o'tilmagan dars (kelmagan / sababli / baho
- *     qo'yilmagan — dars soati narxi).
+ *   · NEGA KAM — har bir kamayish SABABI va KUNI bilan (`reasons`): kelmagan
+ *     ish kuni (fiksadan kunlik summa), o'tilmagan dars (kelmagan / sababli /
+ *     baho qo'yilmagan) va o'rinbosarga berilgan dars (dars soati narxi),
+ *     butun oyga tegishlilari (to'xtatish, ushlab qolish) — alohida.
  *
  * ⚠️ MUHRLANGAN OY MUHRDAN O'QILADI. Majburiyat shakllangan bo'lsa zanjir
  * uning MUHRLANGAN qismlaridan quriladi (`PayrollEntry` doktrinasi): qoida
@@ -38,7 +39,8 @@ const { formatDateUz } = require("../helpers/date.helpers");
 const { dayKey } = require("../helpers/lessonHours");
 const { resolveSalariesForMonth, TYPE_LABELS } = require("./staffSalary.service");
 const payrollEngine = require("./payrollEngine.service");
-const { getTeacherHours, cutoffForMonth } = require("./lessonHours.service");
+const { getTeacherHours, getMonthCalendar, cutoffForMonth } = require("./lessonHours.service");
+const { REASON_LABELS: SUBSTITUTION_REASON_LABELS } = require("./lessonSubstitution.service");
 const { serializeAbsence, loadWorkDays } = require("./payrollAbsence.service");
 const { PAYROLL_USER_SELECT, STATUS_LABELS } = require("./payroll.service");
 
@@ -90,16 +92,17 @@ const fromComputed = (c) => ({
 });
 
 /**
- * O'tilmagan darslar KUNLAR KESIMIDA — "qaysi kuni, qaysi dars, nega va
- * qancha". Kun summasi = shu kuni o'tilmagan soat × 1 dars soati narxi.
+ * Darslar KUNLAR KESIMIDA — "qaysi kuni, qaysi dars va qancha". Kun summasi =
+ * shu kungi soat × 1 dars soati narxi (dvigateldagi KPI formulasining o'zi).
  *
  * ⚠️ Sana matni SERVERDA (`dateLabel`): dars kuni — UTC yarim tuni
  * (`dates.md` §4), brauzerda o'qilsa kun siljirdi.
  *
- * @param {Array} lessons - `getTeachersHours(...).missedLessons`
+ * @param {Array} lessons - `getTeachersHours(...)` dagi dars qatorlari
  * @param {Decimal} rate - 1 dars soati narxi
+ * @param {(lesson: object) => object} shape - ekranga chiqadigan dars shakli
  */
-const groupMissedByDay = (lessons, rate) => {
+const groupLessonsByDay = (lessons, rate, shape) => {
   const byDay = new Map();
   for (const lesson of lessons) {
     const key = dayKey(new Date(lesson.date));
@@ -112,15 +115,7 @@ const groupMissedByDay = (lessons, rate) => {
       };
       byDay.set(key, day);
     }
-    day.lessons.push({
-      className: lesson.className,
-      subjectName: lesson.subjectName,
-      lessonOrder: lesson.lessonOrder,
-      reason: lesson.reason,
-      reasonLabel: lesson.reasonLabel,
-      autoMarked: Boolean(lesson.autoMarked),
-      substituted: Boolean(lesson.substituted),
-    });
+    day.lessons.push(shape(lesson));
   }
 
   return [...byDay.values()]
@@ -133,6 +128,64 @@ const groupMissedByDay = (lessons, rate) => {
         amount: formatAmount(round2(rate.times(day.lessons.length))),
       };
     });
+};
+
+/** O'tilmagan darslar kunlar kesimida — sababi bilan. */
+const groupMissedByDay = (lessons, rate) =>
+  groupLessonsByDay(lessons, rate, (lesson) => ({
+    className: lesson.className,
+    subjectName: lesson.subjectName,
+    lessonOrder: lesson.lessonOrder,
+    reason: lesson.reason,
+    reasonLabel: lesson.reasonLabel,
+    autoMarked: Boolean(lesson.autoMarked),
+    substituted: Boolean(lesson.substituted),
+  }));
+
+/**
+ * NEGA KAM — barcha KUNLIK sabablar bitta xronologik ro'yxatda: kelmagan kun
+ * (fiksadan), o'tilmagan darslar va o'rinbosarga berilgan darslar. Bir kunda
+ * bir nechta sabab bo'lishi mumkin (aralash oylikda kelmagan kun fiksadan
+ * HAM, o'sha kungi darslar soatidan HAM ayriladi) — ular yonma-yon turadi.
+ *
+ * Summalar qismlarning o'zidan (kelmagan kun — muhrdagi/dvigateldagi kun
+ * summasi, darslar — `soat × narx`); kun jami shu qatorlar yig'indisi.
+ *
+ * @returns {{ days: Array, total: Decimal }}
+ */
+const buildReasonDays = ({ absence, missedLessons, substitutedOut }) => {
+  const byDay = new Map();
+  const dayOf = (date, dateLabel) => {
+    let day = byDay.get(date);
+    if (!day) {
+      day = { date, dateLabel, items: [], total: new Decimal(0) };
+      byDay.set(date, day);
+    }
+    return day;
+  };
+
+  for (const row of absence?.days ?? []) {
+    if (!positive(row)) continue;
+    const day = dayOf(row.date, row.dateLabel);
+    day.items.push({ kind: "absence", status: row.status, statusLabel: row.statusLabel, amount: row.amount });
+    day.total = day.total.plus(row.amount);
+  }
+  for (const [kind, block] of [["missed", missedLessons], ["substituted", substitutedOut]]) {
+    for (const row of block?.days ?? []) {
+      const day = dayOf(row.date, row.dateLabel);
+      day.items.push({ kind, hours: row.hours, amount: row.amount, lessons: row.lessons });
+      day.total = day.total.plus(row.amount);
+    }
+  }
+
+  let total = new Decimal(0);
+  const days = [...byDay.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(({ total: dayTotal, ...day }) => {
+      total = total.plus(dayTotal);
+      return { ...day, amount: formatAmount(dayTotal) };
+    });
+  return { days, total };
 };
 
 /**
@@ -269,6 +322,62 @@ const getMonthBreakdown = async (staffId, month) => {
     };
   }
 
+  // ── O'rinbosarga berilgan darslar — soat egasidan AYIRILADI ──
+  // (o'rinbosarga qo'shiladi, `education.md` §8). Pulga ta'siri faqat soat
+  // narxi bo'lsa; kim o'tgani va sababi o'rinbosarlik yozuvining o'zidan.
+  const outLessons = hoursInfo?.substitutedOutLessons ?? [];
+  let substitutedOut = null;
+  if (rate.greaterThan(0) && outLessons.length > 0) {
+    const ids = [...new Set(outLessons.map((lesson) => lesson.substitutionId).filter(Boolean))];
+    const rows = ids.length
+      ? await prisma.lessonSubstitution.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, reason: true, teacherSnapshot: true },
+        })
+      : [];
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    substitutedOut = {
+      hours: outLessons.length,
+      perHourRate: formatAmount(rate),
+      amount: formatAmount(round2(rate.times(outLessons.length))),
+      days: groupLessonsByDay(outLessons, rate, (lesson) => {
+        const row = byId.get(lesson.substitutionId);
+        return {
+          className: lesson.className,
+          subjectName: lesson.subjectName,
+          lessonOrder: lesson.lessonOrder,
+          substituteName: row?.teacherSnapshot?.substitute?.name || "Noma'lum",
+          reasonLabel: SUBSTITUTION_REASON_LABELS[row?.reason] ?? "",
+        };
+      }),
+    };
+  }
+
+  // ── Bayram kunlari — soatbay oylikda dars ham, soat ham yo'q (ma'lumot) ──
+  // Ayirma EMAS (reja ularsiz tuziladi), lekin "nega bu oy soat kam" degan
+  // savolga javob. Yakshanba bayrami sanalmaydi — u kuni dars baribir yo'q.
+  let holidays = [];
+  if (hoursInfo && rate.greaterThan(0) && !hoursInfo.isVacationMonth) {
+    const { holidaySet } = await getMonthCalendar(month);
+    const prefix = `${Math.trunc(month / 100)}-${String(month % 100).padStart(2, "0")}-`;
+    holidays = [...holidaySet]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => new Date(`${key}T00:00:00Z`))
+      .filter((date) => date.getUTCDay() !== 0)
+      .sort((a, b) => a - b)
+      .map((date) => ({ date: dayKey(date), dateLabel: formatDateUz(date, { utc: true }) }));
+  }
+
+  // ── NEGA KAM — kunlik sabablar + butun oyga tegishlilari ──
+  // Jami = ekranda ko'rinadigan har bir qator yig'indisi (kunlar, to'xtatish,
+  // ushlab qolish, foizli ustama ta'siri) — "qayerdan shuncha" ochiq qolmasin.
+  const reasonDays = buildReasonDays({ absence, missedLessons, substitutedOut });
+  const reasonsTotal = reasonDays.total
+    .plus(src.suspendedAmount)
+    .plus(src.deductionAmount)
+    .plus(missedLessons ? new Decimal(missedLessons.otherAmount) : 0);
+
   const paid = new Decimal(entry?.paidAmount ?? 0);
   const debt = src.amount.minus(paid);
 
@@ -290,7 +399,12 @@ const getMonthBreakdown = async (staffId, month) => {
       perHourRate: formatAmount(rate),
       // Pul yozilgan soat — muhrlangan oyda muhrdagisi
       paidHours: src.lessonHours,
-      // Jadval bo'yicha reja va uning taqsimoti (jonli)
+      // Jadval bo'yicha reja va uning taqsimoti (jonli):
+      //   jadval − o'rinbosarga berildi + o'rniga chiqildi = reja
+      //   reja − o'tilmadi = pul yoziladigan soat
+      scheduledHours: hoursInfo?.scheduledHours ?? null,
+      substitutedOutHours: hoursInfo?.substitutedOutHours ?? 0,
+      substitutedInHours: hoursInfo?.substitutedInHours ?? 0,
       plannedHours: hoursInfo ? liveHours + missedHours : null,
       taughtHours: hoursInfo?.taughtHours ?? null,
       missedHours,
@@ -324,8 +438,17 @@ const getMonthBreakdown = async (staffId, month) => {
     })),
     amount: formatAmount(src.amount),
 
-    // ── NEGA KAM — o'tilmagan darslar (soatbay qism) ──
+    // ── NEGA KAM ──
+    // Kunlar xronologik (kelmagan kun, o'tilmagan va o'rinbosarga berilgan
+    // darslar), bo'sh bo'lsa — "hech narsa ayrilmagan"
+    reasons: {
+      days: reasonDays.days,
+      total: formatAmount(reasonsTotal),
+      holidays,
+    },
+    // Tafsilot bloklari (joriy oy kartasi `missedLessons` dan o'qiydi)
     missedLessons,
+    substitutedOut,
     hoursDrift,
 
     // ── TO'LOV — faqat shakllangan oyda ──
@@ -349,4 +472,5 @@ const getMonthBreakdown = async (staffId, month) => {
 module.exports = {
   getMonthBreakdown,
   groupMissedByDay,
+  buildReasonDays,
 };

@@ -12,6 +12,9 @@ const assert = require("node:assert/strict");
  *   · muhrlangan oy MUHRDAN o'qiladi, jonli soat farq qilsa — `hoursDrift`,
  *     summa muhrdagidek, taxminiy "reja" esa berilmaydi;
  *   · fiksa xodimda kelmagan kunlar kun bo'yicha, dars soati umuman o'qilmaydi;
+ *   · "nega kam" — kelmagan kun, o'tilmagan va o'rinbosarga berilgan darslar
+ *     BITTA xronologik ro'yxatda, jami har bir qator yig'indisiga teng;
+ *     ayirma bo'lmasa ro'yxat bo'sh (panel "hech narsa ayrilmagan" deydi);
  *   · kelgusi oy rad etiladi.
  *
  * Servis, payroll dvigateli va kelmagan kun formulasi HAQIQIY kodi ishlaydi;
@@ -39,9 +42,11 @@ const SEP = 202609;
 let db;
 let hoursCalls;
 let monthHours;
+let holidayKeys;
 
 const resetDb = () => {
   hoursCalls = 0;
+  holidayKeys = [];
   db = {
     settings: { id: "singleton", absenceDeductionFromMonth: 202601 },
     users: [
@@ -58,6 +63,7 @@ const resetDb = () => {
     deductions: [],
     entries: [],
     attendances: [],
+    substitutions: [],
   };
   monthHours = regularMonth();
 };
@@ -89,6 +95,10 @@ const regularMonth = () => ({
     lesson("2026-09-08", 3, "absent", { autoMarked: true }),
     lesson("2026-09-08", 1, "absent"),
   ],
+  scheduledHours: 23,
+  substitutedOutHours: 0,
+  substitutedInHours: 0,
+  substitutedOutLessons: [],
   weeklyHours: 6,
   teachingDays: 26,
   isVacationMonth: false,
@@ -135,6 +145,9 @@ const prisma = {
       ) ?? null,
   },
   tutorGroup: { findMany: async () => [] },
+  lessonSubstitution: {
+    findMany: async ({ where }) => db.substitutions.filter((row) => where.id.in.includes(row.id)),
+  },
   payrollSuspension: { findMany: async () => [] },
   userClass: { groupBy: async () => [] },
 };
@@ -148,6 +161,7 @@ fakeModule("../src/services/lessonHours.service", {
   },
   getTeachersHours: async (ids) => new Map(ids.map((i) => [i, monthHours])),
   cutoffForMonth: () => null,
+  getMonthCalendar: async () => ({ holidaySet: new Set(holidayKeys), isVacationMonth: false }),
   computeLessonHoursForMonth: async () => new Map(),
   computeLessonHoursForStaff: async () => ({ hours: 0 }),
 });
@@ -382,6 +396,71 @@ test("sof soatbay xodim kelmasa: kelmagan kun '0 so'm' bo'lib chiqmaydi — u o'
   assert.equal(data.absenceAmount, money(0));
   assert.equal(data.missedLessons.days[0].lessons[0].reason, "absent");
   assertChain(data);
+});
+
+test("nega kam: kelmagan kun, o'tilmagan va o'rinbosarga berilgan darslar bitta ro'yxatda", async () => {
+  resetDb();
+  // Aralash oylik: fiksa 2 600 000 (26 ish kuni → kuniga 100 000) + soat
+  db.rules = [[TEACHER, { fixedAmount: new Decimal(2_600_000), perHourRate: new Decimal(0), allowances: [] }]];
+  db.attendances = [
+    { userId: TEACHER, date: new Date("2026-09-08T00:00:00Z"), status: "absent" },
+  ];
+  db.substitutions = [
+    { id: "s1", reason: "illness", teacherSnapshot: { substitute: { name: "Aziz Rahimov" } } },
+  ];
+  monthHours = {
+    ...regularMonth(),
+    scheduledHours: 25,
+    substitutedOutHours: 2,
+    substitutedOutLessons: [
+      { date: new Date("2026-09-22T00:00:00Z"), dateLabel: "22-sentabr, 2026", className: "8-B", subjectName: "Fizika", lessonOrder: 4, substitutionId: "s1" },
+      { date: new Date("2026-09-08T00:00:00Z"), dateLabel: "8-sentabr, 2026", className: "8-B", subjectName: "Fizika", lessonOrder: 5, substitutionId: "s1" },
+    ],
+  };
+  holidayKeys = ["2026-09-01", "2026-09-06", "2026-10-01"]; // 6-sentabr — yakshanba, 1-oktabr — boshqa oy
+  db.deductions = [
+    { id: id("d1"), staffId: TEACHER, reason: "Jarima", note: "", type: "fixed", value: new Decimal(30_000), createdAt: new Date() },
+  ];
+
+  const data = await getMonthBreakdown(TEACHER, SEP);
+
+  assert.equal(data.salaryType, "mixed");
+  assertChain(data);
+  assert.equal(data.substitutedOut.hours, 2);
+  assert.equal(data.substitutedOut.amount, money(100_000));
+  assert.equal(data.substitutedOut.days[1].lessons[0].substituteName, "Aziz Rahimov");
+  assert.equal(data.substitutedOut.days[1].lessons[0].reasonLabel, "Kasallik");
+
+  // 8-sentabr: fiksadan kun + 2 o'tilmagan dars + 1 berilgan dars, tartib bilan
+  const sep8 = data.reasons.days.find((d) => d.date === "2026-09-08");
+  assert.deepEqual(sep8.items.map((i) => [i.kind, i.amount]), [
+    ["absence", money(100_000)],
+    ["missed", money(100_000)],
+    ["substituted", money(50_000)],
+  ]);
+  assert.equal(sep8.amount, money(250_000));
+  assert.deepEqual(data.reasons.days.map((d) => d.date), ["2026-09-08", "2026-09-15", "2026-09-22"]);
+
+  // Jami = kunlar + ushlab qolish (foizli ustama yo'q — ta'sir 0)
+  // 250 000 + 50 000 + 50 000 + 30 000
+  assert.equal(data.reasons.total, money(380_000));
+
+  // Bayram — faqat shu oyning yakshanba bo'lmagan kuni
+  assert.deepEqual(data.reasons.holidays.map((h) => h.date), ["2026-09-01"]);
+  assert.equal(data.work.scheduledHours, 25);
+  assert.equal(data.work.substitutedOutHours, 2);
+});
+
+test("ayirma yo'q oy: sabablar ro'yxati bo'sh, jami 0", async () => {
+  resetDb();
+  monthHours = { ...regularMonth(), missedHours: 0, missedLessons: [], missedByReason: { absent: 0, excused: 0, noGrade: 0 } };
+
+  const data = await getMonthBreakdown(TEACHER, SEP);
+
+  assert.deepEqual(data.reasons.days, []);
+  assert.equal(data.reasons.total, money(0));
+  assert.equal(data.missedLessons, null);
+  assert.equal(data.substitutedOut, null);
 });
 
 test("oyligi yo'q xodim — hasSalary: false, zanjirsiz", async () => {

@@ -179,6 +179,12 @@ test("o'tilmagan darslar soatdan ayiriladi va sababi bilan qaytadi", async () =>
   // Reja: 5 dushanba + 4 seshanba = 9; 24-avgust o'rinbosarga berilgan
   assert.equal(t1.scheduledHours, 9);
   assert.equal(t1.substitutedOutHours, 1);
+  // Berilgan dars ro'yxati — sanasi, darsi va o'rinbosarlik yozuvi bilan
+  assert.deepEqual(
+    t1.substitutedOutLessons.map((l) => [l.dateLabel, l.className, l.lessonOrder, l.subjectName, l.substitutionId]),
+    [["24-avgust, 2026", "5-A", 1, "Matematika", "sub1"]],
+  );
+  assert.deepEqual(map.get("t2").substitutedOutLessons, []);
   // O'tilmagan: 10 (baho yo'q), 17 (sababsiz kelmagan — baho bo'lsa ham),
   // 25 (baho yo'q). 18-avgust — sababli, lekin baho qo'yilgan → O'TILGAN.
   assert.equal(t1.missedHours, 3);
