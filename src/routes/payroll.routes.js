@@ -27,6 +27,7 @@ const {
   getStaffEntries,
   getMyEntries,
   getMySalaryStats,
+  getMyMonthBreakdown,
   generate,
   cancelEntry,
   previewRecalc,
@@ -132,6 +133,8 @@ router.delete("/categories/:id", protect, validateObjectId("id"), authorizePermi
 // bir marta birlashtirishda tushib qolgan va tab "yuklab bo'lmadi" deb turardi.
 router.get("/salaries/my", protect, getMySalary);
 router.get("/my", protect, getMyEntries);
+// Bitta oyim batafsil: tarkib, kelmagan kunlar, o'tilmagan darslar (`?month=YYYYMM`)
+router.get("/my/breakdown", protect, getMyMonthBreakdown);
 router.get("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_VIEW), getSalaries);
 router.post("/salaries", protect, authorizePermission(PERMISSIONS.PAYROLL_ASSIGN), createSalary);
 router.get("/salaries/staff/:staffId", protect, validateObjectId("staffId"), authorizePermission(PERMISSIONS.PAYROLL_VIEW), getStaffHistory);

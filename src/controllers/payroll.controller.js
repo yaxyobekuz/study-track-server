@@ -2,8 +2,10 @@ const asyncHandler = require("../middleware/async.middleware");
 const payrollService = require("../services/payroll.service");
 const salaryPaymentService = require("../services/salaryPayment.service");
 const payrollRecalcService = require("../services/payrollRecalc.service");
+const payrollBreakdownService = require("../services/payrollBreakdown.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+const { currentMonthKey, parseMonthKey } = require("../helpers/month.helpers");
 
 // ── Majburiyatlar ────────────────────────────
 
@@ -36,6 +38,19 @@ const getMySalaryStats = asyncHandler(async (req, res) => {
   }
 
   const data = await payrollService.getMySalaryStats(req.user.id);
+  res.json({ success: true, data });
+});
+
+// O'ZIMNING bitta oyim — "oylik qanday hisoblandi va nega kam": tarkib
+// zanjiri, kelmagan kunlar va o'tilmagan darslar kunlar kesimida. Ruxsat
+// kaliti YO'Q: identifikator tokendan (`/my` bilan bir xil mulohaza).
+const getMyMonthBreakdown = asyncHandler(async (req, res) => {
+  if (req.user.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Oylik faqat xodimlar uchun");
+  }
+
+  const month = req.query.month ? parseMonthKey(req.query.month, "Oy") : currentMonthKey();
+  const data = await payrollBreakdownService.getMonthBreakdown(req.user.id, month);
   res.json({ success: true, data });
 });
 
@@ -110,6 +125,7 @@ module.exports = {
   getStaffEntries,
   getMyEntries,
   getMySalaryStats,
+  getMyMonthBreakdown,
   generate,
   cancelEntry,
   previewPayment,
