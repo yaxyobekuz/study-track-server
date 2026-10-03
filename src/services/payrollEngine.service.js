@@ -216,6 +216,7 @@ const absenceFor = (fixedAmount, staffId, ctx) => {
   if (!ctx.absence?.enabled) return { total: new Decimal(0), breakdown: {} };
   return computeAbsenceDeduction(fixedAmount, {
     workDays: ctx.absence.workDays,
+    rateDayCount: ctx.absence.rateDayCount,
     absences: ctx.absence.byStaff.get(staffId) || [],
   });
 };

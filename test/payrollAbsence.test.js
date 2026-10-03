@@ -6,7 +6,8 @@ const assert = require("node:assert/strict");
  * biznes qarori 2026-10-02).
  *
  * Himoya qilinadigan narsa:
- *   · ish kunlari = oy − yakshanba − bayram; kunlik = fiksa ÷ ish kunlari;
+ *   · bo'luvchi = oy − yakshanba (dam olish kunlari ICHIDA); kunlik = fiksa ÷ bo'luvchi;
+ *   · kelmaslik faqat ISH kunida (yakshanba va dam olish kunisiz) sanaladi;
  *   · "kelmadi" HAM, "sababli" HAM ayiriladi, kech kelgan — YO'Q;
  *   · yakshanba/bayramdagi belgi sanalmaydi, ayirma fiksadan oshmaydi;
  *   · faqat FIKSA qism (soatbay qism va ustamalar tegilmaydi);
@@ -58,9 +59,11 @@ const { loadAbsenceFacts, serializeAbsence } = require("../src/services/payrollA
 
 /* ───────────────────────── Ma'lumot ───────────────────────── */
 
-// Oktabr, 2026: 31 kun, yakshanbalar 4/11/18/25, 1-oktabr — bayram.
-// Ish kunlari = 31 − 4 − 1 = 26. Fiksa 5 200 000 → kunlik 200 000.
+// Oktabr, 2026: 31 kun, yakshanbalar 4/11/18/25, 1-oktabr — dam olish kuni.
+// Ish kunlari = 31 − 4 − 1 = 26, bo'luvchi = 31 − 4 = 27.
+// Formula testlarida bo'luvchi berilmasa — ish kunlari soni (eski chaqiruvchi).
 const OCT = 202610;
+const OCT_RATE_DAYS = 27;
 const SUNDAYS = ["2026-10-04", "2026-10-11", "2026-10-18", "2026-10-25"];
 const HOLIDAY = "2026-10-01";
 const WORK_DAYS = Array.from({ length: 31 }, (_, i) => `2026-10-${String(i + 1).padStart(2, "0")}`)
@@ -86,7 +89,7 @@ const ALI_ABSENCES = [
 ];
 
 /** Dvigatel konteksti — DB'siz, faqat shu testga kerak qismlar. */
-const ctxOf = ({ absences = ALI_ABSENCES, enabled = true, category = null, hours = 0, suspensions = [], deductions = [] } = {}) => ({
+const ctxOf = ({ absences = ALI_ABSENCES, enabled = true, category = null, hours = 0, suspensions = [], deductions = [], rateDayCount = null } = {}) => ({
   positionMap: new Map([[POS, { id: POS, name: "O'qituvchi", baseSalary: "5200000", department: { name: "Ta'lim" } }]]),
   categoryMap: new Map(category ? [[CAT, category]] : []),
   salaryRules: new Map(),
@@ -97,7 +100,7 @@ const ctxOf = ({ absences = ALI_ABSENCES, enabled = true, category = null, hours
   tutorGroupMap: new Map(),
   classStudentCounts: new Map(),
   suspensions,
-  absence: { enabled, workDays: WORK_DAYS, byStaff: new Map([[ALI, absences]]) },
+  absence: { enabled, workDays: WORK_DAYS, rateDayCount, byStaff: new Map([[ALI, absences]]) },
 });
 
 const ali = (extra = {}) => ({ id: ALI, positionId: POS, salaryCategoryId: null, ...extra });
@@ -116,6 +119,21 @@ test("formula: kunlik = fiksa ÷ ish kunlari; kelmadi va sababli sanaladi, kech/
     { date: "2026-10-05", status: "absent", amount: "200000.00" },
     { date: "2026-10-06", status: "excused", amount: "200000.00" },
   ]);
+  assert.equal(money(total), "400000.00");
+});
+
+test("formula: dam olish kuni BO'LUVCHIDA (faqat yakshanba chiqadi), lekin u kuni kelmaslik ayirilmaydi", () => {
+  // 5 400 000 ÷ 27 = 200 000. 1-oktabr (dam olish) va 4-oktabr (yakshanba)
+  // dagi "kelmadi" sanalmaydi — faqat 5- va 6-oktabr
+  const { total, breakdown } = computeAbsenceDeduction("5400000", {
+    workDays: WORK_DAYS,
+    rateDayCount: OCT_RATE_DAYS,
+    absences: ALI_ABSENCES,
+  });
+
+  assert.equal(breakdown.workDays, 27);
+  assert.equal(breakdown.dailyRate, "200000.00");
+  assert.deepEqual(breakdown.days.map((d) => d.date), ["2026-10-05", "2026-10-06"]);
   assert.equal(money(total), "400000.00");
 });
 
@@ -158,6 +176,15 @@ test("dvigatel: fiksa xodim — amount = yalpi − kelmagan kunlar", () => {
   assert.equal(money(c.amount), "4800000.00");
   // Yalpi qismlar O'ZGARMAYDI — davomat to'g'rilansa ayirma qaytadi
   assert.equal(money(c.fixedAmount), "5200000.00");
+});
+
+test("dvigatel: bo'luvchi kontekstdan — 5 200 000 ÷ 27 = 192 592 (pastga)", () => {
+  const c = computeForStaff(ali(), OCT, ctxOf({ rateDayCount: OCT_RATE_DAYS }));
+
+  assert.equal(c.absenceBreakdown.workDays, 27);
+  assert.equal(c.absenceBreakdown.dailyRate, "192592.00");
+  assert.equal(money(c.absenceAmount), "385184.00");
+  assert.equal(money(c.amount), "4814816.00");
 });
 
 test("dvigatel: fiksa + soatbay — faqat fiksa qismdan, soat puli tegilmaydi", () => {
@@ -303,7 +330,7 @@ test("faktlar: boshlanish oyidan oldin — davomat o'qilmaydi", async () => {
   assert.equal((await loadAbsenceFacts(OCT, [ALI])).enabled, false);
 });
 
-test("faktlar: ish kunlari bayram va yakshanbasiz, davomat xodim bo'yicha", async () => {
+test("faktlar: ish kunlari dam olish va yakshanbasiz, bo'luvchi faqat yakshanbasiz, davomat xodim bo'yicha", async () => {
   settings = { id: "singleton", absenceDeductionFromMonth: OCT };
   holidays = [{ type: "single", date: day(HOLIDAY), isActive: true }];
   attendances = [
@@ -317,6 +344,7 @@ test("faktlar: ish kunlari bayram va yakshanbasiz, davomat xodim bo'yicha", asyn
   const facts = await loadAbsenceFacts(OCT, [ALI]);
   assert.equal(facts.enabled, true);
   assert.deepEqual(facts.workDays, WORK_DAYS);
+  assert.equal(facts.rateDayCount, OCT_RATE_DAYS);
   assert.deepEqual(facts.byStaff.get(ALI), [
     { day: "2026-10-05", status: "absent" },
     { day: "2026-10-06", status: "excused" },

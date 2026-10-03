@@ -4,13 +4,14 @@
  * Biznes qarori (2026-10-02): fiksa oylikdagi xodim (o'qituvchi ham, texnik
  * xodim ham) ish kuni kelmasa, o'sha kun uchun kunlik summa oylikdan ayriladi.
  *
- *   ish kunlari  = oy kunlari − yakshanbalar − bayramlar
- *   kunlik summa = fiksa ÷ ish kunlari
- *   kelmagan kun = davomatda "kelmadi" YOKI "sababli" (kech kelgan — kelgan)
+ *   bo'luvchi    = oy kunlari − yakshanbalar (dam olish kunlari ICHIDA)
+ *   kunlik summa = fiksa ÷ bo'luvchi
+ *   kelmagan kun = ISH kunida (yakshanba va dam olish kunisiz) davomatda
+ *                  "kelmadi" YOKI "sababli" (kech kelgan — kelgan)
  *
  * ⚠️ FORMULA BU YERDA YOZILMAYDI — `computeAbsenceDeduction`
  * (`helpers/salaryRules.helpers.js`). Bu fayl faqat FAKTLARNI yig'adi
- * (davomat, bayramlar, sozlama) va muhrlangan oylikni davomat o'zgarganda
+ * (davomat, dam olish kunlari, sozlama) va muhrlangan oylikni davomat o'zgarganda
  * yangilaydi.
  *
  * ⚠️ FAKT — DAVOMAT. "Kelmadi" ni kun oxirida avtomat job qo'yadi
@@ -47,9 +48,9 @@ const isAbsenceDeductionActive = (fromMonth, month) =>
   fromMonth != null && month >= fromMonth;
 
 /**
- * Oyning ISH KUNLARI — yakshanba va bayramlar chiqarilgan. Dars soati
- * hisobidagi "dars kunlari" bilan AYNI ro'yxat (`teachingDaysOfMonth`):
- * ikkinchi kalendar yozilmaydi.
+ * Oyning ISH KUNLARI — yakshanba va dam olish kunlari chiqarilgan. Kelmaslik
+ * faqat shu kunlarda sanaladi. Dars soati hisobidagi "dars kunlari" bilan
+ * AYNI ro'yxat (`teachingDaysOfMonth`): ikkinchi kalendar yozilmaydi.
  *
  * @param {number} month - YYYYMM
  * @returns {Promise<string[]>} "YYYY-MM-DD"
@@ -60,19 +61,30 @@ const loadWorkDays = async (month) => {
 };
 
 /**
+ * KUNLIK SUMMA BO'LUVCHISI — oy kunlari, faqat yakshanbalar chiqarilgan
+ * (biznes qarori, 2026-10-03). Dam olish kunlari ICHIDA: fiksa ularni ham
+ * qamraydi, ya'ni ular kunlik summani kichraytiradi, lekin o'sha kuni
+ * kelmaslik ayirilmaydi (`loadWorkDays` da yo'q).
+ *
+ * @param {number} month - YYYYMM
+ * @returns {number}
+ */
+const countRateDays = (month) => teachingDaysOfMonth(month).length;
+
+/**
  * Oy uchun ayirma faktlari — bir marta, xodimlar bo'yicha (N+1 so'rovsiz).
  *
  * `enabled: false` bo'lsa davomat umuman o'qilmaydi.
  *
  * @param {number} month - YYYYMM
  * @param {string[]} staffIds
- * @returns {Promise<{ enabled: boolean, workDays: string[],
+ * @returns {Promise<{ enabled: boolean, workDays: string[], rateDayCount: number,
  *   byStaff: Map<string, Array<{day: string, status: string}>> }>}
  */
 const loadAbsenceFacts = async (month, staffIds) => {
   const settings = await getFinanceSettings();
   if (!isAbsenceDeductionActive(settings.absenceDeductionFromMonth, month)) {
-    return { enabled: false, workDays: [], byStaff: new Map() };
+    return { enabled: false, workDays: [], rateDayCount: 0, byStaff: new Map() };
   }
 
   const [workDays, rows] = await Promise.all([
@@ -97,7 +109,7 @@ const loadAbsenceFacts = async (month, staffIds) => {
     byStaff.get(row.userId).push({ day: dayKey(row.date), status: row.status });
   }
 
-  return { enabled: true, workDays, byStaff };
+  return { enabled: true, workDays, rateDayCount: countRateDays(month), byStaff };
 };
 
 /**
@@ -162,6 +174,7 @@ module.exports = {
   isAbsenceDeductionActive,
   serializeAbsence,
   loadWorkDays,
+  countRateDays,
   loadAbsenceFacts,
   resyncAfterAttendanceChange,
 };

@@ -459,7 +459,7 @@ const statusFor = (amount, paidAmount) => {
  *
  * @param {object} entry - PayrollEntry
  * @param {{ groups: Array, studentCounts: Map, deductions: Array, suspensions: Array,
- *   absence?: {enabled: boolean, workDays: string[], absences: Array} }} sources
+ *   absence?: {enabled: boolean, workDays: string[], rateDayCount: number, absences: Array} }} sources
  * @returns {{ changed: boolean, structural: boolean, amount: Decimal, data: object }}
  */
 const recomputeSealedEntry = (entry, { groups, studentCounts, deductions, suspensions, absence }) => {
@@ -565,6 +565,7 @@ const loadResyncSources = async (month, staffIds) => {
       absence: {
         enabled: absence.enabled,
         workDays: absence.workDays,
+        rateDayCount: absence.rateDayCount,
         absences: absence.byStaff.get(staffId) || [],
       },
     }),

@@ -41,7 +41,7 @@ const { resolveSalariesForMonth, TYPE_LABELS } = require("./staffSalary.service"
 const payrollEngine = require("./payrollEngine.service");
 const { getTeacherHours, getMonthCalendar, cutoffForMonth } = require("./lessonHours.service");
 const { REASON_LABELS: SUBSTITUTION_REASON_LABELS } = require("./lessonSubstitution.service");
-const { serializeAbsence, loadWorkDays } = require("./payrollAbsence.service");
+const { serializeAbsence, countRateDays } = require("./payrollAbsence.service");
 const { PAYROLL_USER_SELECT, STATUS_LABELS } = require("./payroll.service");
 
 const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
@@ -281,7 +281,7 @@ const getMonthBreakdown = async (staffId, month) => {
   const absence = hasFixed ? serializeAbsence(src.absenceBreakdown, src.absenceAmount) : null;
   let workDays = absence?.workDays ?? null;
   if (workDays == null && hasFixed) {
-    workDays = (await loadWorkDays(month)).length;
+    workDays = countRateDays(month);
   }
 
   // ── O'tilmagan darslar — pulga ta'siri faqat soat narxi bo'lsa ──
@@ -390,7 +390,8 @@ const getMonthBreakdown = async (staffId, month) => {
 
     // ── QANCHA VAQT UCHUN ──
     work: {
-      // Oyning ish kunlari (yakshanba va bayramsiz) — fiksa shunga bo'linadi
+      // Fiksa bo'linadigan kunlar — oy, faqat yakshanbasiz (dam olish
+      // kunlari ichida; `countRateDays`)
       workDays,
       // 1 ish kuni (kelmagan kun ayirmasi amalda bo'lgan oyda)
       dailyRate: absence?.dailyRate ?? null,

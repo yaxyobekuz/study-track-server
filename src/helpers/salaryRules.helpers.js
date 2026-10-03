@@ -174,9 +174,15 @@ const ABSENCE_STATUS_LABELS = {
 /**
  * KELMAGAN KUNLAR — FIKSA oylikdan kunlik ayirma.
  *
- *   ish kunlari  = oy kunlari − yakshanbalar − bayramlar
- *   kunlik summa = fiksa ÷ ish kunlari, BUTUN SO'MGACHA PASTGA
+ *   bo'luvchi    = oy kunlari − yakshanbalar   (dam olish kunlari ICHIDA)
+ *   kunlik summa = fiksa ÷ bo'luvchi, BUTUN SO'MGACHA PASTGA
  *   ayirma       = Σ kunlik summa har kelmagan ISH kuni uchun, fiksadan oshmaydi
+ *   ish kuni     = oy kunlari − yakshanbalar − dam olish kunlari
+ *
+ * ⚠️ BO'LUVCHI VA ISH KUNLARI IKKI XIL RO'YXAT (biznes qarori, 2026-10-03):
+ * dam olish kuni kunlik summani kichraytiradi (fiksa uni ham qamraydi), lekin
+ * o'sha kuni kelmaslik AYIRILMAYDI — u kuni ishga kelish shart emas. Ilgari
+ * bo'luvchidan dam olish kunlari ham chiqarilardi.
  *
  * ⚠️ FORMULA FAQAT SHU YERDA: dvigatel (jonli hisob, vedomost, shakllantirish)
  * ham, muhrlangan oylikni qayta hisoblash (`recomputeSealedEntry`) ham shuni
@@ -185,29 +191,37 @@ const ABSENCE_STATUS_LABELS = {
  * Qoidalar:
  *   · faqat FIKSA qism (lavozim maoshi + qo'shimcha fiksa). Soatbay qism
  *     o'tilmagan dars orqali allaqachon kamayadi, ustamalar — mustaqil qism;
- *   · yakshanba yoki bayramdagi belgi SANALMAYDI — u kun maxrajda yo'q;
+ *   · yakshanba yoki dam olish kunidagi belgi SANALMAYDI — u ish kuni emas;
  *   · bir kun bir marta (davomat `@@unique([userId, date])`, himoya qavati);
  *   · kunlik summa butun so'mgacha PASTGA yaxlitlanadi — ataylab maktab
  *     zarariga (kirish proratsiyasi `roundingUnit` bilan bir xil ruh):
  *     "kuniga 231 629,63 so'm" tushuntirib bo'lmaydigan raqam, yo'qotish esa
- *     kuniga 1 so'mdan kam. Fiksa ish kunlaridan kichik bo'lsa (kunlik 0
+ *     kuniga 1 so'mdan kam. Fiksa bo'luvchidan kichik bo'lsa (kunlik 0
  *     chiqardi) 2 xonali summa olinadi — aks holda ayirma jimgina yo'qolardi;
  *   · ayirma fiksadan oshmaydi — oxirgi kun qoldiqqacha qisqaradi.
  *
  * @param {Decimal|string|number} fixedAmount - fiksa (lavozim maoshi + qo'shimcha)
  * @param {object} facts
- * @param {string[]} facts.workDays - oyning ish kunlari, "YYYY-MM-DD"
+ * @param {string[]} facts.workDays - oyning ISH kunlari, "YYYY-MM-DD" (kelmaslik
+ *   faqat shu kunlarda sanaladi)
+ * @param {number} [facts.rateDayCount] - bo'luvchi (oy − yakshanbalar). Berilmasa
+ *   — `workDays` soni (eski chaqiruvchi)
  * @param {Array<{day: string, status: string}>} facts.absences - shu xodimning
  *   kelmagan kunlari (`ABSENCE_STATUSES`)
  * @returns {{ total: Decimal, breakdown: {workDays: number, dailyRate: string,
  *   days: Array<{date: string, status: string, amount: string}>} }}
+ *   `breakdown.workDays` — BO'LUVCHI (ekranda "N kunga bo'linadi")
  */
-const computeAbsenceDeduction = (fixedAmount, { workDays = [], absences = [] } = {}) => {
+const computeAbsenceDeduction = (
+  fixedAmount,
+  { workDays = [], rateDayCount = null, absences = [] } = {},
+) => {
   const fixed = Decimal.max(new Decimal(fixedAmount || 0), 0);
   const workDaySet = new Set(workDays);
+  const divisor = rateDayCount > 0 ? rateDayCount : workDaySet.size;
   let dailyRate = new Decimal(0);
-  if (workDaySet.size > 0) {
-    const exact = fixed.div(workDaySet.size);
+  if (divisor > 0) {
+    const exact = fixed.div(divisor);
     dailyRate = exact.toDecimalPlaces(0, Decimal.ROUND_DOWN);
     if (dailyRate.isZero()) dailyRate = exact.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
   }
@@ -230,7 +244,7 @@ const computeAbsenceDeduction = (fixedAmount, { workDays = [], absences = [] } =
 
   return {
     total,
-    breakdown: { workDays: workDaySet.size, dailyRate: formatAmount(dailyRate), days },
+    breakdown: { workDays: divisor, dailyRate: formatAmount(dailyRate), days },
   };
 };
 
