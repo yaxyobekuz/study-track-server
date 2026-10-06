@@ -97,14 +97,31 @@ const updateEnrollment = asyncHandler(async (req, res) => {
 
   const data = await enrollmentService.updateEnrollment(req.params.id, req.body, {
     allowPast,
+    allowPastCancel: canAdjust(req),
+    actorId: req.user.id,
   });
 
   res.json({ success: true, data });
 });
 
+/**
+ * Davr qamramay qolgan oylarning hisob-fakturalari bekor qilinadi. O'tgan
+ * oyniki — faqat `finance.adjust` bilan (`allowPastCancel`): bittalab bekor
+ * qilishdagi bilan AYNI shart (`invoice.controller.js` → `cancelInvoice`).
+ */
 const closeEnrollment = asyncHandler(async (req, res) => {
   const data = await enrollmentService.closeEnrollment(req.params.id, req.body, {
     allowPast: canAdjust(req),
+    allowPastCancel: canAdjust(req),
+    actorId: req.user.id,
+  });
+  res.json({ success: true, data });
+});
+
+/** Saqlashdan oldin: ketish oyi va bekor qilinadigan hisob-fakturalar. */
+const previewEnrollment = asyncHandler(async (req, res) => {
+  const data = await enrollmentService.previewEnrollmentChange(req.params.id, req.body, {
+    allowPastCancel: canAdjust(req),
   });
   res.json({ success: true, data });
 });
@@ -121,5 +138,6 @@ module.exports = {
   createEnrollment,
   updateEnrollment,
   closeEnrollment,
+  previewEnrollment,
   deleteEnrollment,
 };

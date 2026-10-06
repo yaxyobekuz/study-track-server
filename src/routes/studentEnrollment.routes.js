@@ -15,6 +15,7 @@ const {
   createEnrollment,
   updateEnrollment,
   closeEnrollment,
+  previewEnrollment,
   deleteEnrollment,
 } = require("../controllers/studentEnrollment.controller");
 
@@ -28,6 +29,8 @@ router.post("/", protect, authorizePermission(PERMISSIONS.ENROLLMENT_CREATE), cr
 // Yopish — "o'quvchi maktabdan ketdi". Tahrirlashdan alohida emas, chunki
 // ikkalasi ham bir xil ruxsat talab qiladi, lekin UI da alohida amal.
 router.patch("/:id/close", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.ENROLLMENT_UPDATE), closeEnrollment);
+// Oldindan ko'rish — hech narsa yozmaydi; yopish/tahrirlash bilan AYNI ruxsat
+router.post("/:id/preview", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.ENROLLMENT_UPDATE), previewEnrollment);
 
 router.get("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), getEnrollment);
 router.put("/:id", protect, validateObjectId("id"), authorizePermission(PERMISSIONS.ENROLLMENT_UPDATE), updateEnrollment);
