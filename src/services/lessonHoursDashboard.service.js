@@ -761,6 +761,8 @@ async function getTeacherDetail(teacherId, month) {
     bySubject,
     // O'tilmagan darslar — "nega 61 emas, 60 soat" degan savolga javob
     missedLessons: hoursRow?.missedLessons ?? [],
+    // Rahbariyat "o'tildi" deb belgilagan darslar — soati yozilgan
+    creditedLessons: hoursRow?.creditedLessons ?? [],
     judgedThroughDay: hoursRow?.judgedThroughDay ?? null,
     gradingUnlocks,
     subjects: buildSubjects({

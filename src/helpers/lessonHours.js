@@ -87,6 +87,19 @@ const lessonGradeKey = (classId, subjectId, lessonOrder, day) =>
 const teacherDayKey = (teacherId, day) => `${teacherId}|${day}`;
 
 /**
+ * "O'TILDI" BELGISINING kaliti — AYNAN bitta dars: kim o'tishi kerak edi +
+ * sinf + fan + tartib + kun (`LessonCredit.activeKey`).
+ *
+ * ⚠️ O'qituvchi kalitda bor: belgi "shu o'qituvchining shu darsi o'tildi"
+ * degani. O'rinbosarlik keyin bekor qilinsa, dars egasiga qaytadi va
+ * o'rinbosarga qo'yilgan belgi unga o'tib KETMAYDI — u egasining darsi
+ * haqida qaror emas edi. Fan ham kalitda: jadvalda katakning fani
+ * almashsa, eski belgi boshqa darsni "o'tilgan" qilib qo'ymaydi.
+ */
+const lessonCreditKey = (teacherId, classId, subjectId, lessonOrder, day) =>
+  `${teacherId}|${classId}|${subjectId}|${lessonOrder}|${day}`;
+
+/**
  * Qaysi kungacha darslar TEKSHIRILADI (INKLYUZIV kun raqami).
  *
  * ⚠️ BUGUN TEKSHIRILMAYDI. Baho odatda o'sha kuni qo'yiladi
@@ -148,6 +161,41 @@ function judgeLesson(lesson, { gradedKeys, absences, unlockedDays }) {
   return absence
     ? { reason: "excused", autoMarked: Boolean(absence.autoMarked) }
     : { reason: "noGrade", autoMarked: false };
+}
+
+/**
+ * DARSNING YAKUNIY HOLATI — faktlar (`judgeLesson`) + rahbariyatning
+ * "o'tildi" belgisi (`LessonCredit`). Soat hisobi SHUNI chaqiradi.
+ *
+ *   · faktlar bo'yicha o'tilgan          → { miss: null,  credit: null }
+ *   · o'tilmagan, lekin belgilangan      → { miss: null,  credit: {...} }
+ *   · o'tilmagan                         → { miss: {...}, credit: null }
+ *
+ * ⚠️ BELGI FAQAT O'TILMAGAN DARSGA TA'SIR QILADI va hamma sababni yopadi
+ * (sababsiz "kelmadi" ham): bu rahbariyatning ongli qarori — "dars
+ * o'tilgan, tizim bilmay qolgan". Faktlar bo'yicha o'tilgan darsga belgi
+ * hech narsa qo'shmaydi (soat ikki marta sanalmaydi).
+ *
+ * `credit` — belgilash paytigacha qanday sabab bilan o'tilmagan edi
+ * (`miss` shakli) va belgi yozuvi: "Kelmagan → o'tildi (sabab)" degan
+ * tarix shu ikkisidan chiqadi.
+ *
+ * @param {object} lesson - `judgeLesson` bilan AYNI
+ * @param {object} facts - `judgeLesson` faktlari + `credits`
+ * @param {Map<string, {id: string, reason: string}>} [facts.credits] -
+ *   `lessonCreditKey` → faol belgi
+ * @returns {{ miss: object|null, credit: object|null }}
+ */
+function resolveLesson(lesson, facts) {
+  const miss = judgeLesson(lesson, facts);
+  if (!miss) return { miss: null, credit: null };
+
+  const credit = facts.credits?.get(
+    lessonCreditKey(lesson.teacherId, lesson.classId, lesson.subjectId, lesson.lessonOrder, lesson.day),
+  );
+  if (!credit) return { miss, credit: null };
+
+  return { miss: null, credit: { ...miss, id: credit.id, creditReason: credit.reason } };
 }
 
 /**
@@ -343,8 +391,10 @@ module.exports = {
   LESSON_MISS_REASONS,
   lessonGradeKey,
   teacherDayKey,
+  lessonCreditKey,
   judgedThroughDay,
   judgeLesson,
+  resolveLesson,
   unlockedTeacherDays,
   eachDayOfMonth,
   teachingDaysOfMonth,

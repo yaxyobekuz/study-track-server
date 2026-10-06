@@ -52,8 +52,9 @@ const {
   dayKey,
   lessonGradeKey,
   teacherDayKey,
+  lessonCreditKey,
   judgedThroughDay,
-  judgeLesson,
+  resolveLesson,
   unlockedTeacherDays,
   LESSON_MISS_REASONS,
 } = require("../helpers/lessonHours");
@@ -252,18 +253,24 @@ async function getMonthCalendar(month, { asOfDayOfMonth = null } = {}) {
  * dars egasi emas, boshqa o'qituvchi qo'ygan. U hisobga olinsa, egasi bir
  * baho ham qo'ymagan darsning soati (puli) unga yozilardi.
  *
- * Uchala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
+ * ⚠️ RAHBARIYATNING "O'TILDI" BELGISI (`LessonCredit`) ham shu yerda
+ * yuklanadi — faqat FAOLLARI (bekor qilingani `activeKey = null`). U
+ * o'tilmagan darsni o'tilgan qiladi (`resolveLesson`), boshqa hech narsani
+ * o'zgartirmaydi.
+ *
+ * To'rtala so'rov ham oy bo'yicha BITTA: o'qituvchilar soniga bog'liq emas.
  *
  * @param {number} month - YYYYMM
  * @param {string[]} teacherIds
  * @param {string[]} classIds - soati hisoblanadigan darslarning sinflari
- * @returns {Promise<{gradedKeys: Set<string>, absences: Map<string, object>, unlockedDays: Set<string>}>}
+ * @returns {Promise<{gradedKeys: Set<string>, absences: Map<string, object>,
+ *   unlockedDays: Set<string>, credits: Map<string, {id: string, reason: string}>}>}
  */
 async function loadLessonFacts(month, teacherIds, classIds) {
   // `Grade.date` — instant, shuning uchun oy chegarasi ham TOSHKENT instanti
   const { from, to } = monthInstantRange(month);
 
-  const [grades, absences, unlocks] = await Promise.all([
+  const [grades, absences, unlocks, credits] = await Promise.all([
     classIds.length
       ? prisma.grade.findMany({
           where: { classId: { in: classIds }, date: { gte: from, lte: to }, gradingGrantId: null },
@@ -285,6 +292,23 @@ async function loadLessonFacts(month, teacherIds, classIds) {
       where: { dateFrom: { lte: monthEndDate(month) }, dateTo: { gte: monthStartDate(month) } },
       select: { dateFrom: true, dateTo: true, scope: true, teacherIds: true },
     }),
+    // `LessonCredit.date` — `@db.Date`, Toshkent kunining UTC yarim tuni
+    prisma.lessonCredit.findMany({
+      where: {
+        teacherId: { in: teacherIds },
+        date: { gte: monthStartDate(month), lte: monthEndDate(month) },
+        revokedAt: null,
+      },
+      select: {
+        id: true,
+        teacherId: true,
+        classId: true,
+        subjectId: true,
+        lessonOrder: true,
+        date: true,
+        reason: true,
+      },
+    }),
   ]);
 
   return {
@@ -300,6 +324,12 @@ async function loadLessonFacts(month, teacherIds, classIds) {
       ]),
     ),
     unlockedDays: unlockedTeacherDays(unlocks, teacherIds, eachDayOfMonth(month)),
+    credits: new Map(
+      credits.map((c) => [
+        lessonCreditKey(c.teacherId, c.classId, c.subjectId, c.lessonOrder, dayKey(c.date)),
+        { id: c.id, reason: c.reason },
+      ]),
+    ),
   };
 }
 
@@ -384,7 +414,7 @@ async function getTeachersHours(teacherIds, month, options = {}) {
 
   const facts = judgedKeys.size
     ? await loadLessonFacts(month, ids, [...classIds])
-    : { gradedKeys: new Set(), absences: new Map(), unlockedDays: new Set() };
+    : { gradedKeys: new Set(), absences: new Map(), unlockedDays: new Set(), credits: new Map() };
 
   // O'qituvchi → o'z darslari
   const ownLessons = new Map(ids.map((id) => [id, []]));
@@ -428,6 +458,10 @@ async function getTeachersHours(teacherIds, month, options = {}) {
     let taughtScheduled = 0;
     const missedLessons = [];
     const missedByReason = { absent: 0, excused: 0, noGrade: 0 };
+    // Faktlar bo'yicha o'tilmagan, lekin rahbariyat "o'tildi" deb belgilagan
+    // darslar — soati YOZILADI. "Nega o'tilmaganlar kamaydi" degan savolga
+    // javob (kim, qachon, nega — belgi yozuvida, `creditId`).
+    const creditedLessons = [];
     // O'rinbosarga berilgan o'z darslari — "nega soatim kam" degan savolga
     // javob (kim o'tdi — `substitutionId` orqali). Faqat ko'rsatish uchun:
     // soat `out` hisobidan allaqachon ayirilgan.
@@ -451,7 +485,27 @@ async function getTeachersHours(teacherIds, month, options = {}) {
 
       // ⚠️ Tartib muhim: darsning o'z `day` maydoni HAFTA KUNI nomi
       // ("dushanba") — u sana kalitini ustidan yozib yubormasligi kerak.
-      const miss = judgeLesson({ ...lesson, teacherId, day: day.key }, facts);
+      const { miss, credit } = resolveLesson({ ...lesson, teacherId, day: day.key }, facts);
+
+      if (credit) {
+        creditedLessons.push({
+          date: day.date,
+          // ⚠️ Sana matni SERVERDA: `day.date` — UTC yarim tuni (`dates.md` §4)
+          dateLabel: formatDateUz(day.date, { utc: true }),
+          classId: lesson.classId,
+          className: classMap.get(lesson.classId) ?? "Noma'lum",
+          subjectId: lesson.subjectId,
+          subjectName: subjectMap.get(lesson.subjectId) ?? "Noma'lum",
+          lessonOrder: lesson.lessonOrder,
+          // Belgilanmaganda qanday sabab bilan o'tilmagan bo'lardi
+          reason: credit.reason,
+          reasonLabel: LESSON_MISS_REASONS[credit.reason],
+          substituted,
+          creditId: credit.id,
+          creditReason: credit.creditReason,
+        });
+        return false;
+      }
       if (!miss) return false;
 
       missedByReason[miss.reason] += 1;
@@ -593,6 +647,9 @@ async function getTeachersHours(teacherIds, month, options = {}) {
       missedHours,
       missedByReason,
       missedLessons,
+      // Rahbariyat "o'tildi" deb belgilagani — `hours` ga ALLAQACHON kirgan
+      creditedHours: creditedLessons.length,
+      creditedLessons,
       substitutedOutLessons,
       // Qaysi kungacha tekshirildi: `null` — oy to'liq, `0` — hali hech kun
       judgedThroughDay: judgeLimit,

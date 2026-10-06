@@ -21,6 +21,7 @@ const SECTIONS = {
   ATTENDANCE: "attendance",
   GRADES: "grades",
   GRADE_GRANTS: "gradeGrants",
+  LESSON_CREDITS: "lessonCredits",
   EDUCATION: "education",
   GRADE_ANALYSIS: "gradeAnalysis",
   ACHIEVEMENTS: "achievements",
@@ -183,6 +184,24 @@ const PERMISSION_SECTIONS = [
     label: "Fanga baho ruxsati",
     group: "Ta'lim",
     actions: [A.view, { key: "manage", label: "Ruxsat berish va yopish" }],
+  },
+  {
+    // O'TILMAGAN DARSNI "O'TILDI" DEB BELGILASH — rahbariyat qarori
+    // (`lessonCredit.service.js`). Belgilangan darsning soati oylikka
+    // QAYTADI, ya'ni bu PULGA tegadi.
+    //
+    // ⚠️ ALOHIDA BO'LIM, `grades` yoki `payroll` ichidagi amal EMAS: eski
+    // bare "grades"/"payroll" kalitlari bo'limning HAMMA amalini beradi
+    // (`hasPermission`, `expandLegacyKeys`) va o'qituvchiga pul qaytarish
+    // huquqi owner bermagan odamga jimgina tarqalardi (`gradeGrants` bilan
+    // AYNI sabab). Owner'da doim bor.
+    //
+    // `view` — kunning o'tilmagan darslari va belgilar registri;
+    // `manage` — belgilash va bekor qilish (ikkalasi ham pul qarori).
+    key: SECTIONS.LESSON_CREDITS,
+    label: "Darsni o'tildi deb belgilash",
+    group: "Ta'lim",
+    actions: [A.view, { key: "manage", label: "Belgilash va bekor qilish" }],
   },
   {
     // TA'LIM DASHBOARDI — bitta ekranda butun maktabning o'quv manzarasi.

@@ -3584,6 +3584,74 @@ model GradingGrant {
   @@map("grading_grants")
 }
 
+// "O'TILDI" BELGISI — rahbariyat O'TILMAGAN darsni o'tilgan deb belgilaydi.
+//
+// Dars faktlar bo'yicha o'tilmagan bo'lsa (kelmagan / sababli / baho
+// qo'yilmagan — `helpers/lessonHours.js` → `judgeLesson`), boshliq
+// (`lessonCredits.manage`) uni "o'tildi" qiladi: soati (puli) oylikka qaytadi.
+// Bittalab, bir nechtalab yoki kunning hamma o'tilmagan darslari bir amalda
+// (`batchId`). Qaror `resolveLesson` da, xizmat — `lessonCredit.service.js`.
+//
+// ⚠️ BITTA YOZUV = BITTA DARS: kim o'tishi kerak edi (o'rinbosarlik bilan) +
+// sinf + fan + tartib + kun. Darsga `scheduleLessonId` bilan ishora
+// QILINMAYDI (jadval qayta saqlanadi).
+// ⚠️ `activeKey` — FAOL belgining kaliti, bekor qilinganda NULL: bitta darsga
+// ikkita faol belgi tushmaydi (ikki marta bosilgan tugma, parallel so'rov),
+// tarixdagi bekor qilinganlar esa cheklanmaydi (PostgreSQL da NULL lar teng
+// emas — `DevicePolicyAssignment.targetKey` bilan bir xil yechim).
+// ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (sabab + aktyor): o'tgan oylik va
+// "nega soat ko'paydi" degan savol unga tayanadi.
+model LessonCredit {
+  id          String   @id @db.Char(24)
+  // soft ref'lar — FK yo'q: xodim arxivlansa ham tarix o'qilishi kerak
+  teacherId   String   @map("teacher_id") @db.Char(24)
+  // Dars kuni — Toshkent kunining UTC yarim tuni, faqat `getUTC*`
+  date        DateTime @db.Date
+  classId     String   @map("class_id") @db.Char(24)
+  subjectId   String   @map("subject_id") @db.Char(24)
+  lessonOrder Int      @map("lesson_order")
+  // Belgilash paytida nega o'tilmagan edi: absent | excused | noGrade
+  missReason  String   @map("miss_reason")
+  // Dars o'rinbosarlik bilan berilgan edi (o'qituvchi — o'rinbosar)
+  substituted Boolean  @default(false)
+  // { teacherName, className, subjectName } — keyin qayta nomlansa ham
+  // registr o'qilishi uchun (`GradingGrant.snapshot` doktrinasi)
+  snapshot    Json
+
+  activeKey String? @unique @map("active_key")
+  // Bir amalda belgilanganlar guruhi
+  batchId   String  @map("batch_id") @db.Char(24)
+  reason    String
+  createdBy String  @map("created_by") @db.Char(24)
+
+  // Shu belgi bilan bekor qilingan "Baho qo'ymaslik" jarimasi (`Penalty`,
+  // soft ref) va o'qituvchidan AYNAN olib tashlangan ball — belgi bekor
+  // qilinsa, jarima va shuncha ball qaytariladi (ball 0 dan pastga
+  // tushirilmagani uchun u jarima balidan kam bo'lishi mumkin)
+  penaltyId     String? @map("penalty_id") @db.Char(24)
+  penaltyPoints Int     @default(0) @map("penalty_points")
+
+  // DARS O'TILGAN KUN — KELGAN KUN: belgi kun davomatini "keldi" qilgan bo'lsa,
+  // avvalgi holat shu yerda (bekor qilinganda AYNAN qaytadi) — davomat qatori,
+  // holati, izohlari va bekor qilingan "kelmadi" jarimasi. Bir kunga bir
+  // nechta belgi bo'lsa, faqat bittasida turadi; u bekor qilinsa qolganiga ko'chadi.
+  attendanceRestore Json? @map("attendance_restore")
+
+  revokedAt    DateTime? @map("revoked_at")
+  revokedBy    String?   @map("revoked_by") @db.Char(24)
+  revokeReason String    @default("") @map("revoke_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Soat hisobi oy bo'yicha o'qiydi (o'qituvchilar + kunlar oralig'i)
+  @@index([teacherId, date])
+  @@index([date])
+  @@index([batchId])
+  @@index([createdAt])
+  @@map("lesson_credits")
+}
+
 model PayrollRequest {
   id      String             @id @db.Char(24)
   staffId String             @map("staff_id") @db.Char(24) // so'rovchi

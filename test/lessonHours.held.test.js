@@ -15,6 +15,8 @@ const {
   tashkentDayKey,
   lessonGradeKey,
   teacherDayKey,
+  lessonCreditKey,
+  resolveLesson,
   unlockedTeacherDays,
 } = require("../src/helpers/lessonHours");
 
@@ -75,6 +77,46 @@ test("ochilgan kun: baho bo'lsa davomatdan qat'i nazar o'tilgan, bahosiz — o't
     judgeLesson(lesson, { gradedKeys, absences: absent, unlockedDays: new Set([teacherDayKey("t2", "2026-08-03")]) }),
     { reason: "absent", autoMarked: true },
   );
+});
+
+test("\"o'tildi\" belgisi: faqat o'tilmagan darsni yopadi, sababi saqlanadi", () => {
+  const lesson = { teacherId: "t1", classId: "c1", subjectId: "s1", lessonOrder: 1, day: "2026-08-03" };
+  const absent = new Map([[teacherDayKey("t1", "2026-08-03"), { status: "absent", autoMarked: true }]]);
+  const credits = new Map([
+    [lessonCreditKey("t1", "c1", "s1", 1, "2026-08-03"), { id: "cr1", reason: "Platforma ishlamadi" }],
+  ]);
+
+  // Sababsiz kelmagan kun ham — rahbariyat qarori faktdan ustun
+  assert.deepEqual(resolveLesson(lesson, { gradedKeys: new Set(), absences: absent, credits }), {
+    miss: null,
+    credit: { reason: "absent", autoMarked: true, id: "cr1", creditReason: "Platforma ishlamadi" },
+  });
+
+  // Belgisiz — avvalgidek o'tilmagan
+  assert.deepEqual(resolveLesson(lesson, { gradedKeys: new Set(), absences: absent }), {
+    miss: { reason: "absent", autoMarked: true },
+    credit: null,
+  });
+
+  // Faktlar bo'yicha o'tilgan dars — belgi hech narsa qo'shmaydi (ikki marta sanalmaydi)
+  const graded = new Set([lessonGradeKey("c1", "s1", 1, "2026-08-03")]);
+  assert.deepEqual(resolveLesson(lesson, { gradedKeys: graded, absences: new Map(), credits }), {
+    miss: null,
+    credit: null,
+  });
+
+  // Belgi AYNAN o'sha darsga: boshqa o'qituvchi, fan, tartib yoki kun — ta'sir qilmaydi
+  for (const other of [
+    { ...lesson, teacherId: "t2" },
+    { ...lesson, subjectId: "s2" },
+    { ...lesson, lessonOrder: 2 },
+    { ...lesson, day: "2026-08-04" },
+  ]) {
+    assert.equal(
+      resolveLesson(other, { gradedKeys: new Set(), absences: new Map(), credits }).credit,
+      null,
+    );
+  }
 });
 
 test("ochilgan kunlar to'plami: hammaga / tanlanganlarga, oraliq INKLYUZIV", () => {
@@ -142,6 +184,7 @@ const db = {
     { userId: "t1", date: utc("2026-08-31"), status: "late", autoMarked: false },
   ],
   unlocks: [],
+  credits: [],
 };
 
 fakeModule("../src/config/prisma", {
@@ -164,6 +207,15 @@ fakeModule("../src/config/prisma", {
   gradingUnlock: {
     findMany: async ({ where }) =>
       db.unlocks.filter((u) => u.dateFrom <= where.dateFrom.lte && u.dateTo >= where.dateTo.gte),
+  },
+  lessonCredit: {
+    findMany: async ({ where }) =>
+      db.credits.filter(
+        (c) =>
+          inList(c.teacherId, where.teacherId) &&
+          inRange(c.date, where.date) &&
+          (where.revokedAt === null ? c.revokedAt == null : true),
+      ),
   },
 });
 fakeModule("../src/services/holiday.service", { buildHolidaySet: async () => new Set() });
@@ -263,4 +315,55 @@ test("ochilgan oraliq: sababsiz kelmagan kundagi baho bor dars — o'tilgan, oyn
 
   // Oynasiz — avvalgidek o'tilmagan
   assert.equal((await getTeachersHours(["t1"], 202608)).get("t1").missedByReason.absent, 1);
+});
+
+test("\"o'tildi\" belgisi: soat va pul qaytadi, bekor qilingani hisoblanmaydi", async () => {
+  // 10-avgust (baho yo'q) va 17-avgust (sababsiz kelmagan) — belgilangan;
+  // 25-avgust belgisi BEKOR QILINGAN — o'tilmaganligicha qoladi
+  const credit = (id, day, lessonOrder, extra = {}) => ({
+    id,
+    teacherId: "t1",
+    classId: "c1",
+    subjectId: "s1",
+    lessonOrder,
+    date: utc(day),
+    reason: "Platforma ishlamadi",
+    revokedAt: null,
+    ...extra,
+  });
+  db.credits.push(
+    credit("cr1", "2026-08-10", 1),
+    credit("cr2", "2026-08-17", 1),
+    credit("cr3", "2026-08-25", 2, { revokedAt: new Date("2026-09-01T10:00:00Z") }),
+    // Boshqa o'qituvchining belgisi t1 ga ta'sir qilmaydi
+    credit("cr4", "2026-08-25", 2, { teacherId: "t2" }),
+  );
+  try {
+    const t1 = (await getTeachersHours(["t1"], 202608)).get("t1");
+
+    assert.equal(t1.missedHours, 1);
+    assert.deepEqual(t1.missedByReason, { absent: 0, excused: 0, noGrade: 1 });
+    assert.equal(t1.hours, 9 - 1 - 1);
+    assert.equal(t1.creditedHours, 2);
+    assert.deepEqual(
+      t1.creditedLessons.map((l) => [l.dateLabel, l.lessonOrder, l.reason, l.creditId]),
+      [
+        ["10-avgust, 2026", 1, "noGrade", "cr1"],
+        ["17-avgust, 2026", 1, "absent", "cr2"],
+      ],
+    );
+    assert.equal(t1.creditedLessons[1].reasonLabel, "Kelmagan");
+    assert.equal(t1.creditedLessons[0].creditReason, "Platforma ishlamadi");
+    // Kesimlarda ham o'tilgan
+    const cls = t1.byClass.find((row) => row.id === "c1");
+    assert.equal(cls.hours, 7);
+    assert.equal(cls.missed, 1);
+  } finally {
+    db.credits.length = 0;
+  }
+
+  // Belgisiz — avvalgidek
+  const t1 = (await getTeachersHours(["t1"], 202608)).get("t1");
+  assert.equal(t1.missedHours, 3);
+  assert.equal(t1.creditedHours, 0);
 });
