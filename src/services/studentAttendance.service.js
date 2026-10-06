@@ -6,6 +6,7 @@ const { getPaginationParams, formatPaginationResponse } = require("../utils/pagi
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { DAYS_UZ } = require("../utils/constants");
 const { currentMonthKey } = require("../helpers/month.helpers");
+const { overlappingDateRangeWhere } = require("../helpers/enrollment.helpers");
 
 const STUDENT_STATUSES = ["present", "late", "absent", "excused"];
 
@@ -46,17 +47,64 @@ function flattenStudent(student) {
 }
 
 /**
- * Davomat qatori (`row`) — kontrakt: `{ student, attendance, classId }`.
+ * Davomat qatori (`row`) — kontrakt: `{ student, attendance, classId, enrollment }`.
  * `classId`: yozuv bo'lsa yozuvdagi sinf, bo'lmasa so'ralgan sinf yoki
  * o'quvchining birinchi sinfi (yangi yozuv qaysi sinfga yozilishini bildiradi).
+ * `enrollment`: shu kunni qamragan o'qish davri (`loadEnrollmentsOn`) — panel
+ * "O'qishni tugatish" amalini shu davr bilan ochadi, profilga kirmasdan.
  */
-function buildRow(student, attendance, requestedClassId = null) {
+function buildRow(student, attendance, requestedClassId = null, enrollment = null) {
   return {
     student,
     attendance: attendance || null,
     classId:
       attendance?.classId || requestedClassId || student.classes?.[0]?.id || null,
+    enrollment: enrollment || null,
   };
+}
+
+/**
+ * Shu kuni O'QIYOTGAN o'quvchilarning davri: `studentId → davr`.
+ *
+ * ⚠️ "O'quvchi o'qiyaptimi" degan savolga faqat o'qish davri javob beradi
+ * (`education.md` §3–4). Kunlik ro'yxatlar ilgari faqat login bayroqlariga
+ * (`isActive` / `isArchived`) qarardi: davri yopilgan, lekin sinfda qolgan
+ * o'quvchi ro'yxatda turaverar, kechki job esa uni har kuni "kelmadi" deb
+ * belgilardi — maktabdan ketgan bola "Kelmadi" filtrida abadiy qolardi.
+ * Hisobot (`buildExpectedResolver`) va dashboard (`studyingStudentIds`)
+ * bilan AYNI qoida: davr kunni qamrasa — o'qiydi, davri yo'q — o'qimaydi.
+ *
+ * `endDate` INKLYUZIV (oxirgi o'qigan kun): bugun yopilgan davr bugun hali
+ * ro'yxatda, ertadan chiqadi. Bir kunni ikki davr qamray olmaydi
+ * (`assertNoOverlap`), shuning uchun xarita bir qiymatli.
+ *
+ * @param {Date} day - Toshkent kunining UTC yarim tuni (`resolveDay`)
+ * @param {string[]|null} [studentIds] - berilsa faqat shular (sinf ko'rinishi)
+ * @returns {Promise<Map<string, {id: string, startDate: string, endDate: string|null, endReason: string|null}>>}
+ */
+async function loadEnrollmentsOn(day, studentIds = null) {
+  if (studentIds && studentIds.length === 0) return new Map();
+
+  const rows = await prisma.studentEnrollment.findMany({
+    where: {
+      ...overlappingDateRangeWhere(day, day),
+      ...(studentIds ? { studentId: { in: studentIds } } : {}),
+    },
+    select: { id: true, studentId: true, startDate: true, endDate: true, endReason: true },
+  });
+
+  return new Map(
+    rows.map(({ studentId, startDate, endDate, ...rest }) => [
+      studentId,
+      {
+        ...rest,
+        // `@db.Date` — kalit sifatida (panel `<input type="date">` va
+        // `formatDateUz` ga to'g'ridan-to'g'ri beradi)
+        startDate: toDayKey(startDate),
+        endDate: endDate ? toDayKey(endDate) : null,
+      },
+    ]),
+  );
 }
 
 /**
@@ -268,6 +316,7 @@ async function updateRecord(recordId, { status, excuseReason }, modifiedBy) {
  * Bitta sinfning bir kunlik davomati.
  * ⚠️ Yozuvlar o'quvchi bo'yicha olinadi (sinf bo'yicha emas): o'quvchi bir
  * kunda bitta yozuvga ega va u boshqa sinf nomidan belgilangan bo'lishi mumkin.
+ * ⚠️ Faqat shu kuni o'qiyotganlar (`loadEnrollmentsOn`).
  */
 async function getTodayClassAttendance(classId, dateInput) {
   const classDoc = await prisma.class.findUnique({ where: { id: classId } });
@@ -275,12 +324,18 @@ async function getTodayClassAttendance(classId, dateInput) {
 
   const today = resolveDay(dateInput);
 
-  const studentsRaw = await prisma.user.findMany({
+  const members = await prisma.user.findMany({
     where: { ...ACTIVE_STUDENT_WHERE, classes: { some: { classId } } },
     select: STUDENT_SELECT,
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
-  const students = studentsRaw.map(flattenStudent);
+  const enrollments = await loadEnrollmentsOn(
+    today,
+    members.map((s) => s.id)
+  );
+  const students = members
+    .filter((s) => enrollments.has(s.id))
+    .map(flattenStudent);
 
   const attendanceRecords = students.length
     ? await prisma.studentAttendance.findMany({
@@ -292,7 +347,12 @@ async function getTodayClassAttendance(classId, dateInput) {
   const recordMap = new Map(attendanceRecords.map((rec) => [rec.studentId, rec]));
 
   const data = students.map((student) =>
-    buildRow(student, recordMap.get(student.id) || null, classId)
+    buildRow(
+      student,
+      recordMap.get(student.id) || null,
+      classId,
+      enrollments.get(student.id)
+    )
   );
 
   const summary = buildSummary(students.length, attendanceRecords);
@@ -303,8 +363,10 @@ async function getTodayClassAttendance(classId, dateInput) {
 /**
  * Barcha sinflar bo'yicha bir kunlik o'quvchilar davomati (sahifalangan).
  * Ko'p yuklamani kamaytirish uchun o'quvchilar sahifalab qaytariladi.
- * Yig'indi esa barcha faol o'quvchilar bo'yicha hisoblanadi (sahifadan qat'i nazar).
- * ⚠️ Jadvalga qaralmaydi: `total` = butun maktabdagi barcha faol o'quvchilar.
+ * Yig'indi esa shu kuni o'qiyotgan barcha o'quvchilar bo'yicha hisoblanadi
+ * (sahifadan qat'i nazar).
+ * ⚠️ Jadvalga qaralmaydi, o'qish davriga qaraladi: `total` = butun maktabda
+ * shu kuni o'qiyotgan faol o'quvchilar (`loadEnrollmentsOn`).
  * @param {Object} req - Express request (query: date, status, page, limit, search)
  */
 async function getTodayAllStudents(req) {
@@ -317,31 +379,33 @@ async function getTodayAllStudents(req) {
 
   const day = resolveDay(dateInput);
 
-  // Barcha faol o'quvchilar (yig'indi va filtr uchun faqat id)
-  const activeStudents = await prisma.user.findMany({
-    where: ACTIVE_STUDENT_WHERE,
-    select: { id: true },
-  });
-  const activeIds = new Set(activeStudents.map((s) => s.id));
+  // Shu kuni o'qiyotgan faol o'quvchilar (yig'indi va filtr uchun faqat id)
+  const [activeStudents, enrollments] = await Promise.all([
+    prisma.user.findMany({ where: ACTIVE_STUDENT_WHERE, select: { id: true } }),
+    loadEnrollmentsOn(day),
+  ]);
+  const activeIds = new Set(
+    activeStudents.map((s) => s.id).filter((id) => enrollments.has(id))
+  );
 
   // Shu kunning barcha o'quvchi davomat yozuvlari (xarita va yig'indi uchun)
   const dayRecordsRaw = await prisma.studentAttendance.findMany({
     where: { date: day },
     select: ATTENDANCE_SELECT,
   });
-  // Faol bo'lmagan (ketgan/arxivlangan) o'quvchi yozuvlari yig'indiga kirmaydi
+  // Doiradan tashqaridagi (ketgan/arxivlangan) o'quvchi yozuvlari yig'indiga kirmaydi
   const dayRecords = dayRecordsRaw.filter((rec) => activeIds.has(rec.studentId));
 
   const recordMap = new Map(dayRecords.map((rec) => [rec.studentId, rec]));
 
-  // Yig'indi - barcha faol o'quvchilar bo'yicha
+  // Yig'indi - shu kuni o'qiyotgan barcha o'quvchilar bo'yicha
   const summary = buildSummary(activeIds.size, dayRecords);
 
-  // Status filtri bo'yicha o'quvchilarni cheklash (saqlangan holat bo'yicha)
-  const userFilter = { ...ACTIVE_STUDENT_WHERE };
+  // Doira (o'qish davri) + status filtri (saqlangan holat bo'yicha)
+  const userFilter = { ...ACTIVE_STUDENT_WHERE, id: { in: [...activeIds] } };
   if (status) {
     if (status === "unmarked") {
-      userFilter.id = { notIn: dayRecords.map((r) => r.studentId) };
+      userFilter.id = { in: [...activeIds].filter((id) => !recordMap.has(id)) };
     } else {
       const matchedIds = dayRecords
         .filter((r) => matchesStatusFilter(r, status))
@@ -366,7 +430,12 @@ async function getTodayAllStudents(req) {
   const students = studentsRaw.map(flattenStudent);
 
   const data = students.map((student) =>
-    buildRow(student, recordMap.get(student.id) || null)
+    buildRow(
+      student,
+      recordMap.get(student.id) || null,
+      null,
+      enrollments.get(student.id)
+    )
   );
 
   const totalPages = Math.ceil(total / limit) || 1;
@@ -390,7 +459,8 @@ async function getTodayAllStudents(req) {
  * Belgilash uchun to'liq ro'yxat (sahifalanmaydi).
  * `classId` bo'lsa shu sinf, bo'lmasa barcha faol o'quvchilar ("Barcha sinflar").
  * Yig'indi butun doira bo'yicha; holat/qidiruv filtri faqat ro'yxatni qisqartiradi.
- * ⚠️ Jadvalga qaralmaydi: `total` = doiradagi barcha faol o'quvchilar.
+ * ⚠️ Jadvalga qaralmaydi, o'qish davriga qaraladi: `total` = doirada shu kuni
+ * o'qiyotgan faol o'quvchilar (`loadEnrollmentsOn`).
  * @param {Object} params - { date, status, search, classId }
  */
 async function getMarkList({ date, status, search, classId } = {}) {
@@ -409,12 +479,20 @@ async function getMarkList({ date, status, search, classId } = {}) {
   const userFilter = { ...ACTIVE_STUDENT_WHERE };
   if (classId) userFilter.classes = { some: { classId } };
 
-  const studentsRaw = await prisma.user.findMany({
+  const members = await prisma.user.findMany({
     where: userFilter,
     select: STUDENT_SELECT,
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
-  const students = studentsRaw.map(flattenStudent);
+  // Sinf ko'rinishida id bo'yicha, butun maktabda esa kunni qamragan
+  // hamma davr bir so'rovda (minglab id parametr yubormaslik uchun)
+  const enrollments = await loadEnrollmentsOn(
+    day,
+    classId ? members.map((s) => s.id) : null
+  );
+  const students = members
+    .filter((s) => enrollments.has(s.id))
+    .map(flattenStudent);
 
   const records = students.length
     ? await prisma.studentAttendance.findMany({
@@ -428,7 +506,14 @@ async function getMarkList({ date, status, search, classId } = {}) {
   const summary = buildSummary(students.length, records);
 
   const rows = students
-    .map((student) => buildRow(student, recordMap.get(student.id) || null, classId || null))
+    .map((student) =>
+      buildRow(
+        student,
+        recordMap.get(student.id) || null,
+        classId || null,
+        enrollments.get(student.id)
+      )
+    )
     .filter(
       (row) => matchesStatusFilter(row.attendance, status) && matchesSearch(row.student, search)
     );
@@ -568,32 +653,53 @@ function weekdayOfKey(key) {
   return new Date(`${key}T00:00:00Z`).getUTCDay();
 }
 
+/**
+ * Sinflar ro'yxati + bugungi sanoq (`totalStudents`, `markedToday`).
+ *
+ * ⚠️ Sanoq `getTodayClassAttendance` bilan AYNI doiradan — shu kuni
+ * o'qiyotgan faol o'quvchilar (`loadEnrollmentsOn`). Aks holda qabulxona
+ * kartasida "20/22 belgilandi" turib, sinf ochilganda belgilanmagan
+ * bola topilmasdi (ikkovi — maktabdan ketgan, lekin sinfda qolgan).
+ * Bitta o'quvchi bir nechta sinfda bo'lsa har birida sanaladi.
+ */
 async function getClassList() {
   const today = getTodayNormalized();
 
-  const classes = await prisma.class.findMany({ where: { isActive: true } });
+  const [classes, members, enrollments, records] = await Promise.all([
+    prisma.class.findMany({ where: { isActive: true } }),
+    prisma.user.findMany({
+      where: ACTIVE_STUDENT_WHERE,
+      select: { id: true, classes: { select: { classId: true } } },
+    }),
+    loadEnrollmentsOn(today),
+    prisma.studentAttendance.findMany({
+      where: { date: today },
+      select: { studentId: true, classId: true },
+    }),
+  ]);
 
-  const result = [];
-  for (const cls of classes) {
-    const totalStudents = await prisma.user.count({
-      where: {
-        classes: { some: { classId: cls.id } },
-        role: "student",
-        isActive: true,
-      },
-    });
-
-    const markedToday = await prisma.studentAttendance.count({
-      where: {
-        classId: cls.id,
-        date: today,
-      },
-    });
-
-    result.push({ ...cls, totalStudents, markedToday });
+  const totals = new Map();
+  const enrolledIds = new Set();
+  for (const student of members) {
+    if (!enrollments.has(student.id)) continue;
+    enrolledIds.add(student.id);
+    for (const { classId } of student.classes) {
+      totals.set(classId, (totals.get(classId) || 0) + 1);
+    }
   }
 
-  return result;
+  // Yozuv o'zi turgan sinf nomidan sanaladi (avvalgidek), faqat doiradagilar
+  const marked = new Map();
+  for (const { studentId, classId } of records) {
+    if (!enrolledIds.has(studentId)) continue;
+    marked.set(classId, (marked.get(classId) || 0) + 1);
+  }
+
+  return classes.map((cls) => ({
+    ...cls,
+    totalStudents: totals.get(cls.id) || 0,
+    markedToday: marked.get(cls.id) || 0,
+  }));
 }
 
 async function getClassMonthRecords(classId, month, year) {
@@ -787,6 +893,7 @@ module.exports = {
   getTodayClassAttendance,
   getTodayAllStudents,
   getMarkList,
+  loadEnrollmentsOn,
   buildExpectedResolver,
   getClassList,
   getClassMonthRecords,
