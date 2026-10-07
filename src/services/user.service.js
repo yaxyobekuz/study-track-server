@@ -101,16 +101,80 @@ async function syncDirectory(id) {
   });
   if (!user) return;
 
+  // ⚠️ UY FILIALI TAHRIRDA O'ZGARMAYDI. Ilgari bu yerda har doim JORIY
+  // filial yozilardi: ko'p filialli xodimni ikkinchi filialda tahrirlash
+  // uning login yo'naltirgichini jimgina o'sha filialga burib, ikkinchi
+  // "uy" biriktirishini yaratardi. Uy filiali faqat ko'chirishda
+  // (`branchTransfer.service.js`) o'zgaradi; yozuv yo'q bo'lsa — joriy filial
+  // (filiallashtirishdan oldingi foydalanuvchi, lazy migratsiya).
+  const existing = await userDirectory.findByUserId(id);
+  const homeBranchId = existing?.branchId ?? branch.id;
+  const isHome = homeBranchId === branch.id;
+
   await userDirectory.sync({
     id: user.id,
     username: user.username,
-    branchId: branch.id,
-    role: user.role,
+    branchId: homeBranchId,
+    // Yo'naltirgichdagi rol — UY filialidagi rol
+    role: isHome ? user.role : existing.role,
     firstName: user.firstName,
     lastName: user.lastName ?? "",
     isActive: user.isActive,
     isArchived: user.isArchived,
+    currentBranchId: branch.id,
+    currentRole: user.role,
   });
+}
+
+/**
+ * Bu filialdagi qator odamning AMALDAGI profilimi?
+ *
+ * Ko'chirilgan yoki filialdan chiqarilgan odamning eski filialida qatori
+ * QOLADI (baholar, davomat, to'lovlar unga ishora qiladi), lekin u QOLDIQ.
+ * Identifikatsiya maydonlari esa (`propagateIdentity`) odamning AMALDAGI
+ * filiallariga tarqaladi — qoldiq orqali tahrir, arxivlash yoki parol
+ * almashtirish uning yangi filialdagi profilini o'zgartirib yuborardi
+ * (arxivlash — tizimdan butunlay chiqarib yuborardi).
+ *
+ * Owner va filiallashtirishdan oldingi (yo'naltirgichsiz) foydalanuvchi
+ * tekshirilmaydi.
+ *
+ * @param {{id: string, role: string}} user
+ */
+async function assertLiveProfile(user) {
+  if (!user || user.role === ROLES.OWNER) return;
+  const entry = await userDirectory.findByUserId(user.id);
+  if (!entry) return;
+
+  const branch = getBranch();
+  const access = await userDirectory.listAccess(user.id);
+  if (access.some((row) => row.branchId === branch.id)) return;
+
+  const home = await branchService.findById(entry.branchId);
+  throw new BadRequestError(
+    user.role === ROLES.STUDENT
+      ? `O'quvchi "${home?.name ?? "boshqa"}" filialiga ko'chirilgan — o'zgartirish o'sha filialda qilinadi`
+      : `Xodim bu filialdan chiqarilgan — o'zgartirish uning amaldagi filialida ("${home?.name ?? "boshqa"}") qilinadi`,
+    { reason: "not_live_profile", homeBranchId: entry.branchId },
+  );
+}
+
+/**
+ * Profil sahifasi uchun: bu filialdagi qator qoldiqmi va odam hozir qayerda.
+ * @returns {Promise<{live: boolean, homeBranch: {id: string, name: string}|null}>}
+ */
+async function describeBranchPresence(user) {
+  if (!user || user.role === ROLES.OWNER) return { live: true, homeBranch: null };
+  const entry = await userDirectory.findByUserId(user.id);
+  if (!entry) return { live: true, homeBranch: null };
+
+  const branch = getBranch();
+  const access = await userDirectory.listAccess(user.id);
+  const home = await branchService.findById(entry.branchId);
+  return {
+    live: access.some((row) => row.branchId === branch.id),
+    homeBranch: home ? { id: home.id, name: home.name } : null,
+  };
 }
 
 
@@ -240,6 +304,14 @@ async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
  * @returns {Promise<object|null>}
  */
 async function getUserById(id) {
+  const user = await loadUserWithSchedule(id);
+  if (!user) return user;
+  // Qoldiq profilmi (boshqa filialga ko'chirilgan / filialdan chiqarilgan) —
+  // profil sahifasi buni ochiq aytadi va tahrir tugmalarini yopadi
+  return { ...user, branchPresence: await describeBranchPresence(user) };
+}
+
+async function loadUserWithSchedule(id) {
   const user = await loadUser(id);
   if (!user) return user;
 
@@ -365,6 +437,7 @@ async function setExtraRoles(userId, extraRoles, actor) {
   if (target.role === ROLES.OWNER) {
     throw new ForbiddenError("Owner rollarini o'zgartirib bo'lmaydi");
   }
+  await assertLiveProfile(target);
 
   const wanted = [
     ...new Set((extraRoles || []).map((r) => String(r).trim()).filter(Boolean)),
@@ -950,6 +1023,7 @@ async function updateUser(id, data, options = {}) {
       "Egasi foydalanuvchisini o'zgartirish mumkin emas",
     );
   }
+  await assertLiveProfile(user);
 
   const update = {};
   if (firstName) update.firstName = firstName;
@@ -1118,11 +1192,12 @@ async function updateUserPhone(id, data = {}) {
 
   const user = await prisma.user.findUnique({
     where: { id },
-    select: { id: true },
+    select: { id: true, role: true },
   });
   if (!user) {
     throw new NotFoundError("Foydalanuvchi topilmadi");
   }
+  await assertLiveProfile(user);
 
   const update = {};
   if (phone !== undefined) update.phone = normalizePhone(phone);
@@ -1156,6 +1231,7 @@ async function resetPassword(id, newPassword) {
       "Egasi foydalanuvchisi parolini tiklash mumkin emas",
     );
   }
+  await assertLiveProfile(user);
 
   const hashed = await hashPassword(newPassword);
 
@@ -1195,6 +1271,22 @@ async function deleteUser(id) {
   if (user.role === "student") {
     throw new BadRequestError(
       "O'quvchini o'chirib bo'lmaydi. Uning o'rniga arxivlang",
+    );
+  }
+  await assertLiveProfile(user);
+
+  // ⚠️ Yo'naltirgich BUTUN tizim bo'yicha — uni o'chirish odamni HAMMA
+  // filialdan chiqarib yuboradi. Boshqa filialda ham ishlaydigan xodim bu
+  // yerdan faqat CHIQARILADI (`detachFromBranch`), o'chirilmaydi.
+  const access = await userDirectory.listAccess(id);
+  if (access.some((row) => row.branchId !== getBranch().id)) {
+    const isHomeHere = access.some((row) => row.isHome && row.branchId === getBranch().id);
+    throw new BadRequestError(
+      isHomeHere
+        ? "Xodim boshqa filiallarda ham ishlaydi — o'chirish uni hamma filialdan chiqarib " +
+            "yuboradi. Avval boshqa filiallardan chiqaring"
+        : "Xodim boshqa filiallarda ham ishlaydi — bu filialdan chiqarish uchun uning " +
+            "\"Filiallar\" bo'limidan foydalaning",
     );
   }
 
@@ -1241,6 +1333,9 @@ async function archiveUser(id, options = {}) {
   if (user.isArchived) {
     throw new BadRequestError("Foydalanuvchi allaqachon arxivlangan");
   }
+  // Arxivlash BARCHA filiallarga tarqaladi — qoldiq qatordan bosilsa,
+  // odam amaldagi filialida ham tizimdan chiqib ketardi
+  await assertLiveProfile(user);
 
   const today = currentDayDate();
 
@@ -1353,6 +1448,10 @@ async function restoreUser(id) {
   if (!user.isArchived) {
     throw new BadRequestError("Foydalanuvchi arxivlanmagan");
   }
+  // ⚠️ BOSHQA FILIALGA KO'CHIRILGAN o'quvchi bu yerda arxivda turadi (tarix
+  // qatori). Uni shu yerda qaytarish o'quvchini IKKI filialda bir vaqtda
+  // "o'qiyotgan" qilib qo'yardi — qaytarish faqat ko'chirish orqali.
+  await assertLiveProfile(user);
 
   const today = currentDayDate();
 
@@ -1958,4 +2057,6 @@ module.exports = {
   attachToBranch,
   detachFromBranch,
   propagateIdentity,
+  assertLiveProfile,
+  describeBranchPresence,
 };

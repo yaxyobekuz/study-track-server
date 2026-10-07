@@ -104,6 +104,11 @@ enum CoinTransactionType {
   fine_reduction_purchase
   season_absolute_reward
   season_class_top_reward
+  // FILIALLARARO KO'CHIRISH — qoldiq yozuv bilan ko'chadi: manba filialda
+  // chiqim (qoldiq 0 ga), maqsad filialda kirim (o'sha qoldiq). Tarix o'z
+  // filialida qoladi, ya'ni "bu tangalar qayerdan" degan savolga javob shu
+  // qator (`branchTransfer.service.js`).
+  branch_transfer
 }
 
 enum MarketOrderStatus {
@@ -593,6 +598,7 @@ enum StudentClassChangeSource {
   profile // O'quvchi profili → "Sinflar" kartasi
   class_page // Sinf sahifasi → "Ko'chirish" / "Sinfdan chiqarish"
   assistant // AI yordamchi (egasi tasdiqlagan taklif)
+  branch_transfer // Filiallararo ko'chirish — o'quvchi boshqa filialga o'tdi
 }
 
 // O'QUVCHI TASHQI TIZIMDA BORMI — ERP va Kundalik.com.

@@ -5,6 +5,7 @@ const router = express.Router();
 // Routes imports
 const authRoutes = require("./auth.routes");
 const branchRoutes = require("./branch.routes");
+const branchTransferRoutes = require("./branchTransfer.routes");
 const userRoutes = require("./user.routes");
 const subjectRoutes = require("./subject.routes");
 const classRoutes = require("./class.routes");
@@ -86,6 +87,7 @@ const parentalRoutes = require("./parental.routes");
 // Routes
 router.use("/auth", authRoutes);
 router.use("/branches", branchRoutes);
+router.use("/branch-transfers", branchTransferRoutes);
 router.use("/users", userRoutes);
 router.use("/subjects", subjectRoutes);
 router.use("/classes", classRoutes);

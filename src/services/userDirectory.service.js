@@ -125,7 +125,11 @@ const release = async (userId) => {
  * Yozuv topilmasa — YARATADI: filiallashtirishdan oldin yaratilgan
  * foydalanuvchilar uchun lazy migratsiya.
  *
- * @param {object} entry - `claim` bilan bir xil shakl
+ * ⚠️ `branchId` — UY filiali (chaqiruvchi mavjud yozuvdan oladi, joriy
+ * filialdan emas). `currentBranchId`/`currentRole` — tahrir qaysi filialda
+ * bo'lgani: uy bo'lmasa, faqat o'sha biriktirishning roli yangilanadi.
+ *
+ * @param {object} entry - `claim` bilan bir xil shakl (+ `currentBranchId`, `currentRole`)
  */
 const sync = async (entry) => {
   const data = {
@@ -158,6 +162,16 @@ const sync = async (entry) => {
       },
       update: { role: data.role, isHome: true },
     });
+
+    // Tahrir UY BO'LMAGAN filialda bo'ldi — o'sha filialdagi rol (u
+    // biriktirish qatorida denormalizatsiya) yangilanadi. Qator yaratilmaydi:
+    // biriktirishni faqat biriktirish/ko'chirish ochadi.
+    if (entry.currentBranchId && entry.currentBranchId !== data.branchId && entry.currentRole) {
+      await platformPrisma.userBranchAccess.updateMany({
+        where: { userId: row.id, branchId: entry.currentBranchId },
+        data: { role: entry.currentRole },
+      });
+    }
 
     return row;
   } catch (error) {

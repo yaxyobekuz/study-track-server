@@ -318,6 +318,9 @@ function buildRow(person, projected, accrued, hoursRow, entry, planned = null) {
     // Toifa/lavozim qaysi bo'limniki ("Yuqori sinflar") — bir xil nomli
     // toifa har bo'limda boshqa stavka bilan bo'lishi mumkin.
     departmentName: projected?.departmentName || null,
+    // Ko'p filialli xodim: asosiy oyligi (fiksa, ustama) boshqa filialda —
+    // bu yerda faqat shu filialdagi dars va tyutorlik (`payrollOwnership`)
+    fixedOwner: projected?.fixedOwner ?? null,
     // Soat PULGA aylanadimi — ustunni ko'rsatish sharti EMAS, faqat
     // "bu odamda soat pul hosil qiladi" belgisi (rang va jami uchun).
     usesHours: Boolean(perHourRate),

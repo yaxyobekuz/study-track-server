@@ -15,6 +15,7 @@
 // Bo'lim kalitlari — route fayllarida `authorizeSection` uchun.
 const SECTIONS = {
   BRANCHES: "branches",
+  TRANSFERS: "transfers",
   USERS: "users",
   ENROLLMENT: "enrollment",
   STATISTICS: "statistics",
@@ -97,6 +98,27 @@ const PERMISSION_SECTIONS = [
       A.update,
       { key: "archive", label: "Arxivlash" },
       { key: "assign", label: "Xodimni filialga biriktirish" },
+    ],
+  },
+  {
+    // FILIALLARARO KO'CHIRISH — o'quvchi, xodim va sinf (`branchTransfer.service.js`).
+    //
+    // Amallar ATAYLAB mayda: o'quvchini ko'chirish uning moliyasini (o'qish
+    // davri, tarif, hisob-faktura) ikki filialda o'zgartiradi, xodimni
+    // ko'chirish esa oylik egasini — ular boshqa-boshqa qaror.
+    //
+    // ⚠️ RUXSAT IKKALA FILIALDA tekshiriladi: odam MAQSAD filialga ham
+    // kiritiladi, ruxsatlar esa har filialda alohida (`User.permissions`).
+    // Faqat manba filialdagi kalit yetsa, Chilonzorda huquqi bor xodim
+    // Yunusobod bazasiga odam kiritib qo'ya olardi. Owner — istisno.
+    key: SECTIONS.TRANSFERS,
+    label: "Filiallararo ko'chirish",
+    group: "Asosiy",
+    actions: [
+      A.view,
+      { key: "students", label: "O'quvchilarni ko'chirish" },
+      { key: "staff", label: "Xodimlarni ko'chirish" },
+      { key: "classes", label: "Sinflarni ko'chirish" },
     ],
   },
   {

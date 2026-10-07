@@ -342,7 +342,12 @@ async function getCoinStats() {
     topEarners,
     dailyStats,
   ] = await Promise.all([
-    prisma.coinTransaction.aggregate({ _sum: { amount: true } }),
+    // ⚠️ Filiallararo o'tkazma "tarqatilgan" emas: tanga boshqa filialda
+    // berilgan va o'quvchi bilan ko'chgan (`branchTransfer.service.js`)
+    prisma.coinTransaction.aggregate({
+      where: { type: { not: "branch_transfer" } },
+      _sum: { amount: true },
+    }),
     prisma.user.aggregate({
       where: { isActive: true, isArchived: false },
       _sum: { coinBalance: true },

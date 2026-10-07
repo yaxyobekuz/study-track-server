@@ -55,6 +55,7 @@ const { getFinanceSettings } = require("./settings.service");
 const { resolveTutorIdsForMonth } = require("./tutorGroup.service");
 const { absenceBreakdownKey } = require("../helpers/salaryRules.helpers");
 const { serializeAbsence } = require("./payrollAbsence.service");
+const { pinGeneratedMonth } = require("./payrollOwnership.service");
 
 // Payroll uchun user maydonlari — biriktirmalar bilan
 const PAYROLL_USER_SELECT = {
@@ -148,6 +149,9 @@ const emptySummary = (month, reason) => ({
   deductionTotal: "0.00",
   // zeroAmount — faqat KPI oladigan, lekin shu oy darsi bo'lmagan xodim
   skipped: { alreadyExists: 0, noSalary: 0, archived: 0, zeroAmount: 0, monthOpen: 0 },
+  // Ko'p filialli xodim: asosiy oyligi boshqa filialda — bu yerda faqat shu
+  // filialdagi dars/tyutorlik (`payrollOwnership.service.js`)
+  fixedElsewhere: 0,
   durationMs: 0,
 });
 
@@ -240,16 +244,20 @@ const generateForMonth = async (monthInput, options = {}) => {
       status: true,
       paidAmount: true,
       amount: true,
+      fixedAmount: true,
       absenceBreakdown: true,
     },
   });
   const restorable = new Map();
   const refreshable = new Map();
   const lockedIds = new Set();
+  // To'lov tushgan va asosiy oyligi bor qatorlar — ega filial ularni ham muhrlaydi
+  const lockedWithFixed = new Set();
   for (const row of existing) {
     const paid = new Decimal(row.paidAmount).greaterThan(0);
     if (paid) {
       lockedIds.add(row.staffId); // to'lov tushgan — muhr o'zgarmaydi
+      if (new Decimal(row.fixedAmount).greaterThan(0)) lockedWithFixed.add(row.staffId);
     } else if (row.status === "cancelled") {
       restorable.set(row.staffId, row);
     } else {
@@ -276,6 +284,11 @@ const generateForMonth = async (monthInput, options = {}) => {
   const restores = [];
   const refreshes = [];
   const zeroedOut = [];
+  // Asosiy oyligi boshqa filialda va shu yerda ish qismi ham yo'q — alohida
+  // sabab bilan bekor qilinadi
+  const zeroedElsewhere = [];
+  // Shu filial EGA bo'lgan va asosiy oyligi bor xodimlar — oy muhrlanadi
+  const pinIds = [];
   let total = new Decimal(0);
   let fixedTotal = new Decimal(0);
   let kpiTotal = new Decimal(0);
@@ -285,6 +298,9 @@ const generateForMonth = async (monthInput, options = {}) => {
   for (const person of staff) {
     if (lockedIds.has(person.id)) {
       // To'lov tushgan — muhr o'zgarmaydi (taqsimot bog'langan)
+      if (lockedWithFixed.has(person.id) && !ctx.foreignFixed?.has(person.id)) {
+        pinIds.push(person.id);
+      }
       summary.skipped.alreadyExists += 1;
       continue;
     }
@@ -293,13 +309,15 @@ const generateForMonth = async (monthInput, options = {}) => {
     const existingRestore = restorable.get(person.id);
 
     const c = payrollEngine.computeForStaff(person, month, ctx);
+    if (c?.fixedOwner) summary.fixedElsewhere += 1;
+    else if (c?.fixedAmount.greaterThan(0)) pinIds.push(person.id);
 
     // Bu oy oyligi yo'qmi? Biriktirma yo'q (`!c`) yoki YALPI 0 (masalan
     // shu oy darsi bo'lmagan KPI o'qituvchi). To'lanmagan mavjud qator bo'lsa
     // — endi bu oy oyligi qolmadi, bekor qilinadi (vedomost ham 0 ko'rsatadi).
     if (!c || c.grossAmount.lessThanOrEqualTo(0)) {
       if (existingRefresh) {
-        zeroedOut.push(existingRefresh.id);
+        (c?.fixedOwner ? zeroedElsewhere : zeroedOut).push(existingRefresh.id);
       } else {
         summary.skipped[!c ? "noSalary" : "zeroAmount"] += 1;
       }
@@ -376,7 +394,7 @@ const generateForMonth = async (monthInput, options = {}) => {
   summary.created = rows.length;
   summary.restored = restores.length;
   summary.updated = refreshes.length;
-  summary.cancelledStale = zeroedOut.length;
+  summary.cancelledStale = zeroedOut.length + zeroedElsewhere.length;
   summary.totalAmount = formatAmount(total);
   summary.fixedTotal = formatAmount(fixedTotal);
   summary.kpiTotal = formatAmount(kpiTotal);
@@ -425,6 +443,8 @@ const generateForMonth = async (monthInput, options = {}) => {
     summary.skipped.alreadyExists += refreshes.length - updated;
   }
 
+  if (!dryRun) summary.cancelledStale = 0;
+
   if (!dryRun && zeroedOut.length > 0) {
     // To'lanmagan qatorda bu oy oyligi qolmadi (dars soati 0 / qoida yopildi)
     const result = await prisma.payrollEntry.updateMany({
@@ -436,7 +456,30 @@ const generateForMonth = async (monthInput, options = {}) => {
         cancelledBy: actorId ?? SYSTEM_ACTOR_ID,
       },
     });
-    summary.cancelledStale = result.count;
+    summary.cancelledStale += result.count;
+  }
+
+  if (!dryRun && zeroedElsewhere.length > 0) {
+    // Asosiy oylik boshqa filialda va shu filialda bajarilgan ish yo'q —
+    // to'lanmagan qator ikkinchi oylik bo'lib qolmasin. To'langani tegilmaydi
+    // (CAS: `paidAmount: 0`).
+    const result = await prisma.payrollEntry.updateMany({
+      where: { id: { in: zeroedElsewhere }, paidAmount: 0, status: { in: ["unpaid", "paid"] } },
+      data: {
+        status: "cancelled",
+        cancelReason: "Asosiy oylik boshqa filialda hisoblanadi — bu filialda shu oy ish yo'q",
+        cancelledAt: new Date(),
+        cancelledBy: actorId ?? SYSTEM_ACTOR_ID,
+      },
+    });
+    summary.cancelledStale += result.count;
+  }
+
+  // Ega filial o'z oyini MUHRLAYDI: keyin uy filiali o'zgarsa (ko'chirish)
+  // ham bu oyning asosiy oyligi shu yerda qoladi va boshqa filial uni
+  // hisoblamaydi
+  if (!dryRun && pinIds.length > 0) {
+    await pinGeneratedMonth(pinIds, month);
   }
 
   // 5 ── QULFLANGAN (to'lov tushgan) majburiyatlar: tyutor qatorlari va ushlab

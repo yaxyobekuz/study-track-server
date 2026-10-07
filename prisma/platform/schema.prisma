@@ -82,6 +82,8 @@ model Branch {
   telegramLinks TelegramDirectory[]
   staffAccess   UserBranchAccess[]
   sessions      UserSession[]
+  transfersOut  BranchTransfer[]    @relation("TransfersOut")
+  transfersIn   BranchTransfer[]    @relation("TransfersIn")
 
   @@index([isArchived, isActive, sortOrder])
   @@map("branches")
@@ -435,6 +437,140 @@ model UserBranchAccess {
   @@id([userId, branchId])
   @@index([branchId, role])
   @@map("user_branch_access")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// FILIALLARARO KO'CHIRISH — o'quvchi, xodim va sinf
+// ═════════════════════════════════════════════════════════════════════
+//
+// Ko'chirish BITTA PostgreSQL tranzaksiyasida bajariladi: barcha filial
+// schema'lari va platforma bitta bazada, shuning uchun manba filial, maqsad
+// filial va login yo'naltirgichi bir vaqtda o'zgaradi — yarim ko'chgan odam
+// strukturaviy imkonsiz (`branchTransfer.service.js`).
+//
+// ⚠️ TARIX O'Z FILIALIDA QOLADI, HOLAT ODAM BILAN KO'CHADI. Baholar, davomat,
+// hisob-faktura va to'lovlar manba filialning FAKTI: baho o'qituvchi oyligiga
+// (dars "o'tildimi"), to'lov kassa qoldig'iga bog'langan. Ularni ko'chirish
+// manba filial o'qituvchilarining oyligini va kassasini jimgina o'zgartirardi.
+// Ko'chadi: login, tarif/chegirma (kelajak qoidasi), tanga qoldig'i (yozuv
+// bilan), ota-ona nazorati, Telegram, sinf, o'qish davri.
+//
+// Bu jadval — JURNAL: kim, qachon, qayerdan, qayerga, nega va nima ko'chdi.
+// Append-only — tahrirlanmaydi va o'chirilmaydi.
+
+enum BranchTransferKind {
+  student // o'quvchi(lar)
+  staff // xodim(lar): o'qituvchi, tyutor va boshqa barcha xodimlar
+  class // sinf(lar) — sinf o'quvchilari bilan birga
+}
+
+enum BranchTransferMode {
+  move // butunlay ko'chadi: maqsad filial asosiy (uy) filialga aylanadi
+  share // manba filialda ham qoladi: maqsad filial qo'shiladi (faqat xodim)
+}
+
+enum BranchTransferStatus {
+  completed // hammasi o'tdi
+  // Asosiy ko'chirish o'tdi, lekin tranzaksiyadan keyingi qadam (masalan
+  // manba filialdagi hisob-fakturani bekor qilish) yiqildi — qo'lda hal qilish
+  // kerak. Qaysi qadam ekani `branch_transfer_items.warnings` da.
+  attention
+}
+
+model BranchTransfer {
+  id   String             @id @db.Char(24)
+  kind BranchTransferKind
+  mode BranchTransferMode
+
+  sourceBranchId String @map("source_branch_id") @db.Char(24)
+  targetBranchId String @map("target_branch_id") @db.Char(24)
+
+  // Maqsad filialdagi BIRINCHI kun. Manba filialda oxirgi kun — bir kun oldin.
+  effectiveDate DateTime @map("effective_date") @db.Date
+
+  reason  String @db.Text
+  // Tanlangan variantlar (tarif rejimi, ruxsatlar, sinf...) — "nega shunday
+  // ko'chdi" degan savolga javob
+  options Json   @default("{}")
+
+  itemCount Int                  @map("item_count")
+  status    BranchTransferStatus @default(completed)
+
+  createdBy     String   @map("created_by") @db.Char(24)
+  // Aktyor ismi MUHRLANADI: jurnal boshqa filialdan ham o'qiladi, aktyor esa
+  // u filialda bo'lmasligi mumkin
+  createdByName String   @default("") @map("created_by_name")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  sourceBranch Branch               @relation("TransfersOut", fields: [sourceBranchId], references: [id], onDelete: Restrict)
+  targetBranch Branch               @relation("TransfersIn", fields: [targetBranchId], references: [id], onDelete: Restrict)
+  items        BranchTransferItem[]
+
+  @@index([sourceBranchId, createdAt(sort: Desc)])
+  @@index([targetBranchId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("branch_transfers")
+}
+
+// Ko'chirishning bitta odami yoki sinfi.
+model BranchTransferItem {
+  id         String @id @db.Char(24)
+  transferId String @map("transfer_id") @db.Char(24)
+
+  // "user" | "class"
+  subjectType String @map("subject_type") @db.VarChar(16)
+  // `User.id` (filiallar bo'ylab yagona) yoki manba filialdagi `Class.id`
+  subjectId   String @map("subject_id") @db.Char(24)
+  // Ism / sinf nomi — o'sha paytdagi holat (keyin o'zgarsa ham jurnal aytadi)
+  label       String
+  role        String @default("")
+
+  // Nima ko'chdi (jadval → qatorlar soni), sinf, oylar, tranzaksiyadan
+  // keyingi qadamlar natijasi
+  details  Json     @default("{}")
+  warnings String[] @default([])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  transfer BranchTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@index([transferId])
+  @@index([subjectId, createdAt(sort: Desc)])
+  @@map("branch_transfer_items")
+}
+
+// ─────────────────────────────────────────────
+// ASOSIY OYLIK EGASI — bir xodim, bir oy, BITTA filial
+// ─────────────────────────────────────────────
+//
+// Xodim bir nechta filialda ishlashi mumkin. ASOSIY OYLIK (lavozim maoshi,
+// qo'shimcha fiksa, ustamalar, bonuslar, kelmagan kun ayirmasi) har oy uchun
+// FAQAT BITTA filialda hisoblanadi — shu jadval qaysi filial ekanini
+// muhrlaydi. Boshqa filiallarda faqat o'sha filialda BAJARILGAN ISH
+// (dars soati × stavka, tyutor guruhi) hisoblanadi: ular boshqa-boshqa ish,
+// ya'ni ikki marta hisoblash emas.
+//
+// ⚠️ Yagona kalit (`userId`, `month`) — ikkinchi filial o'sha oyni egallay
+// olmaydi: ikki marta asosiy oylik STRUKTURAVIY imkonsiz
+// (`payrollOwnership.service.js`).
+//
+// Qator bo'lmasa — egasi xodimning UY filiali (`UserDirectory.branchId`).
+// Qator yozadiganlar: oylik shakllantirish (egasi o'zi) va ko'chirish
+// (manba filial ko'chish oyini va o'tgan oylarini saqlab qoladi — uy filiali
+// o'zgargani o'tgan oylik egasini o'zgartirmasin).
+model PayrollMonthOwner {
+  userId   String @map("user_id") @db.Char(24)
+  month    Int // YYYYMM
+  branchId String @map("branch_id") @db.Char(24)
+
+  // "generation" | "transfer"
+  source String @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([userId, month])
+  @@index([branchId, month])
+  @@map("payroll_month_owners")
 }
 
 // ═════════════════════════════════════════════════════════════════════
