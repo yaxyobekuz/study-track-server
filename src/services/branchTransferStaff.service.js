@@ -489,6 +489,35 @@ const writeStaff = async (db, ctx, items, options) => {
         item.id,
         ctx.target.id,
       );
+
+      // ── BOTDAGI BOG'LANISH UZILADI ──
+      //
+      // Xodim botga o'z logini bilan kirib, davomati va oyligini ko'rishi
+      // mumkin (`20261009120000_bot_staff_login`). Bog'lanish esa FILIALGA
+      // qotirilgan: `tg_users` qatori manba filial schema'sida yotadi va
+      // `telegram_directory` bot uchun "bu telegramId qaysi filial" degan
+      // yo'naltirgich. Uy filiali ko'chganda bu ikkisi tegilmasa, xodim
+      // botda ESKI filialning ma'lumotini ko'rib turardi.
+      //
+      // ⚠️ KO'CHIRILMAYDI, UZILADI. Qatorni maqsad schema'ga ko'chirish
+      // mumkin edi, lekin undagi `notificationsEnabled`/`lastActivity` —
+      // shu filialning FAKTI (ko'chmaydiganlar ro'yxati, fayl boshidagi
+      // izoh). Xodim qayta login qiladi va to'g'ri filialga tushadi; login
+      // oqimi "bog'lanmagan" holatni allaqachon to'g'ri kutib oladi.
+      //
+      // ⚠️ FAQAT `link_kind = 'staff'`: shu odamning o'quvchi sifatidagi
+      // bog'lanishiga (farzandi shu maktabda o'qiyotgan bo'lsa) tegilmaydi —
+      // u o'quvchi ko'chirilganda alohida boshqariladi
+      // (`branchTransferStudent.service.js`).
+      await exec(
+        `DELETE FROM ${src("tg_users")} WHERE user_id = $1 AND link_kind = 'staff'`,
+        item.id,
+      );
+      await exec(
+        `DELETE FROM ${plat("telegram_directory")}
+         WHERE user_id = $1 AND link_kind = 'staff'`,
+        item.id,
+      );
     }
     await exec(
       `INSERT INTO ${plat("user_branch_access")}
