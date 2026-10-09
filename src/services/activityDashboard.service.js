@@ -89,6 +89,22 @@ const NON_STAFF_ROLES = [ROLES.OWNER, ROLES.STUDENT];
 /** Chiquvchi (biz yuborgan) hodisalar prefiksi — faollik sanog'iga kirmaydi. */
 const OUTBOUND_PREFIX = "bot.out.";
 
+/**
+ * XODIMNING BOTDAGI harakatlari prefiksi — `OUTBOUND_PREFIX` bilan bir xil
+ * sababga ko'ra QAMROV sanog'idan chiqariladi.
+ *
+ * Botga endi xodim ham o'z logini bilan kiradi (`tg_users.link_kind =
+ * 'staff'`), lekin bu panelda "bot" kanali OTA-ONA QAMROVINI bildiradi:
+ * `botRate` ning maxraji — o'quvchiga bog'langan hisoblar soni. Xodim
+ * hodisasi sanoqqa kirsa ulush 100% dan oshib ketardi, chunki u maxrajda
+ * yo'q (`linkKind: "student"` filtri).
+ *
+ * ⚠️ YO'QOLMAYDI: `actionBreakdown` kanal bo'yicha filtrlaydi, prefiks
+ * bo'yicha emas — xodimning botdagi harakatlari "Harakatlar" kesimida
+ * ko'rinib turadi (`ACTION_LABELS`).
+ */
+const STAFF_PREFIX = "bot.staff.";
+
 /** Bot harakatlarining o'zbekcha nomlari. */
 const ACTION_LABELS = {
   "bot.start": "Botni ochish",
@@ -98,6 +114,15 @@ const ACTION_LABELS = {
   "bot.statistics": "Statistika",
   "bot.notifications": "Bildirishnoma sozlash",
   "bot.unlink": "Hisobni uzish",
+  // ── Xodim oqimi (`STAFF_PREFIX`) ──
+  "bot.staff.start": "Botni ochish (xodim)",
+  "bot.staff.link": "Xodim hisobini bog'lash",
+  "bot.staff.attendance": "Davomatini ko'rish",
+  "bot.staff.tasks": "Topshiriqlarini ko'rish",
+  "bot.staff.lessons": "Darslarini ko'rish",
+  "bot.staff.payroll": "Oyligini ko'rish",
+  "bot.staff.settings": "Sozlamalar (xodim)",
+  "bot.staff.unlink": "Xodim hisobini uzish",
   "bot.message": "Boshqa xabar",
   "bot.out.report": "Kunlik hisobot yuborildi",
   "bot.out.failed": "Yuborilmadi",
@@ -341,6 +366,7 @@ async function activeByChannel(from, to) {
       FROM activity_events
      WHERE day BETWEEN ${dayKey(from)}::date AND ${dayKey(to)}::date
        AND action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+       AND action NOT LIKE ${`${STAFF_PREFIX}%`}
      GROUP BY channel
   `;
 
@@ -384,6 +410,7 @@ async function bucketSeries(from, to, grain) {
             FROM activity_events
            WHERE day BETWEEN ${dayKey(from)}::date AND ${dayKey(to)}::date
              AND action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+             AND action NOT LIKE ${`${STAFF_PREFIX}%`}
            GROUP BY day
            ORDER BY day
         `
@@ -396,6 +423,7 @@ async function bucketSeries(from, to, grain) {
               FROM activity_events
              WHERE day BETWEEN ${dayKey(from)}::date AND ${dayKey(to)}::date
                AND action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+               AND action NOT LIKE ${`${STAFF_PREFIX}%`}
              GROUP BY 1
              ORDER BY 1
           `
@@ -407,6 +435,7 @@ async function bucketSeries(from, to, grain) {
               FROM activity_events
              WHERE day BETWEEN ${dayKey(from)}::date AND ${dayKey(to)}::date
                AND action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+               AND action NOT LIKE ${`${STAFF_PREFIX}%`}
              GROUP BY 1
              ORDER BY 1
           `;
@@ -550,6 +579,7 @@ async function todayActors(day) {
       FROM activity_events
      WHERE day = ${dayKey(day)}::date
        AND action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+       AND action NOT LIKE ${`${STAFF_PREFIX}%`}
      GROUP BY actor_key
   `;
 
@@ -618,6 +648,13 @@ async function getOverview({ days, granularity, count, withRoster = false } = {}
       orderBy: [{ firstName: "asc" }],
     }),
     prisma.tgUser.findMany({
+      // ⚠️ FAQAT OTA-ONA qatorlari: botga xodim ham kiradi
+      // (`link_kind = 'staff'`), uning qatorida `student` NULL va bu
+      // bo'lim butunlay "ota-ona qamrovi" haqida. Pastdagi
+      // `studentSet.has(tg.student)` ularni baribir tashlab yuborardi —
+      // filtr bazadan keraksiz qator tortib kelmaslik va niyatni
+      // ko'rsatib qo'yish uchun.
+      where: { linkKind: "student" },
       select: {
         telegramId: true,
         student: true,
