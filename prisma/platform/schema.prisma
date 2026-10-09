@@ -133,11 +133,19 @@ model UserDirectory {
 
 // Telegram → filial. Busiz bot har xabarda BARCHA filial schema'larini
 // skanerlashiga to'g'ri kelardi.
+// telegramId → qaysi filial. Bot har kelgan xabarda shu yerga qaraydi.
+//
+// ⚠️ `userId` / `linkKind` — filial schema'sidagi `TgUser` bilan AYNI
+// ma'noda (izoh o'sha yerda). Xodim bog'lanishida `studentId` NULL
+// bo'ladi, shuning uchun ustun nullable qilindi.
 model TelegramDirectory {
   telegramId String @id @map("telegram_id")
 
-  branchId  String @map("branch_id") @db.Char(24)
-  studentId String @map("student_id") @db.Char(24)
+  branchId String @map("branch_id") @db.Char(24)
+
+  userId   String  @map("user_id") @db.Char(24)
+  linkKind String  @default("student") @map("link_kind")
+  studentId String? @map("student_id") @db.Char(24)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -145,6 +153,7 @@ model TelegramDirectory {
   branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
   @@index([branchId])
+  @@index([userId])
   @@map("telegram_directory")
 }
 

@@ -2291,11 +2291,36 @@ model MessageQueue {
   @@map("message_queue")
 }
 
+// TELEGRAM BOG'LANISHI — o'quvchi (ota-ona) YOKI xodim.
+//
+// Dastlab bu jadval faqat ota-onalar uchun edi: `student` ustuni MAJBURIY
+// bo'lib, botga faqat o'quvchi logini bilan kirish mumkin edi. Endi xodim
+// ham o'z logini bilan kiradi va o'ziga tegishli tezkor ma'lumotni ko'radi,
+// shuning uchun ikkita ustun qo'shildi.
+//
+// ⚠️ `userId` — BOG'LANGAN ODAM, roli qanday bo'lishidan qat'i nazar.
+// Yangi kod faqat shuni o'qiydi.
+//
+// ⚠️ `linkKind` — bog'lanish TURI ("student" | "staff"), ROL EMAS va
+// ataylab rol nomi saqlanmaydi: odamning roli keyin o'zgarishi mumkin
+// (o'qituvchi → ma'muriyat) va muhrlangan rol jimgina eskirib, botda
+// noto'g'ri menyu ko'rsatardi. Menyu uchun rol HAR SAFAR `User.role` dan
+// jonli o'qiladi; bu ustun esa faqat "bu qator ota-onaning-mi yoki
+// xodimning-mi" degan savolga javob beradi va INDEKSLANGAN — shu savol
+// ro'yxat so'rovlarida `User` ga qo'shilmasdan berilishi kerak.
+//
+// ⚠️ `student` SAQLANDI va `linkKind = "student"` bo'lganda to'ladi,
+// xodimda esa NULL. Bu ataylab: o'quvchiga xabar yuboradigan barcha
+// joylar (`penalty`, `debtReminder`, `premiumNotification`) `student`
+// bo'yicha qidiradi va NULL tufayli ular xodim qatoriga HECH QACHON
+// urilmaydi — ya'ni eski oqimlar o'zgarishsiz va xavfsiz qoldi.
 model TgUser {
   id                   String   @id @db.Char(24)
   telegramId           String   @unique @map("telegram_id")
   chatId               String   @map("chat_id")
-  student              String   @db.Char(24)
+  userId               String   @map("user_id") @db.Char(24)
+  linkKind             String   @default("student") @map("link_kind")
+  student              String?  @db.Char(24)
   firstName            String?  @map("first_name")
   lastName             String?  @map("last_name")
   username             String?
@@ -2306,6 +2331,8 @@ model TgUser {
   updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@index([student])
+  @@index([userId])
+  @@index([linkKind, isActive])
   @@index([notificationsEnabled, isActive])
   @@map("tg_users")
 }
