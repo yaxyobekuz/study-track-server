@@ -31,7 +31,11 @@ const {
   getPaginationParams,
   formatPaginationResponse,
 } = require("../utils/pagination");
-const { NotFoundError, BadRequestError } = require("../utils/errors");
+const {
+  NotFoundError,
+  BadRequestError,
+  ConflictError,
+} = require("../utils/errors");
 const { notifyIssueReply } = require("./issueNotification.service");
 
 /** Ko'rib chiqish holatlari — `IssueStatus` enum bilan ayni ro'yxat. */
@@ -82,6 +86,41 @@ function pickCategoryFields(data = {}) {
 }
 
 /**
+ * NOM YAGONA EKANINI TEKSHIRADI — registrga BOG'LIQ EMAS.
+ *
+ * ⚠️ BU SHART, chunki BOT KATEGORIYANI NOM BO'YICHA TOPADI: Telegram'dagi
+ * oddiy klaviatura tugmasi `callback_data` bermaydi, javob sifatida faqat
+ * matn qaytadi (`bot/src/services/issue.service.js#findActiveCategoryByName`).
+ * Ikkita "Texnika" bo'lsa bot birinchisini tanlab, muammolar jimgina ikki
+ * kategoriyaga bo'linib ketardi.
+ *
+ * ⚠️ NOAKTIVLAR HAM HISOBGA OLINADI. Yumshoq o'chirilgan kategoriyani
+ * qaytadan yaratish o'rniga QAYTA YOQISH kerak: aks holda eski muammolar
+ * bitta "Texnika" da, yangilari esa boshqasida qolardi. Xato xabari aynan
+ * shuni aytadi.
+ *
+ * @param {string} name
+ * @param {string} [excludeId] - tahrirlashda o'zini hisobdan chiqarish
+ */
+async function assertCategoryNameFree(name, excludeId) {
+  const existing = await prisma.issueCategory.findFirst({
+    where: {
+      name: { equals: name, mode: "insensitive" },
+      ...(excludeId && { id: { not: excludeId } }),
+    },
+    select: { id: true, isActive: true },
+  });
+
+  if (!existing) return;
+
+  throw new ConflictError(
+    existing.isActive
+      ? "Bu nomli kategoriya allaqachon mavjud"
+      : "Bu nomli kategoriya noaktiv holatda mavjud — uni o'chirish o'rniga qayta yoqing",
+  );
+}
+
+/**
  * Kategoriya yaratadi.
  * @param {object} data - `{ name, isActive }`
  * @param {string} createdBy
@@ -90,6 +129,8 @@ function pickCategoryFields(data = {}) {
 async function createCategory(data, createdBy) {
   const fields = pickCategoryFields(data);
   if (!fields.name) throw new BadRequestError("Kategoriya nomi kiritilmadi");
+
+  await assertCategoryNameFree(fields.name);
 
   return prisma.issueCategory.create({ data: { ...fields, createdBy } });
 }
@@ -139,6 +180,9 @@ async function updateCategory(id, data) {
   const fields = pickCategoryFields(data);
   if (fields.name !== undefined && !fields.name) {
     throw new BadRequestError("Kategoriya nomi bo'sh bo'lishi mumkin emas");
+  }
+  if (fields.name !== undefined && fields.name !== existing.name) {
+    await assertCategoryNameFree(fields.name, id);
   }
 
   return prisma.issueCategory.update({ where: { id }, data: fields });
