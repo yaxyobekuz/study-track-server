@@ -63,6 +63,7 @@ const SECTIONS = {
   SOCIAL: "social",
   LEADS: "leads",
   ACTIVITY: "activity",
+  ISSUES: "issues",
   SECURITY: "security",
   DEVICES: "devices",
 };
@@ -900,6 +901,36 @@ const PERMISSION_SECTIONS = [
       { key: "roster", label: "Foydalanmayotganlar ro'yxati" },
       { key: "sessions", label: "Foydalanuvchi tafsiloti" },
       A.export,
+    ],
+  },
+  {
+    // MUAMMOLAR — "foydalanuvchi NIMADAN shikoyat qilyapti?".
+    //
+    // Xodim yoki ota-ona botdan muammo yuboradi (kategoriya + matn),
+    // ma'muriyat panelda ko'rib chiqadi va javob yozadi.
+    //
+    // ⚠️ `view` — RO'YXAT, `review` — HOLAT VA JAVOB. Ajratilgani
+    // `penalties.review` bilan ayni mulohaza: javob botga ketadi va
+    // maktab nomidan yoziladi, ya'ni uni kim yozishini owner alohida hal
+    // qiladi. Ro'yxatni ko'rish esa shunchaki "nima bo'lyapti" degan savol.
+    //
+    // ⚠️ `categories` ALOHIDA: botdagi klaviatura aynan shu ro'yxatdan
+    // chiziladi, ya'ni kategoriyani o'chirish FOYDALANUVCHI KO'RADIGAN
+    // narsani o'zgartiradi — bitta muammoga javob yozish huquqi bilan
+    // bir xil og'irlikda emas.
+    //
+    // ⚠️ `reports` — `tasks.reports` bilan ayni mulohaza: kesim butun
+    // jamoaning shikoyat manzarasini ochadi ("eng ko'p qaysi kategoriya",
+    // "qancha javobsiz qoldi") va u ro'yxatni ko'rishdan kengroq.
+    key: SECTIONS.ISSUES,
+    label: "Muammolar",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "review", label: "Holatni o'zgartirish / javob yozish" },
+      A.delete,
+      { key: "categories", label: "Kategoriyalarni boshqarish" },
+      { key: "reports", label: "Hisobotlar" },
     ],
   },
   {

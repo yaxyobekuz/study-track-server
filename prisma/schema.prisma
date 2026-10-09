@@ -6813,3 +6813,104 @@ model ParentalUnlockRequest {
   @@index([status, expiresAt])
   @@map("parental_unlock_requests")
 }
+
+// ─────────────────────────────────────────────
+// MUAMMOLAR (bot → ma'muriyat)
+// ─────────────────────────────────────────────
+//
+// Xodim yoki ota-ona botdan muammo yuboradi: avval KATEGORIYA tanlanadi
+// (oddiy klaviatura), keyin matn yoziladi. Panelda ma'muriyat ro'yxatni
+// ko'radi, holatini o'zgartiradi va javob yozadi — javob botga qaytadi.
+//
+// ⚠️ YOZUVCHI — BOT, o'quvchi/xodim nomidan. Server esa faqat KO'RIB
+// CHIQADI (holat + javob). Shu sababli ikki tomon bir ustunga yozmaydi va
+// poyga holati yo'q: bot `status`/`reply` ga, server `body`/`categoryId` ga
+// hech qachon tegmaydi.
+
+/**
+ * Muammoning ko'rib chiqilish holati.
+ *
+ * `new` → kelgan, hech kim ko'rmagan. `in_review` → mas'ul oldi.
+ * `resolved` / `rejected` — YAKUNIY: ikkalasida ham yuborgan odamga
+ * javob ketadi (`issueNotification.service.js`), shuning uchun "rad
+ * etildi" jim yopilish emas.
+ */
+enum IssueStatus {
+  new
+  in_review
+  resolved
+  rejected
+}
+
+/**
+ * MUAMMO KATEGORIYASI — faqat NOMI va HOLATI.
+ *
+ * ⚠️ ATAYLAB MINIMAL: tavsif, rang, mas'ul, rol filtri YO'Q. Kategoriya
+ * botdagi klaviatura tugmasi bo'lib xizmat qiladi va tugmada nomdan
+ * boshqa hech narsa ko'rinmaydi.
+ *
+ * ⚠️ `isActive` — botdagi KO'RINISH kaliti. Bot faqat faol kategoriyalarni
+ * ko'rsatadi (`issue.service.js#getActiveCategories`), lekin eski
+ * muammolar o'z kategoriyasini saqlab qoladi: shu sababli o'chirish
+ * YUMSHOQ (`isActive = false`), aks holda arxivdagi muammo "kategoriyasiz"
+ * qolardi.
+ */
+model IssueCategory {
+  id        String   @id @db.Char(24)
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  issues Issue[]
+
+  @@index([isActive, name])
+  @@map("issue_categories")
+}
+
+/**
+ * BOTDAN KELGAN MUAMMO.
+ *
+ * ⚠️ `authorKind` — bog'lanish TURI (`tg_users.link_kind` bilan ayni
+ * ma'noda), ROL EMAS. "student" da `userId` — O'QUVCHI, lekin botdan
+ * foydalanadigan odam uning OTA-ONASI: panelda shuning uchun "O'quvchi
+ * (ota-ona)" deb ko'rsatiladi. Rolni muhrlamaymiz — odamning roli
+ * keyin o'zgarishi mumkin va u `users` dan jonli o'qiladi.
+ *
+ * ⚠️ `chatId` MUHRLANADI va `tg_users` dan qayta izlanmaydi. Javob
+ * yuborilayotganda odam bog'lanishni uzgan yoki boshqa hisobga o'tgan
+ * bo'lishi mumkin — javob MUAMMONI YUBORGAN chatga borishi kerak, hozir
+ * o'sha telegramda kim turganiga emas.
+ */
+model Issue {
+  id         String      @id @db.Char(24)
+  categoryId String      @map("category_id") @db.Char(24)
+  userId     String      @map("user_id") @db.Char(24)
+  authorKind String      @map("author_kind")
+  body       String
+  status     IssueStatus @default(new)
+
+  telegramId String? @map("telegram_id")
+  chatId     String? @map("chat_id")
+
+  // Ko'rib chiqish natijasi — faqat panel yozadi.
+  reply      String?
+  reviewedBy String?   @map("reviewed_by") @db.Char(24)
+  reviewedAt DateTime? @map("reviewed_at")
+  // Javob botga YETIB BORDIMI. `reviewedAt` bor-u bu bo'sh bo'lsa —
+  // Telegram rad etdi (odam botni bloklagan): panelda shu farq
+  // ko'rsatiladi, aks holda ma'muriyat javob ketdi deb o'ylardi.
+  repliedAt  DateTime? @map("replied_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category IssueCategory @relation(fields: [categoryId], references: [id])
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([categoryId])
+  @@index([userId])
+  @@map("issues")
+}

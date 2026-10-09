@@ -114,6 +114,7 @@ const ACTION_LABELS = {
   "bot.statistics": "Statistika",
   "bot.notifications": "Bildirishnoma sozlash",
   "bot.unlink": "Hisobni uzish",
+  "bot.issue": "Muammo yuborish",
   // ── Xodim oqimi (`STAFF_PREFIX`) ──
   "bot.staff.start": "Botni ochish (xodim)",
   "bot.staff.link": "Xodim hisobini bog'lash",
@@ -123,6 +124,7 @@ const ACTION_LABELS = {
   "bot.staff.payroll": "Oyligini ko'rish",
   "bot.staff.settings": "Sozlamalar (xodim)",
   "bot.staff.unlink": "Xodim hisobini uzish",
+  "bot.staff.issue": "Muammo yuborish (xodim)",
   "bot.message": "Boshqa xabar",
   "bot.out.report": "Kunlik hisobot yuborildi",
   "bot.out.failed": "Yuborilmadi",
