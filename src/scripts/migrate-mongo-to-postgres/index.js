@@ -687,6 +687,11 @@ const t = {
     id: oid(d._id),
     telegramId: d.telegramId,
     chatId: d.chatId,
+    // MongoDB davrida botga FAQAT ota-ona kirardi (xodim logini keyin
+    // qo'shilgan), shuning uchun ko'chirilgan har bir qator — o'quvchi
+    // bog'lanishi: `userId` = o'sha o'quvchi, `linkKind` = "student".
+    userId: oid(d.student),
+    linkKind: "student",
     student: oid(d.student),
     firstName: d.firstName ?? null,
     lastName: d.lastName ?? null,
