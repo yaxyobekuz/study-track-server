@@ -353,7 +353,10 @@ async function loadUserWithSchedule(id) {
 
 async function getStats() {
   const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
-    prisma.tgUser.count(),
+    // ⚠️ `linkKind` FILTRI SHART: botga endi xodim ham kiradi
+    // (`tg_users.link_kind = 'staff'`), bu ko'rsatkich esa "nechta
+    // OTA-ONA botga bog'langan" degani va shunday nom bilan ko'rsatiladi.
+    prisma.tgUser.count({ where: { linkKind: "student" } }),
     prisma.user.count({ where: { role: { notIn: ["owner", "student"] } } }),
     prisma.user.count({ where: { role: "student", isArchived: false } }),
     prisma.premium.count({ where: { status: "active" } }),
