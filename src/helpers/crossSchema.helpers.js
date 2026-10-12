@@ -260,10 +260,24 @@ const copyRows = async (db, cache, spec) => {
  * @param {Object<string, string>} [spec.override] - ustun → SQL ifoda (alias
  *   `s`; parametrlar `$3` dan boshlanadi, `$1`/`$2` — juftliklar)
  * @param {any[]} [spec.params] - `$3`, `$4`, ... qiymatlari
+ * @param {"error"|"nothing"|"update"} [spec.onConflict] - "update" → maqsadda
+ *   AYNI `id` bor bo'lsa o'sha qator JOYIDA qayta yoziladi. O'chirib qayta
+ *   yozish emas: bolalari (`onDelete: Cascade`) bilan birga tarix ham
+ *   o'chib ketardi.
+ * @param {string[]} [spec.keepOnUpdate] - "update" da tegilmaydigan ustunlar
  * @returns {Promise<number>}
  */
 const copyRowsWithNewIds = async (db, cache, spec) => {
-  const { from, to, table, pairs, override = {}, params = [] } = spec;
+  const {
+    from,
+    to,
+    table,
+    pairs,
+    override = {},
+    params = [],
+    onConflict = "error",
+    keepOnUpdate = [],
+  } = spec;
   if (!pairs?.length) return 0;
   const columns = await assertSameShape(db, cache, from, to, table);
 
@@ -276,10 +290,24 @@ const copyRowsWithNewIds = async (db, cache, spec) => {
     })
     .join(", ");
 
+  const names = columns.map((c) => c.name);
+  for (const key of keepOnUpdate) {
+    if (!names.includes(key)) throw new Error(`"${table}" da "${key}" ustuni yo'q`);
+  }
+  let conflict = "";
+  if (onConflict === "nothing") conflict = " ON CONFLICT DO NOTHING";
+  if (onConflict === "update") {
+    const updatable = names.filter((n) => n !== "id" && !keepOnUpdate.includes(n));
+    conflict =
+      ` ON CONFLICT ("id") DO UPDATE SET ` +
+      updatable.map((n) => `${quoteIdent(n)} = EXCLUDED.${quoteIdent(n)}`).join(", ");
+  }
+
   const sql =
     `INSERT INTO ${qualified(to, table)} (${list}) SELECT ${select} ` +
     `FROM ${qualified(from, table)} s ` +
-    `JOIN unnest($1::text[], $2::text[]) AS m(new_id, src_id) ON s."id" = m.src_id`;
+    `JOIN unnest($1::text[], $2::text[]) AS m(new_id, src_id) ON s."id" = m.src_id` +
+    conflict;
 
   return db.$executeRawUnsafe(
     sql,

@@ -56,6 +56,14 @@ const {
 } = require("../helpers/month.helpers");
 const { Decimal, formatAmount, formatSum, sumAmounts } = require("../helpers/money.helpers");
 const { formatDateUz } = require("../helpers/date.helpers");
+const {
+  planStudentFinance,
+  writeStudentFinance,
+} = require("./branchTransferFinance.service");
+const {
+  planStudentHistory,
+  writeStudentHistory,
+} = require("./branchTransferHistory.service");
 
 /** Ota-ona nazorati jadvallari — hammasi `student_id` bilan, filial ma'lumotiga ishora qilmaydi. */
 const PARENTAL_TABLES = [
@@ -245,19 +253,10 @@ const planStudents = async (db, ctx, studentIds, options) => {
     ids,
     month,
   );
-  const invoices = await q(
-    `SELECT id, student_id AS "studentId", month, amount::text AS amount,
-            paid_amount::text AS "paidAmount", status::text AS status
-     FROM ${src("monthly_invoices")}
-     WHERE student_id = ANY($1::text[]) AND status <> 'cancelled'
-     ORDER BY student_id, month, id`,
-    ids,
-  );
-  const accounts = await q(
-    `SELECT student_id AS "studentId", balance::text AS balance
-     FROM ${src("student_accounts")} WHERE student_id = ANY($1::text[])`,
-    ids,
-  );
+  // ⚠️ Hisob-faktura va depozit bu yerda O'QILMAYDI: ular moliyaviy
+  // holat yadrosida (`planStudentFinance`) — bitta joyda o'qilib, bitta
+  // joyda hal qilinadi. Ikkita o'quvchi bo'lsa, biri qarzni "qoladi", biri
+  // "ko'chadi" deb hisoblab qo'yishi mumkin edi.
   const openOrders = await q(
     `SELECT student_id AS "studentId", COUNT(*)::int AS n FROM ${src("market_orders")}
      WHERE student_id = ANY($1::text[]) AND status IN ('pending', 'delivering')
@@ -337,9 +336,7 @@ const planStudents = async (db, ctx, studentIds, options) => {
   const statusesOf = byStudent(statuses);
   const servicesOf = byStudent(services);
   const overridesOf = byStudent(overrides);
-  const invoicesOf = byStudent(invoices);
   const count = (rows) => new Map(rows.map((r) => [String(r.studentId), r]));
-  const accountOf = count(accounts);
   const ordersOf = count(openOrders);
   const testsOf = count(liveTests);
   const damageOf = count(damages);
@@ -349,6 +346,25 @@ const planStudents = async (db, ctx, studentIds, options) => {
   const parentalSet = new Set(parental.map((r) => String(r.studentId)));
 
   const defaultTariffId = targetSettings?.defaultTariffId ?? null;
+
+  // ── O'qish davri → CHEGARA OYI (maqsad filial hisoblay boshlaydigan oy) ──
+  //
+  // Chegara moliya va tarix rejalaridan OLDIN kerak, shuning uchun u alohida
+  // o'tishda hisoblanadi: `planSourcePeriods` sof funksiya (faqat davrlar va
+  // ko'chish kuni), ya'ni ikki marta chaqirish xavfsiz emas — bir marta
+  // chaqirilib, natijasi quyidagi tsiklda ham ishlatiladi.
+  const periodPlanOf = new Map(
+    ids.map((id) => [id, planSourcePeriods(periodsOf.get(id) ?? [], ctx.day)]),
+  );
+  const boundaryOf = new Map(
+    ids.map((id) => [id, periodPlanOf.get(id).coversTransferMonth ? nextMonth(month) : month]),
+  );
+
+  // Moliyaviy holat (qarz + depozit) va ta'lim tarixi — alohida yadrolar
+  const financeOf = await planStudentFinance(db, ctx, ids, boundaryOf);
+  const historyOf = await planStudentHistory(db, ctx, ids);
+  const historyCatalog = historyOf.get("__catalog__");
+
   const items = [];
 
   for (const id of ids) {
@@ -400,8 +416,8 @@ const planStudents = async (db, ctx, studentIds, options) => {
 
     // ── O'qish davri va oylar ──
     const sourcePeriods = periodsOf.get(id) ?? [];
-    const plan = planSourcePeriods(sourcePeriods, ctx.day);
-    const boundary = plan.coversTransferMonth ? nextMonth(month) : month;
+    const plan = periodPlanOf.get(id);
+    const boundary = boundaryOf.get(id);
 
     if (sourcePeriods.length === 0) {
       notes.push("Bu filialda o'qish davri yo'q edi — yangi filialda davr ochiladi");
@@ -419,26 +435,67 @@ const planStudents = async (db, ctx, studentIds, options) => {
         : `${formatMonthKey(month)} — yangi filialda hisoblanadi`,
     );
 
-    // ── Moliya: manba filialda qoladigan ──
-    const studentInvoices = invoicesOf.get(id) ?? [];
-    const cancelling = studentInvoices.filter((inv) => inv.month >= boundary);
-    const staying = studentInvoices.filter((inv) => inv.month < boundary);
-    const debt = sumAmounts(
-      staying.map((inv) => new Decimal(inv.amount).minus(inv.paidAmount)).filter((d) => d.greaterThan(0)),
-    );
-    const deposit = new Decimal(accountOf.get(id)?.balance ?? 0);
+    // ── MOLIYAVIY HOLAT: qarz va depozit O'QUVCHI BILAN KETADI ──
+    //
+    // Qarz — bekor qilinib, maqsadda AYNI muhrlangan tarkib bilan qayta
+    // ochiladi. Depozit — HAQIQIY PUL sifatida kassadan kassaga.
+    // Yadro: `branchTransferFinance.service.js`.
+    const finance = financeOf.get(id);
     const damageDue = new Decimal(damageOf.get(id)?.due ?? 0);
 
-    // Bekor bo'ladigan oyga tushgan pul depozitga qaytadi (`cancelInvoice`)
-    const refunded = sumAmounts(cancelling.map((inv) => inv.paidAmount));
-    if (cancelling.length > 0) {
+    if (finance.debtMonths.length > 0) {
+      notes.push(
+        `Qarz ko'chadi: ${finance.debtMonths.map(formatMonthKey).join(", ")} ` +
+          `(${formatSum(finance.debtAmount)}) — yangi filial qarzdorlar ro'yxatiga o'tadi`,
+      );
+    }
+    if (finance.blockedMonths.length > 0) {
       warnings.push(
-        `Bu filialdagi ${cancelling.map((inv) => formatMonthKey(inv.month)).join(", ")} ` +
-          "hisob-fakturasi bekor qilinadi" +
-          (refunded.greaterThan(0)
-            ? ` (to'langan ${formatSum(refunded)} shu filial depozitiga qaytadi — ` +
-              "avval shu filialdagi qarzni yopadi)"
-            : ""),
+        `${finance.blockedMonths.map(formatMonthKey).join(", ")} yangi filialda ALLAQACHON ` +
+          "hisoblangan — o'sha oy(lar)ning qarzi shu filialda qoladi (ikki marta yozilmasligi uchun)",
+      );
+    }
+    if (new Decimal(finance.deposit).greaterThan(0)) {
+      notes.push(
+        `Depozit ko'chadi: ${formatSum(finance.deposit)}` +
+          (new Decimal(finance.nonCashTotal).greaterThan(0)
+            ? ` (shundan ${formatSum(finance.cashTotal)} kassadan kassaga o'tadi, ` +
+              `${formatSum(finance.nonCashTotal)} — qo'lda to'g'rilash puli, faqat balans)`
+            : " — manba kassasidan chiqib, yangi filial kassasiga kiradi"),
+      );
+    }
+    if (finance.missingTargetAccount) {
+      blockers.push(
+        `"${ctx.target.name}" filialida faol to'lov turi yo'q — depozitni o'tkazib bo'lmaydi; ` +
+          "avval o'sha filialda to'lov turi oching",
+      );
+    }
+    if (finance.settledMonths.length > 0) {
+      notes.push(
+        `To'langan ${finance.settledMonths.length} ta oy va ularning cheklari shu filial ` +
+          "tarixi bo'lib qoladi (pul allaqachon shu kassaga tushgan)",
+      );
+    }
+    if (finance.vacatingMonths.length > 0) {
+      notes.push(
+        `${finance.vacatingMonths.map(formatMonthKey).join(", ")} — bu filialda bekor ` +
+          "qilinadi, o'sha oy yangi filialda hisoblanadi",
+      );
+    }
+
+    // ── TA'LIM TARIXI ──
+    const history = historyOf.get(id);
+    if (history.grades > 0 || history.attendance > 0) {
+      notes.push(
+        `Tarix ko'chadi: ${history.grades} ta baho, ${history.attendance} ta davomat` +
+          (history.achievements ? `, ${history.achievements} ta yutuq` : "") +
+          (history.penalties ? `, ${history.penalties} ta jarima/rag'bat` : ""),
+      );
+    }
+    if (history.testsStaying > 0) {
+      warnings.push(
+        `${history.testsStaying} ta test natijasi KO'CHMAYDI — ular shu filialning test ` +
+          "mavsumi va savollar bazasiga bog'langan, o'sha filial tarixida qoladi",
       );
     }
 
@@ -525,15 +582,25 @@ const planStudents = async (db, ctx, studentIds, options) => {
       warnings,
       notes,
       classes,
+      // ── Ekranda ko'rinadigan hisob ──
       finance: {
-        debt: formatAmount(debt),
-        debtMonths: staying
-          .filter((inv) => new Decimal(inv.amount).greaterThan(inv.paidAmount))
-          .map((inv) => formatMonthKey(inv.month)),
-        deposit: formatAmount(deposit),
-        // Bekor bo'ladigan oylardan depozitga qaytadigan pul
-        refunded: formatAmount(refunded),
+        // Ko'chadigan qarz (manbada qoladigan qarz endi YO'Q: ochiq oylar
+        // yo ko'chadi, yo — maqsadda band bo'lsa — shu yerda qoladi)
+        debt: finance.debtAmount,
+        debtMonths: finance.debtMonths.map(formatMonthKey),
+        stayingDebtMonths: finance.blockedMonths.map(formatMonthKey),
+        deposit: finance.deposit,
+        cash: finance.cashTotal,
+        settledMonths: finance.settledMonths.length,
+        settledAmount: finance.settledAmount,
         damageDue: formatAmount(damageDue),
+      },
+      history: {
+        grades: history.grades,
+        attendance: history.attendance,
+        achievements: history.achievements,
+        penalties: history.penalties,
+        testsStaying: history.testsStaying,
       },
       // ── Yozuv uchun (mijozga ham ketadi — hisob shaffof bo'lsin) ──
       plan: {
@@ -542,7 +609,9 @@ const planStudents = async (db, ctx, studentIds, options) => {
         coversTransferMonth: plan.coversTransferMonth,
         closingPeriodIds: plan.closing.map((p) => p.id),
         deletingPeriodIds: plan.deleting.map((p) => p.id),
-        cancelInvoiceIds: cancelling.map((inv) => inv.id),
+        // Moliyaviy holat rejasi — yozuv AYNAN shundan boradi va u reja
+        // XESHIGA kiradi: oraliqda to'lov tushsa yoki oy yopilsa 409
+        finance,
         tariff: {
           mode: tariffPlan.mode,
           tariffId: tariffPlan.tariffId ?? null,
@@ -573,41 +642,96 @@ const planStudents = async (db, ctx, studentIds, options) => {
 
   // ── Tasdiqlanishi SHART bo'lgan oqibatlar (server ham tekshiradi) ──
   const ready = items.filter((item) => item.status === "ready");
-  const acknowledgements = [
-    {
-      code: "history_stays",
-      title: "Tarix shu filialda qoladi",
-      message:
-        "Baholar, davomat, testlar, hisob-fakturalar va to'lovlar shu filial tarixi bo'lib qoladi " +
-        "(ular shu filial o'qituvchilari oyligi va kassasiga bog'langan). Yangi filialda o'quvchi " +
-        "toza profil bilan, lekin o'z logini, tarifi, chegirmasi va tanga qoldig'i bilan boshlaydi.",
-    },
-  ];
+  const acknowledgements = [];
+
   const debtors = ready.filter((item) => new Decimal(item.finance.debt).greaterThan(0));
   if (debtors.length) {
     acknowledgements.push({
-      code: "debt_stays",
-      title: "Qarz shu filialda qoladi",
+      code: "debt_moves",
+      title: "Qarz yangi filialga o'tadi",
       message:
-        `${debtors.length} ta o'quvchining shu filialdagi qarzi (jami ` +
-        `${formatSum(sumAmounts(debtors.map((i) => i.finance.debt)))}) shu filial ` +
-        "qarzdorlar ro'yxatida qoladi va shu filial kassasiga to'lanadi.",
+        `${debtors.length} ta o'quvchining to'lanmagan oylari (jami ` +
+        `${formatSum(sumAmounts(debtors.map((i) => i.finance.debt)))}) shu filialda bekor ` +
+        "qilinadi va yangi filialda AYNI summa bilan qayta ochiladi: endi u yangi filial " +
+        "qarzdorlar ro'yxatida turadi va o'sha filial kassasiga to'lanadi.",
     });
   }
-  const moneyOf = (item) => new Decimal(item.finance.deposit).plus(item.finance.refunded);
-  const depositors = ready.filter((item) => moneyOf(item).greaterThan(0));
+
+  const depositors = ready.filter((item) => new Decimal(item.finance.deposit).greaterThan(0));
   if (depositors.length) {
+    const cash = sumAmounts(depositors.map((i) => i.finance.cash));
     acknowledgements.push({
-      code: "deposit_stays",
-      title: "Depozit shu filialda qoladi",
+      code: "deposit_moves",
+      title: "Depozit haqiqiy pul bilan o'tadi",
       message:
-        `${depositors.length} ta o'quvchining shu filialdagi depoziti (bekor bo'ladigan oydan ` +
-        `qaytadigani bilan jami ${formatSum(sumAmounts(depositors.map(moneyOf)))}) shu ` +
-        "filial kassasida qoladi: avval shu filialdagi qarzni yopadi, qolgani kerak bo'lsa " +
-        "qaytarib berilib, yangi filialda qayta to'lanadi.",
+        `${depositors.length} ta o'quvchining depoziti (jami ` +
+        `${formatSum(sumAmounts(depositors.map((i) => i.finance.deposit)))}) yangi filialga ` +
+        `o'tkaziladi. Shundan ${formatSum(cash)} KASSADAN CHIQADI va yangi filial kassasiga ` +
+        "kiradi (\"Boshqa filialga ko'chib ketdi\" yozuvi bilan) — ya'ni shu filialning " +
+        "qoldig'i shuncha kamayadi. Yangi filialda pul darhol o'sha o'quvchining qarziga yechiladi.",
     });
   }
-  if (ready.some((item) => item.plan.cancelInvoiceIds.length > 0)) {
+
+  const withSettled = ready.filter((item) => item.finance.settledMonths > 0);
+  if (withSettled.length) {
+    acknowledgements.push({
+      code: "receipts_stay",
+      title: "To'langan oylar va cheklar shu filialda qoladi",
+      message:
+        "To'lab bo'lingan oylar va ularning cheklari shu filial tarixi bo'lib qoladi: o'sha " +
+        "pul shu kassaga tushgan va allaqachon sarflangan (oylik, xarajat), uni ko'chirish " +
+        "shu filial kassasini minusga tushirardi. Ular yangi filialda o'quvchining " +
+        "\"Boshqa filiallardagi moliya tarixi\" bo'limida to'liq ko'rinadi.",
+    });
+  }
+
+  const withHistory = ready.filter(
+    (item) => item.history.grades > 0 || item.history.attendance > 0,
+  );
+  if (withHistory.length) {
+    acknowledgements.push({
+      code: "academic_history_moves",
+      title: "Baho va davomat yangi filialga ko'chadi",
+      message:
+        `${withHistory.length} ta o'quvchining baholari, davomati, yutuq va jarimalari yangi ` +
+        "filialga o'tadi (sinf va fan NOMI bo'yicha moslanadi, yo'q bo'lsa ochiladi). " +
+        "⚠️ Shu filialning o'tgan davrlar bo'yicha o'rtacha baho va davomat hisobotlari " +
+        "shunga mos ravishda o'zgaradi. Ko'chgan baho yangi filialda hech kimning dars " +
+        "soatiga (oyligiga) qo'shilmaydi.",
+    });
+  }
+
+  const catalogNotes = [];
+  if (historyCatalog?.newSubjects.length) {
+    catalogNotes.push(`fan: ${historyCatalog.newSubjects.join(", ")}`);
+  }
+  if (historyCatalog?.newClasses.length) {
+    catalogNotes.push(`sinf: ${historyCatalog.newClasses.join(", ")}`);
+  }
+  if (catalogNotes.length && withHistory.length) {
+    acknowledgements.push({
+      code: "catalog_created",
+      title: "Yangi filialda katalog qatorlari ochiladi",
+      message:
+        `Tarix joylashishi uchun yangi filialda quyidagilar ochiladi — ${catalogNotes.join("; ")}. ` +
+        "Sinflar NOFAOL holda ochiladi: ular faqat ko'chgan tarixni ushlab turadi, joriy " +
+        "sinflar ro'yxatiga va jurnalga kirmaydi.",
+    });
+  }
+
+  const withTests = ready.filter((item) => item.history.testsStaying > 0);
+  if (withTests.length) {
+    acknowledgements.push({
+      code: "tests_stay",
+      title: "Test natijalari ko'chmaydi",
+      message:
+        `${withTests.length} ta o'quvchining test natijalari shu filialda qoladi: ular shu ` +
+        "filialning test mavsumi, savollar bazasi va biriktirishlariga bog'langan — bitta " +
+        "o'quvchi bilan ajratib ko'chirib bo'lmaydi.",
+    });
+  }
+
+  if (ready.some((item) => item.plan.finance.vacatingMonths.length > 0)) {
     acknowledgements.push({
       code: "invoices_cancelled",
       title: "Ortiqcha hisob-faktura bekor qilinadi",
@@ -626,7 +750,7 @@ const planStudents = async (db, ctx, studentIds, options) => {
     });
   }
 
-  return { items, acknowledgements };
+  return { items, acknowledgements, historyCatalog };
 };
 
 /**
@@ -661,7 +785,7 @@ const trimPeriods = async (db, schema, table, studentIds, boundary) => {
  * @param {Array} items - faqat `ready` qatorlar
  * @returns {Promise<Map<string, object>>} studentId → nima ko'chdi (jadval → qator soni)
  */
-const writeStudents = async (db, ctx, items) => {
+const writeStudents = async (db, ctx, items, historyCatalog = null) => {
   const from = ctx.source.schemaName;
   const to = ctx.target.schemaName;
   const src = (t) => qualified(from, t);
@@ -854,6 +978,27 @@ const writeStudents = async (db, ctx, items) => {
       financeStatuses: plan.statusIds.length,
       monthOverrides: plan.overrideIds.length,
     });
+  }
+
+  // 5b ── MOLIYAVIY HOLAT: qarz ko'chadi, depozit haqiqiy pul bilan o'tadi
+  //
+  // Lock tartibi (`finance.md` §8) yadroning ICHIDA saqlanadi:
+  // StudentAccount → MonthlyInvoice → PaymentAccount, ikkala filialda ham.
+  const financeMoved = await writeStudentFinance(db, ctx, items);
+  for (const [studentId, info] of financeMoved) {
+    if (moved.has(studentId)) moved.get(studentId).finance = info;
+  }
+
+  // 5c ── TA'LIM TARIXI: baho, davomat, yutuq, jarima
+  //
+  // ⚠️ `users` nusxasidan KEYIN: `student_achievements.student_id` —
+  // haqiqiy FK (`onDelete: Cascade`), maqsadda o'quvchi qatori bo'lmasa
+  // yozuv yiqilardi.
+  if (historyCatalog) {
+    const history = await writeStudentHistory(db, ctx, ids, historyCatalog);
+    note("history", history.moved);
+    if (history.createdSubjects.length) note("createdSubjects", history.createdSubjects);
+    if (history.createdClasses.length) note("createdClasses", history.createdClasses);
   }
 
   // 6 ── Tanga qoldig'i — ikki tomonda yozuv bilan (tarix o'z filialida)
@@ -1052,6 +1197,38 @@ const afterStudents = async (ctx, items) => {
           );
       }
     }
+  }
+
+  // ── KO'CHGAN DEPOZITNI YANGI FILIALDA DARHOL QARZGA YECHISH ──
+  //
+  // "Qarz va depozit birga turmaydi" (`finance.md` §6): pul kelgan zahoti
+  // eng eski ochiq oydan boshlab yechiladi. Bu yerda ATAYLAB chaqiriladi —
+  // `settleDepositInTx` har pul amalining O'Z tranzaksiyasi oxirida
+  // chaqilishi kerak, filiallararo tranzaksiya esa filialga bog'langan
+  // Prisma proxy'sini ishlata olmaydi.
+  //
+  // Yiqilsa ham pul yo'qolmaydi: u depozitda turadi, kunlik zaxira pass
+  // (`runDepositSettlementPass`, 06:00) va kechki invariant tekshiruvi
+  // (`deposit_unapplied`) uni baribir topadi.
+  const withDeposit = items.filter((item) =>
+    new Decimal(item.plan.finance?.deposit ?? 0).greaterThan(0),
+  );
+  if (withDeposit.length) {
+    await runWithBranch(ctx.target, async () => {
+      const { applyDepositsForStudent } = require("./studentAccount.service");
+      for (const item of withDeposit) {
+        try {
+          await applyDepositsForStudent(item.id);
+        } catch (error) {
+          warnings
+            .get(item.id)
+            .push(
+              `Ko'chgan depozit yangi filialda qarzga yechilmadi — u depozitda turadi va ` +
+                `kunlik hisoblash uni yechadi (${error.message})`,
+            );
+        }
+      }
+    });
   }
 
   return warnings;

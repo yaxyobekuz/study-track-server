@@ -219,6 +219,11 @@ const ENTRY_SIGNS = {
   // tushgan pul).
   damage_payment: 1,
   damage_payment_void: -1,
+  // FILIALLARARO — o'quvchining sarflanmagan puli (depozit) boshqa filialga
+  // ko'chadi: manbada chiqim, maqsadda kirim. Ikkala yozuv bitta
+  // tranzaksiyada, shuning uchun umumiy pul massasi o'zgarmaydi.
+  branch_transfer_in: 1,
+  branch_transfer_out: -1,
 };
 
 /**

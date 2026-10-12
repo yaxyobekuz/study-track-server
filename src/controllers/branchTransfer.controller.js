@@ -59,6 +59,17 @@ const getStaffPayrollAcrossBranches = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+/**
+ * O'quvchining boshqa filiallardagi moliya tarixi (JONLI o'qiladi —
+ * nusxalanmaydi, shuning uchun ikki filialda ikki marta sanalmaydi).
+ */
+const getStudentFinanceAcrossBranches = asyncHandler(async (req, res) => {
+  const data = await branchTransferService.getStudentFinanceAcrossBranches(req.params.id, {
+    limit: req.query.limit,
+  });
+  res.json({ success: true, data });
+});
+
 module.exports = {
   previewStudents,
   previewStaff,
@@ -70,4 +81,5 @@ module.exports = {
   listTransfers,
   getUserTransfers,
   getStaffPayrollAcrossBranches,
+  getStudentFinanceAcrossBranches,
 };

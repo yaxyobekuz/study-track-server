@@ -33,6 +33,7 @@ const { nextMonth, formatMonthKey } = require("../helpers/month.helpers");
 const { formatSum, sumAmounts } = require("../helpers/money.helpers");
 const { pinMonths, SOURCES } = require("./payrollOwnership.service");
 const { closeSessions } = require("./branchTransferStudent.service");
+const { writeStaffHistory } = require("./branchTransferHistory.service");
 
 const OPEN_TASK_STATUSES = ["pending", "extended", "pending_rejected", "pending_review"];
 
@@ -180,6 +181,23 @@ const planStaff = async (db, ctx, staffIds, options) => {
     ids,
     ctx.month,
   );
+  // Butunlay chiqib ketganda ODAM BILAN ketadigan tarix
+  const penalties = await q(
+    `SELECT user_id AS "staffId", COUNT(*)::int AS n FROM ${src("penalties")}
+     WHERE user_id = ANY($1::text[]) GROUP BY user_id`,
+    ids,
+  );
+  const allTasks = await q(
+    `SELECT assignee AS "staffId", COUNT(*)::int AS n FROM ${src("tasks")}
+     WHERE assignee = ANY($1::text[]) GROUP BY assignee`,
+    ids,
+  );
+  // Manbada QOLADIGAN davomat — oylik kirimi (kelmagan kun ayirmasi)
+  const attendance = await q(
+    `SELECT user_id AS "staffId", COUNT(*)::int AS n FROM ${src("attendances")}
+     WHERE user_id = ANY($1::text[]) GROUP BY user_id`,
+    ids,
+  );
   const subjects = await q(
     `SELECT us.user_id AS "staffId", ss.name, ts.id AS "targetId"
      FROM ${src("user_subjects")} us
@@ -202,6 +220,9 @@ const planStaff = async (db, ctx, staffIds, options) => {
   const lessonsOf = countBy(lessons);
   const substitutionsOf = countBy(substitutions);
   const tasksOf = countBy(tasks);
+  const penaltiesOf = countBy(penalties);
+  const allTasksOf = countBy(allTasks);
+  const attendanceOf = countBy(attendance);
   const roomsOf = countBy(rooms);
   const clubsOf = countBy(clubs);
   const fixedRuleSet = new Set(fixedRules.map((r) => r.staffId));
@@ -318,11 +339,32 @@ const planStaff = async (db, ctx, staffIds, options) => {
       const subs = substitutionsOf.get(id)?.n ?? 0;
       if (subs) warnings.push(`${subs} ta amaldagi o'rinbosarlik bor — ularni qayta ko'rib chiqing`);
       const openTasks = tasksOf.get(id)?.n ?? 0;
-      if (openTasks) warnings.push(`${openTasks} ta bajarilmagan topshirig'i bor`);
+      if (openTasks) {
+        warnings.push(
+          `${openTasks} ta bajarilmagan topshirig'i bor — ular xodim bilan birga yangi ` +
+            "filialga o'tadi; shu filialda qolishi kerak bo'lsa avval boshqa xodimga bering",
+        );
+      }
       const roomCount = roomsOf.get(id)?.n ?? 0;
       if (roomCount) warnings.push(`${roomCount} ta xonaga mas'ul — inventar mas'ulini almashtiring`);
       const clubCount = clubsOf.get(id)?.n ?? 0;
       if (clubCount) warnings.push(`${clubCount} ta to'garak rahbari`);
+    }
+
+    // ── TARIX: nima odam bilan ketadi, nima filialda qoladi ──
+    const penaltyCount = penaltiesOf.get(id)?.n ?? 0;
+    const taskCount = allTasksOf.get(id)?.n ?? 0;
+    const attendanceCount = attendanceOf.get(id)?.n ?? 0;
+    if (leaving && (penaltyCount || taskCount)) {
+      notes.push(
+        `Odam bilan ketadi: ${penaltyCount} ta jarima/rag'bat, ${taskCount} ta topshiriq`,
+      );
+    }
+    if (leaving && attendanceCount) {
+      notes.push(
+        `${attendanceCount} ta davomat qatori shu filialda qoladi — ${formatMonthKey(ctx.month)} ` +
+          "oyining oyligi shu yerda hisoblanadi va kelmagan kun ayirmasi aynan shulardan chiqadi",
+      );
     }
 
     const subjectRows = subjectsOf.get(id) ?? [];
@@ -353,6 +395,9 @@ const planStaff = async (db, ctx, staffIds, options) => {
         profilePicture: user.profilePicture ?? null,
         returning: Boolean(targetRow),
         isHomeBefore: home === ctx.source.id,
+        history: leaving
+          ? { penalties: penaltyCount, tasks: taskCount, attendanceStaying: attendanceCount }
+          : null,
       },
     });
   }
@@ -360,21 +405,36 @@ const planStaff = async (db, ctx, staffIds, options) => {
   const ready = items.filter((item) => item.status === "ready");
   const acknowledgements = [
     {
-      code: "history_stays",
-      title: "Tarix shu filialda qoladi",
-      message:
-        "Davomat, jarima, topshiriq va oylik tarixi shu filial fakti bo'lib qoladi. " +
-        "Oylik sharti (lavozim, toifa) har filialning o'z katalogi — yangi filialda alohida belgilanadi.",
-    },
-    {
       code: "payroll_single",
-      title: "Asosiy oylik — bitta filialda",
+      title: "Oylik va davomat shu filialda qoladi",
       message:
-        "Asosiy oylik (lavozim maoshi, fiksa, ustamalar) har oy faqat BITTA filialda hisoblanadi va " +
-        "to'lanadi — ikkinchi filialda u nol bo'ladi. Dars soati va tyutorlik esa qaysi filialda " +
-        "o'tilgan bo'lsa, o'sha filialda hisoblanadi. Ikki marta to'lash imkonsiz.",
+        "Asosiy oylik (lavozim maoshi, fiksa, ustamalar) har oy faqat BITTA filialda hisoblanadi " +
+        "va O'SHA filial kassasidan to'lanadi — shuning uchun oylik majburiyatlari ko'chmaydi " +
+        "(ko'chirilsa, yangi filialning shakllantirish passi ularni \"asosiy oylik boshqa " +
+        "filialda\" deb darhol bekor qilardi). To'lanmagan oylik shu filialda to'lanadi va yangi " +
+        "filialdan \"Oylik filiallar kesimida\" bo'limida ko'rinib turadi.\n\n" +
+        "Davomat ham shu filialda qoladi: kelmagan kun ayirmasi aynan shu qatorlardan " +
+        "hisoblanadi va ko'chish oyining oyligi shu yerda yopiladi — davomatni olib ketish " +
+        "shu filialdagi oylikni jimgina oshirib yuborardi.",
     },
   ];
+  if (leaving && ready.some((item) => item.plan.history?.penalties || item.plan.history?.tasks)) {
+    acknowledgements.push({
+      code: "staff_history_moves",
+      title: "Jarima va topshiriqlar xodim bilan ketadi",
+      message:
+        "Xodim shu filialdan butunlay chiqayotgani uchun uning jarima/rag'bat yozuvlari va " +
+        "topshiriqlari (tarixi bilan) yangi filialga o'tadi — shu filial ro'yxatlaridan chiqadi. " +
+        "Bajarilmagan topshiriq shu filialda qolishi kerak bo'lsa, avval uni boshqa xodimga bering.",
+    });
+  }
+  acknowledgements.push({
+    code: "salary_rule_stays",
+    title: "Oylik sharti yangi filialda qayta belgilanadi",
+    message:
+      "Lavozim, toifa va oylik qoidasi har filialning O'Z katalogi — ular ko'chmaydi. " +
+      "Yangi filialda xodimga oylik sharti belgilanmaguncha unga majburiyat yozilmaydi.",
+  });
   if (leaving && ready.some((item) => item.warnings.length)) {
     acknowledgements.push({
       code: "work_reassign",
@@ -563,6 +623,16 @@ const writeStaff = async (db, ctx, items, options) => {
       leftSource: leaving,
       homeChanged: isMove,
     });
+  }
+
+  // ── TARIX (faqat butunlay chiqib ketganda) ────────────────────
+  // Profil nusxasidan KEYIN: `tasks`/`penalties` da `users` ga FK yo'q,
+  // lekin maqsadda odam bo'lmasa ro'yxatlar egasiz qator ko'rsatardi.
+  if (leaving && items.length) {
+    const history = await writeStaffHistory(db, ctx, items.map((item) => item.id));
+    for (const item of items) {
+      Object.assign(moved.get(item.id), { historyMoved: history });
+    }
   }
 
   return moved;

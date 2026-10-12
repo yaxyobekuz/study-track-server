@@ -68,6 +68,7 @@ const { startPushTokenProbeCron } = require("./src/jobs/pushTokenProbe.job");
 const { startScheduleSheetSyncCron } = require("./src/jobs/scheduleSheetSync.job");
 const { startDeviceSweepCron } = require("./src/jobs/deviceSweep.job");
 const { startParentalWatchdogCron } = require("./src/jobs/parentalWatchdog.job");
+const { startScheduleRemovalCron } = require("./src/jobs/scheduleRemoval.job");
 
 // ================================
 
@@ -249,6 +250,10 @@ const bootstrap = async () => {
   startDeviceSweepCron();
   // Ota-ona nazorati: jim qurilma, muddati o'tgan so'rov/blok va eski statistika
   startParentalWatchdogCron();
+  // Filiallararo ko'chirish: ko'chgan sinfning jadvalini keyingi oy boshida
+  // manbadan olib tashlash (oy o'rtasida o'chirish o'tilgan darslarni
+  // o'qituvchi oyligidan olib tashlardi)
+  startScheduleRemovalCron();
 
   // Tizimga o'tishdan oldingi (sentabr, 2026 dan avvalgi) fantom oylik
   // majburiyatlarini bir marta tozalaydi + polni o'rnatadi. Bloklamaydi.

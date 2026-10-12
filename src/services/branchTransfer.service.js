@@ -67,9 +67,10 @@ const {
   prevMonth,
 } = require("../helpers/month.helpers");
 const { formatDateUz, formatDateTimeUz } = require("../helpers/date.helpers");
-const { formatAmount } = require("../helpers/money.helpers");
+const { Decimal, formatAmount, sumAmounts } = require("../helpers/money.helpers");
 const studentTransfer = require("./branchTransferStudent.service");
 const staffTransfer = require("./branchTransferStaff.service");
+const scheduleTransfer = require("./branchTransferSchedule.service");
 
 const LIMITS = Object.freeze({ students: 300, staff: 50, classes: 20 });
 const REASON_MIN = 5;
@@ -226,7 +227,19 @@ const stableStringify = (value) => {
 const hashOf = (value) => crypto.createHash("sha256").update(stableStringify(value)).digest("hex");
 
 /** Javob — oldindan ko'rish (va tranzaksiya ichida xesh uchun). */
-const describePlan = ({ kind, mode, ctx, options, items, classes = null, acknowledgements }) => {
+const describePlan = ({
+  kind,
+  mode,
+  ctx,
+  options,
+  items,
+  classes = null,
+  acknowledgements,
+  // Ta'lim tarixi uchun maqsadda ochiladigan katalog qatorlari. Xeshga
+  // KIRADI: oraliqda o'sha filialda shu nomli fan/sinf ochilsa, reja
+  // "ochiladi" deb ko'rsatgan narsa endi mavjud — odam buni qayta ko'rsin.
+  historyCatalog = null,
+}) => {
   const ready = items.filter((item) => item.status === "ready").length;
   const body = {
     kind,
@@ -240,6 +253,7 @@ const describePlan = ({ kind, mode, ctx, options, items, classes = null, acknowl
     options,
     items,
     ...(classes ? { classes } : {}),
+    ...(historyCatalog ? { historyCatalog } : {}),
     counts: { total: items.length, ready, blocked: items.length - ready },
     acknowledgements,
   };
@@ -483,10 +497,12 @@ const loadTargetClass = async (db, ctx, classId) => {
 const studentPlanFn = (ctx, ids, options) => async (db) => {
   const targetClass = await loadTargetClass(db, ctx, options.targetClassId);
   const targetClassIds = new Map(ids.map((id) => [id, targetClass ? [targetClass.id] : []]));
-  const { items, acknowledgements } = await studentTransfer.planStudents(db, ctx, ids, {
-    ...options,
-    targetClassIds,
-  });
+  const { items, acknowledgements, historyCatalog } = await studentTransfer.planStudents(
+    db,
+    ctx,
+    ids,
+    { ...options, targetClassIds },
+  );
   return describePlan({
     kind: KINDS.STUDENT,
     mode: "move",
@@ -494,6 +510,7 @@ const studentPlanFn = (ctx, ids, options) => async (db) => {
     options: { ...options, targetClassName: targetClass?.name ?? null },
     items,
     acknowledgements,
+    historyCatalog,
   });
 };
 
@@ -521,7 +538,7 @@ const transferStudents = async (actor, input) => {
     input,
     plan: studentPlanFn(ctx, ids, options),
     lockKeys: studentLockKeys,
-    write: (db, plan) => studentTransfer.writeStudents(db, ctx, plan.items),
+    write: (db, plan) => studentTransfer.writeStudents(db, ctx, plan.items, plan.historyCatalog),
     after: (plan) => studentTransfer.afterStudents(ctx, plan.items),
   });
 };
@@ -627,12 +644,9 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
         classIds,
       )
     : [];
-  const lessons = await q(
-    `SELECT s.class_id AS "classId", COUNT(*)::int AS n FROM ${src("schedule_lessons")} sl
-     JOIN ${src("schedules")} s ON s.id = sl.schedule_id
-     WHERE s.class_id = ANY($1::text[]) GROUP BY s.class_id`,
-    classIds,
-  );
+  // DARS JADVALI — sanoq emas, TO'LIQ reja: qaysi dars ko'chadi, qaysi biri
+  // (o'qituvchi maqsadda yo'q / band) qo'lda qoladi
+  const schedulePlans = await scheduleTransfer.planClassSchedules(db, ctx, classes);
   const tutorGroups = await q(
     `SELECT id, class_id AS "classId" FROM ${src("tutor_groups")}
      WHERE class_id = ANY($1::text[]) AND (end_month IS NULL OR end_month >= $2)`,
@@ -641,7 +655,6 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
   );
 
   const targetByName = new Map(targetClasses.map((c) => [c.name, c]));
-  const lessonsOf = new Map(lessons.map((r) => [r.classId, r.n]));
   const classPlans = classes.map((c) => {
     const existing = targetByName.get(c.name) ?? null;
     const memberIds = members.filter((m) => m.classId === c.id).map((m) => m.studentId);
@@ -656,11 +669,28 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
     } else {
       notes.push(`"${ctx.target.name}" filialida "${c.name}" sinfi ochiladi`);
     }
-    if (lessonsOf.get(c.id)) {
-      warnings.push(
-        `Bu filial jadvalida sinfning ${lessonsOf.get(c.id)} ta darsi qoladi — keyingi oydan ` +
-          "jadvaldan olib tashlang; yangi filialda jadval alohida tuziladi",
+    const schedule = schedulePlans.get(c.id) ?? null;
+    if (schedule) {
+      notes.push(
+        `Dars jadvali ko'chadi: ${schedule.total} ta darsdan ${schedule.moving} tasi yangi ` +
+          `filialga yoziladi; shu filialdagi jadval ${formatMonthKey(schedule.removalMonth)} ` +
+          "boshida olib tashlanadi",
       );
+      const missing = schedule.skipped.filter((l) => l.reason === "teacher_missing");
+      if (missing.length) {
+        warnings.push(
+          `${missing.length} ta dars o'qituvchisiz qoladi — ` +
+            `${[...new Set(missing.map((l) => l.teacher))].join(", ")} yangi filialda yo'q. ` +
+            "Avval xodimni ko'chiring/ulashing yoki jadvalni qo'lda to'ldiring",
+        );
+      }
+      const busy = schedule.skipped.filter((l) => l.reason === "teacher_busy");
+      if (busy.length) {
+        warnings.push(
+          `${busy.length} ta dars ko'chmaydi — o'qituvchi yangi filialda o'sha katakda band ` +
+            `(${[...new Set(busy.map((l) => l.teacher))].join(", ")})`,
+        );
+      }
     }
     const groups = tutorGroups.filter((g) => g.classId === c.id);
     if (groups.length) {
@@ -682,6 +712,7 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
       targetName: c.name,
       studentIds: memberIds,
       tutorGroupIds: groups.map((g) => g.id),
+      schedule,
       warnings,
       notes,
     };
@@ -692,18 +723,24 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
     for (const id of cp.studentIds) targetClassIds.get(id).push(cp.targetId);
   }
 
-  const { items, acknowledgements } = studentIds.length
+  const { items, acknowledgements, historyCatalog } = studentIds.length
     ? await studentTransfer.planStudents(db, ctx, studentIds, { ...options, targetClassIds })
-    : { items: [], acknowledgements: [] };
+    : { items: [], acknowledgements: [], historyCatalog: null };
 
-  if (classPlans.some((cp) => cp.warnings.some((w) => w.includes("jadval")))) {
+  const withSchedule = classPlans.filter((cp) => cp.schedule);
+  if (withSchedule.length) {
+    const moving = withSchedule.reduce((sum, cp) => sum + cp.schedule.moving, 0);
+    const total = withSchedule.reduce((sum, cp) => sum + cp.schedule.total, 0);
+    const removalMonth = formatMonthKey(withSchedule[0].schedule.removalMonth);
     acknowledgements.push({
-      code: "schedule_stays",
-      title: "Dars jadvali ko'chmaydi",
+      code: "schedule_moves",
+      title: "Dars jadvali ko'chadi, bu filialdan keyingi oydan o'chadi",
       message:
-        "Sinfning shu filialdagi dars jadvali o'zgarmaydi (jadval sanasiz — uni oy o'rtasida o'chirish " +
-        "shu oy o'tilgan darslarni ham o'qituvchi oyligidan olib tashlardi). Keyingi oydan uni " +
-        "jadvaldan olib tashlang, yangi filialda jadval alohida tuziladi.",
+        `${total} ta darsdan ${moving} tasi yangi filial jadvaliga yoziladi (fan nomi bo'yicha ` +
+        "moslanadi, o'qituvchi esa o'sha filialda bor bo'lsa). Shu filialdagi jadval DARHOL " +
+        `emas, ${removalMonth} boshida olib tashlanadi: jadval sanasiz shablon va uni oy ` +
+        "o'rtasida o'chirish shu oy ALLAQACHON O'TILGAN darslarni ham o'qituvchi oyligidan " +
+        "olib tashlardi. Ko'chishdan keyingi darslar baribir o'tilmagan hisoblanadi.",
     });
   }
 
@@ -715,6 +752,7 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
     items,
     classes: classPlans,
     acknowledgements,
+    historyCatalog,
   });
   // Bo'sh sinf ham ko'chiriladi (faqat sinf ochiladi)
   return { ...described, canExecute: described.counts.blocked === 0 && classPlans.length > 0 };
@@ -773,6 +811,14 @@ const transferClasses = async (actor, input) => {
           cp.capacity ?? null,
         );
       }
+      // Haqiqiy maqsad `id` rejaning o'ziga yoziladi: tranzaksiyadan
+      // keyingi qadam (jadval nusxasi) shu obyektni oladi
+      for (const cp of plan.classes) cp.resolvedTargetId = realId.get(cp.targetId) ?? cp.targetId;
+
+      // Jadvalni manbadan olib tashlash NAVBATI — ko'chirish bilan bitta
+      // atomda. Maqsadga nusxalash o'tmasa, navbat keyin bekor qilinadi.
+      await scheduleTransfer.queueSourceRemoval(db, ctx, plan.classes);
+
       const items = plan.items.map((item) => ({
         ...item,
         plan: {
@@ -780,12 +826,49 @@ const transferClasses = async (actor, input) => {
           targetClassIds: item.plan.targetClassIds.map((id) => realId.get(id) ?? id),
         },
       }));
-      return items.length ? studentTransfer.writeStudents(db, ctx, items) : new Map();
+      return items.length
+        ? studentTransfer.writeStudents(db, ctx, items, plan.historyCatalog)
+        : new Map();
     },
     after: async (plan) => {
       const warnings = plan.items.length
         ? await studentTransfer.afterStudents(ctx, plan.items)
         : new Map();
+
+      // ── DARS JADVALI MAQSAD FILIALGA ──
+      // Tranzaksiyadan TASHQARIDA: amaldagi jadvalga yozadigan har yo'l
+      // `withScheduleWriteLock` + `assertPlatformMode` dan o'tadi
+      // (`education.md` §10), u esa filialga bog'langan tranzaksiya.
+      const scheduled = plan.classes
+        .filter((cp) => cp.schedule)
+        .map((cp) => ({
+          id: cp.id,
+          name: cp.name,
+          targetId: cp.resolvedTargetId ?? cp.targetId,
+          schedule: cp.schedule,
+        }));
+      if (scheduled.length) {
+        const copy = await scheduleTransfer.copySchedulesToTarget(ctx, scheduled);
+        if (copy.failedClassIds.length) {
+          await scheduleTransfer
+            .cancelQueuedRemoval(
+              ctx,
+              copy.failedClassIds,
+              "Jadval yangi filialga nusxalanmadi — shu filialda qoldirildi",
+            )
+            .catch((error) =>
+              logger.warn(`[branchTransfer] jadval navbati bekor qilinmadi: ${error.message}`),
+            );
+        }
+        // Sinf ogohlantirishi o'sha sinfning BIRINCHI o'quvchisi qatoriga
+        // yoziladi (jurnal odam bo'yicha tuzilgan); o'quvchisiz sinfda
+        // faqat logga tushadi
+        for (const message of copy.warnings) {
+          const anchor = plan.items[0]?.id;
+          if (anchor && warnings.has(anchor)) warnings.get(anchor).push(message);
+          else logger.warn(`[branchTransfer] ${message}`);
+        }
+      }
       // Sinf tyutor guruhi "keyingi oydan" yopiladi: ko'chish oyi shu filialda
       await runWithBranch(ctx.source, async () => {
         const { removeGroup } = require("./tutorGroup.service");
@@ -1025,6 +1108,171 @@ const getStaffPayrollAcrossBranches = async (userId, { months = 6 } = {}) => {
   };
 };
 
+/**
+ * O'QUVCHINING BOSHQA FILIALLARDAGI MOLIYA TARIXI.
+ *
+ * Ko'chishda OCHIQ holat (qarz va depozit) o'quvchi bilan ketadi, YOPILGAN
+ * fakt esa o'z filialida qoladi: to'langan oy va uning cheki o'sha filial
+ * kassasiga tushgan pul (`branchTransferFinance.service.js` sarlavhasi).
+ *
+ * Shu sababli tarix NUSXALANMAYDI — u shu yerda JONLI o'qiladi. Nusxa
+ * olinganda bitta to'lov ikki filialning tushum hisobotida ikki marta
+ * sanalardi; jonli o'qishda esa har qator faqat o'z filialida bir marta
+ * turadi va keyin o'zgarsa ham mos qoladi.
+ *
+ * `getStaffPayrollAcrossBranches` bilan AYNI naqsh: filiallar o'quvchining
+ * uy filiali va ko'chirish jurnalidan topiladi, har biri `runWithBranch`
+ * bilan alohida o'qiladi va yiqilgani butun javobni yiqitmaydi.
+ *
+ * @param {string} studentId
+ * @param {{limit?: number}} options
+ */
+const getStudentFinanceAcrossBranches = async (studentId, { limit = 50 } = {}) => {
+  const take = Math.min(Math.max(Number.parseInt(limit, 10) || 50, 1), 200);
+
+  const [directory, transferRows] = await Promise.all([
+    platformPrisma.userDirectory.findUnique({
+      where: { id: studentId },
+      select: { branchId: true },
+    }),
+    platformPrisma.branchTransferItem.findMany({
+      where: { subjectType: "user", subjectId: studentId },
+      select: { transfer: { select: { sourceBranchId: true, targetBranchId: true } } },
+    }),
+  ]);
+
+  const current = getBranch();
+
+  // ⚠️ FAQAT SHU FILIALGA ALOQADOR O'QUVCHI. `finance.view` — joriy
+  // filialning huquqi; usiz har qanday `id` bilan begona filialning
+  // moliyaviy ma'lumotini o'qib olish mumkin bo'lardi. Aloqador degani:
+  // o'quvchining shu filialda qatori bor (hozir yoki arxivda), yoki
+  // ko'chirish jurnalida shu filial qatnashgan.
+  const here = await prisma.user
+    .findUnique({ where: { id: studentId }, select: { id: true } })
+    .catch(() => null);
+  const involved =
+    Boolean(here) ||
+    transferRows.some(
+      (r) =>
+        r.transfer.sourceBranchId === current?.id || r.transfer.targetBranchId === current?.id,
+    );
+  if (!involved) {
+    throw new ForbiddenError("Bu o'quvchi shu filialga aloqador emas");
+  }
+  const branchIds = new Set([
+    ...(directory?.branchId ? [directory.branchId] : []),
+    ...transferRows.flatMap((r) => [r.transfer.sourceBranchId, r.transfer.targetBranchId]),
+  ]);
+  branchIds.delete(current?.id);
+  if (branchIds.size === 0) return { branches: [] };
+
+  const branches = (
+    await Promise.all([...branchIds].map((id) => branchService.findById(id)))
+  ).filter(Boolean);
+
+  const rows = await Promise.all(
+    branches.map(async (branch) => {
+      try {
+        const data = await runWithBranch(branch, async () => {
+          const [invoices, payments, account] = await Promise.all([
+            prisma.monthlyInvoice.findMany({
+              where: { studentId },
+              select: {
+                id: true,
+                month: true,
+                amount: true,
+                paidAmount: true,
+                status: true,
+                cancelReason: true,
+              },
+              orderBy: { month: "desc" },
+              take,
+            }),
+            prisma.payment.findMany({
+              where: { studentId },
+              select: {
+                id: true,
+                receiptNo: true,
+                amount: true,
+                paidAt: true,
+                isVoided: true,
+                note: true,
+                account: { select: { name: true } },
+              },
+              orderBy: { paidAt: "desc" },
+              take,
+            }),
+            prisma.studentAccount.findUnique({
+              where: { studentId },
+              select: { balance: true },
+            }),
+          ]);
+          return { invoices, payments, account };
+        });
+
+        const live = data.invoices.filter((row) => row.status !== "cancelled");
+        const paidTotal = sumAmounts(
+          data.payments.filter((row) => !row.isVoided).map((row) => row.amount),
+        );
+        return {
+          branch: { id: branch.id, name: branch.name },
+          totals: {
+            billed: formatAmount(sumAmounts(live.map((row) => row.amount))),
+            paid: formatAmount(paidTotal),
+            debt: formatAmount(
+              sumAmounts(
+                live
+                  .map((row) => new Decimal(row.amount).minus(row.paidAmount))
+                  .filter((value) => value.greaterThan(0)),
+              ),
+            ),
+            deposit: formatAmount(data.account?.balance ?? 0),
+          },
+          invoices: data.invoices.map((row) => ({
+            id: row.id,
+            month: row.month,
+            monthLabel: formatMonthKey(row.month),
+            amount: formatAmount(row.amount),
+            paidAmount: formatAmount(row.paidAmount),
+            status: row.status,
+            cancelReason: row.cancelReason,
+          })),
+          payments: data.payments.map((row) => ({
+            id: row.id,
+            receiptNo: row.receiptNo,
+            amount: formatAmount(row.amount),
+            paidAt: row.paidAt,
+            paidAtLabel: formatDateUz(row.paidAt),
+            accountName: row.account?.name ?? "—",
+            isVoided: row.isVoided,
+            note: row.note,
+          })),
+        };
+      } catch (error) {
+        logger.warn(
+          `[branchTransfer] "${branch.name}" moliya tarixi o'qilmadi: ${error.message}`,
+        );
+        return {
+          branch: { id: branch.id, name: branch.name },
+          error: "Ma'lumot o'qilmadi",
+          totals: null,
+          invoices: [],
+          payments: [],
+        };
+      }
+    }),
+  );
+
+  // Butunlay bo'sh filial ko'rsatilmaydi: o'quvchi u yerda hech qachon
+  // bo'lmagan (masalan, faqat sinf ko'chirish jurnalida uchragan)
+  return {
+    branches: rows.filter(
+      (row) => row.error || row.invoices.length > 0 || row.payments.length > 0,
+    ),
+  };
+};
+
 module.exports = {
   KINDS,
   LIMITS,
@@ -1039,6 +1287,7 @@ module.exports = {
   listTransfers,
   getUserTransfers,
   getStaffPayrollAcrossBranches,
+  getStudentFinanceAcrossBranches,
   // test uchun
   stableStringify,
   parseEffectiveDate,

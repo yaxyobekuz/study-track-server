@@ -273,7 +273,17 @@ async function loadLessonFacts(month, teacherIds, classIds) {
   const [grades, absences, unlocks, credits] = await Promise.all([
     classIds.length
       ? prisma.grade.findMany({
-          where: { classId: { in: classIds }, date: { gte: from, lte: to }, gradingGrantId: null },
+          where: {
+            classId: { in: classIds },
+            date: { gte: from, lte: to },
+            gradingGrantId: null,
+            // ⚠️ BOSHQA FILIALDAN KO'CHIRILGAN BAHO DARSNI O'TILGAN QILMAYDI.
+            // Bu so'rov bahoni sinf + fan + tartib + kun bo'yicha o'qiydi,
+            // o'qituvchi bo'yicha EMAS: ko'chgan baho shu filialdagi o'sha
+            // katakdagi darsni "o'tilgan" qilib, uni hech qachon o'tmagan
+            // o'qituvchiga soat (pul) yozib yuborardi.
+            transferredFromBranchId: null,
+          },
           select: { classId: true, subjectId: true, lessonOrder: true, date: true },
         })
       : [],

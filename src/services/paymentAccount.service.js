@@ -50,6 +50,8 @@ const ENTRY_TYPE_LABELS = {
   expense_void: "Xarajat bekor qilindi",
   damage_payment: "Moddiy zarar undirildi",
   damage_payment_void: "Zarar undiruvi bekor qilindi",
+  branch_transfer_in: "Boshqa filialdan ko'chib keldi",
+  branch_transfer_out: "Boshqa filialga ko'chib ketdi",
 };
 
 const serializeAccount = (row, extra = {}) => ({

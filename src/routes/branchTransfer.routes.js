@@ -27,6 +27,7 @@ const {
   listTransfers,
   getUserTransfers,
   getStaffPayrollAcrossBranches,
+  getStudentFinanceAcrossBranches,
 } = require("../controllers/branchTransfer.controller");
 
 router.use(protect);
@@ -44,6 +45,14 @@ router.get(
   validateObjectId("id"),
   authorizePermission(PERMISSIONS.PAYROLL_VIEW),
   getStaffPayrollAcrossBranches,
+);
+// O'quvchining boshqa filiallardagi moliya tarixi. Ruxsat — `finance.view`:
+// bu qarzdorlik va chek ma'lumoti, ko'chirish bo'limiga tegishli emas.
+router.get(
+  "/users/:id/finance",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.FINANCE_VIEW),
+  getStudentFinanceAcrossBranches,
 );
 
 router.use(authorizeSection(SECTIONS.TRANSFERS));

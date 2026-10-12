@@ -305,6 +305,16 @@ enum AccountEntryType {
   // savolga `external_income` bilan aralashmagan javob kerak.
   damage_payment // + moddiy zarar undirildi
   damage_payment_void // − undiruv bekor qilindi
+  // FILIALLARARO KO'CHIRISH — o'quvchi/xodim boshqa filialga o'tganda uning
+  // OCHIQ pul holati (depozit qoldig'i) haqiqiy pul sifatida ko'chadi: manba
+  // filial kassasidan chiqadi, maqsad filial kassasiga kiradi. Ikkala yozuv
+  // bitta tranzaksiyada, bitta `branch_transfers.id` izohi bilan.
+  //
+  // ⚠️ O'TGAN TO'LOVLAR KO'CHMAYDI va ko'chira ham olmaydi: o'sha pul manba
+  // filialda allaqachon sarflangan (oylik, xarajat). Ko'chadigan yagona pul —
+  // hali sarflanmagan, o'quvchiga tegishli depozit qoldig'i.
+  branch_transfer_in // + boshqa filialdan ko'chib keldi
+  branch_transfer_out // − boshqa filialga ko'chib ketdi
 }
 
 // Oylik qanday hisoblanadi.
@@ -1003,6 +1013,68 @@ model ScheduleSheetMapping {
 }
 
 // ─────────────────────────────────────────────
+// KECHIKTIRILGAN JADVAL O'CHIRISH
+// ─────────────────────────────────────────────
+//
+// Sinf boshqa filialga ko'chirilganda uning dars jadvali maqsad filialga
+// nusxalanadi, manbadagisi esa DARHOL o'chirilmaydi.
+//
+// ⚠️ NIMA UCHUN DARHOL EMAS: `ScheduleLesson` — SANASIZ haftalik shablon,
+// soatbay oylik esa uni butun oyga yoyib hisoblaydi (`lessonHours.service.js`).
+// Oy o'rtasida o'chirilsa, shu oyda ALLAQACHON O'TILGAN darslar ham
+// o'qituvchi oyligidan tushib ketardi (`education.md` §8 doktrinasi:
+// "jadvalni o'chirish o'tgan oylikni qayta yozmasin").
+//
+// Shuning uchun o'chirish KEYINGI OY BOSHIGA qoldiriladi va shu yerda
+// navbatda turadi. `scheduleRemoval.job.js` har kuni ko'radi: oy kelganda
+// `withScheduleWriteLock` + `assertPlatformMode` orqali o'chiradi
+// (sheet rejimida yozilmaydi — navbatda qolib, ogohlantiradi).
+model PendingScheduleRemoval {
+  id String @id @db.Char(24)
+
+  // soft ref → Class: sinf ko'chirilgandan keyin ham o'chirilishi mumkin,
+  // navbat qatori esa nima bo'lganini ayta olishi kerak
+  classId   String @map("class_id") @db.Char(24)
+  // Nomi MUHRLANADI (`tariffName` doktrinasi) — sinf qayta nomlansa ham
+  // navbatdagi qator nimani anglatgani o'zgarmaydi
+  className String @map("class_name")
+
+  // Jadval SHU oyning 1-kunidan boshlab o'chiriladi (YYYYMM)
+  effectiveMonth Int @map("effective_month")
+
+  reason String
+
+  // Qaysi filialga ko'chdi va qaysi ko'chirish yozuvi sabab bo'ldi
+  // (platforma `branch_transfers.id`) — soft ref, FK yo'q (boshqa schema)
+  targetBranchId String? @map("target_branch_id") @db.Char(24)
+  transferId     String? @map("transfer_id") @db.Char(24)
+
+  status      PendingScheduleRemovalStatus @default(pending)
+  processedAt DateTime?                    @map("processed_at")
+  // Oxirgi urinish nima uchun o'tmadi (sheet rejimi, qulf). Qator `pending`
+  // bo'lib qoladi va ertasiga qayta uriniladi — jim yo'qolmaydi.
+  failReason  String                       @default("") @map("fail_reason")
+  lessonCount Int                          @default(0) @map("lesson_count")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Bitta sinfga bitta oy uchun bitta navbat qatori — ikki marta ko'chirish
+  // (yoki qayta urinish) ikkinchi qator yozmaydi
+  @@unique([classId, effectiveMonth])
+  @@index([status, effectiveMonth])
+  @@map("pending_schedule_removals")
+}
+
+enum PendingScheduleRemovalStatus {
+  pending
+  done
+  // Admin jadvalni o'zi o'chirgan yoki sinf qaytarilgan
+  cancelled
+}
+
+// ─────────────────────────────────────────────
 // DARS O'RINBOSARLIGI (dars o'rniga chiqish)
 // ─────────────────────────────────────────────
 //
@@ -1401,19 +1473,24 @@ model AbsenceReason {
 }
 
 model StudentAttendance {
-  id             String           @id @db.Char(24)
-  studentId      String           @map("student_id") @db.Char(24)
-  classId        String           @map("class_id") @db.Char(24)
-  date           DateTime
-  status         AttendanceStatus @default(absent)
-  markedAt       DateTime?        @map("marked_at")
-  excuseReason   String?          @map("excuse_reason")
-  absenceReason  String?          @map("absence_reason") @db.Char(24)
-  autoMarked     Boolean          @default(false) @map("auto_marked")
-  createdBy      String?          @map("created_by") @db.Char(24)
-  lastModifiedBy String?          @map("last_modified_by") @db.Char(24)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
+  id                      String           @id @db.Char(24)
+  studentId               String           @map("student_id") @db.Char(24)
+  classId                 String           @map("class_id") @db.Char(24)
+  date                    DateTime
+  status                  AttendanceStatus @default(absent)
+  markedAt                DateTime?        @map("marked_at")
+  excuseReason            String?          @map("excuse_reason")
+  absenceReason           String?          @map("absence_reason") @db.Char(24)
+  autoMarked              Boolean          @default(false) @map("auto_marked")
+  // Boshqa filialdan ko'chirilgan davomat (soft ref → platform.Branch).
+  // O'QUVCHI davomati pulga ta'sir qilmaydi (`education.md` §6), shuning
+  // uchun bu ustun faqat MANBANI ko'rsatadi: hisobotda "bu kun boshqa
+  // filialda belgilangan" degan javob bo'lsin.
+  transferredFromBranchId String?          @map("transferred_from_branch_id") @db.Char(24)
+  createdBy               String?          @map("created_by") @db.Char(24)
+  lastModifiedBy          String?          @map("last_modified_by") @db.Char(24)
+  createdAt               DateTime         @default(now()) @map("created_at")
+  updatedAt               DateTime         @updatedAt @map("updated_at")
 
   @@unique([studentId, date])
   @@index([classId, date])
@@ -1490,15 +1567,15 @@ model CheckoutRequest {
 // ─────────────────────────────────────────────
 
 model Grade {
-  id          String   @id @db.Char(24)
-  studentId   String   @map("student_id") @db.Char(24)
-  subjectId   String   @map("subject_id") @db.Char(24)
-  classId     String   @map("class_id") @db.Char(24)
-  teacherId   String   @map("teacher_id") @db.Char(24)
-  grade       Int
-  comment     String?
-  date        DateTime
-  lessonOrder Int      @default(1) @map("lesson_order")
+  id                      String   @id @db.Char(24)
+  studentId               String   @map("student_id") @db.Char(24)
+  subjectId               String   @map("subject_id") @db.Char(24)
+  classId                 String   @map("class_id") @db.Char(24)
+  teacherId               String   @map("teacher_id") @db.Char(24)
+  grade                   Int
+  comment                 String?
+  date                    DateTime
+  lessonOrder             Int      @default(1) @map("lesson_order")
   // DARS MAVZUSI — baho qo'yilgan darsda o'tilgan mavzu (soft ref → Topic).
   //
   // Faqat BUGUNGI darsga qo'yilgan bahoda yoziladi: sinf+fanning joriy
@@ -1510,7 +1587,7 @@ model Grade {
   // ⚠️ Eski baholarda `null` — tarix ORQAGA to'ldirilmaydi (mavzu tarixi
   // saqlanmagan, faqat joriy raqam bor). Baholar tahlili mavzu kesimini
   // faqat mavzusi bor baholardan quradi va qamrovni ochiq aytadi.
-  topicId     String?  @map("topic_id") @db.Char(24)
+  topicId                 String?  @map("topic_id") @db.Char(24)
   // RUXSAT BILAN QO'YILGAN BAHO (soft ref → GradingGrant). Boshliq
   // o'qituvchiga O'ZINIKI BO'LMAGAN sinf+fan darsiga baho qo'yishni ochgan
   // bo'lsa, o'sha yo'l bilan yozilgan baho shu ustun bilan belgilanadi.
@@ -1519,12 +1596,24 @@ model Grade {
   // EGASINING ishi emas — oylikdagi "dars o'tildimi" (`loadLessonFacts`) va
   // "Men ketdim" darvozasi uni HISOBLAMAYDI. Aks holda boshqa odamning
   // bahosi bilan dars egasiga soat (pul) yozilardi.
-  gradingGrantId String? @map("grading_grant_id") @db.Char(24)
-  isEdited    Boolean  @default(false) @map("is_edited")
+  gradingGrantId          String?  @map("grading_grant_id") @db.Char(24)
+  // BOSHQA FILIALDAN KO'CHIRILGAN BAHO (soft ref → platform.Branch).
+  //
+  // O'quvchi boshqa filialga o'tganda uning baholari u bilan birga ko'chadi
+  // (sinf va fan NOMI bo'yicha moslanadi) — tarix yo'qolmaydi.
+  //
+  // ⚠️ LEKIN BU BAHO DARSNI "O'TILGAN" QILMAYDI. `loadLessonFacts` bahoni
+  // sinf + fan + dars tartibi + kun bo'yicha o'qiydi, o'qituvchi bo'yicha
+  // EMAS: ko'chgan baho maqsad filialdagi o'sha katakdagi darsni o'tilgan
+  // qilib, hech qachon o'tmagan o'qituvchiga soat (pul) yozib yuborardi.
+  // Shuning uchun oylik hisobi bu ustun to'ldirilgan bahoni CHETLAB O'TADI
+  // (`gradingGrantId` bilan AYNI mulohaza).
+  transferredFromBranchId String?  @map("transferred_from_branch_id") @db.Char(24)
+  isEdited                Boolean  @default(false) @map("is_edited")
   // editHistory[] — { previousGrade, editedAt, editedBy } (faqat audit)
-  editHistory Json     @default("[]") @map("edit_history")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  editHistory             Json     @default("[]") @map("edit_history")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
 
   @@index([studentId, subjectId, date, lessonOrder])
   @@index([classId, date])
@@ -3592,10 +3681,10 @@ model GradingGrant {
 
   // KUN ANIQLIGIDA, INKLYUZIV — Toshkent kunining UTC yarim tuni
   // (`StudentEnrollment` / `GradingUnlock` bilan bir xil qoida, faqat `getUTC*`)
-  dateFrom DateTime @map("date_from") @db.Date
-  dateTo   DateTime @map("date_to") @db.Date
+  dateFrom    DateTime @map("date_from") @db.Date
+  dateTo      DateTime @map("date_to") @db.Date
   // null — davrdagi shu fanning barcha darslari; son — faqat shu tartibdagi dars
-  lessonOrder Int? @map("lesson_order")
+  lessonOrder Int?     @map("lesson_order")
 
   reason   String @default("")
   // { teacherName, className, subjectName } — xodim/sinf o'zgarsa ham
