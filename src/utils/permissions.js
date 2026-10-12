@@ -928,6 +928,11 @@ const PERMISSION_SECTIONS = [
     actions: [
       A.view,
       { key: "review", label: "Holatni o'zgartirish / javob yozish" },
+      // TOPSHIRIQ BIRIKTIRISH — `review` DAN ALOHIDA va bu ataylab.
+      // Javob yozish bitta murojaatni yopadi, topshiriq berish esa
+      // BOSHQA ODAMNING ISHINI belgilaydi va muddati o'tsa unga jarima
+      // yoziladi (`tasks.create` bilan ayni og'irlikdagi qaror).
+      { key: "assign", label: "Topshiriq biriktirish" },
       A.delete,
       { key: "categories", label: "Kategoriyalarni boshqarish" },
       { key: "reports", label: "Hisobotlar" },
