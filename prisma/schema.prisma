@@ -1649,12 +1649,24 @@ model Task {
   completionAttachments Json       @default("[]") @map("completion_attachments")
   penaltyRef            String?    @map("penalty_ref") @db.Char(24)
   autopenalized         Boolean    @default(false)
+
+  // MANBA MUAMMO — topshiriq botdan kelgan muammoni hal qilish uchun
+  // berilgan bo'lsa to'ladi (`issueTask.service.js`). Oddiy topshiriqda
+  // `null`, ya'ni topshiriqlar bo'limining o'zi o'zgarmadi.
+  //
+  // ⚠️ `onDelete: SetNull` — muammo o'chirilsa TOPSHIRIQ QOLADI. Odam
+  // allaqachon ish qilyapti va unda jarima bali ham bo'lishi mumkin:
+  // kaskad o'chirish birovning bajarilgan ishini izsiz yo'q qilardi.
+  issueId               String?    @map("issue_id") @db.Char(24)
+
   createdAt             DateTime   @default(now()) @map("created_at")
   updatedAt             DateTime   @updatedAt @map("updated_at")
 
   statusHistory   TaskStatusHistory[]
   deadlineHistory TaskDeadlineHistory[]
+  issue           Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
 
+  @@index([issueId])
   @@index([assignee, status])
   @@index([assignee, createdAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
@@ -6987,6 +6999,11 @@ model Issue {
   reply      String?
   reviewedBy String?   @map("reviewed_by") @db.Char(24)
   reviewedAt DateTime? @map("reviewed_at")
+  // MUAMMONI TOPSHIRIQ YOPDIMI. Qo'lda yopilgan bilan farqlash SHART:
+  // topshiriq qayta ochilsa muammo ham qayta ochiladi, lekin ma'muriyat
+  // qo'lda "hal qilindi" degan qarorni topshiriq bekor qila olmaydi
+  // (`issueTask.service.js`).
+  closedByTask Boolean  @default(false) @map("closed_by_task")
   // Javob botga YETIB BORDIMI. `reviewedAt` bor-u bu bo'sh bo'lsa —
   // Telegram rad etdi (odam botni bloklagan): panelda shu farq
   // ko'rsatiladi, aks holda ma'muriyat javob ketdi deb o'ylardi.
@@ -6996,6 +7013,9 @@ model Issue {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   category IssueCategory @relation(fields: [categoryId], references: [id])
+  // Har bir ijrochiga ALOHIDA topshiriq (`task.service.js#createTasks`),
+  // shuning uchun bitta muammoda bir nechta topshiriq bo'lishi mumkin.
+  tasks    Task[]
 
   @@index([status, createdAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])
