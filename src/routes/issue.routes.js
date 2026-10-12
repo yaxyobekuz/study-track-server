@@ -7,6 +7,10 @@ const {
 const { PERMISSIONS } = require("../utils/permissions");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const {
+  createMultiFileUpload,
+  handleFileUploadError,
+} = require("../middleware/fileUpload.middleware");
+const {
   createCategory,
   getCategories,
   getActiveCategories,
@@ -16,9 +20,19 @@ const {
   getCounts,
   getOne,
   review,
+  assignTasks,
   remove,
   getReport,
 } = require("../controllers/issue.controller");
+
+// ⚠️ 10 — `task.service.js` dagi `TASK_ATTACHMENTS_MAX` bilan bir xil:
+// topshiriq shu yerdan ham, topshiriqlar bo'limidan ham bir xil qoida
+// bilan yaratiladi. Aniq chegara service'da tekshiriladi.
+const upload = createMultiFileUpload({
+  fieldName: "files",
+  categories: ["image", "video", "document"],
+  maxFiles: 10,
+});
 
 router.use(protect);
 
@@ -66,6 +80,17 @@ router.patch(
   validateObjectId("id"),
   authorizePermission(PERMISSIONS.ISSUES_REVIEW),
   review,
+);
+
+// Topshiriq biriktirish — BOSHQA ODAMNING ishini belgilaydi va muddati
+// o'tsa unga jarima yoziladi, shuning uchun `review` dan alohida kalit.
+router.post(
+  "/:id/tasks",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.ISSUES_ASSIGN),
+  upload,
+  handleFileUploadError,
+  assignTasks,
 );
 
 router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.ISSUES_DELETE), remove);

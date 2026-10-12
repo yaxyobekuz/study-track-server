@@ -37,6 +37,10 @@ const {
   ConflictError,
 } = require("../utils/errors");
 const { notifyIssueReply } = require("./issueNotification.service");
+// ⚠️ ZANJIR BIR TOMONLAMA: issue.service → task.service → issueTask.service.
+// Ko'prik bu modulni import QILMAYDI (sabab `issueTask.service.js` da).
+const taskService = require("./task.service");
+const { getTaskProgress } = require("./issueTask.service");
 
 /** Ko'rib chiqish holatlari — `IssueStatus` enum bilan ayni ro'yxat. */
 const ISSUE_STATUSES = ["new", "in_review", "resolved", "rejected"];
@@ -257,7 +261,7 @@ function buildIssueFilter(query = {}) {
  * odam esa uning OTA-ONASI. Panelda shu farq ko'rinishi uchun `authorKind`
  * o'zgarishsiz qaytariladi va yorliq frontendda qo'yiladi.
  */
-function shapeIssue(issue) {
+function shapeIssue(issue, progress = null) {
   const { author, category, ...rest } = issue;
 
   return {
@@ -267,6 +271,17 @@ function shapeIssue(issue) {
     author: author
       ? { ...author, fullName: fullNameOf(author) }
       : null,
+    // ⚠️ TOPSHIRIQ YO'Q BO'LSA HAM MAYDON BO'LADI (nollar bilan): frontend
+    // "biriktirilganmi?" degan savolga `tasks.total > 0` bilan javob
+    // beradi va `undefined` tekshiruvi har joyda takrorlanmaydi.
+    tasks: progress || {
+      total: 0,
+      active: 0,
+      completed: 0,
+      stopped: 0,
+      assignees: [],
+      nextDueDate: null,
+    },
   };
 }
 
@@ -296,9 +311,18 @@ async function getIssues(req) {
     prisma.issue.count({ where }),
   ]);
 
-  const authors = await loadAuthors(rows);
+  // ⚠️ IKKALASI HAM BITTA SO'ROVDAN: har bir muammo uchun alohida
+  // so'rov yuborilsa 20 qatorli sahifa 40 ta so'rovga aylanardi.
+  const [authors, progress] = await Promise.all([
+    loadAuthors(rows),
+    getTaskProgress(rows.map((r) => r.id)),
+  ]);
+
   const data = rows.map((row) =>
-    shapeIssue({ ...row, author: authors.get(row.userId) || null }),
+    shapeIssue(
+      { ...row, author: authors.get(row.userId) || null },
+      progress.get(row.id),
+    ),
   );
 
   return formatPaginationResponse(data, total, page, limit);
@@ -325,12 +349,59 @@ async function loadAuthors(rows) {
 async function getIssueById(id) {
   const issue = await prisma.issue.findUnique({
     where: { id },
-    include: { category: { select: { name: true, isActive: true } } },
+    include: {
+      category: { select: { name: true, isActive: true } },
+      // Detalda topshiriqlar RO'YXAT bilan: kim, qaysi holatda, qachongacha
+      tasks: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          assignee: true,
+          dueDate: true,
+          completionNote: true,
+        },
+        orderBy: { createdAt: "asc" },
+      },
+    },
   });
   if (!issue) throw new NotFoundError("Muammo topilmadi");
 
-  const authors = await loadAuthors([issue]);
-  return shapeIssue({ ...issue, author: authors.get(issue.userId) || null });
+  const { tasks, ...rest } = issue;
+
+  const [authors, progress, assigneeMap] = await Promise.all([
+    loadAuthors([issue]),
+    getTaskProgress([issue.id]),
+    loadAssignees(tasks),
+  ]);
+
+  const shaped = shapeIssue(
+    { ...rest, author: authors.get(issue.userId) || null },
+    progress.get(issue.id),
+  );
+
+  return {
+    ...shaped,
+    taskList: tasks.map((t) => ({
+      ...t,
+      assignee: assigneeMap.get(t.assignee) || null,
+    })),
+  };
+}
+
+/** Topshiriq ijrochilarini bitta so'rovda yuklaydi (nomi bilan). */
+async function loadAssignees(tasks = []) {
+  const ids = [...new Set(tasks.map((t) => t.assignee).filter(Boolean))];
+  if (!ids.length) return new Map();
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, firstName: true, lastName: true, role: true },
+  });
+
+  return new Map(
+    users.map((u) => [u.id, { ...u, fullName: fullNameOf(u) }]),
+  );
 }
 
 /**
@@ -407,6 +478,10 @@ async function reviewIssue(id, data = {}, reviewedBy) {
       reply: reply || null,
       reviewedBy,
       reviewedAt: new Date(),
+      // ⚠️ QO'LDA KO'RIB CHIQILDI — endi bu QAROR odamniki. Topshiriq
+      // keyin qayta ochilsa muammoni qayta ocha olmaydi
+      // (`issueTask.service#onTaskReopened` aynan shu bayroqqa qaraydi).
+      closedByTask: false,
     },
     include: { category: { select: { name: true, isActive: true } } },
   });
@@ -430,6 +505,78 @@ async function reviewIssue(id, data = {}, reviewedBy) {
     repliedAt: delivered ? new Date() : updated.repliedAt,
     author: authors.get(updated.userId) || null,
   });
+}
+
+/**
+ * MUAMMONI HAL QILISH UCHUN TOPSHIRIQ BIRIKTIRADI.
+ *
+ * Har bir ijrochiga ALOHIDA topshiriq yaratiladi — bu topshiriqlar
+ * bo'limining mavjud qoidasi (`task.service#createTasks`) va bu yerda
+ * takrorlanmaydi: sarlavha/tavsif uzunligi, muddat, jarima bali, fayl
+ * talabi — hammasi o'sha yerda tekshiriladi. Bu funksiya faqat MUAMMOGA
+ * TEGISHLI qoidalarni qo'shadi.
+ *
+ * ⚠️ YAKUNLANGAN MUAMMOGA TOPSHIRIQ BERILMAYDI. Yopilgan murojaat uchun
+ * ish qilishga odam yuborish ma'nosiz va uning javobini allaqachon olgan
+ * odam ikkinchi marta xabar olardi (topshiriq tugaganda).
+ *
+ * ⚠️ HOLAT `in_review` GA O'TADI. Muammo "yangi" bo'lib qolsa ro'yxatda
+ * hali hech kim ko'rmagan murojaatlar orasida turardi, holbuki unga
+ * allaqachon odam biriktirilgan.
+ *
+ * ⚠️ MATN TO'LDIRILMAYDI, lekin BO'SH BO'LSA muammodan olinadi:
+ * ma'muriyat odatda muammoning o'zini topshiriq tavsifiga ko'chiradi va
+ * buni har safar qo'lda qilish ortiqcha ish. Berilgan matn esa
+ * o'zgarishsiz ketadi.
+ *
+ * @param {string} issueId
+ * @param {object} payload - `{ assigneeIds, title, description, dueDate, penaltyPoints, files }`
+ * @param {string} createdBy
+ * @returns {Promise<object>} yangilangan muammo (`taskList` bilan)
+ */
+async function assignTasks(issueId, payload = {}, createdBy) {
+  const issue = await prisma.issue.findUnique({
+    where: { id: issueId },
+    include: { category: { select: { name: true } } },
+  });
+  if (!issue) throw new NotFoundError("Muammo topilmadi");
+
+  if (FINAL_STATUSES.includes(issue.status)) {
+    throw new BadRequestError(
+      "Yakunlangan muammoga topshiriq biriktirib bo'lmaydi",
+    );
+  }
+
+  const title =
+    String(payload.title ?? "").trim() ||
+    `Muammo: ${issue.category?.name || "murojaat"}`;
+
+  const description =
+    String(payload.description ?? "").trim() || issue.body;
+
+  await taskService.createTasks({
+    title,
+    description,
+    dueDate: payload.dueDate,
+    penaltyPoints: payload.penaltyPoints,
+    assigneeIds: payload.assigneeIds,
+    files: payload.files,
+    createdBy,
+    issueId: issue.id,
+  });
+
+  // ⚠️ TOPSHIRIQLAR YARATILGANDAN KEYIN: `createTasks` xato tashlasa
+  // (muddat o'tgan, ijrochi arxivlangan) muammo holati o'zgarmasligi
+  // kerak — aks holda hech qanday topshiriqsiz "ko'rilmoqda" bo'lib
+  // qolardi.
+  if (issue.status === "new") {
+    await prisma.issue.update({
+      where: { id: issue.id },
+      data: { status: "in_review" },
+    });
+  }
+
+  return getIssueById(issue.id);
 }
 
 /**
@@ -462,5 +609,6 @@ module.exports = {
   getIssueById,
   getStatusCounts,
   reviewIssue,
+  assignTasks,
   deleteIssue,
 };

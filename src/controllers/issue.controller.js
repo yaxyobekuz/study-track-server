@@ -1,4 +1,5 @@
 const asyncHandler = require("../middleware/async.middleware");
+const { BadRequestError } = require("../utils/errors");
 const issueService = require("../services/issue.service");
 const issueReportService = require("../services/issueReport.service");
 
@@ -59,6 +60,46 @@ const review = asyncHandler(async (req, res) => {
   res.json({ success: true, data: issue });
 });
 
+/**
+ * Muammoni hal qilish uchun topshiriq biriktiradi.
+ * POST /issues/:id/tasks  (multipart — fayl biriktirish mumkin)
+ */
+const assignTasks = asyncHandler(async (req, res) => {
+  const { title, description, dueDate, penaltyPoints, assigneeIds } = req.body;
+
+  if (!dueDate) throw new BadRequestError("Ijro muddati majburiy");
+
+  // ⚠️ MULTIPART — `assigneeIds` MATN bo'lib keladi (topshiriq yaratish
+  // endpoint'i bilan ayni shakl): FormData massivni o'zi JSON qilib
+  // uzatadi va uni shu yerda yoyish kerak.
+  let parsedAssigneeIds;
+  try {
+    parsedAssigneeIds = JSON.parse(assigneeIds);
+  } catch {
+    throw new BadRequestError("assigneeIds formati noto'g'ri");
+  }
+
+  if (!Array.isArray(parsedAssigneeIds) || parsedAssigneeIds.length === 0) {
+    throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
+  }
+
+  const issue = await issueService.assignTasks(
+    req.params.id,
+    {
+      title,
+      description,
+      dueDate,
+      // Berilmasa — sozlamadagi standart ball (`task.service`)
+      penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
+      assigneeIds: parsedAssigneeIds,
+      files: req.files || [],
+    },
+    req.user.id,
+  );
+
+  res.status(201).json({ success: true, data: issue });
+});
+
 const remove = asyncHandler(async (req, res) => {
   await issueService.deleteIssue(req.params.id);
   res.json({ success: true });
@@ -83,6 +124,7 @@ module.exports = {
   getCounts,
   getOne,
   review,
+  assignTasks,
   remove,
   getReport,
 };
