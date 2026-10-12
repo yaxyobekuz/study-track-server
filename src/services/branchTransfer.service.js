@@ -75,8 +75,15 @@ const scheduleTransfer = require("./branchTransferSchedule.service");
 const LIMITS = Object.freeze({ students: 300, staff: 50, classes: 20 });
 const REASON_MIN = 5;
 const REASON_MAX = 500;
-// Bitta tranzaksiyada bir necha yuz o'quvchi — 3 daqiqagacha (odatda soniyalar)
-const TX_OPTIONS = { maxWait: 15000, timeout: 180000 };
+// Bitta tranzaksiyada bir necha yuz o'quvchi.
+//
+// ⚠️ 15 DAQIQA, 3 emas. Har bir odam uchun o'nlab alohida yozuv ketadi
+// (davr, qoida, moliya, tarix) va ularning har biri — bazaga alohida
+// borib-kelish. Server yonida bu soniyalar, lekin baza masofada bo'lsa
+// kechikish yig'ilib, 97 ta o'quvchi 3 daqiqaga sig'may qoldi va butun
+// ko'chirish oxirida orqaga qaytdi (prodda tekshirilgan). Chegara faqat
+// ZAXIRA to'siq: u ishga tushsa ham yarim holat qolmaydi.
+const TX_OPTIONS = { maxWait: 30000, timeout: 900000 };
 
 const KINDS = Object.freeze({ STUDENT: "student", STAFF: "staff", CLASS: "class" });
 const PERMISSION_FOR = {
@@ -665,7 +672,12 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
     const notes = [];
     if (existing) {
       notes.push(`"${ctx.target.name}" filialida "${c.name}" sinfi bor — o'quvchilar unga qo'shiladi`);
-      if (!existing.isActive) warnings.push(`"${ctx.target.name}" dagi "${c.name}" sinfi faol emas`);
+      if (!existing.isActive) {
+        notes.push(
+          `"${ctx.target.name}" dagi "${c.name}" sinfi hozir nofaol (tarix uchun ochilgan) — ` +
+            "ko'chirishda u FAOLLASHTIRILADI",
+        );
+      }
     } else {
       notes.push(`"${ctx.target.name}" filialida "${c.name}" sinfi ochiladi`);
     }
@@ -732,16 +744,32 @@ const classPlanFn = (ctx, classIds, options) => async (db) => {
     const moving = withSchedule.reduce((sum, cp) => sum + cp.schedule.moving, 0);
     const total = withSchedule.reduce((sum, cp) => sum + cp.schedule.total, 0);
     const removalMonth = formatMonthKey(withSchedule[0].schedule.removalMonth);
-    acknowledgements.push({
-      code: "schedule_moves",
-      title: "Dars jadvali ko'chadi, bu filialdan keyingi oydan o'chadi",
-      message:
-        `${total} ta darsdan ${moving} tasi yangi filial jadvaliga yoziladi (fan nomi bo'yicha ` +
-        "moslanadi, o'qituvchi esa o'sha filialda bor bo'lsa). Shu filialdagi jadval DARHOL " +
-        `emas, ${removalMonth} boshida olib tashlanadi: jadval sanasiz shablon va uni oy ` +
-        "o'rtasida o'chirish shu oy ALLAQACHON O'TILGAN darslarni ham o'qituvchi oyligidan " +
-        "olib tashlardi. Ko'chishdan keyingi darslar baribir o'tilmagan hisoblanadi.",
-    });
+    acknowledgements.push(
+      moving > 0
+        ? {
+            code: "schedule_moves",
+            title: "Dars jadvali ko'chadi, bu filialdan keyingi oydan o'chadi",
+            message:
+              `${total} ta darsdan ${moving} tasi yangi filial jadvaliga yoziladi (fan nomi ` +
+              "bo'yicha moslanadi, o'qituvchi esa o'sha filialda bor bo'lsa). Shu filialdagi " +
+              `jadval DARHOL emas, ${removalMonth} boshida olib tashlanadi: jadval sanasiz ` +
+              "shablon va uni oy o'rtasida o'chirish shu oy ALLAQACHON O'TILGAN darslarni ham " +
+              "o'qituvchi oyligidan olib tashlardi. Ko'chishdan keyingi darslar baribir " +
+              "o'tilmagan hisoblanadi.",
+          }
+        : {
+            // ⚠️ Birorta dars ko'chmasa manbadagi jadval ham O'CHIRILMAYDI:
+            // aks holda jadval ikkala filialdan ham yo'qolardi
+            code: "schedule_manual",
+            title: "Dars jadvali ko'chmaydi — yangi filialda qo'lda tuziladi",
+            message:
+              `${total} ta darsning birortasi ham yangi filialga yozilmaydi, chunki ularning ` +
+              "o'qituvchilari o'sha filialda yo'q (xodim nomi bo'yicha moslanmaydi — u login, " +
+              "ruxsat va oylik egasi). Shuning uchun shu filialdagi jadval ham O'CHIRILMAYDI. " +
+              "Avval o'qituvchilarni yangi filialga ko'chiring yoki ulashing, so'ng jadvalni " +
+              "o'sha yerda tuzing; keyin bu filialdagi darslarni jadvaldan olib tashlang.",
+          },
+    );
   }
 
   const described = describePlan({
@@ -814,6 +842,21 @@ const transferClasses = async (actor, input) => {
       // Haqiqiy maqsad `id` rejaning o'ziga yoziladi: tranzaksiyadan
       // keyingi qadam (jadval nusxasi) shu obyektni oladi
       for (const cp of plan.classes) cp.resolvedTargetId = realId.get(cp.targetId) ?? cp.targetId;
+
+      // ⚠️ NOFAOL SINF FAOLLASHTIRILADI. Maqsadda shu nomli sinf allaqachon
+      // bo'lishi mumkin — masalan oldingi ko'chirishda TARIX uchun nofaol
+      // ochilgani (`mapClasses`, `active: false`). Endi u yerda haqiqatan
+      // dars o'tiladi: nofaol qoldirilsa sinf joriy ro'yxatlarda, jurnalda
+      // va davomatda umuman ko'rinmasdi.
+      const attaching = plan.classes.map((cp) => cp.resolvedTargetId).filter(Boolean);
+      if (attaching.length) {
+        await db.$executeRawUnsafe(
+          `UPDATE ${qualified(ctx.target.schemaName, "classes")}
+           SET is_active = true, updated_at = NOW()
+           WHERE id = ANY($1::text[]) AND is_active = false`,
+          attaching,
+        );
+      }
 
       // Jadvalni manbadan olib tashlash NAVBATI — ko'chirish bilan bitta
       // atomda. Maqsadga nusxalash o'tmasa, navbat keyin bekor qilinadi.

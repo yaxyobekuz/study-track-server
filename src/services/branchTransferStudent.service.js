@@ -64,6 +64,10 @@ const {
   planStudentHistory,
   writeStudentHistory,
 } = require("./branchTransferHistory.service");
+const {
+  snapshotMissedLessons,
+  creditLostLessons,
+} = require("./branchTransferSchedule.service");
 
 /** Ota-ona nazorati jadvallari — hammasi `student_id` bilan, filial ma'lumotiga ishora qilmaydi. */
 const PARENTAL_TABLES = [
@@ -995,6 +999,15 @@ const writeStudents = async (db, ctx, items, historyCatalog = null) => {
   // haqiqiy FK (`onDelete: Cascade`), maqsadda o'quvchi qatori bo'lmasa
   // yozuv yiqilardi.
   if (historyCatalog) {
+    // ⚠️ BAHO KETISHIDAN OLDIN SURAT. Baholar o'quvchilar bilan ko'chadi,
+    // oylik esa "dars o'tildimi" degan savolga aynan bahodan javob oladi:
+    // surat bo'lmasa, shu oyda allaqachon o'tilgan dars jimgina
+    // "o'tilmagan" bo'lib qolardi (`creditLostLessons` uni qaytaradi).
+    ctx.lessonSnapshot = await snapshotMissedLessons(
+      ctx,
+      [...new Set(items.flatMap((item) => item.classes.map((c) => c.id)))],
+    );
+
     const history = await writeStudentHistory(db, ctx, ids, historyCatalog);
     note("history", history.moved);
     if (history.createdSubjects.length) note("createdSubjects", history.createdSubjects);
@@ -1171,6 +1184,35 @@ const afterStudents = async (ctx, items) => {
       }
     }
   });
+
+  // ── O'TILGAN DARSLARNI QAYTARISH (baho ko'chgani uchun yo'qolganlari) ──
+  const sourceClassIds = [...new Set(items.flatMap((item) => item.classes.map((c) => c.id)))];
+  if (ctx.lessonSnapshot?.teacherIds?.length) {
+    try {
+      const credited = await creditLostLessons(ctx, sourceClassIds, ctx.lessonSnapshot);
+      if (credited.credited > 0) {
+        logger.info(
+          `[branchTransfer] "${ctx.source.name}": ${credited.credited} ta o'tilgan dars ` +
+            `${credited.days} kunda "o'tildi" deb belgilandi (baho ko'chdi)`,
+        );
+      }
+      for (const message of credited.warnings) {
+        const anchor = items[0]?.id;
+        if (anchor && warnings.has(anchor)) warnings.get(anchor).push(message);
+      }
+    } catch (error) {
+      logger.error(`[branchTransfer] o'tilgan darslar belgilanmadi: ${error.message}`);
+      const anchor = items[0]?.id;
+      if (anchor && warnings.has(anchor)) {
+        warnings
+          .get(anchor)
+          .push(
+            `Eski filialdagi o'tilgan darslar belgilanmadi — o'qituvchilar soati kam ` +
+              `chiqishi mumkin, "O'tilmagan darslar" dan qo'lda belgilang (${error.message})`,
+          );
+      }
+    }
+  }
 
   await closeSessions(ids, ctx.source.id);
 

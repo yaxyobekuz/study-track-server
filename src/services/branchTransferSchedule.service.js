@@ -179,7 +179,10 @@ const planClassSchedules = async (db, ctx, classes) => {
  * @returns {Promise<number>} yozilgan navbat qatorlari
  */
 const queueSourceRemoval = async (db, ctx, classes) => {
-  const live = classes.filter((c) => c.schedule && c.schedule.total > 0);
+  // ⚠️ FAQAT HAQIQATAN KO'CHGAN JADVAL UCHUN. Maqsad filialda o'qituvchi
+  // bo'lmasa birorta dars nusxalanmaydi (`moving = 0`) — bunda manbadagi
+  // jadvalni o'chirish jadvalni IKKALA filialdan ham yo'q qilardi.
+  const live = classes.filter((c) => c.schedule && c.schedule.moving > 0);
   if (live.length === 0) return 0;
 
   const month = nextMonth(ctx.month);
@@ -209,6 +212,133 @@ const queueSourceRemoval = async (db, ctx, classes) => {
     );
   }
   return written;
+};
+
+
+/**
+ * KO'CHISHDAN OLDIN: o'qituvchining o'tilmagan darslari SURATI.
+ *
+ * ⚠️ NIMA UCHUN KERAK. O'quvchilar bilan birga ularning BAHOLARI ham
+ * ko'chadi, oylik esa "dars o'tildimi" degan savolga aynan bahodan javob
+ * oladi (`loadLessonFacts` — sinf + fan + tartib + kun). Sinfning hamma
+ * o'quvchisi ketsa, shu oyda ALLAQACHON O'TILGAN dars birdan "o'tilmagan"
+ * bo'lib qoladi va o'qituvchi haqiqatan qilgan ishi uchun pulsiz qolardi.
+ *
+ * Shuning uchun ko'chirishdan OLDIN va KEYIN o'tilmaganlar ro'yxati
+ * olinadi; farqi — aynan ko'chirish sababli yo'qolgan darslar, va ular
+ * "o'tildi" belgisi bilan qaytariladi (`creditLostLessons`).
+ *
+ * @param {object} ctx
+ * @param {string[]} classIds - manba filialdagi sinflar
+ * @returns {Promise<{month: number, teacherIds: string[], missed: Set<string>}>}
+ */
+const snapshotMissedLessons = async (ctx, classIds) => {
+  const empty = { month: ctx.month, teacherIds: [], missed: new Set() };
+  if (!classIds.length) return empty;
+
+  return runWithBranch(ctx.source, async () => {
+    const { getTeachersHours } = require("./lessonHours.service");
+    const [own, subs] = await Promise.all([
+      prisma.scheduleLesson.findMany({
+        where: { schedule: { classId: { in: classIds } } },
+        distinct: ["teacherId"],
+        select: { teacherId: true },
+      }),
+      prisma.lessonSubstitutionItem.findMany({
+        where: { classId: { in: classIds } },
+        distinct: ["substitutionId"],
+        select: { substitution: { select: { substituteTeacherId: true } } },
+      }),
+    ]);
+    const teacherIds = [
+      ...new Set([
+        ...own.map((r) => r.teacherId),
+        ...subs.map((r) => r.substitution?.substituteTeacherId),
+      ]),
+    ].filter(Boolean);
+    if (teacherIds.length === 0) return empty;
+
+    const hours = await getTeachersHours(teacherIds, ctx.month);
+    const missed = new Set();
+    for (const [teacherId, row] of hours) {
+      for (const lesson of row.missedLessons ?? []) {
+        missed.add(missedKey(teacherId, lesson));
+      }
+    }
+    return { month: ctx.month, teacherIds, missed };
+  });
+};
+
+/** Dars kaliti — `lessonCreditKey` bilan AYNI tarkib. */
+const missedKey = (teacherId, lesson) =>
+  [teacherId, lesson.classId, lesson.subjectId, lesson.lessonOrder, toIsoDay(lesson.date)].join("|");
+
+const toIsoDay = (date) => new Date(date).toISOString().slice(0, 10);
+
+/**
+ * KO'CHISHDAN KEYIN: faqat ko'chirish sababli "o'tilmagan" bo'lib qolgan
+ * darslarni "o'tildi" deb belgilaydi — o'qituvchi o'z soatini yo'qotmaydi.
+ *
+ * Belgilash BITTALIK xizmat orqali (`lessonCredit.createCredits`): u darsni
+ * serverda QAYTA tekshiradi, `activeKey` bilan takrorni to'sadi, davomat va
+ * jarima holatini belgiga muhrlaydi — mustaqil SQL yozilmaydi.
+ *
+ * @returns {Promise<{credited: number, days: number, warnings: string[]}>}
+ */
+const creditLostLessons = async (ctx, classIds, snapshot) => {
+  const warnings = [];
+  if (!snapshot?.teacherIds?.length) return { credited: 0, days: 0, warnings };
+
+  return runWithBranch(ctx.source, async () => {
+    const { getTeachersHours } = require("./lessonHours.service");
+    const { createCredits } = require("./lessonCredit.service");
+
+    const hours = await getTeachersHours(snapshot.teacherIds, snapshot.month);
+    const classSet = new Set(classIds);
+    const byDay = new Map();
+
+    for (const [teacherId, row] of hours) {
+      for (const lesson of row.missedLessons ?? []) {
+        if (!classSet.has(lesson.classId)) continue;
+        const key = missedKey(teacherId, lesson);
+        // Ko'chirishdan OLDIN ham o'tilmagan bo'lsa — bu bizning ishimiz emas
+        if (snapshot.missed.has(key)) continue;
+        const day = toIsoDay(lesson.date);
+        if (!byDay.has(day)) byDay.set(day, []);
+        byDay.get(day).push({
+          teacherId,
+          classId: lesson.classId,
+          subjectId: lesson.subjectId,
+          lessonOrder: lesson.lessonOrder,
+        });
+      }
+    }
+
+    let credited = 0;
+    for (const [day, lessons] of [...byDay.entries()].sort()) {
+      try {
+        const result = await createCredits(
+          {
+            date: day,
+            mode: "lessons",
+            lessons,
+            reason:
+              `Sinf "${ctx.target.name}" filialiga ko'chirildi — dars o'tilgan, ` +
+              "lekin baholar o'quvchilar bilan birga ko'chdi",
+          },
+          ctx.actor.id,
+        );
+        credited += result?.created ?? lessons.length;
+      } catch (error) {
+        warnings.push(
+          `${day} kunidagi ${lessons.length} ta o'tilgan dars belgilanmadi — ` +
+            `o'qituvchi soati kam chiqishi mumkin (${error.message})`,
+        );
+        logger.warn(`[branchTransfer] o'tilgan dars belgilanmadi (${day}): ${error.message}`);
+      }
+    }
+    return { credited, days: byDay.size, warnings };
+  });
 };
 
 /** Navbat qatorini bekor qiladi (maqsadga nusxalash o'tmadi). */
@@ -324,6 +454,8 @@ const copySchedulesToTarget = async (ctx, classes) => {
 
 module.exports = {
   planClassSchedules,
+  snapshotMissedLessons,
+  creditLostLessons,
   queueSourceRemoval,
   cancelQueuedRemoval,
   copySchedulesToTarget,
