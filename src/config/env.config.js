@@ -21,6 +21,7 @@ const optionalEnvVars = {
   PLATFORM_SCHEMA: "platform",
   BRANCH_SCHEMA_PREFIX: "br_",
   BRANCH_CONNECTION_LIMIT: 5,
+  PLATFORM_CONNECTION_LIMIT: 5,
 };
 
 /**
@@ -120,6 +121,12 @@ const config = {
   // Har filial client'ining pool hajmi. Prisma standarti (CPU×2+1) o'n
   // filialda Postgres `max_connections` ini yeb qo'yardi.
   branchConnectionLimit: parseInt(process.env.BRANCH_CONNECTION_LIMIT, 10) || 5,
+  // Platforma client'ining pool hajmi — SHU YERDA ham cheklanadi, chunki
+  // uning ulanish satri `buildSchemaUrl` dan o'tmaydi va filial cheklovi
+  // unga tegmaydi (`config/platformPrisma.js` izohiga qarang). Platforma
+  // faqat kataloglarni o'qiydi, shuning uchun filial bilan bir xil kichik
+  // pool yetarli.
+  platformConnectionLimit: parseInt(process.env.PLATFORM_CONNECTION_LIMIT, 10) || 5,
 
   // JWT
   jwtSecret: process.env.JWT_SECRET,

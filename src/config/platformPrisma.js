@@ -18,14 +18,41 @@
  * kelgan `Prisma.Decimal` bu yerga (va aksincha) YOZILMAYDI — summa
  * `helpers/money.helpers.js` dagi `formatAmount()` bilan STRING'ga
  * aylantirilib beriladi.
+ *
+ * ⚠️ POOL SHU YERDA CHEKLANADI. Bu client `buildSchemaUrl` dan O'TMAYDI
+ * (ulanish satri `PLATFORM_DATABASE_URL` dan to'g'ridan-to'g'ri keladi),
+ * ya'ni filial client'lariga qo'yilgan `connection_limit` unga tegmaydi va
+ * Prisma standartiga (CPU×2+1) tushib qolardi: 16 yadroli mashinada 33 ta
+ * ulanish, ustiga 6 filial × 5 = 30 → `max_connections = 100` ga pgAdmin va
+ * ikkinchi dev nusxasi bilan birga sig'masdi ("remaining connection slots
+ * are reserved for roles with the SUPERUSER attribute"). Platforma faqat
+ * kataloglarni o'qiydi — pool filialdagidek kichik bo'lishi yetarli.
  */
 
 const { PrismaClient, Prisma } = require("../generated/platform");
 const { config } = require("./env.config");
 const { buildAutoIdExtension } = require("./prismaExtensions");
 
+/**
+ * Ulanish satriga `connection_limit` qo'yadi (allaqachon aniq ko'rsatilgan
+ * bo'lsa — TEGMAYDI: `PLATFORM_DATABASE_URL` da qo'lda berilgan qiymat
+ * ustun turadi).
+ */
+const withPoolLimit = (url, limit) => {
+  if (!url) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has("connection_limit")) {
+      parsed.searchParams.set("connection_limit", String(limit));
+    }
+    return parsed.toString();
+  } catch {
+    return url; // noto'g'ri URL — validateEnv baribir xato beradi
+  }
+};
+
 const basePlatformPrisma = new PrismaClient({
-  datasourceUrl: config.platformDatabaseUrl,
+  datasourceUrl: withPoolLimit(config.platformDatabaseUrl, config.platformConnectionLimit),
   log: config.isDevelopment ? ["warn", "error"] : ["error"],
 });
 
