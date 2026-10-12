@@ -15,12 +15,14 @@
 // Bo'lim kalitlari — route fayllarida `authorizeSection` uchun.
 const SECTIONS = {
   BRANCHES: "branches",
+  TRANSFERS: "transfers",
   USERS: "users",
   ENROLLMENT: "enrollment",
   STATISTICS: "statistics",
   ATTENDANCE: "attendance",
   GRADES: "grades",
   GRADE_GRANTS: "gradeGrants",
+  LESSON_CREDITS: "lessonCredits",
   EDUCATION: "education",
   GRADE_ANALYSIS: "gradeAnalysis",
   ACHIEVEMENTS: "achievements",
@@ -61,6 +63,7 @@ const SECTIONS = {
   SOCIAL: "social",
   LEADS: "leads",
   ACTIVITY: "activity",
+  ISSUES: "issues",
   SECURITY: "security",
   DEVICES: "devices",
 };
@@ -96,6 +99,27 @@ const PERMISSION_SECTIONS = [
       A.update,
       { key: "archive", label: "Arxivlash" },
       { key: "assign", label: "Xodimni filialga biriktirish" },
+    ],
+  },
+  {
+    // FILIALLARARO KO'CHIRISH — o'quvchi, xodim va sinf (`branchTransfer.service.js`).
+    //
+    // Amallar ATAYLAB mayda: o'quvchini ko'chirish uning moliyasini (o'qish
+    // davri, tarif, hisob-faktura) ikki filialda o'zgartiradi, xodimni
+    // ko'chirish esa oylik egasini — ular boshqa-boshqa qaror.
+    //
+    // ⚠️ RUXSAT IKKALA FILIALDA tekshiriladi: odam MAQSAD filialga ham
+    // kiritiladi, ruxsatlar esa har filialda alohida (`User.permissions`).
+    // Faqat manba filialdagi kalit yetsa, Chilonzorda huquqi bor xodim
+    // Yunusobod bazasiga odam kiritib qo'ya olardi. Owner — istisno.
+    key: SECTIONS.TRANSFERS,
+    label: "Filiallararo ko'chirish",
+    group: "Asosiy",
+    actions: [
+      A.view,
+      { key: "students", label: "O'quvchilarni ko'chirish" },
+      { key: "staff", label: "Xodimlarni ko'chirish" },
+      { key: "classes", label: "Sinflarni ko'chirish" },
     ],
   },
   {
@@ -183,6 +207,24 @@ const PERMISSION_SECTIONS = [
     label: "Fanga baho ruxsati",
     group: "Ta'lim",
     actions: [A.view, { key: "manage", label: "Ruxsat berish va yopish" }],
+  },
+  {
+    // O'TILMAGAN DARSNI "O'TILDI" DEB BELGILASH — rahbariyat qarori
+    // (`lessonCredit.service.js`). Belgilangan darsning soati oylikka
+    // QAYTADI, ya'ni bu PULGA tegadi.
+    //
+    // ⚠️ ALOHIDA BO'LIM, `grades` yoki `payroll` ichidagi amal EMAS: eski
+    // bare "grades"/"payroll" kalitlari bo'limning HAMMA amalini beradi
+    // (`hasPermission`, `expandLegacyKeys`) va o'qituvchiga pul qaytarish
+    // huquqi owner bermagan odamga jimgina tarqalardi (`gradeGrants` bilan
+    // AYNI sabab). Owner'da doim bor.
+    //
+    // `view` — kunning o'tilmagan darslari va belgilar registri;
+    // `manage` — belgilash va bekor qilish (ikkalasi ham pul qarori).
+    key: SECTIONS.LESSON_CREDITS,
+    label: "Darsni o'tildi deb belgilash",
+    group: "Ta'lim",
+    actions: [A.view, { key: "manage", label: "Belgilash va bekor qilish" }],
   },
   {
     // TA'LIM DASHBOARDI — bitta ekranda butun maktabning o'quv manzarasi.
@@ -859,6 +901,41 @@ const PERMISSION_SECTIONS = [
       { key: "roster", label: "Foydalanmayotganlar ro'yxati" },
       { key: "sessions", label: "Foydalanuvchi tafsiloti" },
       A.export,
+    ],
+  },
+  {
+    // MUAMMOLAR — "foydalanuvchi NIMADAN shikoyat qilyapti?".
+    //
+    // Xodim yoki ota-ona botdan muammo yuboradi (kategoriya + matn),
+    // ma'muriyat panelda ko'rib chiqadi va javob yozadi.
+    //
+    // ⚠️ `view` — RO'YXAT, `review` — HOLAT VA JAVOB. Ajratilgani
+    // `penalties.review` bilan ayni mulohaza: javob botga ketadi va
+    // maktab nomidan yoziladi, ya'ni uni kim yozishini owner alohida hal
+    // qiladi. Ro'yxatni ko'rish esa shunchaki "nima bo'lyapti" degan savol.
+    //
+    // ⚠️ `categories` ALOHIDA: botdagi klaviatura aynan shu ro'yxatdan
+    // chiziladi, ya'ni kategoriyani o'chirish FOYDALANUVCHI KO'RADIGAN
+    // narsani o'zgartiradi — bitta muammoga javob yozish huquqi bilan
+    // bir xil og'irlikda emas.
+    //
+    // ⚠️ `reports` — `tasks.reports` bilan ayni mulohaza: kesim butun
+    // jamoaning shikoyat manzarasini ochadi ("eng ko'p qaysi kategoriya",
+    // "qancha javobsiz qoldi") va u ro'yxatni ko'rishdan kengroq.
+    key: SECTIONS.ISSUES,
+    label: "Muammolar",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "review", label: "Holatni o'zgartirish / javob yozish" },
+      // TOPSHIRIQ BIRIKTIRISH — `review` DAN ALOHIDA va bu ataylab.
+      // Javob yozish bitta murojaatni yopadi, topshiriq berish esa
+      // BOSHQA ODAMNING ISHINI belgilaydi va muddati o'tsa unga jarima
+      // yoziladi (`tasks.create` bilan ayni og'irlikdagi qaror).
+      { key: "assign", label: "Topshiriq biriktirish" },
+      A.delete,
+      { key: "categories", label: "Kategoriyalarni boshqarish" },
+      { key: "reports", label: "Hisobotlar" },
     ],
   },
   {

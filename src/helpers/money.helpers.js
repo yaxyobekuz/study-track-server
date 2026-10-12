@@ -219,6 +219,11 @@ const ENTRY_SIGNS = {
   // tushgan pul).
   damage_payment: 1,
   damage_payment_void: -1,
+  // FILIALLARARO — o'quvchining sarflanmagan puli (depozit) boshqa filialga
+  // ko'chadi: manbada chiqim, maqsadda kirim. Ikkala yozuv bitta
+  // tranzaksiyada, shuning uchun umumiy pul massasi o'zgarmaydi.
+  branch_transfer_in: 1,
+  branch_transfer_out: -1,
 };
 
 /**
@@ -270,9 +275,28 @@ function percentChange(current, previous) {
   return Number(toDecimal(current).minus(prev).div(prev.abs()).times(100).toFixed(1));
 }
 
+/**
+ * Summani ODAM o'qiydigan matnga: "6 741 000 so'm" (butun so'mgacha).
+ *
+ * `Intl`/`toLocaleString` siz — ajratgich Node ICU qurilishiga bog'liq
+ * bo'lib qolmasin (`dates.md` §3 bilan bir xil sabab). Foydalanuvchiga
+ * ketadigan xabar matnlari uchun; API maydonlari `formatAmount` bilan.
+ *
+ * @param {Decimal|string|number|null} value
+ * @returns {string}
+ */
+function formatSum(value) {
+  const grouped = toDecimal(value ?? 0)
+    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+    .toFixed(0)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return `${grouped} so'm`;
+}
+
 module.exports = {
   Decimal,
   toDecimal,
+  formatSum,
   MAX_AMOUNT,
   AMOUNT_SCALE,
   ENTRY_SIGNS,

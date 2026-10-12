@@ -33,6 +33,7 @@ const {
 const { computeLessonHoursForMonth } = require("./lessonHours.service");
 const { loadGroupsForPayroll } = require("./tutorGroup.service");
 const { loadAbsenceFacts } = require("./payrollAbsence.service");
+const { foreignFixedStaff } = require("./payrollOwnership.service");
 
 const round2 = (d) => d.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
 
@@ -98,7 +99,7 @@ const loadContext = async (month, users, preloaded = {}) => {
 
   const teacherIds = hourlyStaffIds(users, salaryRules);
 
-  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows, absence] = await Promise.all([
+  const [positions, categories, hoursMap, bonusRows, deductionRows, customBaseRows, tutor, suspensionRows, absence, foreignFixed] = await Promise.all([
     positionIds.length
       ? prisma.position.findMany({
           where: { id: { in: positionIds } },
@@ -144,6 +145,9 @@ const loadContext = async (month, users, preloaded = {}) => {
     staffIds.length ? loadSuspensionsForMonth(month, staffIds) : [],
     // KELMAGAN KUNLAR — davomat (kelmadi/sababli), ish kunlari va sozlama
     preloaded.absence || loadAbsenceFacts(month, staffIds),
+    // ASOSIY OYLIGI BOSHQA FILIALDA hisoblanadiganlar (ko'p filialli xodim) —
+    // bu yerda faqat shu filialda bajarilgan ish (`payrollOwnership.service.js`)
+    preloaded.foreignFixed || foreignFixedStaff(month, staffIds),
   ]);
 
   // Faqat O'SHA lavozimda amal qiladi: taxminiy (hypothetical) lavozim
@@ -180,6 +184,7 @@ const loadContext = async (month, users, preloaded = {}) => {
     classStudentCounts: tutor.studentCounts,
     suspensions: suspensionRows,
     absence,
+    foreignFixed,
   };
 };
 
@@ -287,8 +292,17 @@ const computeForStaff = (user, month, ctx) => {
   // belgilanmagan tyutorning qo'shimcha oyligi jimgina yo'qolardi.
   if (!position && !category && !rule && tutorGroups.length === 0) return null;
 
-  const { amount: base, isCustom: baseIsCustom } = resolvePositionBase(user, position, ctx);
-  const extraFixed = new Decimal(rule ? rule.fixedAmount : 0);
+  // ⚠️ ASOSIY OYLIK BOSHQA FILIALDA (ko'p filialli xodim): lavozim maoshi,
+  // qo'shimcha fiksa, ustama va bonuslar bu yerda NOL — ular odamga oyiga bir
+  // marta, ega filialda to'lanadi. Dars soati va tyutor guruhi esa SHU
+  // filialda bajarilgan ish, ular qoladi (`payrollOwnership.service.js`).
+  // Kelmagan kun ayirmasi fiksadan olinadi, ya'ni o'zi ham nolga tushadi.
+  const fixedOwner = ctx.foreignFixed?.get(user.id) ?? null;
+
+  const positionBase = resolvePositionBase(user, position, ctx);
+  const base = fixedOwner ? new Decimal(0) : positionBase.amount;
+  const baseIsCustom = !fixedOwner && positionBase.isCustom;
+  const extraFixed = new Decimal(rule && !fixedOwner ? rule.fixedAmount : 0);
   const fixedAmount = base.plus(extraFixed);
 
   const hoursInfo = ctx.hoursMap.get(user.id);
@@ -301,7 +315,7 @@ const computeForStaff = (user, month, ctx) => {
   // Ustamalar: tasdiqlangan PayrollBonus + eski StaffSalary.allowances.
   // Manba (`bonusId` / `source: "rule"`) qatorga yoziladi — aniq bitta
   // qo'shimchani to'xtatish uning kalitiga tayanadi (`payUnitKeyOf`).
-  const rawBonuses = [
+  const rawBonuses = fixedOwner ? [] : [
     ...(ctx.bonusMap.get(user.id) || []).map((b) => ({
       label: b.label || "Ustama",
       type: b.type,
@@ -401,6 +415,7 @@ const computeForStaff = (user, month, ctx) => {
     categoryName: category?.name ?? "",
     positionName: position?.name ?? "",
     departmentName,
+    fixedOwner,
   };
 };
 
@@ -431,6 +446,7 @@ const previewForStaff = (user, month, ctx) => {
     categoryName: c.categoryName,
     positionName: c.positionName,
     departmentName: c.departmentName,
+    fixedOwner: c.fixedOwner,
   };
 };
 

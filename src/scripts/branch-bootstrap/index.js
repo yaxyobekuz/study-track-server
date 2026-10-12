@@ -291,9 +291,13 @@ async function main() {
 
   if (tgExists) {
     const tgInserted = await raw.$executeRawUnsafe(
+      // ⚠️ `user_id` / `link_kind` MANBADAN olinadi, `student` dan emas:
+      // botga xodim ham kiradi va uning qatorida `student` NULL
+      // (`20261009120000_bot_staff_login`). Ustunlar `tg_users` da
+      // allaqachon to'g'ri to'lgan, shuning uchun shunchaki ko'chiriladi.
       `INSERT INTO "${platformSchema}"."telegram_directory"
-         (telegram_id, branch_id, student_id, created_at, updated_at)
-       SELECT t.telegram_id, $1, t.student, t.created_at, t.updated_at
+         (telegram_id, branch_id, user_id, link_kind, student_id, created_at, updated_at)
+       SELECT t.telegram_id, $1, t.user_id, t.link_kind, t.student, t.created_at, t.updated_at
          FROM "${legacySchema}"."tg_users" t
        ON CONFLICT (telegram_id) DO NOTHING`,
       mainBranch.id,

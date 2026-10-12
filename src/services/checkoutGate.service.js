@@ -222,9 +222,15 @@ async function loadTeacherLessons(userId, day, { nowMin }) {
       select: { classId: true, userId: true },
     }),
     // ⚠️ Fanga ruxsat bilan (boshqa o'qituvchi) qo'ygan baho bu o'qituvchining
-    // ishi emas — oylikdagi "dars o'tildimi" bilan AYNI (`loadLessonFacts`)
+    // ishi emas — oylikdagi "dars o'tildimi" bilan AYNI (`loadLessonFacts`).
+    // Boshqa filialdan ko'chirilgan baho ham shu sababdan hisob emas.
     prisma.grade.findMany({
-      where: { classId: { in: classIds }, date: { gte: from, lt: to }, gradingGrantId: null },
+      where: {
+        classId: { in: classIds },
+        date: { gte: from, lt: to },
+        gradingGrantId: null,
+        transferredFromBranchId: null,
+      },
       select: { classId: true, subjectId: true, lessonOrder: true, studentId: true },
     }),
   ]);

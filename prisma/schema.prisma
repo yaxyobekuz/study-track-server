@@ -104,6 +104,11 @@ enum CoinTransactionType {
   fine_reduction_purchase
   season_absolute_reward
   season_class_top_reward
+  // FILIALLARARO KO'CHIRISH — qoldiq yozuv bilan ko'chadi: manba filialda
+  // chiqim (qoldiq 0 ga), maqsad filialda kirim (o'sha qoldiq). Tarix o'z
+  // filialida qoladi, ya'ni "bu tangalar qayerdan" degan savolga javob shu
+  // qator (`branchTransfer.service.js`).
+  branch_transfer
 }
 
 enum MarketOrderStatus {
@@ -300,6 +305,16 @@ enum AccountEntryType {
   // savolga `external_income` bilan aralashmagan javob kerak.
   damage_payment // + moddiy zarar undirildi
   damage_payment_void // − undiruv bekor qilindi
+  // FILIALLARARO KO'CHIRISH — o'quvchi/xodim boshqa filialga o'tganda uning
+  // OCHIQ pul holati (depozit qoldig'i) haqiqiy pul sifatida ko'chadi: manba
+  // filial kassasidan chiqadi, maqsad filial kassasiga kiradi. Ikkala yozuv
+  // bitta tranzaksiyada, bitta `branch_transfers.id` izohi bilan.
+  //
+  // ⚠️ O'TGAN TO'LOVLAR KO'CHMAYDI va ko'chira ham olmaydi: o'sha pul manba
+  // filialda allaqachon sarflangan (oylik, xarajat). Ko'chadigan yagona pul —
+  // hali sarflanmagan, o'quvchiga tegishli depozit qoldig'i.
+  branch_transfer_in // + boshqa filialdan ko'chib keldi
+  branch_transfer_out // − boshqa filialga ko'chib ketdi
 }
 
 // Oylik qanday hisoblanadi.
@@ -593,6 +608,7 @@ enum StudentClassChangeSource {
   profile // O'quvchi profili → "Sinflar" kartasi
   class_page // Sinf sahifasi → "Ko'chirish" / "Sinfdan chiqarish"
   assistant // AI yordamchi (egasi tasdiqlagan taklif)
+  branch_transfer // Filiallararo ko'chirish — o'quvchi boshqa filialga o'tdi
 }
 
 // O'QUVCHI TASHQI TIZIMDA BORMI — ERP va Kundalik.com.
@@ -997,6 +1013,68 @@ model ScheduleSheetMapping {
 }
 
 // ─────────────────────────────────────────────
+// KECHIKTIRILGAN JADVAL O'CHIRISH
+// ─────────────────────────────────────────────
+//
+// Sinf boshqa filialga ko'chirilganda uning dars jadvali maqsad filialga
+// nusxalanadi, manbadagisi esa DARHOL o'chirilmaydi.
+//
+// ⚠️ NIMA UCHUN DARHOL EMAS: `ScheduleLesson` — SANASIZ haftalik shablon,
+// soatbay oylik esa uni butun oyga yoyib hisoblaydi (`lessonHours.service.js`).
+// Oy o'rtasida o'chirilsa, shu oyda ALLAQACHON O'TILGAN darslar ham
+// o'qituvchi oyligidan tushib ketardi (`education.md` §8 doktrinasi:
+// "jadvalni o'chirish o'tgan oylikni qayta yozmasin").
+//
+// Shuning uchun o'chirish KEYINGI OY BOSHIGA qoldiriladi va shu yerda
+// navbatda turadi. `scheduleRemoval.job.js` har kuni ko'radi: oy kelganda
+// `withScheduleWriteLock` + `assertPlatformMode` orqali o'chiradi
+// (sheet rejimida yozilmaydi — navbatda qolib, ogohlantiradi).
+model PendingScheduleRemoval {
+  id String @id @db.Char(24)
+
+  // soft ref → Class: sinf ko'chirilgandan keyin ham o'chirilishi mumkin,
+  // navbat qatori esa nima bo'lganini ayta olishi kerak
+  classId   String @map("class_id") @db.Char(24)
+  // Nomi MUHRLANADI (`tariffName` doktrinasi) — sinf qayta nomlansa ham
+  // navbatdagi qator nimani anglatgani o'zgarmaydi
+  className String @map("class_name")
+
+  // Jadval SHU oyning 1-kunidan boshlab o'chiriladi (YYYYMM)
+  effectiveMonth Int @map("effective_month")
+
+  reason String
+
+  // Qaysi filialga ko'chdi va qaysi ko'chirish yozuvi sabab bo'ldi
+  // (platforma `branch_transfers.id`) — soft ref, FK yo'q (boshqa schema)
+  targetBranchId String? @map("target_branch_id") @db.Char(24)
+  transferId     String? @map("transfer_id") @db.Char(24)
+
+  status      PendingScheduleRemovalStatus @default(pending)
+  processedAt DateTime?                    @map("processed_at")
+  // Oxirgi urinish nima uchun o'tmadi (sheet rejimi, qulf). Qator `pending`
+  // bo'lib qoladi va ertasiga qayta uriniladi — jim yo'qolmaydi.
+  failReason  String                       @default("") @map("fail_reason")
+  lessonCount Int                          @default(0) @map("lesson_count")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Bitta sinfga bitta oy uchun bitta navbat qatori — ikki marta ko'chirish
+  // (yoki qayta urinish) ikkinchi qator yozmaydi
+  @@unique([classId, effectiveMonth])
+  @@index([status, effectiveMonth])
+  @@map("pending_schedule_removals")
+}
+
+enum PendingScheduleRemovalStatus {
+  pending
+  done
+  // Admin jadvalni o'zi o'chirgan yoki sinf qaytarilgan
+  cancelled
+}
+
+// ─────────────────────────────────────────────
 // DARS O'RINBOSARLIGI (dars o'rniga chiqish)
 // ─────────────────────────────────────────────
 //
@@ -1395,19 +1473,24 @@ model AbsenceReason {
 }
 
 model StudentAttendance {
-  id             String           @id @db.Char(24)
-  studentId      String           @map("student_id") @db.Char(24)
-  classId        String           @map("class_id") @db.Char(24)
-  date           DateTime
-  status         AttendanceStatus @default(absent)
-  markedAt       DateTime?        @map("marked_at")
-  excuseReason   String?          @map("excuse_reason")
-  absenceReason  String?          @map("absence_reason") @db.Char(24)
-  autoMarked     Boolean          @default(false) @map("auto_marked")
-  createdBy      String?          @map("created_by") @db.Char(24)
-  lastModifiedBy String?          @map("last_modified_by") @db.Char(24)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
+  id                      String           @id @db.Char(24)
+  studentId               String           @map("student_id") @db.Char(24)
+  classId                 String           @map("class_id") @db.Char(24)
+  date                    DateTime
+  status                  AttendanceStatus @default(absent)
+  markedAt                DateTime?        @map("marked_at")
+  excuseReason            String?          @map("excuse_reason")
+  absenceReason           String?          @map("absence_reason") @db.Char(24)
+  autoMarked              Boolean          @default(false) @map("auto_marked")
+  // Boshqa filialdan ko'chirilgan davomat (soft ref → platform.Branch).
+  // O'QUVCHI davomati pulga ta'sir qilmaydi (`education.md` §6), shuning
+  // uchun bu ustun faqat MANBANI ko'rsatadi: hisobotda "bu kun boshqa
+  // filialda belgilangan" degan javob bo'lsin.
+  transferredFromBranchId String?          @map("transferred_from_branch_id") @db.Char(24)
+  createdBy               String?          @map("created_by") @db.Char(24)
+  lastModifiedBy          String?          @map("last_modified_by") @db.Char(24)
+  createdAt               DateTime         @default(now()) @map("created_at")
+  updatedAt               DateTime         @updatedAt @map("updated_at")
 
   @@unique([studentId, date])
   @@index([classId, date])
@@ -1484,15 +1567,15 @@ model CheckoutRequest {
 // ─────────────────────────────────────────────
 
 model Grade {
-  id          String   @id @db.Char(24)
-  studentId   String   @map("student_id") @db.Char(24)
-  subjectId   String   @map("subject_id") @db.Char(24)
-  classId     String   @map("class_id") @db.Char(24)
-  teacherId   String   @map("teacher_id") @db.Char(24)
-  grade       Int
-  comment     String?
-  date        DateTime
-  lessonOrder Int      @default(1) @map("lesson_order")
+  id                      String   @id @db.Char(24)
+  studentId               String   @map("student_id") @db.Char(24)
+  subjectId               String   @map("subject_id") @db.Char(24)
+  classId                 String   @map("class_id") @db.Char(24)
+  teacherId               String   @map("teacher_id") @db.Char(24)
+  grade                   Int
+  comment                 String?
+  date                    DateTime
+  lessonOrder             Int      @default(1) @map("lesson_order")
   // DARS MAVZUSI — baho qo'yilgan darsda o'tilgan mavzu (soft ref → Topic).
   //
   // Faqat BUGUNGI darsga qo'yilgan bahoda yoziladi: sinf+fanning joriy
@@ -1504,7 +1587,7 @@ model Grade {
   // ⚠️ Eski baholarda `null` — tarix ORQAGA to'ldirilmaydi (mavzu tarixi
   // saqlanmagan, faqat joriy raqam bor). Baholar tahlili mavzu kesimini
   // faqat mavzusi bor baholardan quradi va qamrovni ochiq aytadi.
-  topicId     String?  @map("topic_id") @db.Char(24)
+  topicId                 String?  @map("topic_id") @db.Char(24)
   // RUXSAT BILAN QO'YILGAN BAHO (soft ref → GradingGrant). Boshliq
   // o'qituvchiga O'ZINIKI BO'LMAGAN sinf+fan darsiga baho qo'yishni ochgan
   // bo'lsa, o'sha yo'l bilan yozilgan baho shu ustun bilan belgilanadi.
@@ -1513,12 +1596,24 @@ model Grade {
   // EGASINING ishi emas — oylikdagi "dars o'tildimi" (`loadLessonFacts`) va
   // "Men ketdim" darvozasi uni HISOBLAMAYDI. Aks holda boshqa odamning
   // bahosi bilan dars egasiga soat (pul) yozilardi.
-  gradingGrantId String? @map("grading_grant_id") @db.Char(24)
-  isEdited    Boolean  @default(false) @map("is_edited")
+  gradingGrantId          String?  @map("grading_grant_id") @db.Char(24)
+  // BOSHQA FILIALDAN KO'CHIRILGAN BAHO (soft ref → platform.Branch).
+  //
+  // O'quvchi boshqa filialga o'tganda uning baholari u bilan birga ko'chadi
+  // (sinf va fan NOMI bo'yicha moslanadi) — tarix yo'qolmaydi.
+  //
+  // ⚠️ LEKIN BU BAHO DARSNI "O'TILGAN" QILMAYDI. `loadLessonFacts` bahoni
+  // sinf + fan + dars tartibi + kun bo'yicha o'qiydi, o'qituvchi bo'yicha
+  // EMAS: ko'chgan baho maqsad filialdagi o'sha katakdagi darsni o'tilgan
+  // qilib, hech qachon o'tmagan o'qituvchiga soat (pul) yozib yuborardi.
+  // Shuning uchun oylik hisobi bu ustun to'ldirilgan bahoni CHETLAB O'TADI
+  // (`gradingGrantId` bilan AYNI mulohaza).
+  transferredFromBranchId String?  @map("transferred_from_branch_id") @db.Char(24)
+  isEdited                Boolean  @default(false) @map("is_edited")
   // editHistory[] — { previousGrade, editedAt, editedBy } (faqat audit)
-  editHistory Json     @default("[]") @map("edit_history")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  editHistory             Json     @default("[]") @map("edit_history")
+  createdAt               DateTime @default(now()) @map("created_at")
+  updatedAt               DateTime @updatedAt @map("updated_at")
 
   @@index([studentId, subjectId, date, lessonOrder])
   @@index([classId, date])
@@ -1554,12 +1649,24 @@ model Task {
   completionAttachments Json       @default("[]") @map("completion_attachments")
   penaltyRef            String?    @map("penalty_ref") @db.Char(24)
   autopenalized         Boolean    @default(false)
+
+  // MANBA MUAMMO — topshiriq botdan kelgan muammoni hal qilish uchun
+  // berilgan bo'lsa to'ladi (`issueTask.service.js`). Oddiy topshiriqda
+  // `null`, ya'ni topshiriqlar bo'limining o'zi o'zgarmadi.
+  //
+  // ⚠️ `onDelete: SetNull` — muammo o'chirilsa TOPSHIRIQ QOLADI. Odam
+  // allaqachon ish qilyapti va unda jarima bali ham bo'lishi mumkin:
+  // kaskad o'chirish birovning bajarilgan ishini izsiz yo'q qilardi.
+  issueId               String?    @map("issue_id") @db.Char(24)
+
   createdAt             DateTime   @default(now()) @map("created_at")
   updatedAt             DateTime   @updatedAt @map("updated_at")
 
   statusHistory   TaskStatusHistory[]
   deadlineHistory TaskDeadlineHistory[]
+  issue           Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
 
+  @@index([issueId])
   @@index([assignee, status])
   @@index([assignee, createdAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
@@ -2285,11 +2392,36 @@ model MessageQueue {
   @@map("message_queue")
 }
 
+// TELEGRAM BOG'LANISHI — o'quvchi (ota-ona) YOKI xodim.
+//
+// Dastlab bu jadval faqat ota-onalar uchun edi: `student` ustuni MAJBURIY
+// bo'lib, botga faqat o'quvchi logini bilan kirish mumkin edi. Endi xodim
+// ham o'z logini bilan kiradi va o'ziga tegishli tezkor ma'lumotni ko'radi,
+// shuning uchun ikkita ustun qo'shildi.
+//
+// ⚠️ `userId` — BOG'LANGAN ODAM, roli qanday bo'lishidan qat'i nazar.
+// Yangi kod faqat shuni o'qiydi.
+//
+// ⚠️ `linkKind` — bog'lanish TURI ("student" | "staff"), ROL EMAS va
+// ataylab rol nomi saqlanmaydi: odamning roli keyin o'zgarishi mumkin
+// (o'qituvchi → ma'muriyat) va muhrlangan rol jimgina eskirib, botda
+// noto'g'ri menyu ko'rsatardi. Menyu uchun rol HAR SAFAR `User.role` dan
+// jonli o'qiladi; bu ustun esa faqat "bu qator ota-onaning-mi yoki
+// xodimning-mi" degan savolga javob beradi va INDEKSLANGAN — shu savol
+// ro'yxat so'rovlarida `User` ga qo'shilmasdan berilishi kerak.
+//
+// ⚠️ `student` SAQLANDI va `linkKind = "student"` bo'lganda to'ladi,
+// xodimda esa NULL. Bu ataylab: o'quvchiga xabar yuboradigan barcha
+// joylar (`penalty`, `debtReminder`, `premiumNotification`) `student`
+// bo'yicha qidiradi va NULL tufayli ular xodim qatoriga HECH QACHON
+// urilmaydi — ya'ni eski oqimlar o'zgarishsiz va xavfsiz qoldi.
 model TgUser {
   id                   String   @id @db.Char(24)
   telegramId           String   @unique @map("telegram_id")
   chatId               String   @map("chat_id")
-  student              String   @db.Char(24)
+  userId               String   @map("user_id") @db.Char(24)
+  linkKind             String   @default("student") @map("link_kind")
+  student              String?  @db.Char(24)
   firstName            String?  @map("first_name")
   lastName             String?  @map("last_name")
   username             String?
@@ -2300,6 +2432,8 @@ model TgUser {
   updatedAt            DateTime @updatedAt @map("updated_at")
 
   @@index([student])
+  @@index([userId])
+  @@index([linkKind, isActive])
   @@index([notificationsEnabled, isActive])
   @@map("tg_users")
 }
@@ -3559,10 +3693,10 @@ model GradingGrant {
 
   // KUN ANIQLIGIDA, INKLYUZIV — Toshkent kunining UTC yarim tuni
   // (`StudentEnrollment` / `GradingUnlock` bilan bir xil qoida, faqat `getUTC*`)
-  dateFrom DateTime @map("date_from") @db.Date
-  dateTo   DateTime @map("date_to") @db.Date
+  dateFrom    DateTime @map("date_from") @db.Date
+  dateTo      DateTime @map("date_to") @db.Date
   // null — davrdagi shu fanning barcha darslari; son — faqat shu tartibdagi dars
-  lessonOrder Int? @map("lesson_order")
+  lessonOrder Int?     @map("lesson_order")
 
   reason   String @default("")
   // { teacherName, className, subjectName } — xodim/sinf o'zgarsa ham
@@ -3582,6 +3716,74 @@ model GradingGrant {
   @@index([classId, subjectId])
   @@index([createdAt])
   @@map("grading_grants")
+}
+
+// "O'TILDI" BELGISI — rahbariyat O'TILMAGAN darsni o'tilgan deb belgilaydi.
+//
+// Dars faktlar bo'yicha o'tilmagan bo'lsa (kelmagan / sababli / baho
+// qo'yilmagan — `helpers/lessonHours.js` → `judgeLesson`), boshliq
+// (`lessonCredits.manage`) uni "o'tildi" qiladi: soati (puli) oylikka qaytadi.
+// Bittalab, bir nechtalab yoki kunning hamma o'tilmagan darslari bir amalda
+// (`batchId`). Qaror `resolveLesson` da, xizmat — `lessonCredit.service.js`.
+//
+// ⚠️ BITTA YOZUV = BITTA DARS: kim o'tishi kerak edi (o'rinbosarlik bilan) +
+// sinf + fan + tartib + kun. Darsga `scheduleLessonId` bilan ishora
+// QILINMAYDI (jadval qayta saqlanadi).
+// ⚠️ `activeKey` — FAOL belgining kaliti, bekor qilinganda NULL: bitta darsga
+// ikkita faol belgi tushmaydi (ikki marta bosilgan tugma, parallel so'rov),
+// tarixdagi bekor qilinganlar esa cheklanmaydi (PostgreSQL da NULL lar teng
+// emas — `DevicePolicyAssignment.targetKey` bilan bir xil yechim).
+// ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (sabab + aktyor): o'tgan oylik va
+// "nega soat ko'paydi" degan savol unga tayanadi.
+model LessonCredit {
+  id          String   @id @db.Char(24)
+  // soft ref'lar — FK yo'q: xodim arxivlansa ham tarix o'qilishi kerak
+  teacherId   String   @map("teacher_id") @db.Char(24)
+  // Dars kuni — Toshkent kunining UTC yarim tuni, faqat `getUTC*`
+  date        DateTime @db.Date
+  classId     String   @map("class_id") @db.Char(24)
+  subjectId   String   @map("subject_id") @db.Char(24)
+  lessonOrder Int      @map("lesson_order")
+  // Belgilash paytida nega o'tilmagan edi: absent | excused | noGrade
+  missReason  String   @map("miss_reason")
+  // Dars o'rinbosarlik bilan berilgan edi (o'qituvchi — o'rinbosar)
+  substituted Boolean  @default(false)
+  // { teacherName, className, subjectName } — keyin qayta nomlansa ham
+  // registr o'qilishi uchun (`GradingGrant.snapshot` doktrinasi)
+  snapshot    Json
+
+  activeKey String? @unique @map("active_key")
+  // Bir amalda belgilanganlar guruhi
+  batchId   String  @map("batch_id") @db.Char(24)
+  reason    String
+  createdBy String  @map("created_by") @db.Char(24)
+
+  // Shu belgi bilan bekor qilingan "Baho qo'ymaslik" jarimasi (`Penalty`,
+  // soft ref) va o'qituvchidan AYNAN olib tashlangan ball — belgi bekor
+  // qilinsa, jarima va shuncha ball qaytariladi (ball 0 dan pastga
+  // tushirilmagani uchun u jarima balidan kam bo'lishi mumkin)
+  penaltyId     String? @map("penalty_id") @db.Char(24)
+  penaltyPoints Int     @default(0) @map("penalty_points")
+
+  // DARS O'TILGAN KUN — KELGAN KUN: belgi kun davomatini "keldi" qilgan bo'lsa,
+  // avvalgi holat shu yerda (bekor qilinganda AYNAN qaytadi) — davomat qatori,
+  // holati, izohlari va bekor qilingan "kelmadi" jarimasi. Bir kunga bir
+  // nechta belgi bo'lsa, faqat bittasida turadi; u bekor qilinsa qolganiga ko'chadi.
+  attendanceRestore Json? @map("attendance_restore")
+
+  revokedAt    DateTime? @map("revoked_at")
+  revokedBy    String?   @map("revoked_by") @db.Char(24)
+  revokeReason String    @default("") @map("revoke_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Soat hisobi oy bo'yicha o'qiydi (o'qituvchilar + kunlar oralig'i)
+  @@index([teacherId, date])
+  @@index([date])
+  @@index([batchId])
+  @@index([createdAt])
+  @@map("lesson_credits")
 }
 
 model PayrollRequest {
@@ -6711,4 +6913,113 @@ model ParentalUnlockRequest {
   @@index([studentId, createdAt])
   @@index([status, expiresAt])
   @@map("parental_unlock_requests")
+}
+
+// ─────────────────────────────────────────────
+// MUAMMOLAR (bot → ma'muriyat)
+// ─────────────────────────────────────────────
+//
+// Xodim yoki ota-ona botdan muammo yuboradi: avval KATEGORIYA tanlanadi
+// (oddiy klaviatura), keyin matn yoziladi. Panelda ma'muriyat ro'yxatni
+// ko'radi, holatini o'zgartiradi va javob yozadi — javob botga qaytadi.
+//
+// ⚠️ YOZUVCHI — BOT, o'quvchi/xodim nomidan. Server esa faqat KO'RIB
+// CHIQADI (holat + javob). Shu sababli ikki tomon bir ustunga yozmaydi va
+// poyga holati yo'q: bot `status`/`reply` ga, server `body`/`categoryId` ga
+// hech qachon tegmaydi.
+
+/**
+ * Muammoning ko'rib chiqilish holati.
+ *
+ * `new` → kelgan, hech kim ko'rmagan. `in_review` → mas'ul oldi.
+ * `resolved` / `rejected` — YAKUNIY: ikkalasida ham yuborgan odamga
+ * javob ketadi (`issueNotification.service.js`), shuning uchun "rad
+ * etildi" jim yopilish emas.
+ */
+enum IssueStatus {
+  new
+  in_review
+  resolved
+  rejected
+}
+
+/**
+ * MUAMMO KATEGORIYASI — faqat NOMI va HOLATI.
+ *
+ * ⚠️ ATAYLAB MINIMAL: tavsif, rang, mas'ul, rol filtri YO'Q. Kategoriya
+ * botdagi klaviatura tugmasi bo'lib xizmat qiladi va tugmada nomdan
+ * boshqa hech narsa ko'rinmaydi.
+ *
+ * ⚠️ `isActive` — botdagi KO'RINISH kaliti. Bot faqat faol kategoriyalarni
+ * ko'rsatadi (`issue.service.js#getActiveCategories`), lekin eski
+ * muammolar o'z kategoriyasini saqlab qoladi: shu sababli o'chirish
+ * YUMSHOQ (`isActive = false`), aks holda arxivdagi muammo "kategoriyasiz"
+ * qolardi.
+ */
+model IssueCategory {
+  id        String   @id @db.Char(24)
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  issues Issue[]
+
+  @@index([isActive, name])
+  @@map("issue_categories")
+}
+
+/**
+ * BOTDAN KELGAN MUAMMO.
+ *
+ * ⚠️ `authorKind` — bog'lanish TURI (`tg_users.link_kind` bilan ayni
+ * ma'noda), ROL EMAS. "student" da `userId` — O'QUVCHI, lekin botdan
+ * foydalanadigan odam uning OTA-ONASI: panelda shuning uchun "O'quvchi
+ * (ota-ona)" deb ko'rsatiladi. Rolni muhrlamaymiz — odamning roli
+ * keyin o'zgarishi mumkin va u `users` dan jonli o'qiladi.
+ *
+ * ⚠️ `chatId` MUHRLANADI va `tg_users` dan qayta izlanmaydi. Javob
+ * yuborilayotganda odam bog'lanishni uzgan yoki boshqa hisobga o'tgan
+ * bo'lishi mumkin — javob MUAMMONI YUBORGAN chatga borishi kerak, hozir
+ * o'sha telegramda kim turganiga emas.
+ */
+model Issue {
+  id         String      @id @db.Char(24)
+  categoryId String      @map("category_id") @db.Char(24)
+  userId     String      @map("user_id") @db.Char(24)
+  authorKind String      @map("author_kind")
+  body       String
+  status     IssueStatus @default(new)
+
+  telegramId String? @map("telegram_id")
+  chatId     String? @map("chat_id")
+
+  // Ko'rib chiqish natijasi — faqat panel yozadi.
+  reply      String?
+  reviewedBy String?   @map("reviewed_by") @db.Char(24)
+  reviewedAt DateTime? @map("reviewed_at")
+  // MUAMMONI TOPSHIRIQ YOPDIMI. Qo'lda yopilgan bilan farqlash SHART:
+  // topshiriq qayta ochilsa muammo ham qayta ochiladi, lekin ma'muriyat
+  // qo'lda "hal qilindi" degan qarorni topshiriq bekor qila olmaydi
+  // (`issueTask.service.js`).
+  closedByTask Boolean  @default(false) @map("closed_by_task")
+  // Javob botga YETIB BORDIMI. `reviewedAt` bor-u bu bo'sh bo'lsa —
+  // Telegram rad etdi (odam botni bloklagan): panelda shu farq
+  // ko'rsatiladi, aks holda ma'muriyat javob ketdi deb o'ylardi.
+  repliedAt  DateTime? @map("replied_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  category IssueCategory @relation(fields: [categoryId], references: [id])
+  // Har bir ijrochiga ALOHIDA topshiriq (`task.service.js#createTasks`),
+  // shuning uchun bitta muammoda bir nechta topshiriq bo'lishi mumkin.
+  tasks    Task[]
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([categoryId])
+  @@index([userId])
+  @@map("issues")
 }

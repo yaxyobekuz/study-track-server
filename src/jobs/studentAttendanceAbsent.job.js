@@ -5,6 +5,7 @@ const { isHoliday: checkHoliday } = require("../services/holiday.service");
 const logger = require("../utils/logger");
 const { getTodayNormalized } = require("../services/attendance.service");
 const { getLessonDayMap } = require("../services/schedule.service");
+const { loadEnrollmentsOn } = require("../services/studentAttendance.service");
 const { DAYS_UZ } = require("../utils/constants");
 
 async function runStudentAbsentMarking() {
@@ -28,13 +29,21 @@ async function runStudentAbsentMarking() {
   // Bugun darsi bor sinflar to'plami ("classId|dayName")
   const lessonDays = await getLessonDayMap();
 
-  const students = await prisma.user.findMany({
-    where: { isActive: true, role: "student" },
-    select: {
-      id: true,
-      classes: { select: { classId: true } },
-    },
-  });
+  // ⚠️ Faqat BUGUN O'QIYOTGANLAR (o'qish davri bugunni qamragan) — kunlik
+  // davomat ro'yxati bilan AYNI doira. Aks holda davri yopilgan, lekin
+  // sinfda qolgan o'quvchi har kecha "kelmadi" bo'lib, ketganidan keyin
+  // ham "Kelmadi" filtrida turaverardi.
+  const [members, enrollments] = await Promise.all([
+    prisma.user.findMany({
+      where: { isActive: true, role: "student" },
+      select: {
+        id: true,
+        classes: { select: { classId: true } },
+      },
+    }),
+    loadEnrollmentsOn(today),
+  ]);
+  const students = members.filter((s) => enrollments.has(s.id));
 
   if (students.length === 0) {
     logger.info("[StudentAttendanceCron] Faol o'quvchilar topilmadi");

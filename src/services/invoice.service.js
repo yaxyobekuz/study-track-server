@@ -41,6 +41,7 @@ const { getFinanceSettings } = require("./settings.service");
 const {
   resolveStatusForStudent,
   resolveStatusesForMonth,
+  NON_BILLABLE,
 } = require("./studentFinanceStatus.service");
 const {
   resolveForStudentMonth,
@@ -1173,11 +1174,22 @@ const getDebtors = async (req) => {
 };
 
 /** Registrning bo'sh javobi — bitta shakl, uchta chiqish nuqtasi uchun. */
-const emptyRegistry = (month, page, limit, total = 0) => ({
+const emptyRegistry = (month, page, limit, total = 0, monthSkipReason = null) => ({
   ...formatPaginationResponse([], total, page, limit),
   month,
   monthLabel: formatMonthKey(month),
-  totals: { totalDebt: "0.00", totalBalance: "0.00", debtorCount: 0 },
+  monthSkipReason,
+  totals: {
+    totalDebt: "0.00",
+    totalBalance: "0.00",
+    debtorCount: 0,
+    // Tanlangan oy kesimi (`getStudentRegistry` izohiga qarang)
+    monthExpected: "0.00",
+    monthCollected: "0.00",
+    monthDebt: "0.00",
+    monthDebtorCount: 0,
+    monthInvoicedCount: 0,
+  },
 });
 
 /**
@@ -1193,6 +1205,40 @@ const emptyRegistry = (month, page, limit, total = 0) => ({
 const isGrantTariffName = (name) => {
   const n = String(name ?? "").toLowerCase();
   return /grand/.test(n) && /(?<!\d)100(?!\d)/.test(n);
+};
+
+/**
+ * TANLANGAN OYGA hisob-faktura NEGA yo'q.
+ *
+ * Tartib muhim — eng ANIQ fakt yuqorida turadi:
+ *   bekor qilingani ongli QAROR, shuning uchun maktab bo'yicha sabablardan
+ *   ham ustun (ta'til fakturalar chiqqanidan KEYIN belgilangan bo'lishi
+ *   mumkin va unda qatorda "ta'til" emas, "bekor qilingan" to'g'ri javob).
+ *
+ * `not_generated` — YAGONA kamchilik varianti (shakllantirish bosilmagan),
+ * qolganlarining hammasi qoidaning normal ishlashi. Ekranda ikkisi
+ * ajratilmasa, admin har bir nol summani qo'lda tekshirishga tushardi.
+ *
+ * @returns {string}
+ */
+const resolveNoInvoiceReason = ({
+  isCancelled,
+  monthSkipReason,
+  status,
+  enrollment,
+  tariffReason,
+  hasPrice,
+}) => {
+  if (isCancelled) return "cancelled";
+  if (monthSkipReason) return monthSkipReason;
+  if (NON_BILLABLE.has(status)) return status;
+  if (!enrollment.enrolled) {
+    // "davri umuman yo'q" ni "bu oyda o'qimagan" dan ajratamiz: birinchisi
+    // to'ldirilishi kerak bo'lgan MA'LUMOT KAMCHILIGI, ikkinchisi esa fakt.
+    return enrollment.reason === "no_periods" ? "no_periods" : "not_enrolled";
+  }
+  if (!hasPrice) return tariffReason;
+  return "not_generated";
 };
 
 /**
@@ -1276,9 +1322,25 @@ const resolveRegistryFilter = async (filter, month) => {
  * JAMI qarz. Kassir shu ro'yxatdan o'quvchini topib, darhol to'lov qabul
  * qiladi.
  *
- * So'rovlar soni sahifadagi o'quvchilar soniga BOG'LIQ EMAS — 6 ta:
- * o'quvchilar, narx, chegirma, qoldiq, qarz, holat. Har qator uchun
- * alohida so'rov qilinsa, 24 talik sahifa 100+ so'rovga aylanardi.
+ * ⚠️ IKKI XIL QARZ qaytariladi va ularni ARALASHTIRMASLIK kerak:
+ *   `debt` / `totals.totalDebt` — BARCHA oylar bo'yicha (kassir undiradigan
+ *      umumiy qarz, tanlangan oyga bog'liq emas);
+ *   `monthDebt` / `totals.monthDebt` — FAQAT tanlangan oy (sinf sahifasidagi
+ *      oy filtri shuni ko'rsatadi).
+ * Ilgari faqat birinchisi bor edi va oy filtri qarz raqamlarini umuman
+ * o'zgartirmasdi: sinf sahifasida sentabr ham, oktabr ham bir xil "Jami
+ * qarz" ko'rsatardi va bosh sahifadagi o'sha sinf qatori (oy kesimida)
+ * boshqa raqam berardi.
+ *
+ * ⚠️ Shu oyning summasi MUHRLANGAN hisob-fakturadan olinadi (bo'lsa),
+ * jonli hisobdan emas: faktura shakllangandan keyin tarif narxi yoki
+ * chegirma o'zgarsa, jonli hisob fakturadagidan boshqa raqam berardi va
+ * "Oylik summa − To'langan" ekranda ko'rinadigan qarzga teng kelmasdi.
+ *
+ * So'rovlar soni sahifadagi o'quvchilar soniga BOG'LIQ EMAS: narx, chegirma,
+ * xizmat, davr, qoldiq, qarz, shu oy fakturalari va holat — har biri BUTUN
+ * to'plam uchun bitta so'rov. Har qator uchun alohida so'rov qilinsa, 24
+ * talik sahifa 100+ so'rovga aylanardi.
  *
  * @param {object} req - query: page, limit, search, classId, month, filter
  * @returns {Promise<object>}
@@ -1287,9 +1349,22 @@ const getStudentRegistry = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { query } = req;
 
-  const settings = await getFinanceSettings();
+  const [settings, vacationSet] = await Promise.all([
+    getFinanceSettings(),
+    getVacationSet(),
+  ]);
   const month = query.month ? parseMonthKey(query.month, "Oy") : currentMonthKey();
   const search = query.search?.trim();
+
+  // Hisob-faktura YO'QLIGINING maktab bo'yicha sabablari — o'quvchiga
+  // bog'liq emas, shuning uchun bir marta hisoblanadi. Generator ham
+  // AYNAN shu ikki qoida bilan butun oyni o'tkazib yuboradi
+  // (`invoiceGeneration.service.js` → `SKIP_REASONS`).
+  const monthSkipReason = vacationSet.has(month)
+    ? "vacation"
+    : settings.firstInvoiceMonth != null && month < settings.firstInvoiceMonth
+      ? "before_first_invoice_month"
+      : null;
 
   const where = {
     role: ROLES.STUDENT,
@@ -1310,7 +1385,9 @@ const getStudentRegistry = async (req) => {
   const restriction = await resolveRegistryFilter(query.filter, month);
   if (restriction) {
     if (restriction.mode === "in") {
-      if (restriction.ids.length === 0) return emptyRegistry(month, page, limit);
+      if (restriction.ids.length === 0) {
+        return emptyRegistry(month, page, limit, 0, monthSkipReason);
+      }
       where.id = { in: restriction.ids };
     } else if (restriction.ids.length > 0) {
       where.id = { notIn: restriction.ids };
@@ -1340,7 +1417,7 @@ const getStudentRegistry = async (req) => {
   const total = allIds.length;
 
   if (students.length === 0) {
-    return emptyRegistry(month, page, limit, total);
+    return emptyRegistry(month, page, limit, total, monthSkipReason);
   }
 
   const ids = students.map((s) => s.id);
@@ -1353,6 +1430,7 @@ const getStudentRegistry = async (req) => {
     overridesByStudent,
     balances,
     debtRows,
+    monthInvoices,
     statuses,
   ] = await Promise.all([
       resolveManyForMonth(month, { studentIds: ids }),
@@ -1368,6 +1446,21 @@ const getStudentRegistry = async (req) => {
         where: { studentId: { in: allIds }, status: { in: ["unpaid", "partial"] } },
         _sum: { amount: true, paidAmount: true },
       }),
+      // TANLANGAN OY kesimi. Bekor qilingani ham O'QILADI, lekin pulga
+      // KIRMAYDI: u QAROR, majburiyat emas (bosh sahifadagi oy kesimi ham
+      // shu qoidada — ikki ekran bir xil raqam ko'rsatishi uchun). Qatorda
+      // esa "Bekor qilingan" deb ko'rsatiladi, aks holda ongli bekor qilish
+      // "faktura shakllantirilmagan" kamchiligi bo'lib ko'rinardi.
+      prisma.monthlyInvoice.findMany({
+        where: { month, studentId: { in: allIds } },
+        select: {
+          id: true,
+          studentId: true,
+          status: true,
+          amount: true,
+          paidAmount: true,
+        },
+      }),
       resolveStatusesForMonth(month, { studentIds: ids }),
     ]);
 
@@ -1378,16 +1471,52 @@ const getStudentRegistry = async (req) => {
     ]),
   );
 
+  // Bir o'quvchi — bir oy — bitta faktura (@@unique), lekin himoya uchun
+  // yig'amiz (`getOverviewDashboard` dagi bilan bir xil qoida).
+  const monthInvoiceByStudent = new Map();
+  const cancelledThisMonth = new Set();
+  for (const inv of monthInvoices) {
+    if (inv.status === "cancelled") {
+      cancelledThisMonth.add(inv.studentId);
+      continue;
+    }
+    const prev =
+      monthInvoiceByStudent.get(inv.studentId) ??
+      { id: inv.id, status: inv.status, amount: new Decimal(0), paid: new Decimal(0) };
+    prev.amount = prev.amount.plus(inv.amount);
+    prev.paid = prev.paid.plus(inv.paidAmount);
+    monthInvoiceByStudent.set(inv.studentId, prev);
+  }
+
+  // Qarz manfiy bo'lib ketmaydi: ortiqcha tushgan pul depozitga ketadi,
+  // "minus qarz" degan tushuncha yo'q (bosh sahifadagi kesim ham shunday).
+  const clampDebt = (v) => (v.isNegative() ? new Decimal(0) : v);
+
   // JAMI — butun filtr bo'yicha, sahifadan mustaqil
   let totalDebt = new Decimal(0);
   let totalBalance = new Decimal(0);
   let debtorCount = 0;
+  // Tanlangan OY kesimi — yuqoridagilardan ALOHIDA yuritiladi
+  let monthExpected = new Decimal(0);
+  let monthCollected = new Decimal(0);
+  let monthDebtTotal = new Decimal(0);
+  let monthDebtorCount = 0;
+  let monthInvoicedCount = 0;
 
   for (const studentId of allIds) {
     const debt = debtByStudent.get(studentId) ?? new Decimal(0);
     totalDebt = totalDebt.plus(debt);
     totalBalance = totalBalance.plus(balances.get(studentId) ?? new Decimal(0));
     if (debt.greaterThan(0)) debtorCount += 1;
+
+    const inv = monthInvoiceByStudent.get(studentId);
+    if (!inv) continue;
+    const invDebt = clampDebt(inv.amount.minus(inv.paid));
+    monthInvoicedCount += 1;
+    monthExpected = monthExpected.plus(inv.amount);
+    monthCollected = monthCollected.plus(inv.paid);
+    monthDebtTotal = monthDebtTotal.plus(invDebt);
+    if (invDebt.greaterThan(0)) monthDebtorCount += 1;
   }
 
   const items = students.map((student) => {
@@ -1417,6 +1546,22 @@ const getStudentRegistry = async (req) => {
             monthOverride: overridesByStudent.get(student.id) ?? null,
           })
         : null;
+
+    // Tanlangan oyning MUHRLANGAN fakturasi (bo'lsa) — ekranda shu oyga
+    // tegishli barcha raqam shundan chiqadi.
+    const inv = monthInvoiceByStudent.get(student.id) ?? null;
+    const monthDebt = inv ? clampDebt(inv.amount.minus(inv.paid)) : null;
+
+    const noInvoiceReason = inv
+      ? null
+      : resolveNoInvoiceReason({
+          isCancelled: cancelledThisMonth.has(student.id),
+          monthSkipReason,
+          status,
+          enrollment,
+          tariffReason: resolved?.reason ?? "no_assignment",
+          hasPrice: base != null,
+        });
 
     return {
       id: student.id,
@@ -1448,6 +1593,9 @@ const getStudentRegistry = async (req) => {
       servicesAmount: priced ? formatAmount(priced.servicesAmount) : null,
       baseAmount: base != null ? formatAmount(base) : null,
       discountAmount: priced ? formatAmount(priced.discountAmount) : null,
+      // JONLI hisob — "narx hozir qancha bo'lishi kerak". Faktura
+      // shakllanganidan keyin tarif/chegirma o'zgarsa, bu `monthAmount` dan
+      // farq qiladi: ekranda shu oyga tegishli raqam `monthAmount`.
       monthlyAmount: priced ? formatAmount(priced.amount) : null,
       // Kirish proratsiyasi — UI da "20-yanvardan · 12/31 kun" deb ko'rinadi
       isEnrolled: enrollment.enrolled,
@@ -1455,8 +1603,31 @@ const getStudentRegistry = async (req) => {
       billableDays: priced?.isProrated ? enrollment.billableDays : null,
       monthDays: priced?.isProrated ? enrollment.monthDays : null,
       balance: formatAmount(balance),
+      // ── BARCHA oylar bo'yicha qarz (kassir undiradigan umumiy summa) ──
       debt: formatAmount(debt),
       hasDebt: debt.greaterThan(0),
+      // ── TANLANGAN OY kesimi ──────────────
+      monthInvoice: inv
+        ? {
+            id: inv.id,
+            status: inv.status,
+            statusLabel: STATUS_LABELS[inv.status] ?? inv.status,
+            amount: formatAmount(inv.amount),
+            paidAmount: formatAmount(inv.paid),
+            debt: formatAmount(monthDebt),
+          }
+        : null,
+      // Shu oyning summasi: faktura bo'lsa MUHRLANGAN, bo'lmasa jonli hisob
+      monthAmount: inv
+        ? formatAmount(inv.amount)
+        : priced
+          ? formatAmount(priced.amount)
+          : null,
+      monthPaid: formatAmount(inv?.paid ?? 0),
+      // Faktura yo'q = shu oyda majburiyat yo'q = shu oyda qarz yo'q
+      monthDebt: formatAmount(monthDebt ?? 0),
+      hasMonthDebt: Boolean(monthDebt?.greaterThan(0)),
+      noInvoiceReason,
     };
   });
 
@@ -1464,10 +1635,21 @@ const getStudentRegistry = async (req) => {
     ...formatPaginationResponse(items, total, page, limit),
     month,
     monthLabel: formatMonthKey(month),
+    // Shu oyga umuman faktura yozilmaganining maktab bo'yicha sababi
+    // (ta'til / tizimga o'tishdan oldingi oy) — bo'lmasa `null`
+    monthSkipReason,
     totals: {
+      // BARCHA oylar bo'yicha — oy filtri bunga ta'sir qilmaydi
       totalDebt: formatAmount(totalDebt),
       totalBalance: formatAmount(totalBalance),
       debtorCount,
+      // TANLANGAN OY bo'yicha. Manba — fakturalar, ya'ni bosh sahifadagi
+      // o'sha sinf qatori bilan AYNAN bir xil raqam chiqadi.
+      monthExpected: formatAmount(monthExpected),
+      monthCollected: formatAmount(monthCollected),
+      monthDebt: formatAmount(monthDebtTotal),
+      monthDebtorCount,
+      monthInvoicedCount,
     },
   };
 };

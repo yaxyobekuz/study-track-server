@@ -17,6 +17,10 @@ const { hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const pushService = require("./push.service");
+// ⚠️ BIR TOMONLAMA ZANJIR: bu modul `issue.service` ni import QILMAYDI,
+// ko'prik esa `task.service` ni — aks holda aylanma import paydo bo'lardi
+// (sabab `issueTask.service.js` boshidagi izohda).
+const issueTaskService = require("./issueTask.service");
 const { getBranch } = require("../config/branchContext");
 const {
   TASK_PUSH_EVENTS,
@@ -248,6 +252,11 @@ const createTasks = async ({
   assigneeIds,
   createdBy,
   files,
+  // MANBA MUAMMO — botdan kelgan muammoni hal qilish uchun berilgan
+  // topshiriqda to'ladi (`issue.service#assignTasks`). Oddiy topshiriqda
+  // `undefined` va ustun `null` bo'lib qoladi: topshiriqlar bo'limining
+  // o'z oqimi o'zgarmaydi.
+  issueId,
 }) => {
   if (!assigneeIds || assigneeIds.length === 0) {
     throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
@@ -326,6 +335,7 @@ const createTasks = async ({
         createdBy,
         status: initialStatus,
         attachments,
+        issueId: issueId ?? null,
         statusHistory: {
           create: [
             {
@@ -511,6 +521,20 @@ const getTaskById = async (taskId, requestingUser) => {
     include: {
       statusHistory: { orderBy: { position: "asc" } },
       deadlineHistory: { orderBy: { position: "asc" } },
+      // MANBA MUAMMO — topshiriq botdan kelgan murojaatni hal qilish
+      // uchun berilgan bo'lsa. IJROCHIGA KERAK: tavsifda matn ko'chirilgan
+      // bo'lsa ham, u kimdan kelganini va qaysi yo'nalish ekanini bilishi
+      // kerak. Oddiy topshiriqda `null`.
+      issue: {
+        select: {
+          id: true,
+          body: true,
+          status: true,
+          authorKind: true,
+          createdAt: true,
+          category: { select: { name: true } },
+        },
+      },
     },
   });
 
@@ -735,6 +759,11 @@ const approveTask = async (taskId, { reason, approvedBy }) => {
   });
 
   _notifyAssignees(TASK_PUSH_EVENTS.COMPLETED, updated, { reason: text });
+
+  // ⚠️ KUTILADI, lekin XATO TASHLAMAYDI (ko'prikning o'zi yutadi):
+  // muammoni yopish natijasi javobdan oldin tayyor bo'lishi kerak, aks
+  // holda panel eski holatni qayta so'rab olardi.
+  await issueTaskService.onTaskCompleted(updated);
 
   return updated;
 };
@@ -1173,6 +1202,10 @@ const reopenTask = async (taskId, { newDueDate, reason, reopenedBy }) => {
     reason: text,
     deadlineChanged: true,
   });
+
+  // Topshiriq muammodan kelgan va muammoni AYNAN SHU topshiriq yopgan
+  // bo'lsa, muammo ham qayta ochiladi.
+  await issueTaskService.onTaskReopened(updated);
 
   return updated;
 };

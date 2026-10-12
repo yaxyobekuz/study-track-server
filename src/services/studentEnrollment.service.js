@@ -26,12 +26,14 @@ const logger = require("../utils/logger");
 const {
   currentMonthKey,
   monthKeyOfDate,
+  monthEndDate,
+  prevMonth,
   parseDayDate,
   parseOptionalDayDate,
   parseOptionalMonthKey,
   formatMonthKey,
 } = require("../helpers/month.helpers");
-const { formatAmount, parseAmount } = require("../helpers/money.helpers");
+const { formatAmount, parseAmount, sumAmounts } = require("../helpers/money.helpers");
 const {
   parseEnrollmentPeriod,
   overlappingDateRangeWhere,
@@ -303,7 +305,7 @@ const getEnrollmentById = async (id) => {
 // ─────────────────────────────────────────────
 
 /**
- * Davr o'zgarishi allaqachon chiqarilgan hisob-fakturalarga qanday tegishini
+ * Davr o'zgarishi QAMRAB QOLGAN oylarning hisob-fakturalariga qanday tegishini
  * RAQAMLAR bilan aytadi.
  *
  * Muhrlangan summa hech qachon avtomatik o'zgarmaydi (qaytarilmaslik
@@ -311,6 +313,9 @@ const getEnrollmentById = async (id) => {
  * ko'rishi shart. "Hisob-faktura bor" degan quruq ogohlantirish bu yerda
  * yetarli emas: proratsiya bilan hisob-faktura noto'g'ri EMAS, balki
  * MA'LUM BIR SUMMAGA noto'g'ri bo'ladi.
+ *
+ * Davr endi QAMRAMAYDIGAN oylar bu yerda emas — ular bekor qilinadi
+ * (`cancelUncoveredInvoices`) va natijasi o'sha yerdan aytiladi.
  *
  * @param {string} studentId
  * @param {Array<object>} periods - YANGI holat
@@ -323,19 +328,11 @@ const collectInvoiceWarnings = async (studentId, periods) => {
     orderBy: { month: "asc" },
   });
 
-  if (invoices.length === 0) return [];
-
-  const warnings = [];
-  const extra = [];
   const changed = [];
 
   for (const invoice of invoices) {
     const next = resolveEnrollmentForMonth(periods, invoice.month);
-
-    if (!next.enrolled) {
-      extra.push(`${formatMonthKey(invoice.month)} (${formatAmount(invoice.amount)})`);
-      continue;
-    }
+    if (!next.enrolled) continue;
 
     const sealedDays = invoice.billableDays ?? invoice.monthDays ?? next.monthDays;
     if (sealedDays !== next.billableDays) {
@@ -346,14 +343,149 @@ const collectInvoiceWarnings = async (studentId, periods) => {
     }
   }
 
-  if (extra.length) {
-    warnings.push(
-      `Bu oylar uchun hisob-faktura endi ortiqcha — bekor qiling: ${extra.join(", ")}`,
+  return changed.length
+    ? [`Bu oylarning ulushi o'zgardi — kerak bo'lsa qayta shakllantiring: ${changed.join("; ")}`]
+    : [];
+};
+
+// ─────────────────────────────────────────────
+// Davr QAMRAMAYDIGAN oylarning hisob-fakturalari
+// ─────────────────────────────────────────────
+
+const serializeImpactInvoice = (invoice) => ({
+  id: invoice.id,
+  month: invoice.month,
+  monthLabel: formatMonthKey(invoice.month),
+  amount: formatAmount(invoice.amount),
+  paidAmount: formatAmount(invoice.paidAmount),
+  status: invoice.status,
+});
+
+/**
+ * Davr endi QAMRAMAYDIGAN oylarning amaldagi hisob-fakturalari: nima bekor
+ * qilinadi va nima ruxsat yetmagani uchun qoladi.
+ *
+ * Generator davr qamramagan oyga hisob-faktura YOZMAYDI. Davr keyin yopilsa
+ * yoki qisqartirilsa, o'sha oylarga allaqachon yozilgani xuddi shunday
+ * ortiqcha — "1-oktabrda shakllandi, 6-oktabrda o'quvchi 30-sentabr bilan
+ * yopildi" holatida u qarzdorlar registrida yolg'on qarz bo'lib turardi.
+ *
+ * ⚠️ BITTA JOY: oynadagi oldindan ko'rish ham, haqiqiy yozuv ham shuni
+ * chaqiradi — "oyna bir narsa dedi, boshqasi bekor bo'ldi" holati bo'lmasin.
+ *
+ * ⚠️ O'TGAN OY — `finance.adjust` (`allowPastCancel`): hisob-fakturani
+ * bittalab bekor qilishdagi bilan AYNI shart. Busiz davrni orqa sana bilan
+ * yopish o'tgan oylar qarzini o'chirib yuboradigan yo'l bo'lib qolardi.
+ * Joriy oy esa davr huquqining o'zi: hisob-faktura bor-yo'qligini aynan davr
+ * hal qiladi (`enrollment` bo'limi shu uchun ham pulga tegadi).
+ *
+ * ⚠️ Davr umuman qolmasa — HECH NARSA: bo'sh ro'yxat "shu oyni qamramaydi"
+ * EMAS, ma'lumot to'liq emasligi (`education.md` §3). Yopish va tahrirlash
+ * bu holatga olib kelmaydi — bu himoya qavati.
+ *
+ * @param {string} studentId
+ * @param {Array<object>} periods - YANGI holat (o'quvchining BARCHA davrlari)
+ * @param {{allowPastCancel?: boolean}} options
+ * @returns {Promise<{cancel: object[], blocked: object[]}>}
+ */
+const planUncoveredInvoices = async (studentId, periods, { allowPastCancel = false } = {}) => {
+  if (!periods?.length) return { cancel: [], blocked: [] };
+
+  const invoices = await prisma.monthlyInvoice.findMany({
+    where: { studentId, status: { not: "cancelled" } },
+    select: { id: true, month: true, amount: true, paidAmount: true, status: true },
+    orderBy: [{ month: "asc" }, { id: "asc" }],
+  });
+
+  const current = currentMonthKey();
+  const cancel = [];
+  const blocked = [];
+
+  for (const invoice of invoices) {
+    if (resolveEnrollmentForMonth(periods, invoice.month).enrolled) continue;
+    (invoice.month < current && !allowPastCancel ? blocked : cancel).push(invoice);
+  }
+
+  return { cancel, blocked };
+};
+
+/**
+ * `planUncoveredInvoices` rejasini bajaradi.
+ *
+ * ⚠️ BITTALIK `cancelInvoice` ORQALI, mustaqil SQL yozilmaydi: to'lov tushgan
+ * oyning puli depozitga qaytishi, boshqa ochiq oylarga yechilishi va lock
+ * tartibi faqat o'sha yo'lda bor (`cancelMonth` doktrinasi). Har oy o'z
+ * tranzaksiyasida — bittasi yiqilsa qolganlari baribir bekor bo'ladi.
+ *
+ * Chaqiruvchi davr yozuvi COMMIT bo'lgandan KEYIN chaqiradi: oylik pass
+ * bekor qilingan oyni tiklashdan oldin davrni qayta o'qiydi, ya'ni yangi
+ * davr ko'rinib turgan paytda bekor qilingan oy qaytib kelmaydi.
+ *
+ * @param {string} studentId
+ * @param {Array<object>} periods - YANGI holat
+ * @param {{actorId: string|null, allowPastCancel?: boolean, reason: string}} options
+ * @returns {Promise<{cancelled: object[], blocked: object[], failed: object[], releasedToDeposit: string, appliedToOthers: string}|null>}
+ */
+const cancelUncoveredInvoices = async (studentId, periods, { actorId, allowPastCancel, reason }) => {
+  const { cancel, blocked } = await planUncoveredInvoices(studentId, periods, { allowPastCancel });
+  if (cancel.length === 0 && blocked.length === 0) return null;
+
+  // Lazy require: invoice.service shu servisni import qiladi (aylanma bog'liqlik)
+  const { cancelInvoice } = require("./invoice.service");
+
+  const cancelled = [];
+  const failed = [];
+
+  for (const invoice of cancel) {
+    try {
+      const result = await cancelInvoice(
+        invoice.id,
+        `${reason} — o'quvchi bu oyda o'qimaydi`,
+        actorId,
+      );
+      cancelled.push({
+        ...serializeImpactInvoice(invoice),
+        releasedToDeposit: result.releasedToDeposit,
+        appliedToOthers: result.appliedToOthers,
+      });
+    } catch (error) {
+      failed.push({ ...serializeImpactInvoice(invoice), reason: error.message });
+    }
+  }
+
+  if (cancelled.length > 0) {
+    logger.warn(
+      `[enrollment] Davr qamramaydigan hisob-fakturalar bekor qilindi: student=${studentId} ` +
+        `oylar=${cancelled.map((i) => i.month).join(",")} actor=${actorId} sabab="${reason}"`,
     );
   }
-  if (changed.length) {
+
+  return {
+    cancelled,
+    blocked: blocked.map(serializeImpactInvoice),
+    failed,
+    releasedToDeposit: formatAmount(sumAmounts(cancelled.map((i) => i.releasedToDeposit))),
+    appliedToOthers: formatAmount(sumAmounts(cancelled.map((i) => i.appliedToOthers))),
+  };
+};
+
+/** Bekor qilinMAGAN qatorlar — admin qo'lda hal qilishi kerak bo'lgani. */
+const describeImpactWarnings = (impact) => {
+  if (!impact) return [];
+
+  const warnings = [];
+  const list = (rows) => rows.map((i) => `${i.monthLabel} (${i.amount})`).join(", ");
+
+  if (impact.blocked.length) {
     warnings.push(
-      `Bu oylarning ulushi o'zgardi — kerak bo'lsa qayta shakllantiring: ${changed.join("; ")}`,
+      `O'tgan oy hisob-fakturasi endi ortiqcha, lekin uni bekor qilish uchun ruxsatingiz ` +
+        `yo'q — moliya bo'limi bekor qilsin: ${list(impact.blocked)}`,
+    );
+  }
+  if (impact.failed.length) {
+    warnings.push(
+      `Bu hisob-fakturalar bekor qilinmadi — qo'lda bekor qiling: ` +
+        impact.failed.map((i) => `${i.monthLabel} (${i.reason})`).join("; "),
     );
   }
 
@@ -475,16 +607,10 @@ const createEnrollment = async (data, userId, { allowPast = false } = {}) => {
 };
 
 /**
- * Davrni tahrirlaydi.
- * @param {string} id
- * @param {object} data
- * @param {{allowPast?: boolean}} options
- * @returns {Promise<object>}
+ * Tahrirlangan davrning sanalari (o'zgarmagan maydon — qatordagi qiymat).
+ * Yozuv ham, oldindan ko'rish ham shundan o'qiydi.
  */
-const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
-  const row = await prisma.studentEnrollment.findUnique({ where: { id } });
-  if (!row) throw new NotFoundError("O'qish davri topilmadi");
-
+const resolveEditedDates = (row, data) => {
   const startDate =
     data.startDate !== undefined ? parseDayDate(data.startDate, "Boshlanish sanasi") : row.startDate;
   const endDate =
@@ -495,6 +621,98 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
   if (endDate != null && endDate < startDate) {
     throw new BadRequestError("Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas");
   }
+
+  return { startDate, endDate };
+};
+
+/**
+ * Davr o'zgarsa hisob-fakturalar bilan NIMA bo'lishini oldindan aytadi —
+ * yopish va tahrirlash oynasi saqlashdan OLDIN ko'rsatadi.
+ *
+ * Sabab: ketish oyi TO'LIQ to'lanadi va "oxirgi o'qigan kun" 1-oktabr bo'lsa,
+ * oktabr ham to'lanadi. "1-sentabrdan 1-oktabrgacha o'qidi" deb o'ylagan
+ * admin buni faqat moliyada qarz paydo bo'lgandan keyin bilardi.
+ *
+ * Hech narsa yozmaydi. Bekor qilinadiganlar ro'yxati yozuvdagi bilan AYNI
+ * funksiyadan (`planUncoveredInvoices`).
+ *
+ * @param {string} id
+ * @param {{startDate?: string, endDate?: string|null}} data
+ * @param {{allowPastCancel?: boolean}} options
+ * @returns {Promise<object>}
+ */
+const previewEnrollmentChange = async (id, data, { allowPastCancel = false } = {}) => {
+  const row = await prisma.studentEnrollment.findUnique({ where: { id } });
+  if (!row) throw new NotFoundError("O'qish davri topilmadi");
+
+  const { startDate, endDate } = resolveEditedDates(row, data);
+  const periods = (await getPeriodsForStudent(row.studentId)).map((period) =>
+    period.id === id ? { ...period, startDate, endDate } : period,
+  );
+
+  const { cancel, blocked } = await planUncoveredInvoices(row.studentId, periods, {
+    allowPastCancel,
+  });
+
+  // Ketish oyi — "oxirgi o'qigan kun" tushgan oy, TO'LIQ to'lanadi
+  let lastMonth = null;
+  let previousMonthEnd = null;
+
+  if (endDate != null) {
+    const month = monthKeyOfDate(endDate);
+    const invoice = await prisma.monthlyInvoice.findFirst({
+      where: { studentId: row.studentId, month, status: { not: "cancelled" } },
+      select: { id: true, month: true, amount: true, paidAmount: true, status: true },
+    });
+
+    lastMonth = {
+      month,
+      monthLabel: formatMonthKey(month),
+      invoice: invoice ? serializeImpactInvoice(invoice) : null,
+    };
+
+    // "Bu oyda umuman o'qimagan bo'lsa" — oldingi oyning oxirgi kuni. Sana
+    // allaqachon oy oxiri bo'lsa yoki davr boshlanishidan oldin qolsa — yo'q.
+    const candidate = monthEndDate(prevMonth(month));
+    if (
+      endDate.getTime() !== monthEndDate(month).getTime() &&
+      candidate >= startDate
+    ) {
+      previousMonthEnd = formatDay(candidate);
+    }
+  }
+
+  return {
+    startDate: formatDay(startDate),
+    endDate: endDate ? formatDay(endDate) : null,
+    lastMonth,
+    previousMonthEnd,
+    cancel: cancel.map(serializeImpactInvoice),
+    blocked: blocked.map(serializeImpactInvoice),
+    releasedToDeposit: formatAmount(sumAmounts(cancel.map((i) => i.paidAmount))),
+  };
+};
+
+/**
+ * Davrni tahrirlaydi.
+ *
+ * Davr endi qamramaydigan oylarning hisob-fakturalari shu yerda bekor
+ * qilinadi (`cancelUncoveredInvoices`) — yopish ham shu yo'ldan o'tadi.
+ *
+ * @param {string} id
+ * @param {object} data
+ * @param {{allowPast?: boolean, allowPastCancel?: boolean, actorId?: string|null}} options
+ * @returns {Promise<object>}
+ */
+const updateEnrollment = async (
+  id,
+  data,
+  { allowPast = false, allowPastCancel = false, actorId = null } = {},
+) => {
+  const row = await prisma.studentEnrollment.findUnique({ where: { id } });
+  if (!row) throw new NotFoundError("O'qish davri topilmadi");
+
+  const { startDate, endDate } = resolveEditedDates(row, data);
 
   if (
     !allowPast &&
@@ -536,15 +754,44 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
       return tx.studentEnrollment.update({ where: { id }, data: payload });
     });
 
+    const periods = await getPeriodsForStudent(row.studentId);
+
+    // Davr endi qamramaydigan oylar BIRINCHI bekor qilinadi: quyidagi
+    // qayta shakllantirish ularni "o'quvchi bu oyda o'qimagan" deb rad etib,
+    // logni to'ldirardi xolos.
+    // ⚠️ Davr allaqachon COMMIT bo'lgan: bu bosqich yiqilsa javob xato bo'lib
+    // qaytmasin — admin "yopilmadi" deb qayta bosib, "allaqachon yopilgan"
+    // xatosiga urilardi. Yiqilgani ogohlantirish bilan aytiladi.
+    const closing = row.endDate == null && payload.endDate != null;
+    let invoiceImpact = null;
+    const impactErrors = [];
+    try {
+      invoiceImpact = await cancelUncoveredInvoices(row.studentId, periods, {
+        actorId,
+        allowPastCancel,
+        reason: closing ? "O'qish davri yopildi" : "O'qish davri o'zgartirildi",
+      });
+    } catch (error) {
+      logger.error(
+        `[enrollment] Davr qamramaydigan hisob-fakturalar bekor qilinmadi: ` +
+          `student=${row.studentId} — ${error.message}`,
+      );
+      impactErrors.push(
+        "Davr saqlandi, lekin ortiqcha hisob-fakturalarni tekshirib bo'lmadi — " +
+          "oynani qayta ochib saqlang yoki moliyada qo'lda bekor qiling",
+      );
+    }
+
     // Boshlang'ich oy summasi/oyi o'zgarsa — o'sha oyning to'lanmagan
-    // hisob-fakturasi avtomatik yangilanadi. Sana o'zgarishi qamrovni
-    // o'zgartirishi mumkin — u jim bekor qilinmaydi, ogohlantirish beriladi.
+    // hisob-fakturasi avtomatik yangilanadi. Kirish sanasi o'zgarib ulush
+    // o'zgargan oylar esa ogohlantirish bilan aytiladi (summa muhrlangan).
     if (data.firstMonthAmount !== undefined || data.firstMonthKey !== undefined) {
       await autoRegen(row.studentId, monthKeyOfDate(startDate));
     }
 
-    const periods = await getPeriodsForStudent(row.studentId);
     const warnings = [
+      ...impactErrors,
+      ...describeImpactWarnings(invoiceImpact),
       ...(await collectInvoiceWarnings(row.studentId, periods)),
       ...(await collectFrozenWarnings(row.studentId, periods)),
     ];
@@ -555,7 +802,7 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
     );
 
     const fresh = await getEnrollmentById(id);
-    return { ...fresh, warnings };
+    return { ...fresh, warnings, invoiceImpact };
   } catch (error) {
     return rethrowDuplicate(
       error,
@@ -567,9 +814,12 @@ const updateEnrollment = async (id, data, { allowPast = false } = {}) => {
 /**
  * Davrni yopadi — "o'quvchi maktabdan ketdi".
  *
+ * Ketish oyi (`endDate` oyi) TO'LIQ to'lanadi; undan keyingi oylarga
+ * allaqachon chiqarilgan hisob-fakturalar bekor qilinadi (`updateEnrollment`).
+ *
  * @param {string} id
  * @param {object} data - { endDate, endReason, reason }
- * @param {{allowPast?: boolean}} options
+ * @param {{allowPast?: boolean, allowPastCancel?: boolean, actorId?: string|null}} options
  * @returns {Promise<object>}
  */
 const closeEnrollment = async (id, data, options = {}) => {
@@ -636,6 +886,8 @@ module.exports = {
   getStudentEnrollments,
   getEnrollments,
   getEnrollmentById,
+  planUncoveredInvoices,
+  previewEnrollmentChange,
   createEnrollment,
   updateEnrollment,
   closeEnrollment,

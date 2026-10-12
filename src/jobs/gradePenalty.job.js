@@ -5,6 +5,7 @@ const { isHoliday } = require("../services/holiday.service");
 const { getSubstitutionCells, effectiveTeacherOf } = require("../helpers/teacherAccess");
 const { currentDayDate } = require("../helpers/month.helpers");
 const { getGradePenaltySettings } = require("../services/settings.service");
+const { gradePenaltyTitle } = require("../helpers/gradePenalty.helpers");
 const logger = require("../utils/logger");
 const {
   getNowInUzbekistan,
@@ -146,9 +147,14 @@ async function runGradePenaltyPass(ownerUser) {
         continue;
       }
 
-      const penaltyTitle =
-        `Baho qo'ymaslik: ${scheduleClass.name} ${lesson.order}-dars (${dateStr})` +
-        (effective.substituted ? " — o'rinbosarlik" : "");
+      // Sarlavha — darsning yagona belgisi: "o'tildi" belgisi shu jarimani
+      // aynan shu sarlavha bo'yicha topadi (`gradePenalty.helpers.js`)
+      const penaltyTitle = gradePenaltyTitle(
+        scheduleClass.name,
+        lesson.order,
+        dateStr,
+        effective.substituted,
+      );
 
       const alreadyPenalized = await prisma.penalty.findFirst({
         where: {

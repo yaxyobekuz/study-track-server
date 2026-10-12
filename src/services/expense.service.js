@@ -52,7 +52,16 @@ const { assertActiveCategory } = require("./expenseCategory.service");
  *
  * @throws {BadRequestError} limitdan oshsa (so'rov yuborishga chaqiradi)
  */
-const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) => {
+const assertWithinLimit = async (
+  categoryId,
+  categoryName,
+  amount,
+  occurredAt,
+  // Tahrirlashda eski yozuv shu tranzaksiyada BEKOR QILINADI, lekin tekshiruv
+  // paytida hali faol — hisobdan chiqarilmasa, xarajat o'zi bilan o'zi
+  // to'qnashib, o'zgarmagan summani ham limitdan oshgan deb rad etardi.
+  excludeExpenseId = null,
+) => {
   const month = monthKeyOfInstant(occurredAt);
   const budget = await prisma.expenseBudget.findUnique({
     where: { month_categoryId: { month, categoryId } },
@@ -62,7 +71,12 @@ const assertWithinLimit = async (categoryId, categoryName, amount, occurredAt) =
 
   const { from, to } = monthInstantRange(month);
   const spentAgg = await prisma.expense.aggregate({
-    where: { categoryId, isVoided: false, occurredAt: { gte: from, lte: to } },
+    where: {
+      categoryId,
+      isVoided: false,
+      occurredAt: { gte: from, lte: to },
+      ...(excludeExpenseId ? { id: { not: excludeExpenseId } } : {}),
+    },
     _sum: { amount: true },
   });
 
@@ -220,6 +234,191 @@ const voidExpense = async (id, reason, userId) => {
   return serializeExpense(result);
 };
 
+/**
+ * XARAJATNI TAHRIRLASH — "50 000 o'rniga adashib 500 000 yozilgan".
+ *
+ * ⚠️ Daftar APPEND-ONLY — joyida o'zgartirish yo'q. Eski xarajat BEKOR
+ * QILINADI (sababi "Tahrirlandi: ...") va to'g'ri qiymatlar bilan YANGI
+ * xarajat yoziladi; ikkala qator ham registrda qoladi. Shakli
+ * `salaryPayment.editPayment` bilan bir xil — kassir ikkala bo'limda
+ * (oylik va xarajat) bir xil xatti-harakatni ko'radi.
+ *
+ * ⚠️ BITTA TRANZAKSIYADA. Void va create ketma-ket chaqirilsa, yangi summa
+ * kategoriya limitidan oshib rad etilganda eski yozuv bekor bo'lib, yangisi
+ * yozilmay qolardi — xarajat jimgina yo'qolib, kassa qoldig'i o'sib ketardi.
+ *
+ * ⚠️ LOCK TARTIBI: to'lov turi o'zgarsa ikkita `PaymentAccount` qulflanadi —
+ * ular HAR DOIM `id` o'sish tartibida yoziladi (`editPayment` dagi bir xil
+ * idioma), aks holda qarama-qarshi yo'nalishdagi ikki tahrir deadlock berardi.
+ *
+ * Faqat "kimga"/izoh o'zgarsa — pulga tegilmaydi, yozuv JOYIDA yangilanadi.
+ *
+ * @param {string} id
+ * @param {object} data - { categoryId?, accountId?, amount?, payee?, note?, occurredAt?, reason }
+ * @param {string} userId
+ */
+const editExpense = async (id, data, userId) => {
+  const existing = await prisma.expense.findUnique({ where: { id } });
+  if (!existing) throw new NotFoundError("Xarajat topilmadi");
+  if (existing.isVoided) {
+    throw new BadRequestError("Bekor qilingan xarajatni tahrirlab bo'lmaydi");
+  }
+
+  const reason = data.reason?.trim();
+  if (!reason) throw new BadRequestError("Tahrirlash sababi majburiy");
+
+  const hasValue = (value) => value != null && value !== "";
+
+  const amount = hasValue(data.amount)
+    ? parseAmount(data.amount, "Summa")
+    : new Decimal(existing.amount);
+  if (amount.lessThanOrEqualTo(0)) {
+    throw new BadRequestError("Summa noldan katta bo'lishi kerak");
+  }
+
+  const categoryId = data.categoryId || existing.categoryId;
+  const accountId = data.accountId || existing.accountId;
+  // Sana yuborilmasa eskisi VAQTI BILAN qoladi — kun o'zgarmagan bo'lsa
+  // frontend uni umuman yubormaydi
+  const occurredAt = hasValue(data.occurredAt)
+    ? parseOccurredAt(data.occurredAt)
+    : existing.occurredAt;
+  const payee = data.payee != null ? String(data.payee).trim() : existing.payee;
+  const note = data.note != null ? String(data.note).trim() : existing.note;
+
+  const moneyChanged =
+    !amount.equals(existing.amount) ||
+    categoryId !== existing.categoryId ||
+    accountId !== existing.accountId ||
+    occurredAt.getTime() !== existing.occurredAt.getTime();
+
+  // ── Pulga tegmaydigan tahrir ────────────────────────────────────────────
+  if (!moneyChanged) {
+    if (payee === existing.payee && note === existing.note) {
+      throw new BadRequestError("Hech narsa o'zgarmadi");
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.expense.update({
+        where: { id },
+        data: { payee, note },
+      });
+
+      // Daftar qatorining IZOHI ham yangilanadi: u "kategoriya — kimga"
+      // tavsifi, pul emas. Aks holda kassa registrida eski "kimga" qolib,
+      // ikki ro'yxat bir-biriga zid ko'rinardi.
+      await tx.accountEntry.updateMany({
+        where: { expenseId: id, type: "expense" },
+        data: {
+          note: [row.categoryName, row.payee].filter(Boolean).join(" — "),
+        },
+      });
+
+      return row;
+    });
+
+    logger.info(
+      `[expense] Xarajat tavsifi tahrirlandi: expense=${id} ` +
+        `actor=${userId} sabab="${reason}"`,
+    );
+
+    return serializeExpense(updated);
+  }
+
+  // ⚠️ Kategoriya FAQAT o'zgartirilganda "faolmi" deb tekshiriladi. Yozuvning
+  // o'z kategoriyasi arxivlangan bo'lishi mumkin (arxivlash — "yangi xarajatda
+  // ko'rinmasin" degani, "eski yozuv muzlatilsin" degani emas); qat'iy
+  // tekshiruv summadagi xatoni tuzatishga ham yo'l bermay qo'yardi.
+  // To'lov turi esa qat'iy: pul AMALDA faol kassadan chiqishi kerak.
+  const [category, account] = await Promise.all([
+    categoryId === existing.categoryId
+      ? prisma.expenseCategory.findUnique({ where: { id: categoryId } })
+      : assertActiveCategory(categoryId),
+    assertActiveAccount(accountId),
+  ]);
+  if (!category) throw new NotFoundError("Kategoriya topilmadi");
+
+  // Limit — YANGI qiymat bo'yicha, eski yozuv hisobdan chiqarilgan holda
+  await assertWithinLimit(category.id, category.name, amount, occurredAt, id);
+
+  const now = new Date();
+
+  const created = await prisma.$transaction(async (tx) => {
+    // 1 ── Eskisini bekor qilish — CAS (parallel bekor qilish/tahrir poygasi)
+    const voided = await tx.expense.updateMany({
+      where: { id, isVoided: false },
+      data: {
+        isVoided: true,
+        voidedAt: now,
+        voidedBy: userId,
+        voidReason: `Tahrirlandi: ${reason}`,
+      },
+    });
+
+    if (voided.count !== 1) {
+      throw new ConflictError(
+        "Xarajat shu orada bekor qilingan yoki tahrirlangan",
+      );
+    }
+
+    // 2 ── To'g'ri qiymatlar bilan yangi hujjat
+    const fresh = await tx.expense.create({
+      data: {
+        categoryId: category.id,
+        accountId: account.id,
+        amount,
+        categoryName: category.name,
+        payee,
+        note,
+        occurredAt,
+        createdBy: userId,
+      },
+    });
+
+    // 3 ── KASSA — `id` o'sish tartibida (deadlock oldini olish)
+    const postReversal = () =>
+      postEntry(tx, {
+        accountId: existing.accountId,
+        type: "expense_void",
+        amount: new Decimal(existing.amount), // pul kassaga QAYTADI
+        occurredAt: now,
+        expenseId: existing.id,
+        note: `Tahrirlandi: ${reason}`,
+        createdBy: userId,
+      });
+
+    const postExpense = () =>
+      postEntry(tx, {
+        accountId: account.id,
+        type: "expense",
+        amount: amount.negated(), // pul CHIQADI
+        occurredAt,
+        expenseId: fresh.id,
+        note: [category.name, fresh.payee].filter(Boolean).join(" — "),
+        createdBy: userId,
+      });
+
+    if (existing.accountId <= account.id) {
+      await postReversal();
+      await postExpense();
+    } else {
+      await postExpense();
+      await postReversal();
+    }
+
+    return fresh;
+  });
+
+  // ⚠️ AUDIT YOZUVI TRANZAKSIYADAN KEYIN — modul bo'ylab bitta tartib
+  logger.warn(
+    `[expense] Xarajat tahrirlandi: eski=${id} (${formatAmount(existing.amount)}) → ` +
+      `yangi=${created.id} (${formatAmount(amount)}) kategoriya="${category.name}" ` +
+      `actor=${userId} sabab="${reason}"`,
+  );
+
+  return serializeExpense(created, { category, account });
+};
+
 /** Xarajatlar registri (sahifalangan). */
 const getExpenses = async (req) => {
   const { page, limit, skip } = getPaginationParams(req);
@@ -324,5 +523,6 @@ module.exports = {
   serializeExpense,
   createExpense,
   voidExpense,
+  editExpense,
   getExpenses,
 };

@@ -1034,7 +1034,7 @@ const closeStudentEnrollment = defineAction({
   risk: "high",
   permission: "enrollment.update",
   description:
-    "Propose recording that a student left the school: closes the student's open enrollment period at endDate (the LAST day studied, YYYY-MM-DD, required) with a leave category: left (own decision), expelled, graduated, transferred (to another branch). Exit is NOT prorated — the month of endDate is billed in full; no invoices are generated after it. Existing invoices for later months are NOT cancelled automatically: the preview lists them so the owner can cancel them separately.",
+    "Propose recording that a student left the school: closes the student's open enrollment period at endDate (the LAST day studied, YYYY-MM-DD, required) with a leave category: left (own decision), expelled, graduated, transferred (to another branch). Exit is NOT prorated — the month of endDate is billed in full; no invoices are generated after it. Existing invoices for later months ARE cancelled automatically on confirm (money already paid for them returns to the deposit) — the preview lists them. If the student did not attend the endDate month at all, endDate must be the last day of the previous month, otherwise that month stays billed in full.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -1075,12 +1075,9 @@ const closeStudentEnrollment = defineAction({
     const nextPeriods = periods.map((period) => (period.id === open.id ? { ...period, endDate } : period));
     const endMonth = monthKeyOfDate(endDate);
 
-    const [invoices, balance, frozen] = await Promise.all([
-      prisma.monthlyInvoice.findMany({
-        where: { studentId: student.id, status: { not: "cancelled" } },
-        select: { month: true, amount: true, paidAmount: true, status: true },
-        orderBy: { month: "asc" },
-      }),
+    // Bekor qilinadiganlar — yozuvdagi bilan AYNI reja (ega: o'tgan oy ham)
+    const [{ cancel: extra }, balance, frozen] = await Promise.all([
+      studentEnrollmentService.planUncoveredInvoices(student.id, nextPeriods, { allowPastCancel: true }),
       studentAccountService.getBalance(student.id),
       prisma.studentFinanceStatus.findMany({
         where: { studentId: student.id, status: "frozen", OR: [{ endMonth: null }, { endMonth: { gt: endMonth } }] },
@@ -1088,16 +1085,14 @@ const closeStudentEnrollment = defineAction({
       }),
     ]);
 
-    const extra = invoices.filter((invoice) => !resolveEnrollmentForMonth(nextPeriods, invoice.month).enrolled);
-
     const warnings = [];
     if (extra.length > 0) {
       const paidTotal = sumAmounts(extra.map((i) => new Decimal(i.paidAmount)));
       warnings.push(
-        `Ketgandan keyingi oylar uchun hisob-faktura mavjud va avtomatik bekor qilinMAYDI: ${extra
+        `Ketgandan keyingi oylarning hisob-fakturasi avtomatik BEKOR QILINADI: ${extra
           .map((i) => `${monthLabel(i.month)} (${formatMoneyUz(formatAmount(i.amount))})`)
-          .join(", ")}. Ularni alohida bekor qilish kerak` +
-          (paidTotal.greaterThan(0) ? `; bekor qilinsa ${formatMoneyUz(formatAmount(paidTotal))} depozitga qaytadi` : ""),
+          .join(", ")}` +
+          (paidTotal.greaterThan(0) ? `; ular uchun to'langan ${formatMoneyUz(formatAmount(paidTotal))} depozitga qaytadi` : ""),
       );
     }
     if (balance.greaterThan(0)) {
@@ -1138,23 +1133,36 @@ const closeStudentEnrollment = defineAction({
     };
   },
   // Mirrors studentEnrollment.controller.closeEnrollment:
-  // closeEnrollment(req.params.id, req.body, { allowPast: canAdjust(req) }) — ega uchun true.
-  async execute(params) {
+  // closeEnrollment(req.params.id, req.body, { allowPast, allowPastCancel: canAdjust(req), actorId })
+  // — ega uchun canAdjust = true.
+  async execute(params, ctx) {
     if (!params.endDate) throw new AiToolError("Tugash sanasi majburiy");
 
     const result = await studentEnrollmentService.closeEnrollment(
       params.enrollmentId,
       { endDate: params.endDate, endReason: params.endReason, reason: params.reason },
-      { allowPast: true },
+      { allowPast: true, allowPastCancel: true, actorId: ctx.user.id },
     );
 
     if (!result.endDate) {
       throw new AiToolError("O'qish davri yopilmadi — tugash sanasi saqlanmadi");
     }
 
+    const cancelled = result.invoiceImpact?.cancelled ?? [];
+
     return {
       summary: `O'qish davri ${formatDateUz(result.endDate, { utc: true })} bilan yopildi (${result.endReasonLabel})`,
-      details: result.warnings.map((warning) => ({ label: "Ogohlantirish", value: warning })),
+      details: [
+        ...cancelled.map((invoice) => ({
+          label: "Hisob-faktura bekor qilindi",
+          value:
+            `${invoice.monthLabel} — ${formatMoneyUz(invoice.amount)}` +
+            (Number(invoice.releasedToDeposit) > 0
+              ? ` (${formatMoneyUz(invoice.releasedToDeposit)} depozitga qaytdi)`
+              : ""),
+        })),
+        ...result.warnings.map((warning) => ({ label: "Ogohlantirish", value: warning })),
+      ],
       data: { enrollmentId: result.id },
     };
   },

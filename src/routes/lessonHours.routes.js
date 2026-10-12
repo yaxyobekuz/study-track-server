@@ -28,6 +28,8 @@ const {
   cancelSubstitution,
 } = require("../controllers/lessonSubstitution.controller");
 
+const creditController = require("../controllers/lessonCredit.controller");
+
 // ── O'zimniki (o'qituvchi paneli) ────────────
 //
 // ⚠️ RUXSAT KALITI YO'Q va bu ATAYLAB: identifikator token'dan olinadi,
@@ -115,6 +117,47 @@ router.post(
   validateObjectId("id"),
   authorizePermission(PERMISSIONS.SUBSTITUTIONS_CANCEL),
   cancelSubstitution,
+);
+
+// ── "O'tildi" belgisi: o'tilmagan darsni o'tilgan qilish ──
+//
+// Alohida bo'lim `lessonCredits` (`permissions.js` izohi): kun ekrani,
+// registr va tanlov ro'yxati — `view`; belgilash va bekor qilish — `manage`
+// (ikkalasi ham o'qituvchi oyligini o'zgartiradi).
+
+router.get(
+  "/credits/day",
+  protect,
+  authorizePermission(PERMISSIONS.LESSONCREDITS_VIEW),
+  creditController.getDay,
+);
+
+router.get(
+  "/credits/teachers",
+  protect,
+  authorizePermission(PERMISSIONS.LESSONCREDITS_VIEW),
+  creditController.getTeacherOptions,
+);
+
+router.get(
+  "/credits",
+  protect,
+  authorizePermission(PERMISSIONS.LESSONCREDITS_VIEW),
+  creditController.listCredits,
+);
+
+router.post(
+  "/credits",
+  protect,
+  authorizePermission(PERMISSIONS.LESSONCREDITS_MANAGE),
+  creditController.createCredits,
+);
+
+router.post(
+  "/credits/revoke",
+  protect,
+  authorizePermission(PERMISSIONS.LESSONCREDITS_MANAGE),
+  creditController.revokeCredits,
 );
 
 // ── Soat hisoboti (boshliq) ──────────────────
