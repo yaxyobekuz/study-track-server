@@ -26,12 +26,24 @@ const {
   TASK_PUSH_EVENTS,
   buildTaskPush,
 } = require("../helpers/taskPush.helpers");
+// Vaqt oynasi, tur va havolalar — YAGONA manba (`taskWindow.helpers.js`):
+// ro'yxat, dashboard, ijrochi paneli va "Men ketdim" darvozasi shundan o'qiydi.
+const {
+  WORKING_STATUSES,
+  TASK_KINDS,
+  normalizeKind,
+  normalizeLinks,
+  resolveTimeState,
+  buildStateWhere,
+} = require("../helpers/taskWindow.helpers");
+const taskScopeService = require("./taskScope.service");
+// Sana MATNI — yagona manba (`dates.md` §2). `dueDate`/`startDate` — INSTANT,
+// shuning uchun `utc` bayrog'isiz.
+const { formatDateTimeUz } = require("../helpers/date.helpers");
 
 // ─── KONSTANTALAR ──────────────────────────────────────────────────
 
 const ACTIVE_STATUSES = ["pending", "extended", "pending_rejected", "pending_review"];
-// Ijrochi hali ishlayotgan holatlar (tekshiruvdagi ish bunga kirmaydi)
-const WORKING_STATUSES = ["pending", "extended", "pending_rejected"];
 const TERMINAL_STATUSES = ["completed", "stopped"];
 
 const TITLE_MAX = 300;
@@ -225,6 +237,32 @@ const _parseDate = (value, label = "Sana") => {
   return date;
 };
 
+/** Ixtiyoriy sana: bo'sh qiymat — `null` (maydon berilmagan). */
+const _parseOptionalDate = (value, label) => {
+  if (value === undefined || value === null || value === "") return null;
+  return _parseDate(value, label);
+};
+
+const _assertKind = (value) => {
+  if (value === undefined || value === null || value === "") return "main";
+  const kind = String(value);
+  if (!TASK_KINDS.includes(kind)) {
+    throw new BadRequestError("Topshiriq turi noto'g'ri");
+  }
+  return kind;
+};
+
+/**
+ * Ro'yxatga/javobga qo'shiladigan HOSILA maydon: topshiriq hozir qaysi
+ * bosqichda (`taskWindow.helpers.js`). Saqlanmaydi — har o'qishda
+ * hisoblanadi, shuning uchun muddat uzaytirilishi bilan ✗ o'z-o'zidan
+ * yo'qoladi.
+ */
+const _withTimeState = (task, now) => ({
+  ...task,
+  timeState: resolveTimeState(task, now),
+});
+
 const _assertAssignableUsers = async (ids) => {
   const users = await prisma.user.findMany({
     where: { id: { in: ids } },
@@ -247,11 +285,21 @@ const _assertAssignableUsers = async (ids) => {
 const createTasks = async ({
   title,
   description,
+  // VAQT ORALIG'I: `startDate` ixtiyoriy. Berilmasa topshiriq avvalgidek
+  // "shu vaqtgacha bajaring" bo'lib qoladi (`taskWindow.helpers.js`).
+  startDate,
   dueDate,
+  // "main" (asosiy) | "extra" (qo'shimcha)
+  kind,
+  // [{ url, label }] — fayl bilan bir qatorda tashqi manba
+  links,
   penaltyPoints,
   assigneeIds,
   createdBy,
   files,
+  // KIM BERYAPTI — `tasks.team` bo'lsa faqat o'z bo'limiga (taskScope).
+  // `undefined` → tekshirilmaydi (ichki chaqiruv: muammodan topshiriq).
+  scope,
   // MANBA MUAMMO — botdan kelgan muammoni hal qilish uchun berilgan
   // topshiriqda to'ladi (`issue.service#assignTasks`). Oddiy topshiriqda
   // `undefined` va ustun `null` bo'lib qoladi: topshiriqlar bo'limining
@@ -292,6 +340,18 @@ const createTasks = async ({
     );
   }
 
+  // ⚠️ BOSHLANISH VAQTI O'TMISHDA BO'LISHI MUMKIN: "soat 13:00 dan 15:00
+  // gacha" degan topshiriq 13:20 da ham beriladi. Yagona shart — oraliq
+  // teskari bo'lmasligi. Minimal muddat (`minLeadHours`) FAQAT `dueDate` ga
+  // tegishli: haqiqiy muddat o'sha (`taskWindow.helpers.js`).
+  const start = _parseOptionalDate(startDate, "Boshlanish vaqti");
+  if (start && start.getTime() >= due.getTime()) {
+    throw new BadRequestError("Boshlanish vaqti ijro muddatidan oldin bo'lishi kerak");
+  }
+
+  const taskKind = _assertKind(kind);
+  const taskLinks = normalizeLinks(links, (msg) => new BadRequestError(msg));
+
   const points = _assertPenaltyPoints(
     penaltyPoints ?? settings.defaultPenaltyPoints,
     settings,
@@ -305,6 +365,9 @@ const createTasks = async ({
   }
 
   await _assertAssignableUsers(assigneeIds);
+  // Rahbar (`tasks.team`) faqat o'z bo'limiga — ro'yxat har yaratishda
+  // qayta tekshiriladi, panel tugmasiga ishonilmaydi.
+  if (scope) taskScopeService.assertCanAssign(assigneeIds, scope);
 
   let attachments = [];
   if (files && files.length > 0) {
@@ -329,7 +392,10 @@ const createTasks = async ({
       data: {
         title: cleanTitle,
         description: cleanDescription,
+        startDate: start,
         dueDate: due,
+        kind: taskKind,
+        links: taskLinks,
         penaltyPoints: points,
         assignee: assigneeId,
         createdBy,
@@ -371,12 +437,14 @@ const createTasks = async ({
  *   due_soon — faol va muddati `dueSoonHours` ichida
  */
 const _buildListFilter = async (query) => {
-  const { status, assigneeId, createdBy, startDate, endDate, search, due } = query;
+  const { status, assigneeId, createdBy, startDate, endDate, search, due, kind, state } =
+    query;
 
   const filter = {};
   if (status && status !== "all") filter.status = status;
   if (assigneeId && assigneeId !== "all") filter.assignee = assigneeId;
   if (createdBy && createdBy !== "all") filter.createdBy = createdBy;
+  if (kind && kind !== "all") filter.kind = normalizeKind(kind);
   if (startDate || endDate) {
     filter.createdAt = {};
     if (startDate) filter.createdAt.gte = new Date(`${startDate}T00:00:00+05:00`);
@@ -399,7 +467,15 @@ const _buildListFilter = async (query) => {
     if (!filter.status) filter.status = { in: WORKING_STATUSES };
   }
 
-  return filter;
+  // VAQT HOLATI kesimi (dashboarddan kelinadigan filtr): bajarildi /
+  // bajarilmadi / jarayonda / hozir vaqti. `status` bilan birga berilsa
+  // ikkalasi ham amal qiladi — biri ikkinchisini jimgina bekor qilmaydi.
+  // ⚠️ `AND` bilan BIRLASHTIRILADI, ustiga yozilmaydi: "Tekshiruvda" statusi
+  // bilan "Bajarilmadi" kesimi tanlansa natija bo'sh bo'lishi KERAK, biri
+  // ikkinchisini jimgina bekor qilib qo'ymasligi (`devices.md` §10 — ikki
+  // holat filtri bir-birini inkor qilgan holat).
+  const stateWhere = state && state !== "all" ? buildStateWhere(state, now) : null;
+  return stateWhere ? { AND: [filter, stateWhere] } : filter;
 };
 
 const LIST_SORTS = {
@@ -415,9 +491,11 @@ const LIST_SORTS = {
  *   startDate, endDate, search, due, sort)
  * @returns {Promise<object>} Sahifalangan topshiriqlar
  */
-const getTasks = async (req) => {
+const getTasks = async (req, scope) => {
   const { page, limit, skip } = getPaginationParams(req);
-  const filter = await _buildListFilter(req.query);
+  const base = await _buildListFilter(req.query);
+  // Rahbar (`tasks.team`) — faqat o'z bo'limi; `tasks.view` — butun filial
+  const filter = taskScopeService.applyScope(base, scope);
   const orderBy = LIST_SORTS[req.query.sort] || LIST_SORTS.newest;
 
   const [rows, total] = await Promise.all([
@@ -431,15 +509,22 @@ const getTasks = async (req) => {
     prisma.task.count({ where: filter }),
   ]);
 
+  const now = new Date();
   const tasks = await _attachListRefs(
-    rows.map(({ _count, ...t }) => ({
-      ...t,
-      extensionsCount: _count.deadlineHistory,
-      attachmentsCount: Array.isArray(t.attachments) ? t.attachments.length : 0,
-      completionAttachmentsCount: Array.isArray(t.completionAttachments)
-        ? t.completionAttachments.length
-        : 0,
-    })),
+    rows.map(({ _count, ...t }) =>
+      _withTimeState(
+        {
+          ...t,
+          extensionsCount: _count.deadlineHistory,
+          attachmentsCount: Array.isArray(t.attachments) ? t.attachments.length : 0,
+          completionAttachmentsCount: Array.isArray(t.completionAttachments)
+            ? t.completionAttachments.length
+            : 0,
+          linksCount: Array.isArray(t.links) ? t.links.length : 0,
+        },
+        now,
+      ),
+    ),
     { withAssignee: true },
   );
 
@@ -450,18 +535,28 @@ const getTasks = async (req) => {
  * "Asosiy" tab tepasidagi jonli hisoblagichlar (davrga bog'liq emas).
  * @returns {Promise<object>}
  */
-const getTaskStats = async () => {
+const getTaskStats = async (scope) => {
   const settings = await getTaskSettings();
   const now = new Date();
   const soon = new Date(now.getTime() + settings.dueSoonHours * HOUR_MS);
+  const scoped = (where) => taskScopeService.applyScope(where, scope);
 
-  const [groups, overdue, dueSoon] = await Promise.all([
-    prisma.task.groupBy({ by: ["status"], _count: { _all: true } }),
+  const [groups, kindGroups, overdue, dueSoon, activeNow, upcoming] = await Promise.all([
+    prisma.task.groupBy({ by: ["status"], where: scoped({}), _count: { _all: true } }),
+    prisma.task.groupBy({ by: ["kind"], where: scoped({}), _count: { _all: true } }),
     prisma.task.count({
-      where: { status: { in: WORKING_STATUSES }, dueDate: { lt: now } },
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { lt: now } }),
     }),
     prisma.task.count({
-      where: { status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } },
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } }),
+    }),
+    // HOZIR BAJARILISH VAQTI — oraliq ichidagi topshiriqlar (ijrochi
+    // panelida qizil bo'lib turadiganlar)
+    prisma.task.count({
+      where: scoped(buildStateWhere("active", now)),
+    }),
+    prisma.task.count({
+      where: scoped(buildStateWhere("upcoming", now)),
     }),
   ]);
 
@@ -475,47 +570,120 @@ const getTaskStats = async () => {
   };
   for (const g of groups) byStatus[g.status] = g._count._all;
 
+  const byKind = { main: 0, extra: 0 };
+  for (const g of kindGroups) {
+    if (g.kind in byKind) byKind[g.kind] = g._count._all;
+  }
+
   const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
 
   return {
     total,
     byStatus,
+    byKind,
     inProgress: byStatus.pending + byStatus.extended + byStatus.pending_rejected,
     review: byStatus.pending_review,
     completed: byStatus.completed,
     stopped: byStatus.stopped,
+    // ⚠️ `overdue` — AYNAN "bajarilmadi" (✗): muddat o'tdi, ish topshirilmadi
     overdue,
+    missed: overdue,
     dueSoon,
+    activeNow,
+    upcoming,
     dueSoonHours: settings.dueSoonHours,
   };
 };
 
+/**
+ * IJROCHINING O'Z TOPSHIRIQLARI.
+ *
+ * `state` — vaqt kesimi (bajarildi / bajarilmadi / hozir vaqti / ...),
+ * `kind` — asosiy yoki qo'shimcha. Ikkalasi ham SQL darajasida: panel
+ * sahifalangan ro'yxatni xotirada filtrlasa, ikkinchi sahifadagi topshiriq
+ * "yo'q" bo'lib ko'rinardi.
+ *
+ * ⚠️ `sort` berilmasa tartib AVVALGICHA (yangilari tepada) — mobil ilova
+ * ham shu yo'ldan o'qiydi.
+ */
 const getMyTasks = async (userId, req) => {
   const { page, limit, skip } = getPaginationParams(req);
-  const { status } = req.query;
+  const { status, kind, state } = req.query;
+  const now = new Date();
 
-  const filter = { assignee: userId };
-  if (status && status !== "all") filter.status = status;
+  const base = { assignee: userId };
+  if (status && status !== "all") base.status = status;
+  if (kind && kind !== "all") base.kind = normalizeKind(kind);
 
-  const [rows, total] = await Promise.all([
+  const stateWhere = state && state !== "all" ? buildStateWhere(state, now) : null;
+  const filter = stateWhere ? { AND: [base, stateWhere] } : base;
+
+  // ⚠️ Sozlamalar ro'yxat bilan BIR VAQTDA o'qiladi: "Topshiriqlarim" eng
+  // ko'p ochiladigan ekran, ketma-ket so'rov unga ortiqcha kechikish
+  // qo'shardi.
+  const [rows, total, settings] = await Promise.all([
     prisma.task.findMany({
       where: filter,
-      orderBy: { createdAt: "desc" },
+      orderBy: LIST_SORTS[req.query.sort] || LIST_SORTS.newest,
       skip,
       take: limit,
     }),
     prisma.task.count({ where: filter }),
+    getTaskSettings(),
   ]);
 
-  const tasks = await _attachListRefs(rows, { withAssignee: false });
+  const tasks = await _attachListRefs(
+    rows.map((t) =>
+      _withTimeState(
+        {
+          ...t,
+          attachmentsCount: Array.isArray(t.attachments) ? t.attachments.length : 0,
+          linksCount: Array.isArray(t.links) ? t.links.length : 0,
+        },
+        now,
+      ),
+    ),
+    { withAssignee: false },
+  );
 
-  return formatPaginationResponse(tasks, total, page, limit);
+  return {
+    ...formatPaginationResponse(tasks, total, page, limit),
+    // ⚠️ RO'YXAT BILAN BIRGA: ijrochi ishni ro'yxatdan chiqmasdan
+    // topshiradi, ya'ni yakunlash qoidalari (nechta fayl, izoh majburiymi)
+    // unga SHU YERDA kerak. Bir marta yuboriladi — har qatorga nusxalash
+    // 20 ta bir xil obyekt bo'lardi; detal sahifadagi `submissionRules`
+    // bilan AYNI manba (`_submissionRules`).
+    submissionRules: _submissionRules(settings),
+  };
 };
 
 const _canManage = (user) =>
   hasRole(user, ROLES.OWNER) || hasPermission(user.permissions || [], "tasks.view");
 
-const getTaskById = async (taskId, requestingUser) => {
+/**
+ * BOSHQARUV AMALI DOIRASI. `tasks.team` bilan kelgan rahbar faqat o'z
+ * bo'limidagi topshiriqni tahrirlaydi / tasdiqlaydi / to'xtatadi.
+ *
+ * ⚠️ HAR AMALDA, route'da emas: route faqat "kalit bormi" deb tekshiradi,
+ * "aynan BU topshiriq meniki emasligini" esa shu yer hal qiladi.
+ */
+const _assertScope = (task, scope, userId) => {
+  // ⚠️ FAQAT `team` rejimida cheklaydi: `tasks.review` / `tasks.stop` kabi
+  // mavjud kalitlar avvalgidek butun filialda ishlaydi — `tasks.team`
+  // QO'SHIMCHA daraja, kuchsizlantirish emas.
+  if (!scope || scope.mode !== taskScopeService.SCOPE_TEAM) return;
+  if (!taskScopeService.isInScope(task, scope, userId)) {
+    throw new ForbiddenError("Bu topshiriq sizning bo'limingizga tegishli emas");
+  }
+};
+
+/**
+ * @param {string} taskId
+ * @param {object} requestingUser
+ * @param {object} [scope] - `taskScope.service.js` natijasi. Berilsa rahbar
+ *   (`tasks.team`) o'z bo'limidagi topshiriqni ham ko'ra oladi.
+ */
+const getTaskById = async (taskId, requestingUser, scope) => {
   const task = await prisma.task.findUnique({
     where: { id: taskId },
     include: {
@@ -543,7 +711,10 @@ const getTaskById = async (taskId, requestingUser) => {
   }
 
   const isAssignee = String(task.assignee) === String(requestingUser.id);
-  const canManage = _canManage(requestingUser);
+  const canManage =
+    _canManage(requestingUser) ||
+    (scope?.mode === taskScopeService.SCOPE_TEAM &&
+      taskScopeService.isInScope(task, scope, requestingUser.id));
 
   if (!isAssignee && !canManage) {
     throw new ForbiddenError("Bu topshiriqni ko'rishga ruxsat yo'q");
@@ -585,6 +756,9 @@ const getTaskById = async (taskId, requestingUser) => {
         select: { id: true, points: true, title: true, createdAt: true },
       })
     : null;
+
+  // Hosila: hozir qaysi bosqichda (oraliq ichidami, muddati o'tdimi)
+  task.timeState = resolveTimeState(task, new Date());
 
   const settings = await getTaskSettings();
   task.submissionRules = _submissionRules(settings);
@@ -724,9 +898,10 @@ const submitTaskCompletion = async (taskId, userId, { note, files }) => {
   return updated;
 };
 
-const approveTask = async (taskId, { reason, approvedBy }) => {
+const approveTask = async (taskId, { reason, approvedBy, scope }) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, approvedBy);
 
   if (task.status !== "pending_review") {
     throw new BadRequestError(
@@ -768,9 +943,10 @@ const approveTask = async (taskId, { reason, approvedBy }) => {
   return updated;
 };
 
-const rejectTask = async (taskId, { reason, rejectedBy, newDueDate }) => {
+const rejectTask = async (taskId, { reason, rejectedBy, newDueDate, scope }) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, rejectedBy);
 
   if (task.status !== "pending_review") {
     throw new BadRequestError(
@@ -857,10 +1033,11 @@ const rejectTask = async (taskId, { reason, rejectedBy, newDueDate }) => {
 
 const stopTask = async (
   taskId,
-  { reason, withPenalty, penaltyPoints, stoppedBy },
+  { reason, withPenalty, penaltyPoints, stoppedBy, scope },
 ) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, stoppedBy);
 
   if (!ACTIVE_STATUSES.includes(task.status)) {
     throw new BadRequestError("Bu topshiriqni to'xtatib bo'lmaydi");
@@ -906,10 +1083,11 @@ const stopTask = async (
 
 const extendDeadline = async (
   taskId,
-  { newDueDate, reason, withPenalty, penaltyPoints, extendedBy },
+  { newDueDate, reason, withPenalty, penaltyPoints, extendedBy, scope },
 ) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, extendedBy);
 
   if (TERMINAL_STATUSES.includes(task.status)) {
     throw new BadRequestError(
@@ -1000,11 +1178,23 @@ const extendDeadline = async (
  */
 const updateTask = async (
   taskId,
-  { title, description, penaltyPoints, assigneeId, removeAttachmentKeys = [], files = [] },
+  {
+    title,
+    description,
+    penaltyPoints,
+    assigneeId,
+    kind,
+    startDate,
+    links,
+    removeAttachmentKeys = [],
+    files = [],
+  },
   editorId,
+  scope,
 ) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, editorId);
 
   if (task.status === "completed") {
     throw new BadRequestError(
@@ -1053,6 +1243,53 @@ const updateTask = async (
     }
   }
 
+  if (kind !== undefined && kind !== null && kind !== "") {
+    const next = _assertKind(kind);
+    if (next !== task.kind) {
+      data.kind = next;
+      changes.push({
+        field: "kind",
+        label: "Topshiriq turi",
+        from: task.kind === "extra" ? "Qo'shimcha" : "Asosiy",
+        to: next === "extra" ? "Qo'shimcha" : "Asosiy",
+      });
+    }
+  }
+
+  // BOSHLANISH VAQTI — bo'sh satr yuborilsa oraliq olib tashlanadi
+  // ("shu vaqtgacha" rejimiga qaytadi). ⚠️ MUDDATNING O'ZI bu yerda
+  // o'zgarmaydi: u `extendDeadline` ning ishi (sabab va tarix bilan).
+  if (startDate !== undefined) {
+    const next = _parseOptionalDate(startDate, "Boshlanish vaqti");
+    if (next && next.getTime() >= task.dueDate.getTime()) {
+      throw new BadRequestError("Boshlanish vaqti ijro muddatidan oldin bo'lishi kerak");
+    }
+    const prevMs = task.startDate ? task.startDate.getTime() : null;
+    if ((next ? next.getTime() : null) !== prevMs) {
+      data.startDate = next;
+      changes.push({
+        field: "startDate",
+        label: "Boshlanish vaqti",
+        from: task.startDate ? formatDateTimeUz(task.startDate) : "—",
+        to: next ? formatDateTimeUz(next) : "—",
+      });
+    }
+  }
+
+  if (links !== undefined) {
+    const next = normalizeLinks(links, (msg) => new BadRequestError(msg));
+    const current = Array.isArray(task.links) ? task.links : [];
+    if (JSON.stringify(next) !== JSON.stringify(current)) {
+      data.links = next;
+      changes.push({
+        field: "links",
+        label: "Havolalar",
+        from: String(current.length),
+        to: String(next.length),
+      });
+    }
+  }
+
   let reassignedTo = null;
   let removedCompletion = [];
   if (assigneeId && String(assigneeId) !== String(task.assignee)) {
@@ -1070,6 +1307,8 @@ const updateTask = async (
     if (nextUser.role === "owner") {
       throw new BadRequestError("Ownerga topshiriq berib bo'lmaydi");
     }
+    // Rahbar topshiriqni bo'limidan tashqariga uzatib yubormasin
+    if (scope) taskScopeService.assertCanAssign([assigneeId], scope);
     const prevMap = await _loadUserMap([task.assignee], { id: true, firstName: true, lastName: true });
     data.assignee = nextUser.id;
     // Oldingi ijrochining rad etilgan natijasi yangi ijrochiga o'tmaydi
@@ -1147,9 +1386,10 @@ const updateTask = async (
  * Holat `pending` ga qaytadi, avtomatik jarima bayrog'i tushiriladi (yangi
  * muddat — yangi imkoniyat, `extendDeadline` bilan bir xil qoida).
  */
-const reopenTask = async (taskId, { newDueDate, reason, reopenedBy }) => {
+const reopenTask = async (taskId, { newDueDate, reason, reopenedBy, scope }) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, reopenedBy);
 
   if (!TERMINAL_STATUSES.includes(task.status)) {
     throw new BadRequestError(
@@ -1215,9 +1455,10 @@ const reopenTask = async (taskId, { newDueDate, reason, reopenedBy }) => {
  * ⚠️ Jarima yozilgan topshiriq o'chirilmaydi: jarima yozuvi manbasiz qolardi
  * — bunday topshiriq to'xtatiladi.
  */
-const deleteTask = async (taskId) => {
+const deleteTask = async (taskId, { deletedBy, scope } = {}) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
+  _assertScope(task, scope, deletedBy);
 
   if (task.penaltyRef) {
     throw new BadRequestError(

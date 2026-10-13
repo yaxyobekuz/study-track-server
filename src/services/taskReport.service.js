@@ -21,6 +21,8 @@ const prisma = require("../config/prisma");
 const { getTaskSettings } = require("./settings.service");
 const { getTashkentDateUtc } = require("../helpers/date.helpers");
 const { BadRequestError } = require("../utils/errors");
+const { applyScope } = require("./taskScope.service");
+const { normalizeKind } = require("../helpers/taskWindow.helpers");
 
 const TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -68,8 +70,46 @@ const _buildBuckets = (fromKey, toKey, granularity) => {
   return keys;
 };
 
-const _resolvePeriod = ({ from, to }) => {
+/**
+ * DAVR PRESETLARI — dashboarddagi "Kunlik / Haftalik / Oylik / Yillik".
+ *
+ * ⚠️ SERVERDA hisoblanadi, panelda emas: kun chegarasi TOSHKENT vaqti
+ * bo'yicha (`education.md` §9). Brauzer mintaqasi boshqa bo'lsa "bugun"
+ * bir kunga siljib ketardi.
+ *
+ * @param {string} preset
+ * @returns {{ from: string, to: string }|null}
+ */
+const _resolvePreset = (preset) => {
   const todayKey = _isoDay(getTashkentDateUtc(0));
+
+  switch (preset) {
+    case "day":
+      return { from: todayKey, to: todayKey };
+    case "week": {
+      // Hafta DUSHANBADAN boshlanadi (hisobotdagi `weekday` indeksi bilan AYNI)
+      const today = new Date(`${todayKey}T00:00:00Z`);
+      const shift = (today.getUTCDay() + 6) % 7;
+      return { from: _isoDay(new Date(today.getTime() - shift * DAY_MS)), to: todayKey };
+    }
+    case "month":
+      return { from: `${todayKey.slice(0, 7)}-01`, to: todayKey };
+    case "year":
+      return { from: `${todayKey.slice(0, 4)}-01-01`, to: todayKey };
+    default:
+      return null;
+  }
+};
+
+const _resolvePeriod = ({ from, to, period }) => {
+  const todayKey = _isoDay(getTashkentDateUtc(0));
+  // Preset berilgan bo'lsa from/to ni O'ZI beradi; qo'lda tanlangan davr
+  // (hisobot tabi) avvalgidek ishlaydi.
+  const preset = _resolvePreset(period);
+  if (preset) {
+    from = preset.from;
+    to = preset.to;
+  }
   const toKey = DATE_RE.test(to || "") ? to : todayKey;
   const fromKey = DATE_RE.test(from || "")
     ? from
@@ -91,6 +131,7 @@ const _resolvePeriod = ({ from, to }) => {
     toKey,
     days,
     granularity,
+    preset: preset ? period : null,
     start: new Date(`${fromKey}T00:00:00+05:00`),
     end: new Date(`${toKey}T23:59:59.999+05:00`),
   };
@@ -177,13 +218,16 @@ const _finalizePerson = (row, user) => {
 
 // ─── Jonli ro'yxatlar ─────────────────────────────────────────────
 
-const _loadLive = async (settings, now) => {
+const _loadLive = async (settings, now, scope) => {
   const soon = new Date(now.getTime() + settings.dueSoonHours * HOUR_MS);
+  const scoped = (where) => applyScope(where, scope);
   const select = {
     id: true,
     title: true,
     assignee: true,
     status: true,
+    kind: true,
+    startDate: true,
     dueDate: true,
     penaltyPoints: true,
     createdAt: true,
@@ -191,23 +235,25 @@ const _loadLive = async (settings, now) => {
 
   const [overdue, overdueCount, dueSoon, dueSoonCount, review, reviewCount] = await Promise.all([
     prisma.task.findMany({
-      where: { status: { in: WORKING_STATUSES }, dueDate: { lt: now } },
-      orderBy: { dueDate: "asc" },
-      take: LIVE_LIMIT,
-      select,
-    }),
-    prisma.task.count({ where: { status: { in: WORKING_STATUSES }, dueDate: { lt: now } } }),
-    prisma.task.findMany({
-      where: { status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } },
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { lt: now } }),
       orderBy: { dueDate: "asc" },
       take: LIVE_LIMIT,
       select,
     }),
     prisma.task.count({
-      where: { status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } },
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { lt: now } }),
     }),
     prisma.task.findMany({
-      where: { status: "pending_review" },
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } }),
+      orderBy: { dueDate: "asc" },
+      take: LIVE_LIMIT,
+      select,
+    }),
+    prisma.task.count({
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { gte: now, lte: soon } }),
+    }),
+    prisma.task.findMany({
+      where: scoped({ status: "pending_review" }),
       orderBy: { updatedAt: "asc" },
       take: LIVE_LIMIT,
       select: {
@@ -220,7 +266,7 @@ const _loadLive = async (settings, now) => {
         },
       },
     }),
-    prisma.task.count({ where: { status: "pending_review" } }),
+    prisma.task.count({ where: scoped({ status: "pending_review" }) }),
   ]);
 
   return {
@@ -245,6 +291,10 @@ const getTaskReport = async (query = {}) => {
   const period = _resolvePeriod(query);
   const { start, end, fromKey, toKey, granularity } = period;
   const now = new Date();
+  // Rahbar (`tasks.team`) — faqat o'z bo'limi. `tasks.view` / owner uchun
+  // `scope` yo'q va `applyScope` hech narsa qo'shmaydi.
+  const scope = query.scope;
+  const scoped = (where) => applyScope(where, scope);
 
   const prevEnd = new Date(start.getTime() - 1);
   const prevStart = new Date(start.getTime() - period.days * DAY_MS);
@@ -253,16 +303,23 @@ const getTaskReport = async (query = {}) => {
 
   const [tasks, completionEvents, prevGroups, live] = await Promise.all([
     prisma.task.findMany({
-      where: { createdAt: { gte: start, lte: end } },
+      where: scoped({ createdAt: { gte: start, lte: end } }),
       select: {
         id: true,
         assignee: true,
         createdBy: true,
         status: true,
+        kind: true,
+        startDate: true,
         dueDate: true,
         penaltyRef: true,
         createdAt: true,
         statusHistory: {
+          // ⚠️ Faqat HOLAT qatorlari: tahrir/jarima/muddat qatorlari
+          // `_deriveFacts` da baribir chetlab o'tiladi, ularni SQL darajasida
+          // tashlab yuborish yillik kesimda o'qiladigan qatorni bir necha
+          // barobar kamaytiradi.
+          where: { kind: "status" },
           orderBy: { position: "asc" },
           select: { status: true, kind: true, changedAt: true },
         },
@@ -270,15 +327,20 @@ const getTaskReport = async (query = {}) => {
       },
     }),
     prisma.taskStatusHistory.findMany({
-      where: { status: "completed", kind: "status", changedAt: { gte: start, lte: end } },
+      where: {
+        status: "completed",
+        kind: "status",
+        changedAt: { gte: start, lte: end },
+        ...(scope && scope.mode !== "all" ? { task: scope.where } : {}),
+      },
       select: { changedAt: true },
     }),
     prisma.task.groupBy({
       by: ["status"],
-      where: { createdAt: { gte: prevStart, lte: prevEnd } },
+      where: scoped({ createdAt: { gte: prevStart, lte: prevEnd } }),
       _count: { _all: true },
     }),
-    _loadLive(settings, now),
+    _loadLive(settings, now, scope),
   ]);
 
   // Jarima ballari — jarima yozuvlaridan (topshiriqdagi `penaltyPoints` —
@@ -305,6 +367,13 @@ const getTaskReport = async (query = {}) => {
     penalized: 0,
     penaltyPoints: 0,
   };
+  // TUR KESIMI — asosiy (lavozim bo'yicha doimiy ish) va qo'shimcha.
+  // Rahbar "qo'shimcha ishlar asosiy ishni bosib ketmayaptimi" degan
+  // savolga shu yerdan javob oladi.
+  const kinds = {
+    main: { key: "main", total: 0, completed: 0, overdue: 0, inProgress: 0, review: 0, stopped: 0 },
+    extra: { key: "extra", total: 0, completed: 0, overdue: 0, inProgress: 0, review: 0, stopped: 0 },
+  };
   const timing = { early: 0, lastDay: 0, late: 0 };
   const completionMinutes = [];
   const reviewMinutes = [];
@@ -325,6 +394,14 @@ const getTaskReport = async (query = {}) => {
     else if (task.status === "pending_review") kpis.review += 1;
     else if (facts.isOverdue) kpis.overdue += 1;
     else kpis.inProgress += 1;
+
+    const kindRow = kinds[normalizeKind(task.kind)];
+    kindRow.total += 1;
+    if (facts.isCompleted) kindRow.completed += 1;
+    else if (task.status === "stopped") kindRow.stopped += 1;
+    else if (task.status === "pending_review") kindRow.review += 1;
+    else if (facts.isOverdue) kindRow.overdue += 1;
+    else kindRow.inProgress += 1;
 
     if (facts.wasRejected) kpis.rejected += 1;
     if (facts.wasExtended) kpis.extended += 1;
@@ -458,6 +535,7 @@ const getTaskReport = async (query = {}) => {
       to: toKey,
       days: period.days,
       granularity,
+      preset: period.preset,
     },
     kpis: {
       ...kpis,
@@ -480,6 +558,10 @@ const getTaskReport = async (query = {}) => {
       { key: "stopped", value: kpis.stopped },
     ],
     timing,
+    kinds: [kinds.main, kinds.extra].map((row) => ({
+      ...row,
+      rate: _rate(row.completed, row.total - row.stopped),
+    })),
     trend: [...trendMap.values()],
     weekday,
     people: peopleRows.slice(0, 100),

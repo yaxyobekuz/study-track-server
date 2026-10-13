@@ -77,6 +77,7 @@ const {
 } = require("./settings.service");
 const { tashkentMinutesOf } = require("./lessonAbsence.service");
 const { WORKING_STATUSES } = require("./task.service");
+const { resolveTimeState } = require("../helpers/taskWindow.helpers");
 const telegramService = require("./telegram.service");
 
 const HOUR_MS = 3600 * 1000;
@@ -324,7 +325,15 @@ async function loadOpenTasks(userId, day, now) {
         dueDate: { lt: dayEnd },
       },
       orderBy: { dueDate: "asc" },
-      select: { id: true, title: true, dueDate: true, status: true },
+      select: {
+        id: true,
+        title: true,
+        dueDate: true,
+        status: true,
+        // Oyna va tur — panel "hozir bajarilish vaqti" ni shundan chizadi
+        startDate: true,
+        kind: true,
+      },
     }),
     getTaskSettings(),
   ]);
@@ -335,8 +344,14 @@ async function loadOpenTasks(userId, day, now) {
       id: t.id,
       title: t.title,
       status: t.status,
+      kind: t.kind,
+      startDate: t.startDate,
       dueDate: t.dueDate,
+      startLabel: t.startDate ? formatDateTimeUz(t.startDate) : null,
       dueLabel: formatDateTimeUz(t.dueDate),
+      // Vaqt holati — ro'yxat, dashboard va ijrochi paneli bilan AYNI
+      // funksiyadan (`taskWindow.helpers.js`)
+      timeState: resolveTimeState(t, now),
       overdue,
       locked: overdue && taskSettings.allowLateSubmission === false,
     };
@@ -555,7 +570,10 @@ function sealReport(readiness, approvedRequestId) {
       pending: readiness.tasks.items.map((t) => ({
         id: t.id,
         title: t.title,
+        kind: t.kind,
+        startLabel: t.startLabel,
         dueLabel: t.dueLabel,
+        timeState: t.timeState,
         locked: t.locked,
       })),
     },

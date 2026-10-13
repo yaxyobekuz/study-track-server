@@ -457,11 +457,20 @@ const PERMISSION_SECTIONS = [
   },
   {
     key: SECTIONS.TASKS,
-    label: "Topshiriqlar",
-    group: "Topshiriqlar",
+    label: "Lavozimlar markazi",
+    group: "Lavozimlar markazi",
     actions: [
       A.view,
       A.create,
+      // RAHBAR DOIRASI — `view`/`create` dan ALOHIDA va ulardan TOR:
+      // o'z BO'LIMI (lavozim → bo'lim) xodimlariga topshiriq berish va
+      // o'sha kesimni boshqarish. `taskScope.service.js` har amalda
+      // qayta tekshiradi.
+      //
+      // ⚠️ Qo'shimcha daraja, kuchsizlantirish EMAS: `tasks.view` egalari
+      // avvalgidek butun filialni ko'radi — aks holda bugun hammasini
+      // ko'rib turgan admin ertaga faqat o'z bo'limini ko'rib qolardi.
+      { key: "team", label: "O'z bo'limiga topshiriq berish" },
       // Tahrirlash — sarlavha/tavsif/ijrochi/fayllar va yakunlangan
       // topshiriqni qayta ochish
       A.update,

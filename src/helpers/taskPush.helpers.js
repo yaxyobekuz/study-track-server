@@ -41,7 +41,7 @@ const truncate = (text, max) => {
 
 /**
  * @param {string} event - TASK_PUSH_EVENTS qiymati
- * @param {{ id: string, title: string, status: string, dueDate: Date }} task - YANGILANGAN topshiriq
+ * @param {{ id: string, title: string, status: string, kind?: string, startDate?: Date|null, dueDate: Date }} task - YANGILANGAN topshiriq
  * @param {{ reason?: string, penaltyPoints?: number, deadlineChanged?: boolean, branchId?: string }} [extra]
  * @returns {{ title: string, body: string, data: object, channelId: string }}
  */
@@ -53,7 +53,13 @@ function buildTaskPush(event, task, extra = {}) {
 
   if (event === TASK_PUSH_EVENTS.CREATED || deadlineChanged) {
     const label = event === TASK_PUSH_EVENTS.CREATED ? "Muddat" : "Yangi muddat";
-    lines.push(`${label}: ${formatDateTimeUz(task.dueDate)}`);
+    // VAQT ORALIG'I berilgan bo'lsa xabarda ham oraliq ko'rinadi: xodim
+    // ilovani ochmasdan "qachondan qachongacha" ekanini bilishi kerak.
+    lines.push(
+      event === TASK_PUSH_EVENTS.CREATED && task.startDate
+        ? `Vaqt: ${formatDateTimeUz(task.startDate)} — ${formatDateTimeUz(task.dueDate)}`
+        : `${label}: ${formatDateTimeUz(task.dueDate)}`,
+    );
   }
   if (reason && event !== TASK_PUSH_EVENTS.CREATED) {
     const label = event === TASK_PUSH_EVENTS.COMPLETED ? "Izoh" : "Sabab";
@@ -72,6 +78,8 @@ function buildTaskPush(event, task, extra = {}) {
       event,
       taskId: task.id,
       status: task.status,
+      // "main" | "extra" — ilova ro'yxatda turni ajratib ko'rsatadi
+      kind: task.kind || "main",
       branchId,
     },
   };
