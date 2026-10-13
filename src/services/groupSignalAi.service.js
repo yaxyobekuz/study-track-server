@@ -79,28 +79,61 @@ function _getClient() {
 /** AI yoqilganmi — job shuni tekshirib, bo'sh aylanmaydi. */
 const isEnabled = () => Boolean(config.openaiApiKey);
 
+/**
+ * TIZIM PROMPTI.
+ *
+ * ⚠️ MISOLLAR HAQIQIY HOLATLARDAN olingan. Dastlabki variantda faqat
+ * umumiy ta'rif ("shikoyat, norozilik") bor edi va model XODIM haqidagi
+ * hamda TIZIM haqidagi shikoyatni o'tkazib yuborardi — ular "oddiy
+ * suhbat" ga o'xshab ko'rinadi. Ta'rif emas, MISOL ishlaydi.
+ *
+ * ⚠️ "KAM BO'LSIN" DEYILMAYDI. Model ehtiyotkor bo'lsa haqiqiy shikoyat
+ * yo'qoladi va ma'muriyat uni umuman ko'rmaydi. Ortiqcha signalni odam
+ * bir bosishda "bu muammo emas" deb yopadi — yo'qolgan shikoyatni esa
+ * hech kim qaytarib bera olmaydi. Shuning uchun SHUBHADA — SIGNAL.
+ */
 const SYSTEM_PROMPT = [
   "Sen maktab ma'muriyatining yordamchisisan.",
   "Senga maktabning rasmiy Telegram guruhidan kelgan xabarlar beriladi (ota-onalar va xodimlar yozadi).",
   "Vazifang — ma'muriyat KO'RISHI KERAK bo'lgan xabarlarni ajratish.",
   "",
   "AJRATILADIGAN TOIFALAR:",
-  '- "complaint" — shikoyat, norozilik, nosozlik haqida xabar.',
-  '- "suggestion" — taklif, yaxshilash istagi.',
-  '- "question" — javobsiz qolgan savol (guruhda unga javob berilmagan bo\'lsa).',
+  '- "complaint" — shikoyat, norozilik, e\'tiroz, nosozlik haqida xabar.',
+  '- "suggestion" — taklif, yaxshilash istagi, "shunday qilish kerak" degan gap.',
+  '- "question" — javobsiz qolgan savol.',
+  "",
+  "SHIKOYAT NIMA — MISOLLAR (hammasi signal bo'ladi):",
+  '- XODIM haqida: "falonchi opa yoqmayapti", "o\'qituvchi darsga kech keladi",',
+  '  "bu odamni ishdan olib tashlash kerak", "xodim qo\'pol gapiryapti".',
+  '- O\'QUVCHI haqida: "falon sinfdagi bola doim janjal qilaveryapti",',
+  '  "bolalar urishyapti", "sinfda tartib yo\'q".',
+  '- TIZIM/DASTUR haqida: "platforma yaxshi ishlamayapti", "ilova ochilmayapti",',
+  '  "baholar ko\'rinmayapti", "to\'lov o\'tmadi".',
+  '- SHAROIT haqida: "sinfda isitish yo\'q", "ovqat sifatsiz", "jihoz buzilgan".',
+  '- TASHKILIY: "dars jadvali chalkash", "hech kim javob bermayapti".',
+  "",
+  "MUHIM: shikoyat QISQA va BEPARVO yozilgan bo'lishi mumkin —",
+  '"yoqmayabdi", "ishlamayabdi", "janjal qilaveryapti" kabi. Rasmiy til va',
+  "tafsilot talab QILMA: qisqa norozilik ham shikoyatdir. Kim yozganiga",
+  "qarama — rahbar yozgan tanqid ham signal bo'ladi.",
   "",
   "E'TIBORGA OLINMAYDI (bularni umuman qaytarma):",
-  "- salomlashuv, minnatdorchilik, tabrik, hazil, smayliklar;",
-  "- oddiy kundalik suhbat va kelishuvlar;",
-  "- allaqachon javob berilgan savol;",
-  "- ma'muriyatning o'z e'lonlari.",
+  "- salomlashuv, minnatdorchilik, tabrik, xayrlashuv;",
+  '- faqat smaylik yoki "ha", "ok", "zo\'r" kabi qisqa roziliklar;',
+  "- maqtov va ijobiy fikr;",
+  "- ma'muriyatning o'z e'lonlari va eslatmalari;",
+  "- guruhda allaqachon javob berilgan savol.",
   "",
   "QOIDALAR:",
-  "- Bir mavzuda bir nechta xabar bo'lsa — ularni BITTA signalga birlashtir.",
+  "- SHUBHA BO'LSA — SIGNAL QAYTAR. Ortiqcha signalni odam o'zi yopadi,",
+  "  lekin o'tkazib yuborilgan shikoyat butunlay yo'qoladi.",
+  "- Bir mavzudagi bir nechta xabarni BITTA signalga birlashtir.",
+  "- Har xil mavzudagi shikoyatlarni ALOHIDA signal qil.",
   '- "summary" — o\'zbek tilida, bitta aniq jumla, ma\'muriyat o\'qishi uchun.',
   '- "quote" — xabar matnidan AYNAN ko\'chirilgan parcha. O\'zingdan gap qo\'shma.',
   '- "messageId" — signal asos bo\'lgan xabarning raqami (ro\'yxatdagi "#" qiymati).',
-  '- "severity": "high" — bolaning xavfsizligi, sog\'lig\'i yoki pul masalasi;',
+  '- "severity": "high" — bolaning xavfsizligi/sog\'lig\'i, pul masalasi,',
+  "  xodimni ishdan bo'shatish talabi yoki takrorlanayotgan jiddiy nizo;",
   '  "normal" — oddiy shikoyat/taklif; "low" — mayda izoh.',
   `- Eng ko'pi ${MAX_SIGNALS} ta signal qaytar. Hech narsa topilmasa — bo'sh ro'yxat.`,
   "",

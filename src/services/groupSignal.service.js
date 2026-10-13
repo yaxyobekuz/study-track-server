@@ -90,6 +90,12 @@ async function runAnalysis() {
   }
 
   let created = 0;
+  // ⚠️ HAQIQATAN TAHLIL QILINGANI SANALADI, olingani emas. AI yiqilsa
+  // xabar navbatda qoladi va uni "ko'rildi" deb sanash panelda
+  // "4 ta xabar ko'rildi — gap topilmadi" degan YOLG'ON xabarga
+  // aylanardi: aslida hech narsa ko'rilmagan edi.
+  let analyzed = 0;
+  let failedGroups = 0;
 
   for (const [chatId, messages] of byChat) {
     const result = await groupSignalAi.analyze(messages);
@@ -99,8 +105,11 @@ async function runAnalysis() {
     // keyingi urinishda qayta ko'riladi.
     if (!result) {
       logger.warn(`[GroupSignal] ${chatId} tahlil qilinmadi — keyin qayta uriniladi`);
+      failedGroups += 1;
       continue;
     }
+
+    analyzed += messages.length;
 
     for (const signal of result.signals) {
       try {
@@ -133,9 +142,14 @@ async function runAnalysis() {
   }
 
   return {
-    analyzed: pending.length,
+    analyzed,
     signals: created,
     groups: byChat.size,
+    // Nechta guruh tahlil qilinmay qoldi — panel shunga qarab
+    // "tekshirib bo'lmadi" deydi, "topilmadi" emas.
+    failedGroups,
+    // Navbatda qolgan (keyingi urinishda ko'riladigan) xabarlar.
+    pending: pending.length - analyzed,
     skipped: false,
   };
 }
