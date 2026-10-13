@@ -201,6 +201,51 @@ class TelegramService {
   }
 
   /**
+   * BOTNING guruhdagi holati — nom, tur va huquqlar bilan.
+   *
+   * `telegramGroup.service.js#refreshGroups` uchun: reyestrdagi qator
+   * eskirgan bo'lishi mumkin (guruh nomi o'zgargan, botni adminlikdan
+   * tushirishgan), bu metod esa Telegram'dan HOZIRGI holatni oladi.
+   *
+   * ⚠️ `checkMembership` dan FARQI: u ODAM a'zoligini tekshiradi, bu esa
+   * BOTNING o'zini so'raydi (`getMe` → `getChatMember`) va guruh
+   * ma'lumotini ham qaytaradi.
+   *
+   * ⚠️ XATO ATILMAYDI, `null` qaytadi: guruh o'chirilgan yoki bot
+   * chiqarilgan bo'lishi mumkin va bu kutilgan hol — chaqiruvchi qolgan
+   * guruhlarni yangilashda davom etishi kerak.
+   *
+   * @param {string} chatId - Guruh yoki kanal chat ID
+   * @returns {Promise<Object|null>}
+   */
+  async getChatStatus(chatId) {
+    if (!bot) return null;
+
+    try {
+      const me = await bot.getMe();
+      const [chat, member] = await Promise.all([
+        bot.getChat(chatId),
+        bot.getChatMember(chatId, me.id),
+      ]);
+
+      return {
+        chatId: chat.id.toString(),
+        type: chat.type,
+        title: chat.title || chat.username || chat.id.toString(),
+        username: chat.username || null,
+        status: member.status,
+        // Huquqlar faqat `administrator` da keladi — yo'qligini "bor"
+        // deb ko'rsatmaslik uchun `Boolean()` bilan normallashtiriladi.
+        canPostMessages: Boolean(member.can_post_messages),
+        canInviteUsers: Boolean(member.can_invite_users),
+      };
+    } catch (error) {
+      logger.error(`Guruh holatini olishda xato (${chatId}): ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * Delete file after sending
    * @param {string} filePath - Path to file
    */

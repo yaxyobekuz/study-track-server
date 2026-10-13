@@ -884,3 +884,101 @@ model PushDevice {
   @@index([jti])
   @@map("push_devices")
 }
+
+// ═════════════════════════════════════════════════════════════════════
+// TELEGRAM GURUHLARI — BOT ADMIN BO'LGAN GURUHLAR REYESTRI
+// ═════════════════════════════════════════════════════════════════════
+
+/**
+ * BOT KO'RGAN GURUH/KANAL.
+ *
+ * ⚠️ NIMA UCHUN REYESTR KERAK: Telegram Bot API'da "men qaysi guruhlarda
+ * adminman" degan savolga javob beradigan metod YO'Q (`getChats` faqat
+ * MTProto — bot emas, ODAM nomidan ulanish). Bot faqat O'ZIGA kelgan
+ * hodisadan biladi, shuning uchun ro'yxat bizda to'planadi:
+ *
+ *   my_chat_member  → status o'zgardi (qo'shildi / admin bo'ldi / chiqdi)
+ *   guruhdagi xabar → zaxira yo'l (hodisa o'tkazib yuborilgan bo'lsa)
+ *
+ * ⚠️ O'TMISHGA QARAMAYDI: bu kod joylashtirilishidan OLDIN bot a'zo bo'lgan
+ * guruh ro'yxatga o'zi tushmaydi — o'sha guruhda status o'zgarishi yoki
+ * xabar kerak. Shuning uchun `SocialNetwork` dan farqli, bu jadval
+ * QO'LDA to'ldirilmaydi: chatId ni odam kiritsa, bot u guruhda haqiqatan
+ * admin ekanini tasdiqlay olmaydi.
+ *
+ * ⚠️ NIMA UCHUN PLATFORMADA: `my_chat_member` kelganda filial konteksti
+ * YO'Q — botni guruhga qo'shgan odam ro'yxatdan o'tmagan bo'lishi mumkin.
+ * Guruhni filialga bog'lash uchun ishonchli signal bo'lmagani uchun
+ * reyestr barcha filiallarga umumiy (changelog bilan ayni mulohaza).
+ *
+ * ⚠️ `SocialNetwork` BILAN ARALASHTIRMANG: u — monitor ekranida
+ * ko'rsatiladigan maktabning ijtimoiy tarmoq HAVOLALARI (qo'lda
+ * kiritiladi, bot bilmaydi). Bu — botning haqiqiy a'zoligi.
+ */
+model TelegramGroup {
+  // Telegram chat ID — tabiiy kalit. Guruh "supergroup"ga o'tganda
+  // Telegram YANGI id beradi, ya'ni yangi qator paydo bo'ladi; eskisi
+  // `status = "migrated"` bilan qoladi (tarix o'chirilmaydi).
+  chatId String @id @map("chat_id")
+
+  // "group" | "supergroup" | "channel". Shaxsiy chat bu yerga YOZILMAYDI.
+  type String @default("group")
+
+  // Guruh nomi — HAR hodisada yangilanadi: nom o'zgarganda reyestrda
+  // eski nom turib qolsa, admin panelda boshqa guruh belgilangandek
+  // ko'rinardi.
+  title    String
+  username String?
+
+  /**
+   * Botning o'sha guruhdagi holati — Telegram'ning `ChatMember.status`
+   * qiymati: "administrator" | "member" | "left" | "kicked" |
+   * "restricted" | "migrated".
+   *
+   * ⚠️ QATOR O'CHIRILMAYDI, holat yoziladi. Bot guruhdan chiqarilsa ham
+   * "rasmiy guruh" belgisi va tarix saqlanishi kerak — qayta qo'shilganda
+   * belgi o'zi tiklanadi.
+   */
+  status String @default("member")
+
+  // Admin huquqlari (faqat `status = "administrator"` da ma'noli).
+  // Xabar yuborish oqimi hali YO'Q, lekin huquqni KO'RSATISH kerak:
+  // "rasmiy guruh" deb belgilangan guruhga keyin yuborib bo'lmasligi
+  // admin uchun hozir ko'rinib turishi lozim.
+  canPostMessages Boolean @default(false) @map("can_post_messages")
+  canInviteUsers  Boolean @default(false) @map("can_invite_users")
+
+  /**
+   * RASMIY GURUH — admin paneldan qo'yiladigan belgi.
+   *
+   * ⚠️ HOZIRCHA FAQAT BELGI: tizim bu guruhga hech narsa yubormaydi.
+   * Ma'nosi — "bu maktabning tanilgan guruhi", ya'ni keyin xabar
+   * yuborish qo'shilganda manba ro'yxati TAYYOR bo'ladi.
+   *
+   * ⚠️ FAQAT ADMIN BO'LGAN GURUHDA qo'yiladi (service tekshiradi):
+   * bot oddiy a'zo bo'lgan guruhni "rasmiy" deb belgilash, keyinchalik
+   * yuborish qo'shilganda jim ishlamaydigan sozlamaga aylanardi.
+   */
+  isOfficial     Boolean   @default(false) @map("is_official")
+  // Kim va qachon belgilagan — "rasmiy" degan qaror javobgarlik bilan
+  // keladi (filial schema'sidagi `User.id`, FK EMAS: boshqa schema).
+  officialBy     String?   @map("official_by") @db.Char(24)
+  officialAt     DateTime? @map("official_at")
+  officialBranch String?   @map("official_branch") @db.Char(24)
+
+  // Botni guruhga qo'shgan odamning Telegram ID'si — guruhni keyin
+  // filialga biriktirish uchun yagona ishora (ro'yxatdan o'tmagan
+  // bo'lishi MUMKIN, shuning uchun `String?`).
+  addedByTgId String? @map("added_by_tg_id")
+
+  // Bot o'sha guruhni BIRINCHI ko'rgan va OXIRGI hodisa vaqti.
+  joinedAt DateTime  @default(now()) @map("joined_at")
+  leftAt   DateTime? @map("left_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([isOfficial])
+  @@map("telegram_groups")
+}

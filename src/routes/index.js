@@ -30,6 +30,7 @@ const attendanceRoutes = require("./attendance.routes");
 const studentAttendanceRoutes = require("./studentAttendance.routes");
 const absenceReasonRoutes = require("./absenceReason.routes");
 const issueRoutes = require("./issue.routes");
+const telegramGroupRoutes = require("./telegramGroup.routes");
 const attendanceReportRoutes = require("./attendanceReport.routes");
 const leadRoutes = require("./lead.routes");
 const premiumRoutes = require("./premium.routes");
@@ -117,6 +118,10 @@ router.use("/attendance", attendanceRoutes);
 router.use("/student-attendance", studentAttendanceRoutes);
 router.use("/absence-reasons", absenceReasonRoutes);
 router.use("/issues", issueRoutes);
+// Bot guruhlari — "Muammolar → Bot sozlamalari" tabi. ALOHIDA prefiks:
+// reyestr PLATFORMADA yashaydi (`telegramGroup.service.js`), muammolar esa
+// filialda — bitta router ichida ikki xil Prisma client aralashardi.
+router.use("/telegram-groups", telegramGroupRoutes);
 router.use("/attendance-reports", attendanceReportRoutes);
 router.use("/leads", leadRoutes);
 router.use("/premium", premiumRoutes);

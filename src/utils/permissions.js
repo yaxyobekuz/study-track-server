@@ -936,6 +936,14 @@ const PERMISSION_SECTIONS = [
       A.delete,
       { key: "categories", label: "Kategoriyalarni boshqarish" },
       { key: "reports", label: "Hisobotlar" },
+      // BOT SOZLAMALARI — botning guruhlari va "rasmiy guruh" belgisi.
+      //
+      // ⚠️ `categories` DAN ALOHIDA: kategoriya — botdagi TUGMA matni,
+      // bu esa botning TASHQI ko'rinishi (maktab nomidan tanilgan guruh).
+      // Ayni paytda belgi faqat belgi, lekin unga xabar yuborish
+      // qo'shilsa, bu kalit allaqachon kimda borligi muhim bo'ladi —
+      // keyinroq ajratish esa ruxsatni jimgina KENGAYTIRARDI.
+      { key: "botSettings", label: "Bot sozlamalari" },
     ],
   },
   {
