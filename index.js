@@ -35,6 +35,9 @@ const requestLogger = require("./src/middleware/requestLogger.middleware");
 const initOwner = require("./src/utils/initOwner");
 const initRoles = require("./src/utils/initRoles");
 
+// Yopilishda baza ulanishlarini kutish muhlati.
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 // Cron jobs
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
 const { startAcademicInsightCron } = require("./src/jobs/academicInsight.job");
@@ -293,13 +296,52 @@ const bootstrap = async () => {
   // filialga bog'liq. Reyestr esa hammasini biladi.
   const platformPrisma = require("./src/config/platformPrisma");
   const branchRegistry = require("./src/config/branchRegistry");
+  //
+  // ⚠️ `server.close()` CALLBACK'IGA TAYANMAYDI. U faqat OCHIQ ULANISHLAR
+  // tugagach chaqiriladi; brauzer esa `keep-alive` bilan o'tirgan bo'ladi,
+  // ya'ni callback hech qachon kelmasligi mumkin. Oldin baza aynan shu
+  // callback ichida yopilardi — natijada SIGINT "server yopilmoqda" deb
+  // yozib, jarayon osilib qolar va o'nlab ulanish bazada `idle` holatda
+  // qolib ketardi. Bir necha marta qayta ishga tushirilsa, rol bo'yicha
+  // ulanish cheklovi aynan shu "yetim" ulanishlar bilan tugardi.
+  //
+  // Shuning uchun: ulanishlarni yopishga buyruq beramiz, lekin baza
+  // client'larini callback'siz, muhlat bilan yopamiz.
+  let shuttingDown = false;
   const shutdown = async (signal) => {
+    // Ikkinchi Ctrl+C — darhol chiqish.
+    if (shuttingDown) {
+      logger.warn(`${signal} takroriy — darhol chiqilmoqda`);
+      process.exit(1);
+    }
+    shuttingDown = true;
     logger.info(`${signal} qabul qilindi, server yopilmoqda...`);
-    server.close(async () => {
+
+    server.close();
+    // Node 18.2+: `keep-alive` ulanishlarni majburan uzadi, aks holda
+    // `server.close()` ochiq brauzer tabini abadiy kutardi.
+    server.closeIdleConnections?.();
+    setTimeout(() => server.closeAllConnections?.(), 3_000).unref();
+
+    // Baza yopilishi cho'zilsa ham jarayon osilib qolmaydi.
+    // ⚠️ `unref()` QO'YILMAYDI: bu taymer — oxirgi himoya, ya'ni hodisa
+    // halqasi bo'shab qolganda ham ISHLASHI kerak. `unref()` bilan u aynan
+    // o'sha holatda jim o'tkazib yuborilardi.
+    const timer = setTimeout(() => {
+      logger.warn("Baza ulanishlari o'z vaqtida yopilmadi — majburan chiqish");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+
+    try {
       await branchRegistry.disconnectAll();
       await platformPrisma.$disconnectBase();
-      process.exit(0);
-    });
+      logger.info("Baza ulanishlari yopildi");
+    } catch (error) {
+      logger.error(`Yopishda xato: ${error.message}`);
+    }
+
+    clearTimeout(timer);
+    process.exit(0);
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
