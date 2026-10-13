@@ -84,11 +84,14 @@ const aiAssistantRoutes = require("./aiAssistant.routes");
 const pushRoutes = require("./push.routes");
 const deviceRoutes = require("./device.routes");
 const parentalRoutes = require("./parental.routes");
+const globalSearchRoutes = require("./globalSearch.routes");
 
 // Routes
 router.use("/auth", authRoutes);
 router.use("/branches", branchRoutes);
 router.use("/branch-transfers", branchTransferRoutes);
+// Sidebar qidiruvi — butun platforma bo'yicha (platformadagi katalogdan)
+router.use("/search", globalSearchRoutes);
 router.use("/users", userRoutes);
 router.use("/subjects", subjectRoutes);
 router.use("/classes", classRoutes);
