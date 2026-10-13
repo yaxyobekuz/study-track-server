@@ -22,6 +22,10 @@
 const expenseService = require("./expense.service");
 const ExcelService = require("./excel.service");
 const { formatDateUz, formatDateTimeUz } = require("../helpers/date.helpers");
+const {
+  parseOptionalMonthKey,
+  formatMonthKey,
+} = require("../helpers/month.helpers");
 // Sarlavha matni ODAMGA ketadi → `formatSum` ("5 750 000 so'm"),
 // `formatAmount` emas: u API maydoni uchun ("5750000.00")
 const { formatSum } = require("../helpers/money.helpers");
@@ -61,10 +65,23 @@ const fetchAllRows = async (query) => {
  * degan savolga javob SHU qator. Filtr nomlari ID emas, NOM bilan
  * yoziladi: fayl boshqa odamga yuborilganda ID hech narsa demaydi.
  */
-const buildSubtitle = ({ totals, rowCount, categoryName, accountName, from, to, includeVoided }) => {
+const buildSubtitle = ({
+  totals,
+  rowCount,
+  categoryName,
+  accountName,
+  monthKey,
+  from,
+  to,
+  includeVoided,
+}) => {
   const parts = [];
 
-  if (from || to) {
+  // Oy tanlangan bo'lsa — kanonik oy yorlig'i ("Oktabr, 2026"), kun
+  // oralig'i emas: ekranda ham aynan shu matn turadi
+  if (monthKey) {
+    parts.push(`Oy: ${formatMonthKey(monthKey)}`);
+  } else if (from || to) {
     parts.push(
       `Davr: ${from ? formatDateUz(from, { utc: true }) : "boshidan"} — ` +
         `${to ? formatDateUz(to, { utc: true }) : "hozirgacha"}`,
@@ -100,6 +117,11 @@ const buildSubtitle = ({ totals, rowCount, categoryName, accountName, from, to, 
 async function exportExpensesToExcel(res, query = {}, labels = {}) {
   const { rows, totals } = await fetchAllRows(query);
 
+  // ⚠️ `getExpenses` oyni allaqachon tekshirgan (noto'g'ri formatda xato
+  // beradi), shuning uchun bu yerda qayta tekshirilmaydi — faqat
+  // sarlavha va fayl nomi uchun o'qiladi.
+  const monthKey = parseOptionalMonthKey(query.month, "Oy");
+
   const columns = [
     { header: "№", key: "no", width: 6, align: "center" },
     { header: "Sana", key: "date", width: 18 },
@@ -122,6 +144,7 @@ async function exportExpensesToExcel(res, query = {}, labels = {}) {
       rowCount: rows.length,
       categoryName: labels.categoryName,
       accountName: labels.accountName,
+      monthKey,
       from: query.from,
       to: query.to,
       includeVoided: query.includeVoided === "true",
@@ -201,7 +224,14 @@ async function exportExpensesToExcel(res, query = {}, labels = {}) {
     });
   }
 
-  await ExcelService.sendWorkbookAs(res, workbook, "chiqimlar", {
+  // Fayl nomida OY turadi: bir nechta oy yuklab olinganda ular bir-birini
+  // bosib ketmasligi kerak ("chiqimlar_Oktabr-2026_2026-10-13.xlsx").
+  // Nomdagi vergul olib tashlanadi — fayl nomida u ortiqcha.
+  const baseName = monthKey
+    ? `chiqimlar_${formatMonthKey(monthKey).replace(", ", "-")}`
+    : "chiqimlar";
+
+  await ExcelService.sendWorkbookAs(res, workbook, baseName, {
     fallbackName: "chiqimlar",
   });
 }

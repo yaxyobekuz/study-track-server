@@ -25,6 +25,7 @@ const { Decimal, parseAmount, formatAmount } = require("../helpers/money.helpers
 const {
   parseDayRangeFilter,
   parseRecordedAt,
+  parseOptionalMonthKey,
   monthInstantRange,
   formatMonthKey,
 } = require("../helpers/month.helpers");
@@ -425,8 +426,24 @@ const getExpenses = async (req) => {
   const { query } = req;
 
   const includeVoided = query.includeVoided === "true";
-  // Kun chegarasi TOSHKENT bo'yicha — modul bo'ylab bitta manbadan
-  const range = parseDayRangeFilter(query);
+
+  // ⚠️ OY FILTRI `from`/`to` DAN USTUN. Oy — moliyaning o'lchov birligi
+  // (`finance.md` §0), shuning uchun ro'yxat ham, Excel ham odatda shu
+  // bilan so'raladi. Ikkalasi birga kelsa, aniqrog'i (oy) yutadi: aks
+  // holda "oktabr" tanlangan-u, eskirgan `from` qolib ketsa, javob
+  // ikkalasining KESISHMASI bo'lib, ekranda tushuntirib bo'lmas ro'yxat
+  // chiqardi.
+  //
+  // Chegaralar TOSHKENT bo'yicha — `monthInstantRange` bilan, chunki
+  // `occurredAt`/`paidAt` INSTANT (kun maydoni emas).
+  const monthKey = parseOptionalMonthKey(query.month, "Oy");
+  let range = null;
+  if (monthKey) {
+    const { from, to } = monthInstantRange(monthKey);
+    range = { gte: from, lte: to };
+  } else {
+    range = parseDayRangeFilter(query);
+  }
 
   // ── Xarajatlar (Expense) ──────────────────────────────────────────────
   const expWhere = {};
