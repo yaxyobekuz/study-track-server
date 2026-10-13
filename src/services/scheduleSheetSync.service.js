@@ -807,7 +807,12 @@ async function rejectRevision(id, body, user) {
 async function getMappings() {
   const [mappings, classes, subjects, teachers] = await Promise.all([
     prisma.scheduleSheetMapping.findMany({ orderBy: [{ kind: "asc" }, { label: "asc" }] }),
-    prisma.class.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    // ⚠️ NOFAOL SINF HAM O'QILADI (`isActive` filtrlanmaydi): allaqachon
+    // moslangan sinf keyin nofaol qilinsa, uning nomi ro'yxatdan yo'qolib,
+    // qator "O'chirilgan" bo'lib ko'rinardi. Tanlov ro'yxatidan esa u
+    // pastda CHIQARIB TASHLANADI — eskisi ko'rinadi, yangisini tanlab
+    // bo'lmaydi (o'qituvchilardagi "(arxiv)" bilan ayni mulohaza).
+    prisma.class.findMany({ select: { id: true, name: true, isActive: true }, orderBy: { name: "asc" } }),
     prisma.subject.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
     prisma.user.findMany({
       where: { OR: [{ role: ROLES.TEACHER }, { extraRoles: { has: ROLES.TEACHER } }] },
@@ -849,7 +854,10 @@ async function getMappings() {
       updatedAt: m.updatedAt,
     })),
     options: {
-      classes,
+      // ⚠️ TANLOVDA FAQAT FAOL SINFLAR: nofaol sinfga jadval yozish
+      // ma'nosiz — u o'quv jarayonida yo'q. O'qituvchilar ro'yxati ham
+      // shu mulohaza bilan arxivlanganlardan tozalanadi (pastda).
+      classes: classes.filter((c) => c.isActive).map(({ id, name }) => ({ id, name })),
       subjects,
       // `username` — yagona: bir xil ismli ikki o'qituvchini ekranda ajratish uchun
       teachers: teachers
