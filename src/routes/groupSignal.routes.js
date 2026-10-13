@@ -9,6 +9,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const {
   getSignals,
   getCounts,
+  refreshSignals,
   attachSignal,
   dismissSignal,
 } = require("../controllers/groupSignal.controller");
@@ -37,6 +38,14 @@ router.get(
   "/counts",
   authorizePermission(PERMISSIONS.ISSUES_SIGNALS),
   getCounts,
+);
+
+// ⚠️ `/refresh` ham `/:id/...` DAN OLDIN — "refresh" id deb o'qilmasligi
+// uchun (`/counts` bilan ayni sabab).
+router.post(
+  "/refresh",
+  authorizePermission(PERMISSIONS.ISSUES_SIGNALS),
+  refreshSignals,
 );
 
 router.post(

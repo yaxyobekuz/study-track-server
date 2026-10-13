@@ -5,6 +5,7 @@
 
 const asyncHandler = require("../middleware/async.middleware");
 const groupSignalService = require("../services/groupSignal.service");
+const { runGroupSignalPass } = require("../jobs/groupSignal.job");
 
 /**
  * AI topgan signallar ro'yxati.
@@ -50,4 +51,30 @@ const dismissSignal = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-module.exports = { getSignals, getCounts, attachSignal, dismissSignal };
+/**
+ * HOZIR TEKSHIRISH — 30 daqiqalik aylanishni kutmasdan tahlil qilish.
+ * POST /api/group-signals/refresh
+ *
+ * ⚠️ YANGI XABAR OLIB KELMAYDI: xabarlarni BOT yozadi (guruhga xabar
+ * tushganda, darhol). Bu tugma faqat NAVBATDAGI xabarlarni tahlil
+ * qiladi, ya'ni "signal hali chiqmagan" holatini tezlashtiradi.
+ * Guruhda umuman yangi gap bo'lmasa, natija nol bo'ladi — bu normal.
+ *
+ * ⚠️ XATO OTMAYDI: `runGroupSignalPass` har qanday nosozlikni o'zi
+ * ushlaydi va `error: true` qaytaradi, panel esa shunga qarab xabar
+ * ko'rsatadi. Bu fon ishi — 500 bilan tugashi noto'g'ri bo'lardi.
+ *
+ * ⚠️ IKKI MARTA BOSILSA bitta aylanish ketadi: job ichida qo'riqchi bor.
+ */
+const refreshSignals = asyncHandler(async (req, res) => {
+  const data = await runGroupSignalPass();
+  res.json({ success: true, data });
+});
+
+module.exports = {
+  getSignals,
+  getCounts,
+  refreshSignals,
+  attachSignal,
+  dismissSignal,
+};

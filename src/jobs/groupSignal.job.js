@@ -28,12 +28,34 @@ const groupSignalService = require("../services/groupSignal.service");
 const groupSignalAi = require("../services/groupSignalAi.service");
 
 /**
- * Bitta aylanish. Qo'lda ham chaqirsa bo'ladi (test uchun).
+ * HOZIR ISHLAYOTGAN aylanish (bo'lmasa `null`).
+ *
+ * ⚠️ BIR VAQTDA BITTA AYLANISH. Panelda "Hozir tekshirish" tugmasi bor
+ * va u cron bilan ustma-ust tushishi mumkin: ikki aylanish bir vaqtda
+ * ketsa, IKKALASI ham ayni xabarlarni o'qib (`analyzedAt` hali
+ * qo'yilmagan), ayni signalni IKKI MARTA yozardi — ustiga AI hisobi
+ * ham ikki barobar bo'lardi. Shuning uchun ikkinchi chaqiruv yangi
+ * aylanish boshlamaydi, BIRINCHISINI KUTADI va uning natijasini oladi.
+ */
+let _running = null;
+
+/**
+ * Bitta aylanish. Panel ham, cron ham shuni chaqiradi.
  *
  * ⚠️ XATO YUQORIGA CHIQMAYDI: bu fon ishi va yiqilishi jarayonni
- * to'xtatmasligi kerak.
+ * to'xtatmasligi kerak. Panel javobni `error` bayrog'idan biladi.
  */
 async function runGroupSignalPass() {
+  if (_running) return _running;
+
+  _running = _runPass().finally(() => {
+    _running = null;
+  });
+
+  return _running;
+}
+
+async function _runPass() {
   try {
     const result = await groupSignalService.runAnalysis();
 
