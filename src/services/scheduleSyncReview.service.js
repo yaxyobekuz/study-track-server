@@ -56,6 +56,32 @@ const { hasRole, hasPermission, PERMISSIONS } = require("../utils/permissions");
 const SINGLETON = "singleton";
 const MAPPING_KINDS = ["class", "subject", "teacher"];
 
+/**
+ * E'TIBORSIZ QOLDIRILGAN NOM — "bu sheet'dagi nom bizga tegishli emas".
+ *
+ * ⚠️ NIMA UCHUN KERAK: bitta Google Sheet bir nechta filialning jadvalini
+ * saqlashi mumkin. AI Hub filialida ochilganda sheet'dagi "2 A-sinf rus"
+ * kabi o'nlab begona nom "Topilmadi" bo'lib turardi va ularni moslashning
+ * ILOJI YO'Q edi — platformada bunday sinf yo'q va bo'lmaydi ham.
+ * Natijada "hal qilinmagan nomlar" ro'yxati hech qachon bo'shamasdi va
+ * jadvalni qo'llash doim bloklanardi.
+ *
+ * ⚠️ NIMA UCHUN SENTINEL, ALOHIDA JADVAL EMAS: `schedule_sheet_mappings`
+ * da `targetId` MAJBURIY (`String`, nullable emas) va `targetId: null`
+ * allaqachon BAND — u "moslashni o'chirish" degani (`saveMappings`).
+ * Alohida jadval esa "bu nom qanday hal qilingan" degan savolga ikkita
+ * manba yaratardi: bir joyda moslash, boshqa joyda e'tiborsizlik, va
+ * ikkisi bir-biriga zid bo'lib qolishi mumkin edi.
+ *
+ * 24 ta nol — haqiqiy ObjectId bo'la olmaydi (hech qachon generatsiya
+ * qilinmaydi), lekin `ID_RE` dan o'tadi, ya'ni mavjud validatsiya va
+ * ustun turi (`@db.Char(24)`) o'zgarishsiz qoladi.
+ */
+const IGNORED_TARGET = "000000000000000000000000";
+
+/** @param {string|null} targetId */
+const isIgnored = (targetId) => targetId === IGNORED_TARGET;
+
 // Sheet tekshiruvi shu muddatdan eski bo'lsa qo'llanmaydi: sheet o'shandan
 // beri o'zgargan bo'lishi mumkin (platforma rejimida avtomatik tekshiruv yo'q).
 const CHECK_FRESH_MS = 15 * 60 * 1000;
@@ -318,7 +344,14 @@ function resolveLabels(data, ctx) {
 
       let status;
       let targetId = null;
-      if (mapping) {
+      if (mapping && isIgnored(mapping.targetId)) {
+        // ⚠️ E'TIBORSIZ — `missing_target` dan OLDIN tekshiriladi:
+        // sentinel platformada mavjud bo'lmagani uchun pastdagi `exists`
+        // tekshiruvi uni "O'chirilgan" deb ko'rsatib, qatorni yana
+        // muammoga aylantirardi.
+        status = "ignored";
+        targetId = null;
+      } else if (mapping) {
         targetId = mapping.targetId;
         const exists =
           kind === "class"
@@ -358,7 +391,12 @@ function resolveLabels(data, ctx) {
       lookup[kind].set(key, usable ? targetId : null);
 
       // Darssiz sinf ustuni — moslanmagan bo'lsa ham hech narsa yozilmaydi.
-      if (!usable && !(kind === "class" && entry.count === 0)) {
+      //
+      // ⚠️ E'TIBORSIZ QOLDIRILGAN NOM XATO BERMAYDI: odam "bu bizga
+      // tegishli emas" deb aytib bo'lgan. Aks holda uni hal qilishning
+      // iloji qolmasdi — platformada mos yozuv yo'q, demak moslab ham
+      // bo'lmaydi, e'tiborsiz qoldirib ham bo'lmaydi.
+      if (status !== "ignored" && !usable && !(kind === "class" && entry.count === 0)) {
         errors.push({ code: `mapping_${status}`, kind, key, message: mappingMessage(kind, res) });
       }
 
@@ -400,7 +438,18 @@ function resolveLabels(data, ctx) {
     }
   }
 
-  return { resolution, lookup, errors, warnings };
+  // E'TIBORSIZ QOLDIRILGAN kalitlar — tur bo'yicha. Dars qurishda shu
+  // to'plamdagi nom uchragan qator BUTUNLAY tashlanadi (`reviewRevision`),
+  // shuning uchun u `lookup` dan alohida: `lookup` "qaysi id ga bog'landi"
+  // degan savolga javob beradi, bu esa "umuman qaramaymiz" degan ro'yxat.
+  const ignoredKeys = { class: new Set(), subject: new Set(), teacher: new Set() };
+  for (const kind of MAPPING_KINDS) {
+    for (const res of resolution[kind]) {
+      if (res.status === "ignored") ignoredKeys[kind].add(res.key);
+    }
+  }
+
+  return { resolution, lookup, ignoredKeys, errors, warnings };
 }
 
 const KIND_LABELS = { class: "Sinf", subject: "Fan", teacher: "O'qituvchi" };
@@ -948,22 +997,60 @@ async function reviewRevision(client, revision, { calendar = null, user = null }
   // Yangi holatni qurish — faqat moslash va vaqtlar to'liq bo'lsa
   let newRows = null;
   const mappingReady = !errors.length;
+  // E'tiborsiz qoldirilgan nom tufayli tashlab ketilgan darslar — pastda
+  // ogohlantirishga aylanadi (jim tashlab ketish "darslarim qayerda?"
+  // degan savolni tug'dirardi).
+  const skippedByIgnore = [];
+  const ignoredKeys = resolved.ignoredKeys;
   if (mappingReady) {
-    const lessons = (data.lessons || []).map((l) => ({
-      classId: resolved.lookup.class.get(normalizeKey(l.classLabel)),
-      subjectId: resolved.lookup.subject.get(normalizeKey(l.subjectLabel)),
-      teacherId: resolved.lookup.teacher.get(normalizeKey(l.teacherLabel)),
-      day: l.day,
-      order: slotMap.orderOf.get(`${l.startTime}-${l.endTime}`),
-      startTime: l.startTime,
-      endTime: l.endTime,
-      classLabel: l.classLabel,
-      cell: l.cell,
-    }));
+    const lessons = (data.lessons || [])
+      // ⚠️ E'TIBORSIZ QOLDIRILGAN NOMNING DARSI BUTUNLAY TASHLANADI —
+      // `classId: null` bilan quyiga o'tkazilsa, pastdagi `unresolved`
+      // tekshiruvi uni "sinf aniqlanmadi" deb xato qilardi va e'tiborsiz
+      // qoldirishning ma'nosi qolmasdi.
+      //
+      // ⚠️ UCHALA TUR BO'YICHA ham tekshiriladi: begona sinf odatda begona
+      // fan va o'qituvchi bilan keladi, lekin teskarisi ham bo'ladi —
+      // bizning sinfimiz jadvalida boshqa filialning o'qituvchisi turishi
+      // mumkin. Bunday darsni ham yozib bo'lmaydi: o'qituvchi platformada
+      // yo'q, ya'ni dars egasiz qolardi.
+      .filter((l) => {
+        const ignoredKind = MAPPING_KINDS.find((kind) => {
+          const label = kind === "class" ? l.classLabel : kind === "subject" ? l.subjectLabel : l.teacherLabel;
+          return ignoredKeys[kind].has(normalizeKey(label));
+        });
+        if (ignoredKind) skippedByIgnore.push({ cell: l.cell, label: l.classLabel, kind: ignoredKind });
+        return !ignoredKind;
+      })
+      .map((l) => ({
+        classId: resolved.lookup.class.get(normalizeKey(l.classLabel)),
+        subjectId: resolved.lookup.subject.get(normalizeKey(l.subjectLabel)),
+        teacherId: resolved.lookup.teacher.get(normalizeKey(l.teacherLabel)),
+        day: l.day,
+        order: slotMap.orderOf.get(`${l.startTime}-${l.endTime}`),
+        startTime: l.startTime,
+        endTime: l.endTime,
+        classLabel: l.classLabel,
+        cell: l.cell,
+      }));
 
     // Ikkinchi qavat: hal qilinmagan id bilan dars hech qachon quruvchiga
     // tushmasin (parser belgidan iborat nomlarni allaqachon rad etadi).
     const unresolved = lessons.filter((l) => !l.classId || !l.subjectId || !l.teacherId || !l.order);
+    // E'tiborsiz qoldirilgan nomlar tufayli nechta dars tashlab ketilgani —
+    // XATO EMAS, lekin JIM HAM QOLMAYDI: odam "sheet'da 200 dars bor edi,
+    // jadvalga 80 tasi tushibdi" degan holatni ko'rishi kerak.
+    if (skippedByIgnore.length) {
+      const labels = [...new Set(skippedByIgnore.map((s) => s.label).filter(Boolean))];
+      warnings.push({
+        code: "lessons_ignored",
+        message:
+          `${skippedByIgnore.length} ta dars e'tiborsiz qoldirilgan nomlar tufayli o'tkazib yuborildi` +
+          (labels.length ? ` (${labels.slice(0, 5).join(", ")}${labels.length > 5 ? " va boshqalar" : ""})` : "") +
+          ". Ular jadvalga yozilmaydi",
+      });
+    }
+
     if (unresolved.length) {
       for (const l of unresolved.slice(0, 20)) {
         errors.push({
@@ -1434,6 +1521,8 @@ async function uniqueIndexPresent(client) {
 
 module.exports = {
   ACKS,
+  IGNORED_TARGET,
+  isIgnored,
   SNAPSHOT_VERSION,
   SNAPSHOT_KIND_LABELS,
   userCan,
