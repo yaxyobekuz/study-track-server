@@ -1673,6 +1673,19 @@ model Task {
   penaltyRef            String?    @map("penalty_ref") @db.Char(24)
   autopenalized         Boolean    @default(false)
 
+  // DOIMIY TOPSHIRIQ QOIDASI — topshiriq takrorlanuvchi qoidadan avtomat
+  // yaratilgan bo'lsa to'ladi (`taskSchedule.service.js`). Qo'lda berilgan
+  // bir martalik topshiriqda `null`.
+  //
+  // ⚠️ `onDelete: SetNull` — qoida o'chirilsa YARATILGAN TOPSHIRIQLAR
+  // QOLADI: odam allaqachon ish qilgan, natijasi va jarimasi bor. Qoidani
+  // o'chirish faqat KELAJAKKA ta'sir qiladi.
+  scheduleId     String?   @map("schedule_id") @db.Char(24)
+  // Qaysi kun uchun yaratilgan (Toshkent kuni, UTC yarim tunida).
+  // ⚠️ `(scheduleId, assignee, occurrenceDate)` YAGONA: cron ikki marta
+  // ishga tushsa ham bitta kunga ikkita topshiriq yozilmaydi.
+  occurrenceDate DateTime? @map("occurrence_date") @db.Date
+
   // MANBA MUAMMO — topshiriq botdan kelgan muammoni hal qilish uchun
   // berilgan bo'lsa to'ladi (`issueTask.service.js`). Oddiy topshiriqda
   // `null`, ya'ni topshiriqlar bo'limining o'zi o'zgarmadi.
@@ -1688,7 +1701,10 @@ model Task {
   statusHistory   TaskStatusHistory[]
   deadlineHistory TaskDeadlineHistory[]
   issue           Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  schedule        TaskSchedule?         @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
 
+  @@unique([scheduleId, assignee, occurrenceDate])
+  @@index([scheduleId])
   @@index([issueId])
   @@index([assignee, status])
   // Ijrochining vaqt oynasi bo'yicha ro'yxati ("bugun nima qilaman")
@@ -1698,6 +1714,79 @@ model Task {
   @@index([status, dueDate])
   @@index([dueDate, autopenalized, status])
   @@map("tasks")
+}
+
+// ─────────────────────────────────────────────
+// DOIMIY (TAKRORLANUVCHI) TOPSHIRIQLAR
+// ─────────────────────────────────────────────
+
+/**
+ * DOIMIY TOPSHIRIQ QOIDASI — "har dushanba 08:10 da", "har 10 kunda bir",
+ * "3 oyda bir, oyning 1-kuni".
+ *
+ * ⚠️ QOIDANING O'ZI TOPSHIRIQ EMAS. Undan cron HAQIQIY topshiriqlarni
+ * VAQTIDAN OLDIN yaratadi (`leadDays`, sukut 1 kun) — shu yaratilishning
+ * o'zi xodim uchun ESLATMA bo'ladi. Ikkinchi "eslatma" mexanizmi
+ * qo'shilmaydi: u holda bitta hodisa ikki joydan boshqarilardi.
+ *
+ * ⚠️ Yaratilgan topshiriq ODDIY topshiriq: o'z holati, muddati, natijasi,
+ * jarimasi bor va qoida o'chirilsa ham joyida qoladi.
+ */
+model TaskSchedule {
+  id            String  @id @db.Char(24)
+  title         String
+  description   String
+  // Ijrochilar — har hodisada HAR BIRIGA ALOHIDA topshiriq
+  assignees     String[] @db.Char(24)
+  attachments   Json     @default("[]")
+  links         Json     @default("[]")
+  penaltyPoints Int      @default(1) @map("penalty_points")
+
+  // ── TAKRORLANISH ──
+  // "weekly" — haftaning tanlangan kunlari (`weekdays`)
+  // "days"   — har N kunda (`intervalDays`), `startDate` dan sanaladi
+  // "months" — har N oyda (`intervalMonths`), oyning tanlangan kunlari
+  //
+  // ⚠️ Prisma enum EMAS, matn (`Task.kind` bilan AYNI sabab: enum har
+  // filial schema'sida o'ziniki bo'lardi).
+  frequency      String @db.VarChar(16)
+  // 0..6, 0 = yakshanba (JS `getDay()` va `DAYS_UZ` bilan AYNI konvensiya)
+  weekdays       Int[]  @default([])
+  // 1..31. ⚠️ Oyda yo'q kun (31-fevral) O'SHA OYNING OXIRGI KUNIGA
+  // surilaadi — qoida jimgina tushib qolmasligi uchun.
+  monthDays      Int[]  @default([]) @map("month_days")
+  intervalDays   Int?   @map("interval_days")
+  intervalMonths Int?   @map("interval_months")
+
+  // ── VAQT ── Toshkent devor-soati, "HH:mm"
+  startTime     String? @map("start_time") @db.VarChar(5)
+  dueTime       String  @map("due_time") @db.VarChar(5)
+  // Muddat hodisa kunidan necha kun keyin (0 — o'sha kuni).
+  // "Dushanba 08:10 dan chorshanba 18:00 gacha" shu bilan ifodalanadi.
+  dueOffsetDays Int     @default(0) @map("due_offset_days")
+  // Topshiriq necha kun OLDIN yaratiladi (= eslatma)
+  leadDays      Int     @default(1) @map("lead_days")
+
+  // ── AMAL QILISH DAVRI ── (Toshkent kuni, UTC yarim tunida)
+  startDate DateTime  @map("start_date") @db.Date
+  endDate   DateTime? @map("end_date") @db.Date
+
+  isActive Boolean @default(true) @map("is_active")
+  // Oxirgi yaratilgan hodisa kuni — hisobot va diagnostika uchun
+  lastRunDate DateTime? @map("last_run_date") @db.Date
+
+  createdBy  String    @map("created_by") @db.Char(24)
+  stoppedBy  String?   @map("stopped_by") @db.Char(24)
+  stopReason String?   @map("stop_reason")
+  stoppedAt  DateTime? @map("stopped_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  tasks Task[]
+
+  @@index([isActive, startDate])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@map("task_schedules")
 }
 
 // Topshiriq qoidalari (filial singleton). Getter — `settings.service.js` dagi

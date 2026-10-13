@@ -22,6 +22,7 @@ const coinRoutes = require("./coin.routes");
 const marketRoutes = require("./market.routes");
 const penaltyRoutes = require("./penalty.routes");
 const taskRoutes = require("./task.routes");
+const taskScheduleRoutes = require("./taskSchedule.routes");
 const roleRoutes = require("./role.routes");
 const permissionRoutes = require("./permission.routes");
 const socialNetworkRoutes = require("./socialNetwork.routes");
@@ -111,6 +112,8 @@ router.use("/coins", coinRoutes);
 router.use("/market", marketRoutes);
 router.use("/penalties", penaltyRoutes);
 router.use("/tasks", taskRoutes);
+// Doimiy (takrorlanuvchi) topshiriq QOIDALARI — topshiriqlarning o'zi emas
+router.use("/task-schedules", taskScheduleRoutes);
 router.use("/roles", roleRoutes);
 router.use("/permissions", permissionRoutes);
 router.use("/social-networks", socialNetworkRoutes);

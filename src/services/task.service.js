@@ -282,6 +282,82 @@ const _assertAssignableUsers = async (ids) => {
 
 // ─── ASOSIY FUNKSIYALAR ────────────────────────────────────────────
 
+/**
+ * TOPSHIRIQ QATORLARINI YOZADIGAN YAGONA JOY.
+ *
+ * Qo'lda berilgan topshiriq ham, doimiy qoidadan avtomat yaratilgani ham
+ * (`taskSchedule.service.js`) shu yerdan o'tadi: qator shakli, boshlang'ich
+ * holat va vaqt chizig'ining birinchi qatori bir xil bo'lishi kerak. Ikkita
+ * yozuvchi bo'lsa, avtomat topshiriqlar tarixsiz paydo bo'lardi.
+ *
+ * HAR BIR IJROCHIGA ALOHIDA topshiriq: har kimning o'z holati, muddati,
+ * natijasi va jarimasi bor. ⚠️ Fayllar hamma nusxada UMUMIY (bir marta
+ * yuklanadi) — o'chirishda `_deleteUnsharedAttachments` shuni hisobga oladi.
+ *
+ * @param {object} params
+ * @param {string[]} params.assigneeIds
+ * @param {string} params.createdBy
+ * @param {object} params.fields - qatorning qolgan maydonlari
+ * @param {boolean} [params.atomic=true] - `true`: hammasi bitta
+ *   tranzaksiyada (40 kishidan 25-sida xato chiqsa, yarmi berilgan holat
+ *   qolmaydi). `false`: har qator alohida — cron uchun, bitta buzuq qator
+ *   butun passni orqaga qaytarmasligi kerak.
+ * @param {boolean} [params.skipDuplicates=false] - takrorni (yagona indeks)
+ *   xato emas, "allaqachon bor" deb o'tkazadi — cron idempotentligi.
+ * @returns {Promise<object[]>} yozilgan qatorlar
+ */
+const writeTaskRows = async ({
+  assigneeIds,
+  createdBy,
+  fields,
+  atomic = true,
+  skipDuplicates = false,
+  now = new Date(),
+}) => {
+  const data = (assigneeId) => ({
+    ...fields,
+    assignee: assigneeId,
+    createdBy,
+    status: "pending",
+    statusHistory: {
+      create: [
+        {
+          status: "pending",
+          reason: "Topshiriq yaratildi",
+          changedBy: createdBy,
+          changedAt: now,
+          position: 0,
+        },
+      ],
+    },
+  });
+
+  if (atomic) {
+    return prisma.$transaction(
+      async (tx) => {
+        const created = [];
+        for (const assigneeId of assigneeIds) {
+          created.push(await tx.task.create({ data: data(assigneeId) }));
+        }
+        return created;
+      },
+      { timeout: Math.max(15000, assigneeIds.length * 200), maxWait: 10000 },
+    );
+  }
+
+  const created = [];
+  for (const assigneeId of assigneeIds) {
+    try {
+      created.push(await prisma.task.create({ data: data(assigneeId) }));
+    } catch (error) {
+      // P2002 — yagona indeks: shu kunga topshiriq allaqachon yozilgan
+      if (skipDuplicates && error?.code === "P2002") continue;
+      throw error;
+    }
+  }
+  return created;
+};
+
 const createTasks = async ({
   title,
   description,
@@ -374,22 +450,12 @@ const createTasks = async ({
     attachments = await uploadAttachments(files);
   }
 
-  const now = new Date();
-  const initialStatus = "pending";
-
-  // HAR BIR IJROCHIGA ALOHIDA topshiriq: har kimning o'z holati, muddati,
-  // natijasi va jarimasi bor. Hammasi BITTA tranzaksiyada — 40 kishidan
-  // 25-sida xato chiqsa, yarmi berilgan-yarmi berilmagan holat qolmaydi.
-  // ⚠️ Fayllar hamma nusxada UMUMIY (bir marta yuklanadi) — o'chirishda
-  // `_deleteUnsharedAttachments` shuni hisobga oladi.
   let tasks;
   try {
-    tasks = await prisma.$transaction(
-      async (tx) => {
-        const created = [];
-        for (const assigneeId of assigneeIds) {
-          created.push(await tx.task.create({
-      data: {
+    tasks = await writeTaskRows({
+      assigneeIds,
+      createdBy,
+      fields: {
         title: cleanTitle,
         description: cleanDescription,
         startDate: start,
@@ -397,29 +463,10 @@ const createTasks = async ({
         kind: taskKind,
         links: taskLinks,
         penaltyPoints: points,
-        assignee: assigneeId,
-        createdBy,
-        status: initialStatus,
         attachments,
         issueId: issueId ?? null,
-        statusHistory: {
-          create: [
-            {
-              status: initialStatus,
-              reason: "Topshiriq yaratildi",
-              changedBy: createdBy,
-              changedAt: now,
-              position: 0,
-            },
-          ],
-        },
       },
-          }));
-        }
-        return created;
-      },
-      { timeout: Math.max(15000, assigneeIds.length * 200), maxWait: 10000 },
-    );
+    });
   } catch (error) {
     // Yozuv bo'lmadi — yuklangan fayllar yetim qolmasin
     await deleteAttachments(attachments);
@@ -1544,6 +1591,8 @@ const updateTaskSettings = async (body, userId) => {
 
 module.exports = {
   ACTIVE_STATUSES,
+  writeTaskRows,
+  notifyAssignees: _notifyAssignees,
   WORKING_STATUSES,
   COMPLETION_FILES_HARD_MAX,
   TASK_ATTACHMENTS_MAX,
