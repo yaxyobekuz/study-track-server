@@ -11,6 +11,19 @@
  * bu 90 ta ulanish bo'lib, Postgres'ning odatiy `max_connections = 100` ini
  * yeb qo'yardi.
  *
+ * ⚠️ LEKIN FILIAL CHEKLOVINING O'ZI YETARLI EMAS. `connection_limit` HAR BIR
+ * client uchun amal qiladi, jami esa ochilgan filiallar soniga ko'payadi:
+ * 6 filial × 5 + platforma 5 = 35, va bazaga bitta jarayon emas, bir nechtasi
+ * ulanadi (prod, dev nusxasi, pgAdmin). Rolda `rolconnlimit = 100` bo'lsa
+ * "too many connections for role" aynan shunda chiqadi.
+ *
+ * Shuning uchun chegara filialga emas, JARAYONGA qo'yiladi
+ * (`config.dbConnectionBudget`): budjet ochiq filiallarga teng bo'linadi va
+ * yangi filial ochilganda mavjud client'lar QAYTA O'LCHANADI. Shu sababli
+ * jami ulanish filiallar soni qancha bo'lishidan qat'i nazar budjetdan
+ * oshmaydi — "filial qo'shdim, server yiqildi" holati tuzilishi bo'yicha
+ * imkonsiz.
+ *
  * Kesh kaliti — `id` emas, `schemaName`: filial qatori qayta o'qilganda ham,
  * migratsiya skriptidan chaqirilganda ham (u yerda `Branch` qatori bo'lmasligi
  * mumkin) bir xil client qaytadi.

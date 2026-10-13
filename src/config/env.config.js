@@ -22,6 +22,8 @@ const optionalEnvVars = {
   BRANCH_SCHEMA_PREFIX: "br_",
   BRANCH_CONNECTION_LIMIT: 5,
   PLATFORM_CONNECTION_LIMIT: 5,
+  DB_CONNECTION_BUDGET: 25,
+  DB_POOL_TIMEOUT: 20,
 };
 
 /**
@@ -127,6 +129,16 @@ const config = {
   // faqat kataloglarni o'qiydi, shuning uchun filial bilan bir xil kichik
   // pool yetarli.
   platformConnectionLimit: parseInt(process.env.PLATFORM_CONNECTION_LIMIT, 10) || 5,
+  // ⚠️ BU JARAYON OLA OLADIGAN JAMI ULANISH. Filial cheklovining o'zi
+  // yetarli EMAS: u HAR BIR client uchun amal qiladi, jami esa filiallar
+  // soniga ko'payib ketadi (6 filial × 5 + platforma 5 = 35). Rolda
+  // `rolconnlimit = 100` va bazaga bir nechta nusxa ulanadi (prod, dev,
+  // pgAdmin) — shuning uchun chegara filialga emas, JARAYONGA qo'yiladi:
+  // `branchRegistry` budjetni ochiq filiallarga bo'lib beradi.
+  dbConnectionBudget: parseInt(process.env.DB_CONNECTION_BUDGET, 10) || 25,
+  // Pool bo'shashini kutish (sekund). Prisma standarti 10 — og'ir
+  // hisobotda yetmay "Timed out fetching a new connection" beradi.
+  dbPoolTimeout: parseInt(process.env.DB_POOL_TIMEOUT, 10) || 20,
 
   // JWT
   jwtSecret: process.env.JWT_SECRET,
