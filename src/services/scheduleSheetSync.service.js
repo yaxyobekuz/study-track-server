@@ -828,6 +828,12 @@ async function getMappings() {
     subject: new Map(subjects.map((s) => [s.id, s.name])),
     teacher: new Map(teachers.map((t) => [t.id, `${teacherName(t)}${t.isArchived ? " (arxiv)" : ""}`])),
   };
+  // E'tiborsiz qoldirilgan nom platformadagi hech bir yozuvga ishora
+  // qilmaydi, shuning uchun uning yorlig'i qo'lda beriladi — aks holda
+  // `targetMissing: true` bo'lib, "O'chirilgan" deb ko'rinardi.
+  for (const kind of MAPPING_KINDS) {
+    names[kind].set(review.IGNORED_TARGET, "E'tiborsiz qoldirilgan");
+  }
   const users = await review.loadUsersById(prisma, mappings.map((m) => m.updatedBy));
 
   return {
@@ -887,7 +893,13 @@ async function saveMappings(body, user) {
   });
 
   await withScheduleWriteLock(async (tx) => {
-    const idsOf = (kind) => normalized.filter((i) => i.kind === kind && i.targetId).map((i) => i.targetId);
+    // ⚠️ SENTINEL TEKSHIRUVDAN CHETDA: "e'tiborsiz qoldirish" platformadagi
+    // yozuvga ishora qilmaydi, ya'ni uni `class`/`subject`/`user` jadvalidan
+    // qidirish har doim "topilmadi" xatosini berardi.
+    const idsOf = (kind) =>
+      normalized
+        .filter((i) => i.kind === kind && i.targetId && !review.isIgnored(i.targetId))
+        .map((i) => i.targetId);
     const [classes, subjects, teachers] = await Promise.all([
       tx.class.findMany({ where: { id: { in: idsOf("class") } }, select: { id: true } }),
       tx.subject.findMany({ where: { id: { in: idsOf("subject") } }, select: { id: true } }),
@@ -907,7 +919,7 @@ async function saveMappings(body, user) {
     };
 
     for (const item of normalized) {
-      if (item.targetId && !valid[item.kind].has(item.targetId)) {
+      if (item.targetId && !review.isIgnored(item.targetId) && !valid[item.kind].has(item.targetId)) {
         throw new BadRequestError(
           item.kind === "teacher"
             ? `"${item.label}": tanlangan foydalanuvchi faol o'qituvchi emas`
