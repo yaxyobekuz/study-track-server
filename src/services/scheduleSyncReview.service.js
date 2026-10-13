@@ -82,6 +82,18 @@ const IGNORED_TARGET = "000000000000000000000000";
 /** @param {string|null} targetId */
 const isIgnored = (targetId) => targetId === IGNORED_TARGET;
 
+/**
+ * JADVALGA TUSHMAYDIGAN HOLATLAR — "bu nom bu filialga tegishli emas".
+ *
+ *   `ignored` — ODAM qo'lda belgilagan (sentinel saqlangan),
+ *   `foreign` — TIZIM aniqladi: platformada mos yozuv UMUMAN yo'q.
+ *
+ * Ikkalasi bir xil ishlanadi: xato bermaydi va shu nom uchragan dars
+ * qurilayotgan jadvaldan tashlanadi. Farqi faqat kelib chiqishida, va u
+ * ekranda ko'rinadi — odam tizim nimani o'zi hal qilganini bilishi kerak.
+ */
+const SKIPPED_STATUSES = new Set(["ignored", "foreign"]);
+
 // Sheet tekshiruvi shu muddatdan eski bo'lsa qo'llanmaydi: sheet o'shandan
 // beri o'zgargan bo'lishi mumkin (platforma rejimida avtomatik tekshiruv yo'q).
 const CHECK_FRESH_MS = 15 * 60 * 1000;
@@ -371,7 +383,28 @@ function resolveLabels(data, ctx) {
       } else if (candidates.length > 1) {
         status = "ambiguous";
       } else {
-        status = "unresolved";
+        // ⚠️ BOSHQA FILIALNING NOMI — AVTOMATIK O'TKAZIB YUBORILADI.
+        //
+        // Bitta Google Sheet butun tarmoqning jadvalini saqlaydi, sinf va
+        // xodim esa HAR FILIALDA O'ZINIKI. Shuning uchun har filialda
+        // sheet'ning katta qismi "begona": AI Hub da MBSI ning 72 ta sinfi
+        // chiqib, ro'yxatni to'ldirib turardi va jadvalni qo'llash
+        // bloklanardi.
+        //
+        // Nomzod UMUMAN topilmagani — eng kuchli dalil: nom na aynan, na
+        // o'xshashlik bo'yicha mos kelmadi, ya'ni bu filialda bunday sinf
+        // yo'q. Bunday nomni odamdan "hal qilishni" so'rash ma'nosiz —
+        // tanlaydigan narsaning o'zi yo'q.
+        //
+        // ⚠️ `suggested` va `ambiguous` BUNGA KIRMAYDI: u yerda mos yozuv
+        // BOR, faqat qaysi biri ekani aniq emas — bu haqiqiy savol va odam
+        // javob berishi kerak. Avtomatik tashlansa, bizning sinfimiz
+        // jimgina jadvaldan tushib qolardi.
+        //
+        // Odam qaroriga (`manual`) hech qanday ta'siri yo'q: moslash
+        // saqlangan bo'lsa, yuqoridagi shoxga tushadi va bu yergacha
+        // yetib kelmaydi.
+        status = "foreign";
       }
 
       const res = {
@@ -392,11 +425,13 @@ function resolveLabels(data, ctx) {
 
       // Darssiz sinf ustuni — moslanmagan bo'lsa ham hech narsa yozilmaydi.
       //
-      // ⚠️ E'TIBORSIZ QOLDIRILGAN NOM XATO BERMAYDI: odam "bu bizga
-      // tegishli emas" deb aytib bo'lgan. Aks holda uni hal qilishning
-      // iloji qolmasdi — platformada mos yozuv yo'q, demak moslab ham
-      // bo'lmaydi, e'tiborsiz qoldirib ham bo'lmaydi.
-      if (status !== "ignored" && !usable && !(kind === "class" && entry.count === 0)) {
+      // ⚠️ IKKI HOLAT XATO BERMAYDI va ikkalasining ma'nosi bitta —
+      // "bu nom bu filialga tegishli emas":
+      //   `ignored` — ODAM shunday dedi (qo'lda belgilangan),
+      //   `foreign` — TIZIM shunday xulosa qildi (mos yozuv umuman yo'q).
+      // Aks holda ularni hal qilishning iloji qolmasdi: platformada mos
+      // yozuv yo'q, demak moslab ham bo'lmaydi.
+      if (!SKIPPED_STATUSES.has(status) && !usable && !(kind === "class" && entry.count === 0)) {
         errors.push({ code: `mapping_${status}`, kind, key, message: mappingMessage(kind, res) });
       }
 
@@ -445,7 +480,7 @@ function resolveLabels(data, ctx) {
   const ignoredKeys = { class: new Set(), subject: new Set(), teacher: new Set() };
   for (const kind of MAPPING_KINDS) {
     for (const res of resolution[kind]) {
-      if (res.status === "ignored") ignoredKeys[kind].add(res.key);
+      if (SKIPPED_STATUSES.has(res.status)) ignoredKeys[kind].add(res.key);
     }
   }
 
@@ -1044,10 +1079,16 @@ async function reviewRevision(client, revision, { calendar = null, user = null }
       const labels = [...new Set(skippedByIgnore.map((s) => s.label).filter(Boolean))];
       warnings.push({
         code: "lessons_ignored",
+        // ⚠️ MATN "TEKSHIRING" DEB TUGAYDI va bu ataylab: o'tkazib
+        // yuborilganlarning aksariyati boshqa filialniki, LEKIN bizning
+        // sinfimiz sheet'da boshqacha yozilgan bo'lsa ("IT1" ↔ "IT 1") u
+        // ham shu yerga tushadi. Tizim buni o'zi ajrata olmaydi, shuning
+        // uchun qaror odamga ko'rsatiladi — jim qolsa, bizning darsimiz
+        // jadvaldan bildirmay tushib qolardi.
         message:
-          `${skippedByIgnore.length} ta dars e'tiborsiz qoldirilgan nomlar tufayli o'tkazib yuborildi` +
+          `${skippedByIgnore.length} ta dars o'tkazib yuborildi — bu filialda bunday sinf, fan yoki o'qituvchi yo'q` +
           (labels.length ? ` (${labels.slice(0, 5).join(", ")}${labels.length > 5 ? " va boshqalar" : ""})` : "") +
-          ". Ular jadvalga yozilmaydi",
+          ". Orasida bizniki bo'lsa, \"Moslash\" bo'limida tanlang",
       });
     }
 
