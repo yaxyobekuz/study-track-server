@@ -20,9 +20,12 @@
  * degan tasniflash. Katta model bu yerda pulni bir necha o'nlab barobar
  * oshirib, aniqlikka deyarli qo'shmasdi.
  *
- * ⚠️ MODEL IQTIBOSNI O'YLAB TOPMAYDI: `quote` xabar matnidan OLINADI va
- * biz uni haqiqatan matnda borligiga tekshiramiz (`_pickQuote`). Aks
- * holda panelda hech kim yozmagan gap "iqtibos" bo'lib turardi.
+ * ⚠️ MODEL MATN YOZMAYDI — faqat TANLAYDI va TOIFALAYDI. Panelda
+ * ko'rinadigan matn XABARNING O'ZI (`_normalizeSignal` da manba
+ * xabardan olinadi), ya'ni model o'ylab topgan gap u yerga tusha
+ * olmaydi. Avval model qisqa sarlavha yozardi va u har safar
+ * "...aytilgan" degan o'ramga aylanib, odamning o'z gapini
+ * uzoqlashtirardi.
  */
 
 const OpenAI = require("openai");
@@ -54,6 +57,15 @@ const MAX_MESSAGES_PER_CALL = 60;
 
 /** Modeldan so'raladigan eng ko'p signal — bitta to'plamdan. */
 const MAX_SIGNALS = 10;
+
+/**
+ * Kartada ko'rsatiladigan matnning eng uzun uzunligi.
+ *
+ * ⚠️ KESISH KERAK: uzun xabar butun ro'yxatni egallab, qolgan
+ * signallarni pastga surib yuborardi. To'liq matn har doim "Xabarni
+ * ochish" havolasida va biriktirish oynasida qoladi.
+ */
+const MAX_SUMMARY = 300;
 
 /** Javob token chegarasi. */
 const MAX_OUTPUT_TOKENS = 2000;
@@ -129,24 +141,19 @@ const SYSTEM_PROMPT = [
   "  lekin o'tkazib yuborilgan shikoyat butunlay yo'qoladi.",
   "- Bir mavzudagi bir nechta xabarni BITTA signalga birlashtir.",
   "- Har xil mavzudagi shikoyatlarni ALOHIDA signal qil.",
-  '- "summary" — MUAMMONING O\'ZI, qisqa sarlavha kabi (3-8 so\'z).',
-  "  Odam shikoyatni mazmunidan tushunadi — izoh va o'ram KERAK EMAS.",
-  '  YOZMA: "...aytilgan", "...haqida shikoyat bor", "...deb yozilgan".',
-  "  Faqat MUAMMONING O'ZINI yoz:",
-  '  to\'g\'ri  — "Platforma yaxshi ishlamayapti"',
-  '             "1-sinfda bola doim janjal qilyapti"',
-  '             "Dilnoza opani ishdan bo\'shatish talabi"',
-  '  noto\'g\'ri — "Platforma yaxshi ishlamayotgani aytilgan."',
-  '             "1-sinfdagi bola haqida shikoyat bor."',
-  '- "quote" — xabar matnidan AYNAN ko\'chirilgan parcha. O\'zingdan gap qo\'shma.',
   '- "messageId" — signal asos bo\'lgan xabarning raqami (ro\'yxatdagi "#" qiymati).',
   '- "severity": "high" — bolaning xavfsizligi/sog\'lig\'i, pul masalasi,',
   "  xodimni ishdan bo'shatish talabi yoki takrorlanayotgan jiddiy nizo;",
   '  "normal" — oddiy shikoyat/taklif; "low" — mayda izoh.',
   `- Eng ko'pi ${MAX_SIGNALS} ta signal qaytar. Hech narsa topilmasa — bo'sh ro'yxat.`,
   "",
+  "⚠️ MATN YOZMA. Sen faqat TANLAYSAN va TOIFALAYSAN: qaysi xabar",
+  "signalga arzishini va uning turini aytasan. Xabarning o'z matni",
+  "panelda o'zi ko'rsatiladi — qisqartirish, izohlash yoki qayta",
+  "yozish KERAK EMAS.",
+  "",
   "Javobni FAQAT shu JSON shaklida qaytar (boshqa hech narsa yozma):",
-  '{"signals":[{"messageId":"123","kind":"complaint","severity":"normal","summary":"...","quote":"..."}]}',
+  '{"signals":[{"messageId":"123","kind":"complaint","severity":"normal"}]}',
 ].join("\n");
 
 /**
@@ -174,21 +181,14 @@ function _buildUserText(messages) {
 }
 
 /**
- * Model bergan iqtibosni TEKSHIRADI.
- *
- * ⚠️ MODEL IQTIBOSNI O'YLAB TOPISHI MUMKIN. Panelda "iqtibos" deb
- * turgan gap haqiqatan yozilmagan bo'lsa, ma'muriyat yo'q gap uchun
- * odamni chaqirardi. Shuning uchun iqtibos manba matnida bor-yo'qligi
- * tekshiriladi; bo'lmasa — xabarning o'z boshi olinadi.
- */
-function _pickQuote(rawQuote, sourceText) {
-  const quote = typeof rawQuote === "string" ? rawQuote.trim() : "";
-  if (quote && sourceText.includes(quote)) return quote.slice(0, 500);
-  return sourceText.slice(0, 500);
-}
-
-/**
  * Model javobidagi bitta yozuvni tozalaydi.
+ *
+ * ⚠️ MATN MODELDAN OLINMAYDI. `summary` — XABARNING O'Z MATNI, model
+ * yozgan xulosa emas. Avval model qisqa sarlavha yozardi va u har safar
+ * "...aytilgan", "...haqida shikoyat bor" degan o'ramga aylanib,
+ * odamning o'z gapini uzoqlashtirardi. Odam shikoyatni o'z so'zi bilan
+ * o'qiganda tezroq tushunadi — model esa faqat TANLAYDI (bu gap
+ * signalga arziydimi) va TOIFALAYDI (shikoyat/taklif/savol).
  *
  * @returns {object|null} yaroqsiz bo'lsa `null` — o'sha yozuv tashlanadi
  */
@@ -198,15 +198,15 @@ function _normalizeSignal(raw, byMessageId) {
   const kind = String(raw.kind || "").trim();
   if (!SIGNAL_KINDS.has(kind)) return null;
 
-  const summary = String(raw.summary || "").trim();
-  if (!summary) return null;
-
-  // ⚠️ XABARGA BOG'LANMAGAN SIGNAL TASHLANADI: havola ham, muallif ham,
-  // vaqt ham o'sha xabardan keladi. Ularsiz signal "kimdir nimadir
-  // dedi" bo'lib qolardi va tekshirib bo'lmasdi.
+  // ⚠️ XABARGA BOG'LANMAGAN SIGNAL TASHLANADI: matn ham, havola ham,
+  // muallif ham, vaqt ham o'sha xabardan keladi. Ularsiz signal
+  // "kimdir nimadir dedi" bo'lib qolardi va tekshirib bo'lmasdi.
   const messageId = String(raw.messageId ?? "").trim();
   const source = byMessageId.get(messageId);
   if (!source) return null;
+
+  const text = String(source.text || "").trim();
+  if (!text) return null;
 
   const severity = String(raw.severity || "").trim();
 
@@ -214,8 +214,8 @@ function _normalizeSignal(raw, byMessageId) {
     messageId,
     kind,
     severity: SEVERITIES.has(severity) ? severity : "normal",
-    summary: summary.slice(0, 500),
-    quote: _pickQuote(raw.quote, source.text),
+    // Xabarning o'zi. Juda uzun bo'lsa kesiladi — to'lig'i havolada.
+    summary: text.length > MAX_SUMMARY ? `${text.slice(0, MAX_SUMMARY)}…` : text,
     chatId: source.chatId,
     senderTgId: source.senderTgId,
     senderName: source.senderName,

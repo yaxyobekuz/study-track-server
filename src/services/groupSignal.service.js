@@ -120,7 +120,6 @@ async function runAnalysis() {
             kind: signal.kind,
             severity: signal.severity,
             summary: signal.summary,
-            quote: signal.quote,
             senderTgId: signal.senderTgId,
             senderName: signal.senderName,
             sentAt: signal.sentAt,
@@ -252,7 +251,6 @@ async function listSignals(query = {}) {
       kind: signal.kind,
       severity: signal.severity,
       summary: signal.summary,
-      quote: signal.quote,
       status: signal.status,
 
       senderName: signal.senderName,
@@ -371,9 +369,10 @@ async function attach(id, payload = {}, userId) {
 function _buildIssueBody(signal, group) {
   const link = buildMessageLink(group || { chatId: signal.chatId }, signal.messageId);
 
+  // ⚠️ IQTIBOS ALOHIDA YOZILMAYDI: `summary` — xabarning O'Z matni
+  // (`groupSignalAi.service.js#_normalizeSignal`), ya'ni uni takrorlash
+  // bitta gapni ikki marta yozish bo'lardi.
   const lines = [signal.summary, ""];
-
-  if (signal.quote) lines.push(`Xabar: "${signal.quote}"`, "");
 
   lines.push(`Guruh: ${group?.title || signal.chatId}`);
   if (signal.senderName) lines.push(`Yozgan: ${signal.senderName}`);
