@@ -17,6 +17,15 @@ const branchService = require("../services/branch.service");
 const logger = require("../utils/logger");
 
 /**
+ * `mapBranches` bir vaqtda nechta filialni ochishi mumkin.
+ *
+ * Har filial o'z client'i va o'z pool'i bilan keladi, ya'ni bu son — bitta
+ * so'rov baza ulanishlarini necha barobar ko'paytirishi. Cheklanmasa filial
+ * qo'shilishi jim ravishda ulanish talabini oshirib boradi.
+ */
+const MAX_PARALLEL_BRANCHES = 4;
+
+/**
  * Har bir ishlaydigan filialda KETMA-KET bajaradi.
  *
  * Ketma-ket, chunki cron joblar bazani og'ir yuklaydi (davomat, hisob-faktura)
@@ -56,6 +65,13 @@ async function forEachBranch(fn, options = {}) {
  * Faqat O'QISH uchun: yig'ma dashboard o'nta filialni ketma-ket kutib
  * o'tirmasligi kerak. Yozadigan ish uchun `forEachBranch` ishlatiladi.
  *
+ * ⚠️ PARALLELLIK CHEKLANGAN (`MAX_PARALLEL_BRANCHES`). Oldin bu funksiya
+ * `Promise.all` bilan HAMMA filialni bir vaqtda ishga tushirardi: har filial
+ * o'z client'ini ochib, o'z pool'ini band qilgani uchun bitta admin so'rovi
+ * (masalan rollar ro'yxati) filiallar soniga ko'paygan ulanish talab qilardi.
+ * Shunday ikki-uch so'rov ustma-ust kelsa rol bo'yicha cheklov tugab,
+ * "too many connections for role" chiqardi.
+ *
  * @param {(branch: object) => Promise<any>} fn
  * @param {{branches?: object[], label?: string}} [options]
  * @returns {Promise<Array<{branch: object, value?: any, error?: Error}>>}
@@ -64,16 +80,32 @@ async function mapBranches(fn, options = {}) {
   const { label = "[Branch]" } = options;
   const branches = options.branches ?? (await branchService.listOperational());
 
-  return Promise.all(
-    branches.map(async (branch) => {
+  const results = new Array(branches.length);
+  let cursor = 0;
+
+  // Navbat: har "ishchi" ro'yxatdan keyingi filialni olib ketadi, shuning
+  // uchun sekin filial o'zidan keyingilarini bloklamaydi (bo'lak-bo'lak
+  // bajarishning kamchiligi aynan shu edi).
+  const worker = async () => {
+    while (cursor < branches.length) {
+      const index = cursor++;
+      const branch = branches[index];
       try {
-        return { branch, value: await runWithBranch(branch, () => fn(branch)) };
+        results[index] = {
+          branch,
+          value: await runWithBranch(branch, () => fn(branch)),
+        };
       } catch (error) {
         logger.error(`${label} "${branch.name}" filialida xato: ${error.message}`);
-        return { branch, error };
+        results[index] = { branch, error };
       }
-    }),
-  );
+    }
+  };
+
+  const workers = Math.min(MAX_PARALLEL_BRANCHES, branches.length);
+  await Promise.all(Array.from({ length: workers }, worker));
+
+  return results;
 }
 
 /**
