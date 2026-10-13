@@ -45,6 +45,9 @@ const withPoolLimit = (url, limit) => {
     if (!parsed.searchParams.has("connection_limit")) {
       parsed.searchParams.set("connection_limit", String(limit));
     }
+    if (!parsed.searchParams.has("pool_timeout")) {
+      parsed.searchParams.set("pool_timeout", String(config.dbPoolTimeout));
+    }
     return parsed.toString();
   } catch {
     return url; // noto'g'ri URL — validateEnv baribir xato beradi

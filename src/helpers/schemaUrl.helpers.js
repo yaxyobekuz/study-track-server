@@ -37,18 +37,21 @@ function assertSafeSchemaName(schemaName) {
  *
  * @param {string} baseUrl - `DATABASE_URL` (schema'si bo'lishi ham, bo'lmasligi ham mumkin)
  * @param {string} schemaName - "platform", "public", "br_chilonzor"
- * @param {{connectionLimit?: number}} [options]
+ * @param {{connectionLimit?: number, poolTimeout?: number}} [options]
  * @returns {string}
  */
 function buildSchemaUrl(baseUrl, schemaName, options = {}) {
   assertSafeSchemaName(schemaName);
 
-  const { connectionLimit } = options;
+  const { connectionLimit, poolTimeout } = options;
   const url = new URL(baseUrl);
 
   url.searchParams.set("schema", schemaName);
   if (connectionLimit != null) {
     url.searchParams.set("connection_limit", String(connectionLimit));
+  }
+  if (poolTimeout != null) {
+    url.searchParams.set("pool_timeout", String(poolTimeout));
   }
 
   return url.toString();
