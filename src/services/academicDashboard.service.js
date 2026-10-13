@@ -610,6 +610,99 @@ const buildLevels = ({ grades, attendance, classes, studentsByClass, unassignedS
 };
 
 /**
+ * Sinflarni BOSQICH bo'yicha saralaydi: 1-sinfdan 11-sinfgacha, raqamsiz
+ * nomlar oxirida, bir bosqichdagilar nom bo'yicha.
+ *
+ * ⚠️ `localeCompare` ISHLATILMAYDI: natijasi Node ICU qurilishiga bog'liq
+ * bo'lib qolardi (`.claude/rules/dates.md` dagi bilan bir xil sabab) va
+ * bitta jadval ikki serverda ikki xil tartibda chiqardi.
+ */
+const byClassLevel = (a, b) => {
+  const levelA = levelOfClassName(a.className);
+  const levelB = levelOfClassName(b.className);
+
+  if (levelA !== levelB) {
+    if (levelA == null) return 1;
+    if (levelB == null) return -1;
+    return levelA - levelB;
+  }
+
+  if (a.className === b.className) return 0;
+  return a.className < b.className ? -1 : 1;
+};
+
+/**
+ * SINFLAR SIG'IMI — har sinfda nechta joy bor, nechtasi band, nechtasi bo'sh.
+ *
+ * ⚠️ PUL BU YERGA KO'CHIRILMAYDI. Moliya dashboardidagi "Sinflar bo'yicha
+ * sig'im va qarz" jadvalining ta'lim tomoni: qarz, grant va summalar
+ * QASDAN olinmagan — ular `finance.view` ortida turadi, bu javob esa
+ * `education.view` bilan ochiladi (`finance.md` §11: narxni ko'rish huquqi
+ * qarzdorlik registrini ochib bermasligi kerak). Ikkalasi bitta javobga
+ * qo'shilsa, moliya ruxsatisiz odam qarz manzarasini shu karta orqali
+ * olib qo'yardi.
+ *
+ * ⚠️ O'QUVCHI SONI — A'ZOLIK bo'yicha (sinflar ro'yxatidagi son bilan AYNI
+ * qoida), `levels` jadvalidagi "har o'quvchi bitta sinfda" qoidasi EMAS:
+ * sig'im joyni o'lchaydi. Shu sababli bu jadvalning yig'indisi KPI dagi
+ * o'quvchilar sonidan KATTA bo'lishi mumkin — JAMI qatori o'z
+ * qatorlaridan yig'iladi va KPI bilan solishtirilmaydi.
+ *
+ * ⚠️ Sanoqqa faqat SHU OYDA o'qiganlar kiradi (`enrollment.studentIds` —
+ * davri oyni qamragan va arxivlanmagan o'quvchilar): sahifadagi qolgan
+ * bloklar bilan bitta o'quvchilar to'plami. Moliya tomonidagi o'sha jadval
+ * esa JONLI sanoqni oladi, ya'ni ikki ekranda bir-biriga yaqin, lekin
+ * har doim ham teng bo'lmagan raqam turishi KUTILGAN hol.
+ *
+ * ⚠️ Sig'imi belgilanmagan sinf (`capacity = null`) jadvalda QOLADI, lekin
+ * JAMI ga qo'shilmaydi: 0 deb hisoblansa, maktab sig'imi sun'iy ravishda
+ * to'lgan bo'lib ko'rinardi. Nechtasi belgilanmagani `withoutCapacity` da.
+ *
+ * ⚠️ NOFAOL sinf faqat o'quvchisi bor bo'lsa ko'rinadi: filiallararo
+ * ko'chirishda maqsad filialda tarixni ushlab turish uchun NOFAOL sinf
+ * ochiladi (`education.md` §3) va u bo'sh holda ro'yxatni to'ldirardi.
+ */
+const buildCapacity = ({ classRows, seatsByClass }) => {
+  const rows = classRows
+    .filter((row) => row.isActive || (seatsByClass.get(row.id) ?? 0) > 0)
+    .map((row) => {
+      const studentCount = seatsByClass.get(row.id) ?? 0;
+      const capacity = row.capacity ?? null;
+
+      return {
+        classId: row.id,
+        className: row.name,
+        capacity,
+        studentCount,
+        // ⚠️ MANFIY bo'lishi mumkin va shunday qoldiriladi: sig'imdan oshib
+        // ketgan sinf aynan shu minus bilan ko'rinadi (nolga qisilsa,
+        // muammo ekranda umuman bilinmasdi).
+        freeSpots: capacity == null ? null : capacity - studentCount,
+        fillRate: capacity > 0 ? rate(studentCount, capacity) : null,
+      };
+    })
+    .sort(byClassLevel);
+
+  const measured = rows.filter((row) => row.capacity != null);
+  const capacity = measured.reduce((sum, row) => sum + row.capacity, 0);
+  const occupied = measured.reduce((sum, row) => sum + row.studentCount, 0);
+
+  return {
+    rows,
+    totals: {
+      classCount: rows.length,
+      withoutCapacity: rows.length - measured.length,
+      capacity,
+      occupied,
+      freeSpots: capacity - occupied,
+      fillRate: rate(occupied, capacity),
+      // Jadvaldagi HAMMA sinfning o'quvchisi — sig'imi belgilanmaganlari ham
+      students: rows.reduce((sum, row) => sum + row.studentCount, 0),
+    },
+  };
+};
+
+/**
  * Baholar taqsimoti — 5 dan 1 gacha, ulushi bilan.
  *
  * Qo'yilmagan baholar KIRMAYDI: taqsimot faqat qo'yilganini bo'ladi.
@@ -1125,7 +1218,13 @@ const getOverview = async (query = {}) => {
   const [subjectRows, classRows, studentClassRows, achievementCount, previousAchievementCount] =
     await Promise.all([
       prisma.subject.findMany({ select: { id: true, name: true } }),
-      prisma.class.findMany({ select: { id: true, name: true } }),
+      // ⚠️ `capacity` va `isActive` SHU SO'ROVDA olinadi: sig'im jadvali
+      // (`buildCapacity`) uchun ikkinchi `class.findMany` yozilsa, bitta
+      // ekran bitta jadvalni ikki marta o'qib, ikki xil holatni ko'rishi
+      // mumkin bo'lardi. `classes` xaritasi avvalgidek faqat nomni oladi.
+      prisma.class.findMany({
+        select: { id: true, name: true, capacity: true, isActive: true },
+      }),
       // Sinf bo'yicha o'quvchi soni — FAQAT shu oyda o'qiganlar.
       // ⚠️ `groupBy` EMAS, qatorlarning O'ZI: `UserClass` — M2M va ikki
       // sinfga biriktirilgan o'quvchi guruhlangan sanoqda ikki marta
@@ -1155,6 +1254,17 @@ const getOverview = async (query = {}) => {
   const studentsByClass = new Map();
   for (const classId of classOfStudent.values()) {
     studentsByClass.set(classId, (studentsByClass.get(classId) ?? 0) + 1);
+  }
+
+  // ⚠️ SIG'IM jadvali uchun ALOHIDA sanoq — u A'ZOLIK qatorlarini sanaydi,
+  // `studentsByClass` esa har o'quvchini FAQAT BITTA sinfga yozadi. Sabab:
+  // sig'im — JOY haqida, ikki sinfga biriktirilgan o'quvchi ikkala sinfda
+  // ham parta egallaydi. Bitta xaritani ikkala blokka berib bo'lmaydi:
+  // bosqichlar jadvalida yig'indi KPI ga teng bo'lishi shart, sig'im
+  // jadvalida esa har sinfdagi haqiqiy bandlik kerak (`buildCapacity`).
+  const seatsByClass = new Map();
+  for (const row of studentClassRows) {
+    seatsByClass.set(row.classId, (seatsByClass.get(row.classId) ?? 0) + 1);
   }
 
   // Sinfga umuman biriktirilmaganlar — "Boshqa sinflar" qatoriga
@@ -1232,6 +1342,7 @@ const getOverview = async (query = {}) => {
     unassignedStudents,
   });
   const distribution = buildDistribution(grades);
+  const capacity = buildCapacity({ classRows, seatsByClass });
 
   const totals = {
     students: current.students,
@@ -1253,6 +1364,8 @@ const getOverview = async (query = {}) => {
     kpi,
     subjects: subjectRowsBuilt,
     levels: levelRowsBuilt,
+    // Sinflar sig'imi — pulsiz (`buildCapacity` izohiga qarang)
+    capacity,
     distribution,
     attendanceTrend,
     topStudents,
@@ -1289,5 +1402,6 @@ module.exports = {
   // Sinov uchun ochiladi
   levelOfClassName,
   levelKeyOf,
+  buildCapacity,
   CLASS_LEVELS,
 };
