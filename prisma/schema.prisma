@@ -1642,6 +1642,29 @@ model Task {
   createdBy             String     @map("created_by") @db.Char(24)
   status                TaskStatus @default(pending)
   dueDate               DateTime   @map("due_date")
+
+  // TOPSHIRIQ TURI — "main" (asosiy, lavozim bo'yicha doimiy ish) yoki
+  // "extra" (qo'shimcha, bir martalik vazifa).
+  //
+  // ⚠️ Prisma enum EMAS, matn: enum HAR FILIAL schema'sida o'ziniki bo'ladi
+  // (`finance.md` §12 — `public."Gender"` ≠ `br_x."Gender"`) va yangi tur
+  // qo'shish har bir schema'ga alohida migratsiya talab qilardi.
+  // `TaskStatusHistory.kind` bilan AYNI qaror.
+  kind                  String     @default("main") @db.VarChar(16)
+
+  // VAQT ORALIG'INING BOSHI. `null` — faqat muddat berilgan ("shu vaqtgacha
+  // bajaring"), to'ldirilgan bo'lsa topshiriq AYNAN shu oraliqda bajariladi
+  // va ijrochi panelida "hozir bajarilish vaqti" shundan chiqadi.
+  //
+  // ⚠️ MUDDAT BARIBIR `dueDate` DA: jarima, hisobot, FIFO va "Men ketdim"
+  // darvozasi faqat unga qaraydi. Oraliq — KO'RSATMA (qachondan boshlash),
+  // ikkinchi muddat emas: aks holda "qaysi vaqt haqiqiy muddat" degan savol
+  // ikki xil javob olardi.
+  startDate             DateTime?  @map("start_date")
+
+  // HAVOLALAR — [{ url, label }]. Fayl bilan bir qatorda tashqi manbaga
+  // ishora (hujjat, video, shakl). Faqat http(s), service tekshiradi.
+  links                 Json       @default("[]")
   penaltyPoints         Int        @default(1) @map("penalty_points")
   // attachments[] / completionAttachments[] — { key, url, type, ... }
   attachments           Json       @default("[]")
@@ -1668,6 +1691,8 @@ model Task {
 
   @@index([issueId])
   @@index([assignee, status])
+  // Ijrochining vaqt oynasi bo'yicha ro'yxati ("bugun nima qilaman")
+  @@index([assignee, dueDate])
   @@index([assignee, createdAt(sort: Desc)])
   @@index([createdBy, createdAt(sort: Desc)])
   @@index([status, dueDate])

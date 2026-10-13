@@ -150,8 +150,25 @@ test("yangi topshiriq — sarlavha va muddat yagona sana formatida", () => {
     event: "created",
     taskId: TASK.id,
     status: "pending",
+    // Tur — mobil ilova bilan shartnomaning bir qismi (sukut: asosiy)
+    kind: "main",
     branchId: "b1",
   });
+});
+
+test("vaqt oralig'i berilsa xabarda ORALIQ ko'rinadi", () => {
+  // Xodim ilovani ochmasdan "qachondan qachongacha" ekanini bilishi kerak
+  const push = buildTaskPush(
+    TASK_PUSH_EVENTS.CREATED,
+    { ...TASK, kind: "extra", startDate: new Date("2026-05-21T08:00:00+05:00") },
+    { branchId: "b1" },
+  );
+
+  assert.equal(
+    push.body,
+    "Hisobotni topshirish\nVaqt: 21-may, 2026 08:00 — 21-may, 2026 14:30",
+  );
+  assert.equal(push.data.kind, "extra");
 });
 
 test("rad etildi — sabab, yangi muddat va jarima ko'rsatiladi", () => {

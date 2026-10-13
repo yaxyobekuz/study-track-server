@@ -2,6 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError } = require("../utils/errors");
 const taskService = require("../services/task.service");
 const taskReportService = require("../services/taskReport.service");
+const taskScopeService = require("../services/taskScope.service");
 const { getTaskSettings: loadTaskSettings } = require("../services/settings.service");
 
 /**
@@ -9,7 +10,8 @@ const { getTaskSettings: loadTaskSettings } = require("../services/settings.serv
  * POST /tasks
  */
 const createTask = asyncHandler(async (req, res) => {
-  const { title, description, dueDate, penaltyPoints, assigneeIds } = req.body;
+  const { title, description, startDate, dueDate, kind, links, penaltyPoints, assigneeIds } =
+    req.body;
 
   // Sarlavha/tavsif uzunligi sozlamaga bog'liq — service tekshiradi
   if (!dueDate) throw new BadRequestError("Ijro muddati majburiy");
@@ -28,12 +30,18 @@ const createTask = asyncHandler(async (req, res) => {
   const tasks = await taskService.createTasks({
     title,
     description,
+    // Ixtiyoriy: berilsa topshiriq AYNAN shu oraliqda bajariladi
+    startDate,
     dueDate,
+    kind,
+    // multipart'da JSON satri bo'lib keladi — service o'zi ochadi
+    links,
     // Berilmasa — sozlamadagi standart ball
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
     assigneeIds: parsedAssigneeIds,
     createdBy: req.user.id,
     files: req.files || [],
+    scope: req.taskScope,
   });
 
   return res.status(201).json({
@@ -48,7 +56,7 @@ const createTask = asyncHandler(async (req, res) => {
  * GET /tasks
  */
 const getTasks = asyncHandler(async (req, res) => {
-  const result = await taskService.getTasks(req);
+  const result = await taskService.getTasks(req, req.taskScope);
   return res.json(result);
 });
 
@@ -66,7 +74,7 @@ const getMyTasks = asyncHandler(async (req, res) => {
  * GET /tasks/:id
  */
 const getTaskById = asyncHandler(async (req, res) => {
-  const task = await taskService.getTaskById(req.params.id, req.user);
+  const task = await taskService.getTaskById(req.params.id, req.user, req.taskScope);
   return res.json({ success: true, data: task });
 });
 
@@ -95,6 +103,7 @@ const approveTask = asyncHandler(async (req, res) => {
   const task = await taskService.approveTask(req.params.id, {
     reason,
     approvedBy: req.user.id,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data: task, message: "Topshiriq tasdiqlandi" });
 });
@@ -111,6 +120,7 @@ const rejectTask = asyncHandler(async (req, res) => {
     reason,
     rejectedBy: req.user.id,
     newDueDate,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data: task, message: "Topshiriq rad etildi" });
 });
@@ -128,6 +138,7 @@ const stopTask = asyncHandler(async (req, res) => {
     withPenalty: !!withPenalty,
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
     stoppedBy: req.user.id,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data: task, message: "Topshiriq to'xtatildi" });
 });
@@ -147,6 +158,7 @@ const extendDeadline = asyncHandler(async (req, res) => {
     withPenalty: !!withPenalty,
     penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
     extendedBy: req.user.id,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data: task, message: "Ijro muddati uzaytirildi" });
 });
@@ -156,7 +168,7 @@ const extendDeadline = asyncHandler(async (req, res) => {
  * GET /tasks/stats
  */
 const getTaskStats = asyncHandler(async (req, res) => {
-  const data = await taskService.getTaskStats();
+  const data = await taskService.getTaskStats(req.taskScope);
   return res.json({ success: true, data });
 });
 
@@ -168,6 +180,44 @@ const getTaskReport = asyncHandler(async (req, res) => {
   const data = await taskReportService.getTaskReport({
     from: req.query.from,
     to: req.query.to,
+    period: req.query.period,
+    scope: req.taskScope,
+  });
+  return res.json({ success: true, data });
+});
+
+/**
+ * TOPSHIRIQ BERISH MUMKIN BO'LGAN ODAMLAR (doira bo'yicha).
+ *
+ * Bo'lim rahbarida `users.view` bo'lmasligi mumkin — usiz u ijrochini
+ * tanlay olmasdi. Javobda faqat ism va rol bor.
+ *
+ * GET /tasks/assignees?search=&group=staff|student&limit=
+ */
+const getTaskAssignees = asyncHandler(async (req, res) => {
+  const data = await taskScopeService.getAssignableUsers(req.taskScope, {
+    search: req.query.search,
+    group: req.query.group,
+    limit: req.query.limit,
+  });
+  return res.json({ success: true, data });
+});
+
+/**
+ * LAVOZIMLAR MARKAZI DASHBOARDI — kunlik / haftalik / oylik / yillik.
+ *
+ * ⚠️ Hisobot bilan BITTA DVIGATEL (`taskReport.service.js`): dashboarddagi
+ * "bajarildi" va hisobotdagi "bajarildi" ikki xil raqam chiqarmasligi kerak.
+ * Farqi faqat davr presetida va doirasida (rahbar — o'z bo'limi).
+ *
+ * GET /tasks/dashboard?period=day|week|month|year
+ */
+const getTaskDashboard = asyncHandler(async (req, res) => {
+  const data = await taskReportService.getTaskReport({
+    period: req.query.period || "month",
+    from: req.query.from,
+    to: req.query.to,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data });
 });
@@ -195,7 +245,16 @@ const updateTaskSettings = asyncHandler(async (req, res) => {
  * PUT /tasks/:id
  */
 const updateTask = asyncHandler(async (req, res) => {
-  const { title, description, penaltyPoints, assigneeId, removeAttachmentKeys } = req.body;
+  const {
+    title,
+    description,
+    penaltyPoints,
+    assigneeId,
+    kind,
+    startDate,
+    links,
+    removeAttachmentKeys,
+  } = req.body;
 
   let removeKeys = [];
   if (removeAttachmentKeys) {
@@ -216,10 +275,14 @@ const updateTask = asyncHandler(async (req, res) => {
       description,
       penaltyPoints,
       assigneeId,
+      kind,
+      startDate,
+      links,
       removeAttachmentKeys: removeKeys,
       files: req.files || [],
     },
     req.user.id,
+    req.taskScope,
   );
   return res.json({ success: true, data: task, message: "Topshiriq yangilandi" });
 });
@@ -236,6 +299,7 @@ const reopenTask = asyncHandler(async (req, res) => {
     newDueDate,
     reason,
     reopenedBy: req.user.id,
+    scope: req.taskScope,
   });
   return res.json({ success: true, data: task, message: "Topshiriq qayta ochildi" });
 });
@@ -245,7 +309,10 @@ const reopenTask = asyncHandler(async (req, res) => {
  * DELETE /tasks/:id
  */
 const deleteTask = asyncHandler(async (req, res) => {
-  const data = await taskService.deleteTask(req.params.id);
+  const data = await taskService.deleteTask(req.params.id, {
+    deletedBy: req.user.id,
+    scope: req.taskScope,
+  });
   return res.json({ success: true, data, message: "Topshiriq o'chirildi" });
 });
 
@@ -254,6 +321,8 @@ module.exports = {
   getTasks,
   getTaskStats,
   getTaskReport,
+  getTaskDashboard,
+  getTaskAssignees,
   getTaskSettings,
   updateTaskSettings,
   updateTask,
