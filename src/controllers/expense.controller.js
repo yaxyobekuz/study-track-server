@@ -1,5 +1,7 @@
 const asyncHandler = require("../middleware/async.middleware");
+const prisma = require("../config/prisma");
 const expenseService = require("../services/expense.service");
+const expenseExport = require("../services/expenseExport.service");
 
 const getExpenses = asyncHandler(async (req, res) => {
   const data = await expenseService.getExpenses(req);
@@ -32,4 +34,45 @@ const replaceExpense = asyncHandler(async (req, res) => {
   res.json({ success: true, data, message: "Xarajat tahrirlandi" });
 });
 
-module.exports = { getExpenses, createExpense, voidExpense, replaceExpense };
+/**
+ * CHIQIMLARNI EXCEL'GA YUKLAB OLISH.
+ *
+ * ⚠️ FILTRLAR EKRANDAGIDEK QO'LLANADI — `req.query` o'zgarishsiz
+ * uzatiladi: foydalanuvchi kategoriya tanlab Excel bossa, faylda ham
+ * aynan o'sha qatorlar bo'lishi kerak. Fayl ekrandan boshqa ma'lumot
+ * bersa, ikkalasiga ham ishonch yo'qolardi.
+ *
+ * Filtr NOMLARI (ID emas) sarlavha ostiga yoziladi — fayl boshqa odamga
+ * yuborilganda "qaysi kategoriya" degan savolga ID javob bermaydi.
+ */
+const exportExpenses = asyncHandler(async (req, res) => {
+  const { categoryId, accountId } = req.query;
+
+  const [category, account] = await Promise.all([
+    categoryId
+      ? prisma.expenseCategory.findUnique({
+          where: { id: categoryId },
+          select: { name: true },
+        })
+      : null,
+    accountId
+      ? prisma.paymentAccount.findUnique({
+          where: { id: accountId },
+          select: { name: true },
+        })
+      : null,
+  ]);
+
+  await expenseExport.exportExpensesToExcel(res, req.query, {
+    categoryName: category?.name,
+    accountName: account?.name,
+  });
+});
+
+module.exports = {
+  getExpenses,
+  createExpense,
+  voidExpense,
+  replaceExpense,
+  exportExpenses,
+};
