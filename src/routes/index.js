@@ -31,6 +31,7 @@ const studentAttendanceRoutes = require("./studentAttendance.routes");
 const absenceReasonRoutes = require("./absenceReason.routes");
 const issueRoutes = require("./issue.routes");
 const telegramGroupRoutes = require("./telegramGroup.routes");
+const groupSignalRoutes = require("./groupSignal.routes");
 const attendanceReportRoutes = require("./attendanceReport.routes");
 const leadRoutes = require("./lead.routes");
 const premiumRoutes = require("./premium.routes");
@@ -122,6 +123,10 @@ router.use("/issues", issueRoutes);
 // reyestr PLATFORMADA yashaydi (`telegramGroup.service.js`), muammolar esa
 // filialda — bitta router ichida ikki xil Prisma client aralashardi.
 router.use("/telegram-groups", telegramGroupRoutes);
+// Guruh signallari — "Muammolar → Guruh signallari" tabi. Signallar ham
+// PLATFORMADA (guruh filialga tegishli emas), biriktirilgan muammo esa
+// filialda — service ikkalasiga ham yozadi.
+router.use("/group-signals", groupSignalRoutes);
 router.use("/attendance-reports", attendanceReportRoutes);
 router.use("/leads", leadRoutes);
 router.use("/premium", premiumRoutes);

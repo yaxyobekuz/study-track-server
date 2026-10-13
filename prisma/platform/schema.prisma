@@ -982,3 +982,121 @@ model TelegramGroup {
   @@index([isOfficial])
   @@map("telegram_groups")
 }
+
+/**
+ * RASMIY GURUHDAN KELGAN XABAR — AI tahlili uchun XOMASHYO.
+ *
+ * Bot rasmiy deb belgilangan guruhlarda KUZATUVCHI: hech narsa yozmaydi,
+ * javob bermaydi, faqat o'qiydi va shu jadvalga yozib qo'yadi. Har 30
+ * daqiqada server shu yozuvlarni AI'ga beradi (`groupSignal.job.js`).
+ *
+ * ⚠️ FAQAT `isOfficial` GURUHDAN. Bot a'zo bo'lgan har qanday guruh emas:
+ * reyestrda tasodifiy qo'shilgan, test va begona guruhlar ham bor. Rasmiy
+ * belgisi — ma'muriyatning "bu guruh bizniki" degan ochiq qarori, ya'ni
+ * kuzatuvga ROZILIK. Belgisiz guruhda xabar O'QILMAYDI ham, yozilmaydi ham.
+ *
+ * ⚠️ PLATFORMADA, FILIALDA EMAS — `telegram_groups` bilan bir xil sabab:
+ * guruh xabari kelganda filial konteksti yo'q va uni taxmin qilish
+ * noto'g'ri bo'lardi (`bot/src/services/group.service.js` izohi).
+ *
+ * ⚠️ TAHLILDAN KEYIN O'CHIRILADI (`groupSignal.service.js#sweep`): bu
+ * navbat, arxiv emas. Guruh yozishmalarini muddatsiz saqlash — tahlil
+ * uchun kerak bo'lmagan shaxsiy ma'lumotni yig'ish bo'lardi. Saqlanadigan
+ * yagona narsa — AI muammo deb topgan signal va uning iqtibosi.
+ */
+model GroupMessage {
+  id String @id @db.Char(24)
+
+  chatId    String @map("chat_id")
+  messageId String @map("message_id")
+
+  // Muallif — Telegram'dagi holicha. Bu odam tizimda bo'lmasligi mumkin
+  // (ota-ona, mehmon), shuning uchun `users` ga bog'lanish YO'Q.
+  senderTgId String? @map("sender_tg_id")
+  senderName String? @map("sender_name")
+
+  text String
+
+  // Javob bo'lsa — nimaga javob ekani. AI uchun kontekst: "ha, to'g'ri"
+  // degan xabar o'zicha ma'nosiz, javob bo'lgani bilan ma'noli.
+  replyToText String? @map("reply_to_text")
+
+  // Telegram'dagi yuborilish vaqti (bizning qabul vaqtimiz emas).
+  sentAt DateTime @map("sent_at")
+
+  // Tahlil qilindimi. `true` bo'lgach yozuv `sweep` bilan o'chiriladi.
+  analyzedAt DateTime? @map("analyzed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Bir xabar ikki marta yozilmaydi (bot qayta ishga tushsa ham).
+  @@unique([chatId, messageId])
+  // Tahlil navbati: tahlil qilinmaganlarini vaqt bo'yicha olish.
+  @@index([analyzedAt, sentAt])
+  @@map("group_messages")
+}
+
+/**
+ * AI ANIQLAGAN SIGNAL — "guruhda shunga o'xshash muammo bor".
+ *
+ * ⚠️ BU MUAMMO EMAS, SIGNAL. Ataylab `issues` jadvaliga tushmaydi:
+ * qarorni AI chiqargan, ya'ni u XATO BO'LISHI MUMKIN. Muammolar ro'yxati
+ * — ma'muriyat ishlaydigan rasmiy navbat; unga AI taxminini to'g'ridan
+ * to'g'ri qo'yish o'sha navbatning ishonchliligini buzardi.
+ *
+ * Odam ko'radi → kategoriya tanlaydi → "Muammolarga biriktirish" bosadi.
+ * Shundagina `issues` da haqiqiy yozuv paydo bo'ladi (`issueId` to'ladi).
+ *
+ * ⚠️ `issueId` — FILIAL schema'sidagi `issues.id` ga ishora, lekin
+ * RELATION EMAS: bu jadval platformada, muammo esa filialda. Prisma ikki
+ * schema orasida bog'lanish qura olmaydi va buni qo'lda o'qiymiz.
+ * `branchId` yonida turadi — qaysi filialning muammosi ekani shundan
+ * bilinadi.
+ */
+model GroupSignal {
+  id String @id @db.Char(24)
+
+  chatId    String  @map("chat_id")
+  // Signal manbasi bo'lgan xabar — LINK shundan quriladi.
+  messageId String? @map("message_id")
+
+  // AI bergan baho.
+  kind     String // complaint | suggestion | question
+  severity String @default("normal") // low | normal | high
+  summary  String
+  // AI matndan OLGAN iqtibos — o'zi yozgan emas. Odam "signal haqiqatan
+  // shu gapdanmi" degan savolga xabarni ochmasdan javob topadi.
+  quote    String?
+
+  // Xabar muallifi — holicha muhrlanadi (`group_messages` o'chiriladi).
+  senderTgId String?   @map("sender_tg_id")
+  senderName String?   @map("sender_name")
+  sentAt     DateTime? @map("sent_at")
+
+  // Qamrov: AI nechta xabarni ko'rib shu xulosaga kelgan.
+  messageCount Int @default(1) @map("message_count")
+
+  // new | attached | dismissed
+  status String @default("new")
+
+  // MUAMMOLARGA BIRIKTIRILGAN BO'LSA.
+  issueId    String?   @map("issue_id") @db.Char(24)
+  branchId   String?   @map("branch_id") @db.Char(24)
+  attachedBy String?   @map("attached_by") @db.Char(24)
+  attachedAt DateTime? @map("attached_at")
+
+  // E'tiborsiz qoldirilgan bo'lsa — kim va qachon.
+  dismissedBy String?   @map("dismissed_by") @db.Char(24)
+  dismissedAt DateTime? @map("dismissed_at")
+
+  // Qaysi model chiqargan — model almashganda eski signallarni ajratish
+  // uchun ("bu xulosani qaysi versiya bergan").
+  model String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([chatId])
+  @@map("group_signals")
+}

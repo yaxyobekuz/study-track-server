@@ -953,6 +953,14 @@ const PERMISSION_SECTIONS = [
       // qo'shilsa, bu kalit allaqachon kimda borligi muhim bo'ladi —
       // keyinroq ajratish esa ruxsatni jimgina KENGAYTIRARDI.
       { key: "botSettings", label: "Bot sozlamalari" },
+      // GURUH SIGNALLARI — AI rasmiy guruhlarda topgan shikoyat/taklif.
+      //
+      // ⚠️ `view` DAN ALOHIDA va `botSettings` DAN HAM ALOHIDA. Sabab:
+      // bu yerda guruhdagi ODAMLARNING GAPLARI iqtibos bilan turadi —
+      // muammolar ro'yxatidan ham, guruhlar reyestridan ham nozikroq
+      // ma'lumot. Kim shikoyat qilganini ko'rish alohida qaror bo'lishi
+      // kerak; bitta kalitga qo'shilsa, ruxsat jimgina kengayardi.
+      { key: "signals", label: "Guruh signallari" },
     ],
   },
   {
