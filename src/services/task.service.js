@@ -1253,9 +1253,23 @@ const updateTask = async (
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
   _assertScope(task, scope, editorId);
 
-  if (task.status === "completed") {
+  // ⚠️ YAKUNLANGAN TOPSHIRIQDA FAQAT TUR o'zgaradi. Qolgan maydonlar
+  // (sarlavha, tavsif, muddat, jarima, fayllar) tasdiqlangan natija NIMAGA
+  // nisbatan qabul qilinganini belgilaydi — ular muhrlangan. Tur esa
+  // YORLIQ: u ishning mazmunini emas, hisobotdagi kesimini bildiradi,
+  // shuning uchun uni keyin to'g'rilash mumkin (eski topshiriqlar
+  // "asosiy" bo'lib qolgan, "asosiy" esa endi DOIMIY degani).
+  const kindOnly =
+    kind !== undefined &&
+    [title, description, penaltyPoints, assigneeId, startDate, links].every(
+      (v) => v === undefined,
+    ) &&
+    (removeAttachmentKeys || []).length === 0 &&
+    (files || []).length === 0;
+
+  if (task.status === "completed" && !kindOnly) {
     throw new BadRequestError(
-      "Yakunlangan topshiriqni tahrirlab bo'lmaydi — avval uni qayta oching",
+      "Yakunlangan topshiriqda faqat turni o'zgartirish mumkin — qolganini tahrirlash uchun uni qayta oching",
     );
   }
 
