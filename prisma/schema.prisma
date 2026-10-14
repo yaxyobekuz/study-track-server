@@ -1682,9 +1682,16 @@ model Task {
   // o'chirish faqat KELAJAKKA ta'sir qiladi.
   scheduleId     String?   @map("schedule_id") @db.Char(24)
   // Qaysi kun uchun yaratilgan (Toshkent kuni, UTC yarim tunida).
-  // ⚠️ `(scheduleId, assignee, occurrenceDate)` YAGONA: cron ikki marta
-  // ishga tushsa ham bitta kunga ikkita topshiriq yozilmaydi.
   occurrenceDate DateTime? @map("occurrence_date") @db.Date
+  // Kun ichidagi QAYSI VAQT uchun ("09:00"). Bir kunda bir nechta
+  // takrorlanish bo'lishi mumkin ("ertalab 09:00 va tushdan keyin 15:00"),
+  // shuning uchun yagonalik kaliti kun BILAN BIRGA shu maydonni ham oladi:
+  // `(scheduleId, assignee, occurrenceDate, occurrenceSlot)`.
+  //
+  // ⚠️ Qoidada bir xil tugash vaqti ikki marta bo'lishi TAQIQLANGAN
+  // (service tekshiradi) — aks holda bu kalit ikkita boshqa topshiriqni
+  // bitta deb hisoblardi.
+  occurrenceSlot String?  @map("occurrence_slot") @db.VarChar(5)
 
   // MANBA MUAMMO — topshiriq botdan kelgan muammoni hal qilish uchun
   // berilgan bo'lsa to'ladi (`issueTask.service.js`). Oddiy topshiriqda
@@ -1703,7 +1710,7 @@ model Task {
   issue           Issue?                @relation(fields: [issueId], references: [id], onDelete: SetNull)
   schedule        TaskSchedule?         @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
 
-  @@unique([scheduleId, assignee, occurrenceDate])
+  @@unique([scheduleId, assignee, occurrenceDate, occurrenceSlot])
   @@index([scheduleId])
   @@index([issueId])
   @@index([assignee, status])
@@ -1758,12 +1765,17 @@ model TaskSchedule {
   intervalDays   Int?   @map("interval_days")
   intervalMonths Int?   @map("interval_months")
 
-  // ── VAQT ── Toshkent devor-soati, "HH:mm"
-  startTime     String? @map("start_time") @db.VarChar(5)
-  dueTime       String  @map("due_time") @db.VarChar(5)
-  // Muddat hodisa kunidan necha kun keyin (0 — o'sha kuni).
-  // "Dushanba 08:10 dan chorshanba 18:00 gacha" shu bilan ifodalanadi.
-  dueOffsetDays Int     @default(0) @map("due_offset_days")
+  // ── VAQT OYNALARI ── [{ start: "08:10"|null, due: "09:00", offsetDays: 0 }]
+  //
+  // Toshkent devor-soati. Bir kunda BIR NECHTA oyna bo'lishi mumkin
+  // ("ertalab 09:00 va tushdan keyin 15:00") — har biri o'z topshirig'ini
+  // beradi. `start` ixtiyoriy: berilmasa oyna emas, faqat muddat.
+  // `offsetDays` — muddat hodisa kunidan necha kun keyin ("dushanba 08:10
+  // dan chorshanba 18:00 gacha").
+  //
+  // ⚠️ Massiv, alohida ustunlar emas: ustun bo'lsa ikkinchi vaqt uchun
+  // `dueTime2` kerak bo'lardi va uchinchisida yana migratsiya.
+  slots Json @default("[]")
   // Topshiriq necha kun OLDIN yaratiladi (= eslatma)
   leadDays      Int     @default(1) @map("lead_days")
 

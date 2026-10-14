@@ -37,6 +37,8 @@ const { TASK_PUSH_EVENTS } = require("../helpers/taskPush.helpers");
 const { normalizeLinks } = require("../helpers/taskWindow.helpers");
 const {
   FREQUENCIES,
+  MAX_SLOTS,
+  slotsOf,
   MAX_LEAD_DAYS,
   MAX_DUE_OFFSET_DAYS,
   MAX_INTERVAL_DAYS,
@@ -147,6 +149,64 @@ const _assertRecurrence = (body) => {
   return rule;
 };
 
+/**
+ * VAQT OYNALARI — bir kunda bir nechta bo'lishi mumkin.
+ *
+ * Shakl: `[{ start: "08:10"|null, due: "09:00", offsetDays: 0 }]`.
+ *
+ * ⚠️ BIR XIL TUGASH VAQTI IKKI MARTA BO'LMAYDI: topshiriqlarning
+ * yagonalik kaliti aynan shu vaqt (`tasks.occurrence_slot`), ya'ni takror
+ * vaqt ikkita boshqa topshiriqni baza uchun bitta qilib qo'yardi.
+ *
+ * @param {unknown} value - massiv yoki JSON satri (multipart forma)
+ * @returns {Array<{ start: string|null, due: string, offsetDays: number }>}
+ */
+const _assertSlots = (value) => {
+  let list = value;
+  if (typeof list === "string") {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      throw new BadRequestError("Vaqt oynalari formati noto'g'ri");
+    }
+  }
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new BadRequestError("Kamida bitta vaqt belgilanishi kerak");
+  }
+  if (list.length > MAX_SLOTS) {
+    throw new BadRequestError(`Bir kunda ko'pi bilan ${MAX_SLOTS} ta vaqt bo'lishi mumkin`);
+  }
+
+  const seen = new Set();
+  const slots = list.map((raw, index) => {
+    const label = list.length > 1 ? `${index + 1}-vaqt` : "Vaqt";
+    const due = _clock(raw?.due, `${label}: tugash vaqti`, { required: true });
+    const start = _clock(raw?.start, `${label}: boshlanish vaqti`);
+    const offsetDays = _int(raw?.offsetDays, {
+      min: 0,
+      max: MAX_DUE_OFFSET_DAYS,
+      label: `${label}: muddat kunlari`,
+      fallback: 0,
+    });
+
+    // Bir kunlik oynada boshlanish tugashdan oldin bo'lishi SHART; muddat
+    // boshqa kunga surilgan bo'lsa bu shart o'z-o'zidan bajariladi.
+    if (start && offsetDays === 0 && parseClock(start) >= parseClock(due)) {
+      throw new BadRequestError(`${label}: boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak`);
+    }
+
+    if (seen.has(due)) {
+      throw new BadRequestError(`Bir xil tugash vaqti ikki marta berilgan: ${due}`);
+    }
+    seen.add(due);
+
+    return { start, due, offsetDays };
+  });
+
+  // Tartiblangan holda saqlanadi — panel va matn har doim bir xil ko'rinadi
+  return slots.sort((a, b) => parseClock(a.due) - parseClock(b.due));
+};
+
 const _assertAssignees = async (ids, scope) => {
   const list = [...new Set((ids || []).map(String))].filter(Boolean);
   if (list.length === 0) throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
@@ -208,27 +268,13 @@ const createSchedule = async (body, createdBy, scope) => {
   });
 
   const rule = _assertRecurrence(body);
-  const dueTime = _clock(body.dueTime, "Tugash vaqti", { required: true });
-  const startTime = _clock(body.startTime, "Boshlanish vaqti");
-  const dueOffsetDays = _int(body.dueOffsetDays, {
-    min: 0,
-    max: MAX_DUE_OFFSET_DAYS,
-    label: "Muddat kunlari",
-    fallback: 0,
-  });
+  const slots = _assertSlots(body.slots);
   const leadDays = _int(body.leadDays, {
     min: 0,
     max: MAX_LEAD_DAYS,
     label: "Eslatma kunlari",
     fallback: 1,
   });
-
-  // ⚠️ Bir kunlik ishda boshlanish tugashdan oldin bo'lishi SHART; muddat
-  // boshqa kunga surilgan bo'lsa (`dueOffsetDays`) bu shart o'z-o'zidan
-  // bajariladi va tekshirilmaydi.
-  if (startTime && dueOffsetDays === 0 && parseClock(startTime) >= parseClock(dueTime)) {
-    throw new BadRequestError("Boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak");
-  }
 
   const startDate = body.startDate
     ? _day(body.startDate, "Boshlanish sanasi")
@@ -268,9 +314,7 @@ const createSchedule = async (body, createdBy, scope) => {
         links,
         penaltyPoints,
         ...rule,
-        startTime,
-        dueTime,
-        dueOffsetDays,
+        slots,
         leadDays,
         startDate,
         endDate,
@@ -323,15 +367,7 @@ const updateSchedule = async (id, body, userId, scope) => {
       max: DESCRIPTION_MAX,
     });
   }
-  if (body.dueTime !== undefined) data.dueTime = _clock(body.dueTime, "Tugash vaqti", { required: true });
-  if (body.startTime !== undefined) data.startTime = _clock(body.startTime, "Boshlanish vaqti");
-  if (body.dueOffsetDays !== undefined) {
-    data.dueOffsetDays = _int(body.dueOffsetDays, {
-      min: 0,
-      max: MAX_DUE_OFFSET_DAYS,
-      label: "Muddat kunlari",
-    });
-  }
+  if (body.slots !== undefined) data.slots = _assertSlots(body.slots);
   if (body.leadDays !== undefined) {
     data.leadDays = _int(body.leadDays, { min: 0, max: MAX_LEAD_DAYS, label: "Eslatma kunlari" });
   }
@@ -373,13 +409,6 @@ const updateSchedule = async (id, body, userId, scope) => {
   const endDate = data.endDate !== undefined ? data.endDate : current.endDate;
   if (endDate && endDate.getTime() < startDate.getTime()) {
     throw new BadRequestError("Tugash sanasi boshlanish sanasidan oldin bo'lmasligi kerak");
-  }
-
-  const startTime = data.startTime !== undefined ? data.startTime : current.startTime;
-  const dueTime = data.dueTime ?? current.dueTime;
-  const offset = data.dueOffsetDays ?? current.dueOffsetDays;
-  if (startTime && offset === 0 && parseClock(startTime) >= parseClock(dueTime)) {
-    throw new BadRequestError("Boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak");
   }
 
   let updated;
@@ -564,63 +593,75 @@ const materializeSchedule = async (schedule, today = getTashkentDateUtc(0)) => {
   // to'ldirib, haqiqiy muammoni ko'rinmas qilib qo'yardi.
   const existing = await prisma.task.findMany({
     where: { scheduleId: schedule.id, occurrenceDate: { in: days } },
-    select: { assignee: true, occurrenceDate: true },
+    select: { assignee: true, occurrenceDate: true, occurrenceSlot: true },
   });
+  // Kalit — KUN + VAQT + ODAM: bir kunda bir nechta oyna bo'lishi mumkin
   const done = new Set(
-    existing.map((t) => `${t.occurrenceDate.toISOString().slice(0, 10)}|${t.assignee}`),
+    existing.map(
+      (t) => `${t.occurrenceDate.toISOString().slice(0, 10)}|${t.occurrenceSlot}|${t.assignee}`,
+    ),
   );
 
   let created = 0;
   let skipped = 0;
   const now = new Date();
 
+  const slots = slotsOf(schedule);
+
   for (const day of days) {
     const dayKey = day.toISOString().slice(0, 10);
-    const pending = liveAssignees.filter((id) => !done.has(`${dayKey}|${id}`));
-    skipped += liveAssignees.length - pending.length;
-    if (pending.length === 0) continue;
 
-    const window = buildWindow(schedule, day);
+    // ⚠️ HAR OYNA O'Z TOPSHIRIG'INI BERADI: "har kuni 09:00 va 15:00"
+    // qoidasida bir kunga ikkita alohida topshiriq yoziladi, har birining
+    // o'z muddati, natijasi va jarimasi bilan.
+    for (const slot of slots) {
+      const pending = liveAssignees.filter((id) => !done.has(`${dayKey}|${slot.due}|${id}`));
+      skipped += liveAssignees.length - pending.length;
+      if (pending.length === 0) continue;
 
-    // ⚠️ MUDDATI ALLAQACHON O'TGAN HODISA YOZILMAYDI. Bugungi kun oynaga
-    // kiradi, lekin uning soati o'tib ketgan bo'lishi mumkin: "har kuni
-    // 09:00" qoidasi soat 14:00 da yaratilsa (yoki qayta yoqilsa), xodim
-    // o'sha zahoti MUDDATI O'TGAN topshiriq va soatlik cron'dan AVTOMAT
-    // JARIMA olardi — ko'rmagan ishi uchun. Bunday hodisa keyingi
-    // takrorlanishga qoldiriladi.
-    if (window.dueDate.getTime() <= now.getTime()) {
-      skipped += pending.length;
-      continue;
-    }
+      const window = buildWindow(slot, day);
 
-    const rows = await taskService.writeTaskRows({
-      assigneeIds: pending,
+      // ⚠️ MUDDATI ALLAQACHON O'TGAN OYNA YOZILMAYDI. Bugungi kun oynaga
+      // kiradi, lekin uning soati o'tib ketgan bo'lishi mumkin: "har kuni
+      // 09:00" qoidasi soat 14:00 da yaratilsa (yoki qayta yoqilsa), xodim
+      // o'sha zahoti MUDDATI O'TGAN topshiriq va soatlik cron'dan AVTOMAT
+      // JARIMA olardi — ko'rmagan ishi uchun. Kun ichidagi keyingi oyna
+      // (masalan 15:00) baribir yoziladi.
+      if (window.dueDate.getTime() <= now.getTime()) {
+        skipped += pending.length;
+        continue;
+      }
+
+      const rows = await taskService.writeTaskRows({
+        assigneeIds: pending,
       createdBy: schedule.createdBy,
-      // ⚠️ Har qator ALOHIDA: pass kuniga bir necha marta ishlashi mumkin
-      // (cron + startup) va bitta buzuq qator qolganlarini to'smasligi
-      // kerak. `skipDuplicates` — poyga uchun ZAXIRA qavat: ikki pass bir
-      // vaqtda ishlasa, yagona indeks ikkinchisini to'xtatadi.
-      atomic: false,
-      skipDuplicates: true,
-      fields: {
-        title: schedule.title,
-        description: schedule.description,
-        startDate: window.startDate,
-        dueDate: window.dueDate,
-        // Doimiy topshiriq — ASOSIY tur (biznes qarori)
-        kind: "main",
-        links: schedule.links,
-        attachments: schedule.attachments,
-        penaltyPoints: schedule.penaltyPoints,
-        scheduleId: schedule.id,
-        occurrenceDate: day,
-      },
-    });
+        // ⚠️ Har qator ALOHIDA: pass kuniga bir necha marta ishlashi mumkin
+        // (cron + startup) va bitta buzuq qator qolganlarini to'smasligi
+        // kerak. `skipDuplicates` — poyga uchun ZAXIRA qavat: ikki pass bir
+        // vaqtda ishlasa, yagona indeks ikkinchisini to'xtatadi.
+        atomic: false,
+        skipDuplicates: true,
+        fields: {
+          title: schedule.title,
+          description: schedule.description,
+          startDate: window.startDate,
+          dueDate: window.dueDate,
+          // Doimiy topshiriq — ASOSIY tur (biznes qarori)
+          kind: "main",
+          links: schedule.links,
+          attachments: schedule.attachments,
+          penaltyPoints: schedule.penaltyPoints,
+          scheduleId: schedule.id,
+          occurrenceDate: day,
+          occurrenceSlot: slot.due,
+        },
+      });
 
-    if (rows.length > 0) {
-      created += rows.length;
-      // Yaratilishning O'ZI eslatma — xodimga push boradi
-      taskService.notifyAssignees(TASK_PUSH_EVENTS.CREATED, rows);
+      if (rows.length > 0) {
+        created += rows.length;
+        // Yaratilishning O'ZI eslatma — xodimga push boradi
+        taskService.notifyAssignees(TASK_PUSH_EVENTS.CREATED, rows);
+      }
     }
   }
 

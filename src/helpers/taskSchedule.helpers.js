@@ -43,6 +43,8 @@ const WEEKDAY_NAMES = [
 
 const MAX_LEAD_DAYS = 30;
 const MAX_DUE_OFFSET_DAYS = 30;
+// Bir kundagi vaqt oynalari soni — "ertalab, tushda, kechqurun" dan ancha keng
+const MAX_SLOTS = 12;
 const MAX_INTERVAL_DAYS = 365;
 const MAX_INTERVAL_MONTHS = 24;
 
@@ -151,19 +153,32 @@ const nextOccurrence = (schedule, fromDay, horizonDays = 400) => {
 };
 
 /**
- * Hodisa kuni → topshiriqning haqiqiy vaqt oynasi.
+ * Qoidaning vaqt oynalari — har doim MASSIV.
  *
- * ⚠️ MUDDAT `dueOffsetDays` BILAN surilishi mumkin: "dushanba 08:10 dan
- * chorshanba 18:00 gacha" degan topshiriq shunday ifodalanadi.
+ * ⚠️ Bitta joydan o'qiladi: eski qoidalarda (ko'chirishdan oldin yozilgan)
+ * massiv bo'sh bo'lib qolishi mumkin, u holda topshiriq umuman yozilmasligi
+ * kerak — jim "soat 00:00" o'ylab topishdan ko'ra ko'rinadigan bo'shliq
+ * yaxshiroq.
  *
  * @param {object} schedule
+ * @returns {Array<{ start: string|null, due: string, offsetDays: number }>}
+ */
+const slotsOf = (schedule) => (Array.isArray(schedule?.slots) ? schedule.slots : []);
+
+/**
+ * Hodisa kuni + BITTA vaqt oynasi → topshiriqning haqiqiy vaqtlari.
+ *
+ * ⚠️ MUDDAT `offsetDays` BILAN surilishi mumkin: "dushanba 08:10 dan
+ * chorshanba 18:00 gacha" degan topshiriq shunday ifodalanadi.
+ *
+ * @param {{ start?: string|null, due: string, offsetDays?: number }} slot
  * @param {Date} day
  * @returns {{ startDate: Date|null, dueDate: Date }}
  */
-const buildWindow = (schedule, day) => {
-  const dueMinute = parseClock(schedule.dueTime) ?? 0;
-  const dueDay = addDays(day, schedule.dueOffsetDays || 0);
-  const startMinute = schedule.startTime ? parseClock(schedule.startTime) : null;
+const buildWindow = (slot, day) => {
+  const dueMinute = parseClock(slot?.due) ?? 0;
+  const dueDay = addDays(day, slot?.offsetDays || 0);
+  const startMinute = slot?.start ? parseClock(slot.start) : null;
 
   return {
     startDate: startMinute === null ? null : tashkentInstant(day, startMinute),
@@ -182,9 +197,14 @@ const buildWindow = (schedule, day) => {
  */
 const describeSchedule = (schedule) => {
   if (!schedule) return "—";
-  const time = schedule.startTime
-    ? `${schedule.startTime}–${schedule.dueTime}`
-    : schedule.dueTime;
+
+  const slots = slotsOf(schedule);
+  const time =
+    slots.length === 0
+      ? "—"
+      : slots
+          .map((slot) => (slot.start ? `${slot.start}–${slot.due}` : slot.due))
+          .join(", ");
 
   let rule;
   switch (schedule.frequency) {
@@ -213,12 +233,16 @@ const describeSchedule = (schedule) => {
       rule = "—";
   }
 
-  const tail = schedule.dueOffsetDays > 0 ? ` (+${schedule.dueOffsetDays} kun)` : "";
+  // Muddati boshqa kunga surilgan oyna bo'lsa — eslatib qo'yamiz
+  const maxOffset = slots.reduce((max, slot) => Math.max(max, slot.offsetDays || 0), 0);
+  const tail = maxOffset > 0 ? ` (+${maxOffset} kun)` : "";
   return `${rule} · ${time}${tail}`;
 };
 
 module.exports = {
   FREQUENCIES,
+  MAX_SLOTS,
+  slotsOf,
   WEEKDAY_NAMES,
   MAX_LEAD_DAYS,
   MAX_DUE_OFFSET_DAYS,

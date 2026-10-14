@@ -29,11 +29,12 @@ const base = {
   isActive: true,
   startDate: day("2026-10-01"),
   endDate: null,
-  dueTime: "18:00",
-  dueOffsetDays: 0,
+  slots: [{ start: null, due: "18:00", offsetDays: 0 }],
   weekdays: [],
   monthDays: [],
 };
+
+const slot = (due, start = null, offsetDays = 0) => ({ start, due, offsetDays });
 
 // 2026-10-12 — dushanba, 2026-10-14 — chorshanba
 
@@ -131,40 +132,57 @@ test("oraliqdagi hodisalar va keyingisi", () => {
 // ─── Vaqt oynasi ──────────────────────────────────────────────────
 
 test("soat TOSHKENT devor-soati bo'lib instantga aylanadi", () => {
-  const s = { ...base, frequency: "weekly", weekdays: [1], startTime: "08:10", dueTime: "09:30" };
-  const w = buildWindow(s, day("2026-10-12"));
+  const w = buildWindow(slot("09:30", "08:10"), day("2026-10-12"));
 
   // 08:10 Toshkent = 03:10 UTC
   assert.equal(w.startDate.toISOString(), "2026-10-12T03:10:00.000Z");
   assert.equal(w.dueDate.toISOString(), "2026-10-12T04:30:00.000Z");
 });
 
+test("BIR KUNDA BIR NECHTA VAQT — har biri o'z oynasini beradi", () => {
+  // "Har kuni ertalab 09:00 da va tushdan keyin 15:00 da"
+  const morning = buildWindow(slot("09:00"), day("2026-10-12"));
+  const afternoon = buildWindow(slot("15:00", "14:30"), day("2026-10-12"));
+
+  assert.equal(morning.dueDate.toISOString(), "2026-10-12T04:00:00.000Z");
+  assert.equal(afternoon.startDate.toISOString(), "2026-10-12T09:30:00.000Z");
+  assert.equal(afternoon.dueDate.toISOString(), "2026-10-12T10:00:00.000Z");
+  assert.ok(morning.dueDate < afternoon.dueDate, "ertalabki oldin tugaydi");
+});
+
 test("muddat boshqa kunga surilishi mumkin (bir necha kunlik ish)", () => {
-  const s = {
-    ...base,
-    frequency: "weekly",
-    weekdays: [1],
-    startTime: "08:10",
-    dueTime: "18:00",
-    dueOffsetDays: 2,
-  };
-  const w = buildWindow(s, day("2026-10-12"));
+  const w = buildWindow(slot("18:00", "08:10", 2), day("2026-10-12"));
 
   assert.equal(w.startDate.toISOString(), "2026-10-12T03:10:00.000Z", "dushanba 08:10");
   assert.equal(w.dueDate.toISOString(), "2026-10-14T13:00:00.000Z", "chorshanba 18:00");
 });
 
 test("boshlanish vaqti berilmasa oyna yo'q — faqat muddat", () => {
-  const s = { ...base, frequency: "days", intervalDays: 1, startTime: null };
-  assert.equal(buildWindow(s, day("2026-10-12")).startDate, null);
+  assert.equal(buildWindow(slot("18:00"), day("2026-10-12")).startDate, null);
 });
 
 // ─── Matn ─────────────────────────────────────────────────────────
 
 test("qoida matni odam o'qiydigan ko'rinishda", () => {
   assert.equal(
-    describeSchedule({ ...base, frequency: "weekly", weekdays: [1, 3], startTime: "08:10" }),
+    describeSchedule({
+      ...base,
+      frequency: "weekly",
+      weekdays: [1, 3],
+      slots: [slot("18:00", "08:10")],
+    }),
     "Har dushanba, chorshanba · 08:10–18:00",
+  );
+
+  // Bir kunda bir nechta vaqt — hammasi matnda ko'rinadi
+  assert.equal(
+    describeSchedule({
+      ...base,
+      frequency: "days",
+      intervalDays: 1,
+      slots: [slot("09:00"), slot("15:00", "14:30")],
+    }),
+    "Har kuni · 09:00, 14:30–15:00",
   );
   assert.equal(
     describeSchedule({ ...base, frequency: "days", intervalDays: 10 }),

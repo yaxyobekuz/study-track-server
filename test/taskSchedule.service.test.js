@@ -81,9 +81,7 @@ const SCHEDULE = {
   monthDays: [],
   intervalDays: null,
   intervalMonths: null,
-  startTime: "08:10",
-  dueTime: "09:00",
-  dueOffsetDays: 0,
+  slots: [{ start: "08:10", due: "09:00", offsetDays: 0 }],
   leadDays: 1,
   startDate: day("2026-10-01"),
   endDate: null,
@@ -109,6 +107,57 @@ test("topshiriq VAQTIDAN OLDIN yoziladi (leadDays)", async () => {
   assert.equal(written[0].dueDate.toISOString(), "2026-10-19T04:00:00.000Z");
   assert.equal(written[0].kind, "main", "doimiy topshiriq — ASOSIY tur");
   assert.equal(written[0].scheduleId, SCHEDULE.id);
+  assert.equal(written[0].occurrenceSlot, "09:00", "qaysi vaqt uchun yozilgani");
+});
+
+test("BIR KUNDA BIR NECHTA VAQT — har biriga alohida topshiriq", async () => {
+  // "Har dushanba ertalab 09:00 da va tushdan keyin 15:00 da"
+  const result = await materializeSchedule(
+    {
+      ...SCHEDULE,
+      slots: [
+        { start: null, due: "09:00", offsetDays: 0 },
+        { start: "14:30", due: "15:00", offsetDays: 0 },
+      ],
+    },
+    day("2026-10-18"),
+  );
+
+  assert.equal(result.created, 4, "2 vaqt × 2 ijrochi");
+  assert.deepEqual(
+    [...new Set(written.map((t) => t.occurrenceSlot))].sort(),
+    ["09:00", "15:00"],
+  );
+  // Ikkala topshiriq ham AYNI kunga, lekin boshqa muddatga
+  assert.equal(
+    new Set(written.map((t) => t.occurrenceDate.toISOString())).size,
+    1,
+    "bitta kun",
+  );
+  assert.equal(new Set(written.map((t) => t.dueDate.toISOString())).size, 2, "ikki muddat");
+});
+
+test("bir kunning o'tgan vaqti tashlanadi, keyingisi YOZILADI", async () => {
+  // Kun ichida 00:00 allaqachon o'tgan, 23:59 esa hali oldinda
+  const today = getTashkentDateUtc(0);
+  const result = await materializeSchedule(
+    {
+      ...SCHEDULE,
+      frequency: "days",
+      intervalDays: 1,
+      weekdays: [],
+      startDate: today,
+      leadDays: 0,
+      slots: [
+        { start: null, due: "00:00", offsetDays: 0 },
+        { start: null, due: "23:59", offsetDays: 0 },
+      ],
+    },
+    today,
+  );
+
+  assert.equal(result.created, 2, "faqat kechki vaqt, ikkala ijrochiga");
+  assert.deepEqual([...new Set(written.map((t) => t.occurrenceSlot))], ["23:59"]);
 });
 
 test("hodisadan uzoq kunda hech narsa yozilmaydi", async () => {
@@ -181,8 +230,7 @@ test("MUDDATI ALLAQACHON O'TGAN hodisa yozilmaydi (darhol jarima bo'lardi)", asy
       intervalDays: 1,
       weekdays: [],
       startDate: today,
-      startTime: null,
-      dueTime: "00:00",
+      slots: [{ start: null, due: "00:00", offsetDays: 0 }],
       leadDays: 0,
     },
     today,
