@@ -117,6 +117,23 @@ const minutesOfTime = (value) => {
 const isGatedUser = (user) =>
   Boolean(user) && user.role !== ROLES.OWNER && hasRole(user, ROLES.TEACHER);
 
+/**
+ * KETISHDAN OLDIN OGOHLANTIRILADIGAN XODIM — o'qituvchidan tashqari
+ * hamma (ma'muriyat, rahbar, xodim, qabulxona).
+ *
+ * ⚠️ OGOHLANTIRISH, TO'SIQ EMAS. Qat'iy to'siq o'qituvchida qoladi
+ * (`education.md` §12): unda sabab bor — ketgandan keyin bugungi darsga
+ * baho qo'yib bo'lmaydi va dars oylikdan tushib ketadi. Boshqa xodimda
+ * bunday zanjir yo'q, shuning uchun ularni ishdan chiqmay qolishga
+ * majburlash YANGI intizom qoidasi bo'lardi — uni jim kiritib bo'lmaydi.
+ * Lekin "bajarilmagan topshiriqlaring bor" deb aytish — shunchaki halollik.
+ */
+const isAdvisedUser = (user) =>
+  Boolean(user) &&
+  user.role !== ROLES.OWNER &&
+  user.role !== ROLES.STUDENT &&
+  !isGatedUser(user);
+
 // ─────────────────────────────────────────────
 // BUGUNGI DARSLAR
 // ─────────────────────────────────────────────
@@ -470,6 +487,10 @@ async function getCheckoutReadiness(user) {
     date: dayKey(day),
     dateLabel: formatDateUz(day, { utc: true }),
     applies: false,
+    // Ogohlantirish rejimi (qat'iy darvoza emas) — panel shunga qarab
+    // ro'yxatni ko'rsatadi
+    advisory: false,
+    warnings: [],
     ready: true,
     canCheckOut: true,
     closed: null,
@@ -480,7 +501,26 @@ async function getCheckoutReadiness(user) {
     attendance: null,
   };
 
-  if (!isGatedUser(user)) return base;
+  if (!isGatedUser(user)) {
+    // Qat'iy darvoza emas — faqat ro'yxat va ogohlantirish
+    if (!isAdvisedUser(user)) return base;
+
+    const advisorySettings = await getAttendanceSettings();
+    if (advisorySettings.checkoutRequireTasks === false) return base;
+
+    const items = await loadOpenTasks(user.id, day, now);
+    if (items.length === 0) return base;
+
+    return {
+      ...base,
+      // ⚠️ `applies: false` BO'LIB QOLADI: `resolveCheckout` shunga qarab
+      // ketishni TO'SMAYDI. Panel esa `advisory` ni ko'rib ro'yxatni
+      // chizadi.
+      advisory: true,
+      tasks: { required: false, items },
+      warnings: [`${items.filter((t) => !t.locked).length} ta topshiriq topshirilmagan`],
+    };
+  }
 
   const settings = await getAttendanceSettings();
   const requireGrades = settings.checkoutRequireGrades !== false;
