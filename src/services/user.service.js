@@ -104,9 +104,10 @@ async function syncDirectory(id) {
   // ⚠️ UY FILIALI TAHRIRDA O'ZGARMAYDI. Ilgari bu yerda har doim JORIY
   // filial yozilardi: ko'p filialli xodimni ikkinchi filialda tahrirlash
   // uning login yo'naltirgichini jimgina o'sha filialga burib, ikkinchi
-  // "uy" biriktirishini yaratardi. Uy filiali faqat ko'chirishda
-  // (`branchTransfer.service.js`) o'zgaradi; yozuv yo'q bo'lsa — joriy filial
-  // (filiallashtirishdan oldingi foydalanuvchi, lazy migratsiya).
+  // "uy" biriktirishini yaratardi. Uy filiali faqat ATAYLAB o'zgaradi —
+  // `setHomeBranch` ("Asosiy qilish"), uy filialidan chiqarish yoki
+  // ko'chirish (`branchTransfer.service.js`) orqali; yozuv yo'q bo'lsa —
+  // joriy filial (filiallashtirishdan oldingi foydalanuvchi, lazy migratsiya).
   const existing = await userDirectory.findByUserId(id);
   const homeBranchId = existing?.branchId ?? branch.id;
   const isHome = homeBranchId === branch.id;
@@ -1984,22 +1985,106 @@ async function attachToBranch(userId, { branchId, role, actorId = null }) {
 }
 
 /**
- * Xodimni filialdan chiqaradi.
+ * Asosiy (uy) filialni almashtiradi — login shu paytdan boshlab shu
+ * filialga tushadi.
+ *
+ * Reyestr yozuvi `userDirectory.setHomeBranch` da (u ikki jadvalni birga
+ * yangilaydi), bu yerda esa FILIAL TOMONIDAGI oqibat: botdagi bog'lanish
+ * uziladi, aks holda xodim botda eski filial ma'lumotini ko'rib turardi
+ * (`detachFromBranch` va ko'chirish oqimi bilan AYNI qaror).
+ *
+ * @param {string} userId
+ * @param {string} branchId
+ */
+async function setHomeBranch(userId, branchId) {
+  const entry = await userDirectory.findByUserId(userId);
+  if (!entry) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  if (entry.role === "student") {
+    throw new BadRequestError(
+      "O'quvchi bitta filialda o'qiydi — uning asosiy filiali ko'chirish orqali o'zgaradi",
+    );
+  }
+  if (entry.branchId === branchId) {
+    throw new BadRequestError("Bu filial allaqachon asosiy");
+  }
+
+  const target = await branchService.getUsableById(branchId);
+  const access = await userDirectory.setHomeBranch(userId, branchId);
+
+  // Profil maqsad filialda bo'lishi shart — biriktirish bor-u profil yo'q
+  // holati `getUserBranches` da `profileMissing` bilan ko'rinadi va bu
+  // yerda jim o'tkazib yuborilmaydi: login tushadigan filial bu.
+  const profile = await runWithBranch(target, () =>
+    prisma.user.findUnique({ where: { id: userId }, select: { id: true } }),
+  );
+  if (!profile) {
+    throw new BadRequestError(
+      `"${target.name}" filialida xodim profili yo'q — biriktirishni bekor qilib qaytadan biriktiring`,
+    );
+  }
+
+  await platformPrisma.telegramDirectory.deleteMany({
+    where: { userId, linkKind: "staff" },
+  });
+  const previous = await branchService.findById(entry.branchId);
+  if (previous) {
+    await runWithBranch(previous, () =>
+      prisma.tgUser
+        .deleteMany({ where: { userId, linkKind: "staff" } })
+        .catch(() => {}),
+    );
+  }
+
+  logger.info(
+    `[user] ${userId} — asosiy filial "${target.name}" ga o'tdi (${access.role})`,
+  );
+
+  return getUserBranches(userId);
+}
+
+/**
+ * Xodimni filialdan chiqaradi — ISTALGAN filialdan, asosiysi ham.
  *
  * Profil qatori O'CHIRILMAYDI, faqat `isActive: false` qilinadi: o'sha
  * filialdagi davomat, jarima va topshiriqlar unga ishora qiladi va
  * hisobotlardan yo'qolmasligi kerak (`User` soft-ref naqshi).
  *
- * UY filialidan chiqarib bo'lmaydi — login aynan o'sha yerga tushadi
- * (`userDirectory.revokeAccess` tekshiradi).
+ * UY filialidan chiqarilganda login boshqa filialga o'tadi
+ * (`nextHomeBranchId`, bir filial qolsa — avtomat). Yagona filialdan
+ * chiqarib bo'lmaydi: `userDirectory.revokeAccess` tekshiradi.
+ *
+ * ⚠️ UY FILIALI O'ZGARSA BOTDAGI BOG'LANISH UZILADI. `tg_users` qatori
+ * filial schema'sida, `telegram_directory` esa "bu telegramId qaysi filial"
+ * degan yo'naltirgich: tegilmasa xodim botda ESKI filial ma'lumotini ko'rib
+ * turardi. Ko'chirish oqimidagi bilan AYNI qaror
+ * (`branchTransferStaff.service.js`) — ko'chirilmaydi, uziladi: xodim qayta
+ * login qiladi va to'g'ri filialga tushadi.
  *
  * @param {string} userId
  * @param {string} branchId
+ * @param {{nextHomeBranchId?: string}} [options]
  */
-async function detachFromBranch(userId, branchId) {
-  const access = await userDirectory.revokeAccess(userId, branchId);
+async function detachFromBranch(userId, branchId, { nextHomeBranchId } = {}) {
+  const access = await userDirectory.revokeAccess(userId, branchId, {
+    nextHomeBranchId,
+  });
   if (!access) {
     throw new NotFoundError("Bu filialga biriktirish topilmadi");
+  }
+
+  if (access.isHome) {
+    await platformPrisma.telegramDirectory.deleteMany({
+      where: { userId, linkKind: "staff" },
+    });
+    const old = await branchService.findById(branchId);
+    if (old) {
+      await runWithBranch(old, () =>
+        prisma.tgUser
+          .deleteMany({ where: { userId, linkKind: "staff" } })
+          .catch(() => {}),
+      );
+    }
   }
 
   const branch = await branchService.findById(branchId);
@@ -2058,6 +2143,7 @@ module.exports = {
   // Ko'p filialli xodim
   getUserBranches,
   attachToBranch,
+  setHomeBranch,
   detachFromBranch,
   propagateIdentity,
   assertLiveProfile,

@@ -437,13 +437,35 @@ const attachUserToBranch = asyncHandler(async (req, res) => {
 });
 
 /**
- * Xodimni filialdan chiqarish (asosiy filialdan chiqarib bo'lmaydi).
+ * Xodimning asosiy (uy) filialini almashtirish — login shu filialga tushadi.
+ * @route PATCH /api/users/:id/branches/:branchId/home
+ */
+const setUserHomeBranch = asyncHandler(async (req, res) => {
+  const data = await userService.setHomeBranch(
+    req.params.id,
+    req.params.branchId,
+  );
+
+  res.json({
+    success: true,
+    message: "Asosiy filial o'zgartirildi",
+    data,
+  });
+});
+
+/**
+ * Xodimni filialdan chiqarish.
+ *
+ * Asosiy filialdan ham chiqarish mumkin: login qaysi filialga tushishi
+ * `nextHomeBranchId` da keladi (bitta filial qolsa — shart emas).
+ *
  * @route DELETE /api/users/:id/branches/:branchId
  */
 const detachUserFromBranch = asyncHandler(async (req, res) => {
   const data = await userService.detachFromBranch(
     req.params.id,
     req.params.branchId,
+    { nextHomeBranchId: req.query.nextHomeBranchId || undefined },
   );
 
   res.json({
@@ -473,5 +495,6 @@ module.exports = {
   updateMe,
   getUserBranches,
   attachUserToBranch,
+  setUserHomeBranch,
   detachUserFromBranch,
 };

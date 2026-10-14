@@ -19,7 +19,7 @@
  */
 
 const platformPrisma = require("../config/platformPrisma");
-const { ConflictError, NotFoundError } = require("../utils/errors");
+const { BadRequestError, ConflictError, NotFoundError } = require("../utils/errors");
 const logger = require("../utils/logger");
 
 const normalize = (username) => String(username ?? "").toLowerCase().trim();
@@ -262,22 +262,96 @@ const grantAccess = async ({ userId, branchId, role, actorId = null }) =>
   });
 
 /**
- * Biriktirishni bekor qiladi.
+ * UY FILIALINI ALMASHTIRADI — login shu paytdan boshlab shu filialga tushadi.
  *
- * UY filialini yechib bo'lmaydi: login aynan o'sha yerga tushadi, ya'ni
- * uni olib tashlash odamni tizimdan butunlay chiqarib yuborardi.
+ * Uy filiali ikki joyda yozilgan va ikkalasi BIRGA o'zgarishi shart:
+ * `user_directory.branchId` (login yo'naltirgichi) va `user_branch_access.isHome`
+ * (ro'yxatdagi bayroq). Bittasi yangilanib ikkinchisi qolsa, "Asosiy" yorlig'i
+ * bir filialda, login esa boshqasida bo'lib qolardi.
+ *
+ * Maqsad filial biriktirilgan bo'lishi SHART: biriktirilmagan filialni uy
+ * qilish odamni profili yo'q schema'ga yuborardi.
  *
  * @param {string} userId
  * @param {string} branchId
+ * @returns {Promise<object>} yangi uy biriktirishi
  */
-const revokeAccess = async (userId, branchId) => {
+const setHomeBranch = async (userId, branchId) => {
+  const access = await findAccess(userId, branchId);
+  if (!access) {
+    throw new BadRequestError(
+      "Xodim bu filialga biriktirilmagan — avval biriktiring, keyin asosiy qiling",
+    );
+  }
+
+  await platformPrisma.$transaction([
+    platformPrisma.userBranchAccess.updateMany({
+      where: { userId, branchId: { not: branchId }, isHome: true },
+      data: { isHome: false },
+    }),
+    platformPrisma.userBranchAccess.update({
+      where: { userId_branchId: { userId, branchId } },
+      data: { isHome: true },
+    }),
+    platformPrisma.userDirectory.update({
+      where: { id: userId },
+      data: { branchId, role: access.role },
+    }),
+  ]);
+
+  logger.info(`[UserDirectory] ${userId} — asosiy filial ${branchId} ga o'tdi`);
+  return { ...access, isHome: true };
+};
+
+/**
+ * Biriktirishni bekor qiladi.
+ *
+ * UY filialidan chiqarish MUMKIN, lekin login qayerga tushishini aytib
+ * ketish shart (`nextHomeBranchId`): `user_directory.branchId` bitta filialga
+ * ishora qiladi va u bo'sh qolsa odam login qila olib hech qaysi filialga
+ * tushmasdi — ya'ni tizimdan butunlay chiqib ketardi.
+ *
+ * Oxirgi biriktirishni yechib bo'lmaydi: ko'chiriladigan uy qolmaydi.
+ * Bunday xodim arxivlanadi yoki o'chiriladi, filialsiz qoldirilmaydi.
+ *
+ * @param {string} userId
+ * @param {string} branchId
+ * @param {{nextHomeBranchId?: string}} [options]
+ */
+const revokeAccess = async (userId, branchId, { nextHomeBranchId } = {}) => {
   const access = await findAccess(userId, branchId);
   if (!access) return null;
 
   if (access.isHome) {
-    throw new ConflictError(
-      "Asosiy filialdan chiqarib bo'lmaydi — foydalanuvchi tizimga aynan o'sha filial orqali kiradi",
-    );
+    const rest = (await listAccess(userId)).filter((row) => row.branchId !== branchId);
+
+    if (rest.length === 0) {
+      throw new ConflictError(
+        "Bu xodimning yagona filiali — chiqarilsa tizimga kira olmaydi. " +
+          "Uni butunlay chiqarish uchun arxivlang.",
+      );
+    }
+
+    // Tanlov bo'lmasa o'zimiz tanlamaymiz: "login qaysi filialga tushadi"
+    // degan qarorni jimgina qabul qilish — keyin tushuntirib bo'lmaydigan
+    // holat. Bittagina filial qolsa boshqa variant yo'q, shuning uchun
+    // so'rashning ma'nosi ham yo'q.
+    const nextId =
+      nextHomeBranchId ?? (rest.length === 1 ? rest[0].branchId : null);
+
+    if (!nextId) {
+      throw new BadRequestError(
+        "Asosiy filialdan chiqarishdan oldin login qaysi filialga tushishini tanlang",
+        { reason: "next_home_required", branches: rest.map((row) => row.branchId) },
+      );
+    }
+    if (!rest.some((row) => row.branchId === nextId)) {
+      throw new BadRequestError(
+        "Yangi asosiy filial xodim biriktirilgan filiallardan biri bo'lishi kerak",
+      );
+    }
+
+    await setHomeBranch(userId, nextId);
   }
 
   await platformPrisma.userBranchAccess.delete({
@@ -308,5 +382,6 @@ module.exports = {
   findAccess,
   grantAccess,
   revokeAccess,
+  setHomeBranch,
   countAccessByBranch,
 };

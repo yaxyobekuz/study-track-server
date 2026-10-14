@@ -19,6 +19,7 @@ const {
   updateMe,
   getUserBranches,
   attachUserToBranch,
+  setUserHomeBranch,
   detachUserFromBranch,
   setUserRoles,
 } = require("../controllers/user.controller");
@@ -135,6 +136,9 @@ router.put(
 // bazaga kiritadi, ya'ni oddiy tahrirlashdan tubdan farq qiladi.
 router.get("/:id/branches", validateObjectId("id"), authorizePermission(PERMISSIONS.USERS_VIEW), getUserBranches);
 router.post("/:id/branches", validateObjectId("id"), authorizePermission(PERMISSIONS.BRANCHES_ASSIGN), attachUserToBranch);
+// Asosiy filialni almashtirish — login qaysi filialga tushishini o'zgartiradi,
+// shuning uchun biriktirish bilan BIR XIL ruxsat talab qiladi.
+router.patch("/:id/branches/:branchId/home", validateObjectId("id"), validateObjectId("branchId"), authorizePermission(PERMISSIONS.BRANCHES_ASSIGN), setUserHomeBranch);
 router.delete("/:id/branches/:branchId", validateObjectId("id"), validateObjectId("branchId"), authorizePermission(PERMISSIONS.BRANCHES_ASSIGN), detachUserFromBranch);
 
 module.exports = router;
