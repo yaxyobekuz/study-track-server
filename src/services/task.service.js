@@ -16,6 +16,7 @@ const {
 const { hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
+const { config } = require("../config/env.config");
 const pushService = require("./push.service");
 // ⚠️ BIR TOMONLAMA ZANJIR: bu modul `issue.service` ni import QILMAYDI,
 // ko'prik esa `task.service` ni — aks holda aylanma import paydo bo'lardi
@@ -209,6 +210,12 @@ const _submissionRules = (settings) => ({
     ? settings.completionFileTypes
     : ["image", "video", "document"],
   allowLateSubmission: settings.allowLateSubmission,
+  // ⚠️ HAJM CHEGARASI PANELGA HAM BERILADI. Usiz panel katta faylni
+  // yuborib qo'yardi va foydalanuvchi "CORS xatosi" ni ko'rardi: hajm
+  // chegarasiga urilgan so'rovni oldingi qavat (proksi) rad etadi va
+  // uning javobida CORS sarlavhalari bo'lmaydi — brauzer esa haqiqiy
+  // sababni o'qiy olmaydi.
+  maxFileSizeMb: config.maxUploadFileSizeMb,
 });
 
 const _assertText = (value, { label, min, max }) => {
