@@ -113,6 +113,11 @@ const planStaff = async (db, ctx, staffIds, options) => {
     users.map((u) => u.username),
     ids,
   );
+  // Uy filiali manbadan boshqa bo'lishi mumkin — izohda nomi bilan aytiladi
+  const homeBranches = await q(
+    `SELECT id, name, schema_name AS "schemaName" FROM ${plat("branches")} WHERE id = ANY($1::text[])`,
+    [...new Set(directory.map((d) => d.branchId).filter(Boolean))],
+  );
   const roleValues = [...new Set([...(options.role ? [options.role] : []), ...users.map((u) => u.role)])];
   const roles = await q(
     `SELECT value, name, permissions, work_start_time AS "workStartTime", work_end_time AS "workEndTime",
@@ -209,6 +214,8 @@ const planStaff = async (db, ctx, staffIds, options) => {
 
   const userById = new Map(users.map((u) => [u.id, u]));
   const homeOf = new Map(directory.map((d) => [d.id, d.branchId]));
+  const homeNameOf = new Map(homeBranches.map((b) => [b.id, b.name]));
+  const homeSchemaOf = new Map(homeBranches.map((b) => [b.id, b.schemaName]));
   const accessOf = new Map();
   for (const row of access) {
     if (!accessOf.has(row.userId)) accessOf.set(row.userId, []);
@@ -263,8 +270,14 @@ const planStaff = async (db, ctx, staffIds, options) => {
     if (!isMove && branches.includes(ctx.target.id)) {
       blockers.push(`Xodim "${ctx.target.name}" filialiga allaqachon biriktirilgan`);
     }
+    // Uy filiali BOSHQA joyda bo'lsa ham to'liq ko'chirish mumkin: maqsad
+    // filial uy bo'ladi va eski uy oddiy biriktirishga aylanadi. Bu jim
+    // o'tmaydi — login qayerdan qayerga ko'chayotgani yoziladi.
     if (isMove && home !== ctx.source.id) {
-      blockers.push("Xodimni faqat asosiy (uy) filialidan ko'chirish mumkin");
+      notes.push(
+        `Login hozir "${homeNameOf.get(home) ?? "boshqa filial"}" filialiga tushadi — ` +
+          `ko'chirishdan keyin "${ctx.target.name}" filialiga o'tadi`,
+      );
     }
     if (clashes.has(user.username)) {
       blockers.push(
@@ -395,6 +408,9 @@ const planStaff = async (db, ctx, staffIds, options) => {
         profilePicture: user.profilePicture ?? null,
         returning: Boolean(targetRow),
         isHomeBefore: home === ctx.source.id,
+        // Eski uy filialining schema'si — botdagi bog'lanishni tozalash
+        // manbadan BOSHQA schema'da bo'lishi mumkin (`writeStaff`)
+        homeSchemaName: homeSchemaOf.get(home) ?? null,
         history: leaving
           ? { penalties: penaltyCount, tasks: taskCount, attendanceStaying: attendanceCount }
           : null,
@@ -569,10 +585,24 @@ const writeStaff = async (db, ctx, items, options) => {
       // bog'lanishiga (farzandi shu maktabda o'qiyotgan bo'lsa) tegilmaydi —
       // u o'quvchi ko'chirilganda alohida boshqariladi
       // (`branchTransferStudent.service.js`).
+      //
+      // ⚠️ QATOR MANBADA EMAS, ESKI UY FILIALIDA bo'lishi mumkin: ko'chirish
+      // uy filialidan boshlanishi SHART emas (odam Chilonzorda yashab
+      // Yunusoboddan ko'chirilishi mumkin). Faqat manbani tozalash o'sha
+      // holatda botdagi bog'lanishni tirik qoldirar edi — pastdagi
+      // `telegram_directory` o'chirilib, `tg_users` qolib ketardi.
+      const homeSchema = item.plan.homeSchemaName;
       await exec(
         `DELETE FROM ${src("tg_users")} WHERE user_id = $1 AND link_kind = 'staff'`,
         item.id,
       );
+      if (homeSchema && homeSchema !== from) {
+        await exec(
+          `DELETE FROM ${qualified(homeSchema, "tg_users")}
+           WHERE user_id = $1 AND link_kind = 'staff'`,
+          item.id,
+        );
+      }
       await exec(
         `DELETE FROM ${plat("telegram_directory")}
          WHERE user_id = $1 AND link_kind = 'staff'`,
