@@ -16,6 +16,7 @@ const {
 const { hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
+const { config } = require("../config/env.config");
 const pushService = require("./push.service");
 // ⚠️ BIR TOMONLAMA ZANJIR: bu modul `issue.service` ni import QILMAYDI,
 // ko'prik esa `task.service` ni — aks holda aylanma import paydo bo'lardi
@@ -141,13 +142,23 @@ const _deleteUnsharedAttachments = async (attachments, excludeTaskId) => {
 
   const orphaned = [];
   for (const attachment of list) {
-    const stillUsed = await prisma.task.count({
-      where: {
-        id: { not: excludeTaskId },
-        attachments: { array_contains: [{ key: attachment.key }] },
-      },
-    });
-    if (stillUsed === 0) orphaned.push(attachment);
+    // ⚠️ DOIMIY TOPSHIRIQ QOIDASI HAM SHU FAYLGA ISHORA QILADI. Faqat
+    // topshiriqlar sanalsa, qoidadan yaratilgan yagona topshiriqni
+    // o'chirish qoidaning namuna faylini saqlashdan BUTUNLAY o'chirib
+    // yuborardi — keyingi hafta yoziladigan topshiriqlar esa o'lik
+    // havolaga ishora qilib qolardi.
+    const [usedByTask, usedBySchedule] = await Promise.all([
+      prisma.task.count({
+        where: {
+          id: { not: excludeTaskId },
+          attachments: { array_contains: [{ key: attachment.key }] },
+        },
+      }),
+      prisma.taskSchedule.count({
+        where: { attachments: { array_contains: [{ key: attachment.key }] } },
+      }),
+    ]);
+    if (usedByTask === 0 && usedBySchedule === 0) orphaned.push(attachment);
   }
   await deleteAttachments(orphaned);
 };
@@ -199,6 +210,12 @@ const _submissionRules = (settings) => ({
     ? settings.completionFileTypes
     : ["image", "video", "document"],
   allowLateSubmission: settings.allowLateSubmission,
+  // ⚠️ HAJM CHEGARASI PANELGA HAM BERILADI. Usiz panel katta faylni
+  // yuborib qo'yardi va foydalanuvchi "CORS xatosi" ni ko'rardi: hajm
+  // chegarasiga urilgan so'rovni oldingi qavat (proksi) rad etadi va
+  // uning javobida CORS sarlavhalari bo'lmaydi — brauzer esa haqiqiy
+  // sababni o'qiy olmaydi.
+  maxFileSizeMb: config.maxUploadFileSizeMb,
 });
 
 const _assertText = (value, { label, min, max }) => {
@@ -281,6 +298,82 @@ const _assertAssignableUsers = async (ids) => {
 };
 
 // ─── ASOSIY FUNKSIYALAR ────────────────────────────────────────────
+
+/**
+ * TOPSHIRIQ QATORLARINI YOZADIGAN YAGONA JOY.
+ *
+ * Qo'lda berilgan topshiriq ham, doimiy qoidadan avtomat yaratilgani ham
+ * (`taskSchedule.service.js`) shu yerdan o'tadi: qator shakli, boshlang'ich
+ * holat va vaqt chizig'ining birinchi qatori bir xil bo'lishi kerak. Ikkita
+ * yozuvchi bo'lsa, avtomat topshiriqlar tarixsiz paydo bo'lardi.
+ *
+ * HAR BIR IJROCHIGA ALOHIDA topshiriq: har kimning o'z holati, muddati,
+ * natijasi va jarimasi bor. ⚠️ Fayllar hamma nusxada UMUMIY (bir marta
+ * yuklanadi) — o'chirishda `_deleteUnsharedAttachments` shuni hisobga oladi.
+ *
+ * @param {object} params
+ * @param {string[]} params.assigneeIds
+ * @param {string} params.createdBy
+ * @param {object} params.fields - qatorning qolgan maydonlari
+ * @param {boolean} [params.atomic=true] - `true`: hammasi bitta
+ *   tranzaksiyada (40 kishidan 25-sida xato chiqsa, yarmi berilgan holat
+ *   qolmaydi). `false`: har qator alohida — cron uchun, bitta buzuq qator
+ *   butun passni orqaga qaytarmasligi kerak.
+ * @param {boolean} [params.skipDuplicates=false] - takrorni (yagona indeks)
+ *   xato emas, "allaqachon bor" deb o'tkazadi — cron idempotentligi.
+ * @returns {Promise<object[]>} yozilgan qatorlar
+ */
+const writeTaskRows = async ({
+  assigneeIds,
+  createdBy,
+  fields,
+  atomic = true,
+  skipDuplicates = false,
+  now = new Date(),
+}) => {
+  const data = (assigneeId) => ({
+    ...fields,
+    assignee: assigneeId,
+    createdBy,
+    status: "pending",
+    statusHistory: {
+      create: [
+        {
+          status: "pending",
+          reason: "Topshiriq yaratildi",
+          changedBy: createdBy,
+          changedAt: now,
+          position: 0,
+        },
+      ],
+    },
+  });
+
+  if (atomic) {
+    return prisma.$transaction(
+      async (tx) => {
+        const created = [];
+        for (const assigneeId of assigneeIds) {
+          created.push(await tx.task.create({ data: data(assigneeId) }));
+        }
+        return created;
+      },
+      { timeout: Math.max(15000, assigneeIds.length * 200), maxWait: 10000 },
+    );
+  }
+
+  const created = [];
+  for (const assigneeId of assigneeIds) {
+    try {
+      created.push(await prisma.task.create({ data: data(assigneeId) }));
+    } catch (error) {
+      // P2002 — yagona indeks: shu kunga topshiriq allaqachon yozilgan
+      if (skipDuplicates && error?.code === "P2002") continue;
+      throw error;
+    }
+  }
+  return created;
+};
 
 const createTasks = async ({
   title,
@@ -374,22 +467,12 @@ const createTasks = async ({
     attachments = await uploadAttachments(files);
   }
 
-  const now = new Date();
-  const initialStatus = "pending";
-
-  // HAR BIR IJROCHIGA ALOHIDA topshiriq: har kimning o'z holati, muddati,
-  // natijasi va jarimasi bor. Hammasi BITTA tranzaksiyada — 40 kishidan
-  // 25-sida xato chiqsa, yarmi berilgan-yarmi berilmagan holat qolmaydi.
-  // ⚠️ Fayllar hamma nusxada UMUMIY (bir marta yuklanadi) — o'chirishda
-  // `_deleteUnsharedAttachments` shuni hisobga oladi.
   let tasks;
   try {
-    tasks = await prisma.$transaction(
-      async (tx) => {
-        const created = [];
-        for (const assigneeId of assigneeIds) {
-          created.push(await tx.task.create({
-      data: {
+    tasks = await writeTaskRows({
+      assigneeIds,
+      createdBy,
+      fields: {
         title: cleanTitle,
         description: cleanDescription,
         startDate: start,
@@ -397,29 +480,10 @@ const createTasks = async ({
         kind: taskKind,
         links: taskLinks,
         penaltyPoints: points,
-        assignee: assigneeId,
-        createdBy,
-        status: initialStatus,
         attachments,
         issueId: issueId ?? null,
-        statusHistory: {
-          create: [
-            {
-              status: initialStatus,
-              reason: "Topshiriq yaratildi",
-              changedBy: createdBy,
-              changedAt: now,
-              position: 0,
-            },
-          ],
-        },
       },
-          }));
-        }
-        return created;
-      },
-      { timeout: Math.max(15000, assigneeIds.length * 200), maxWait: 10000 },
-    );
+    });
   } catch (error) {
     // Yozuv bo'lmadi — yuklangan fayllar yetim qolmasin
     await deleteAttachments(attachments);
@@ -1196,9 +1260,23 @@ const updateTask = async (
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
   _assertScope(task, scope, editorId);
 
-  if (task.status === "completed") {
+  // ⚠️ YAKUNLANGAN TOPSHIRIQDA FAQAT TUR o'zgaradi. Qolgan maydonlar
+  // (sarlavha, tavsif, muddat, jarima, fayllar) tasdiqlangan natija NIMAGA
+  // nisbatan qabul qilinganini belgilaydi — ular muhrlangan. Tur esa
+  // YORLIQ: u ishning mazmunini emas, hisobotdagi kesimini bildiradi,
+  // shuning uchun uni keyin to'g'rilash mumkin (eski topshiriqlar
+  // "asosiy" bo'lib qolgan, "asosiy" esa endi DOIMIY degani).
+  const kindOnly =
+    kind !== undefined &&
+    [title, description, penaltyPoints, assigneeId, startDate, links].every(
+      (v) => v === undefined,
+    ) &&
+    (removeAttachmentKeys || []).length === 0 &&
+    (files || []).length === 0;
+
+  if (task.status === "completed" && !kindOnly) {
     throw new BadRequestError(
-      "Yakunlangan topshiriqni tahrirlab bo'lmaydi — avval uni qayta oching",
+      "Yakunlangan topshiriqda faqat turni o'zgartirish mumkin — qolganini tahrirlash uchun uni qayta oching",
     );
   }
 
@@ -1544,6 +1622,8 @@ const updateTaskSettings = async (body, userId) => {
 
 module.exports = {
   ACTIVE_STATUSES,
+  writeTaskRows,
+  notifyAssignees: _notifyAssignees,
   WORKING_STATUSES,
   COMPLETION_FILES_HARD_MAX,
   TASK_ATTACHMENTS_MAX,

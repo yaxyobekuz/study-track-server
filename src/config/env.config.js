@@ -156,7 +156,16 @@ const config = {
   doBucketPublicBaseUrl: process.env.DO_BUCKET_PUBLIC_BASE_URL,
 
   // Upload
-  maxUploadFileSizeMb: parseInt(process.env.MAX_UPLOAD_FILE_SIZE_MB, 10) || 20,
+  maxUploadFileSizeMb: parseInt(process.env.MAX_UPLOAD_FILE_SIZE_MB, 10) || 30,
+  // ⚠️ BITTA SO'ROVNING UMUMIY CHEGARASI (fayl hajmidan ALOHIDA).
+  // Multer fayllarni XOTIRADA ushlaydi (`memoryStorage`), ya'ni bitta
+  // so'rovda 10 ta 30 MB lik fayl 300 MB operativ xotira degani. Umumiy
+  // chegara bo'lmasa, bir nechta parallel yuklash serverni yiqitardi.
+  //
+  // ⚠️ Bu son proksidagi `client_max_body_size` dan OSHMASLIGI kerak: aks
+  // holda so'rovni tarmoq uzadi va brauzer buni "CORS xatosi" deb
+  // ko'rsatadi (rad etilgan javobda CORS sarlavhalari bo'lmaydi).
+  maxUploadRequestMb: parseInt(process.env.MAX_UPLOAD_REQUEST_MB, 10) || 100,
 
   // Telegram
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,

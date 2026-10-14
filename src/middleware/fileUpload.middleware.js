@@ -138,7 +138,7 @@ const createSingleFileUpload = ({
     },
   });
 
-  return withBranchContext(upload.single(fieldName));
+  return [assertRequestSize, withBranchContext(upload.single(fieldName))];
 };
 
 /**
@@ -175,7 +175,7 @@ const createMultiFileUpload = ({
     },
   });
 
-  return withBranchContext(upload.array(fieldName, Math.max(1, maxFiles)));
+  return [assertRequestSize, withBranchContext(upload.array(fieldName, Math.max(1, maxFiles)))];
 };
 
 /**
@@ -224,7 +224,35 @@ const createFieldsUpload = ({
     },
   });
 
-  return withBranchContext(upload.fields(fields));
+  return [assertRequestSize, withBranchContext(upload.fields(fields))];
+};
+
+/**
+ * SO'ROVNING UMUMIY HAJMI — multer'dan OLDIN tekshiriladi.
+ *
+ * ⚠️ NIMA UCHUN KERAK: multer fayllarni XOTIRADA ushlaydi, ya'ni bitta
+ * so'rovdagi 10 ta 30 MB lik fayl 300 MB operativ xotira degani. Faqat
+ * fayl hajmi cheklansa, umumiy hajm cheklanmay qolardi.
+ *
+ * ⚠️ `Content-Length` bo'yicha va O'QISHDAN OLDIN: tanani oxirigacha
+ * o'qib, keyin rad etish xotirani baribir band qilardi.
+ *
+ * ⚠️ Javob EXPRESS'dan chiqadi, ya'ni CORS sarlavhalari bilan — brauzer
+ * haqiqiy sababni o'qiy oladi. Proksi rad etsa esa javobda CORS
+ * sarlavhalari bo'lmaydi va brauzer buni "CORS xatosi" deb ko'rsatadi.
+ */
+const assertRequestSize = (req, res, next) => {
+  const limitBytes = Math.max(1, config.maxUploadRequestMb) * 1024 * 1024;
+  const length = Number(req.headers["content-length"] || 0);
+
+  if (length > limitBytes) {
+    return res.status(413).json({
+      success: false,
+      message: `So'rov juda katta (${(length / 1024 / 1024).toFixed(1)} MB). Bir martada ko'pi bilan ${config.maxUploadRequestMb} MB yuborish mumkin.`,
+    });
+  }
+
+  return next();
 };
 
 /**

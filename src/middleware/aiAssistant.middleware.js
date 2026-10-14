@@ -70,7 +70,7 @@ const actionLimiter = buildLimiter(
  * Ovozli xabar (multipart `audio`). JSON so'rovda multer hech narsa
  * qilmaydi — bitta `/chat` yo'li ikkala shaklni ham qabul qiladi.
  * Hajm chegarasi (`LIMITS.maxVoiceBytes`) controller'da: multer chegarasi
- * butun tizim uchun umumiy (20MB).
+ * butun tizim uchun umumiy (`MAX_UPLOAD_FILE_SIZE_MB`, sukut 30MB).
  */
 const voiceUpload = [
   createSingleFileUpload({ fieldName: "audio", categories: ["voice"] }),

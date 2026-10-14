@@ -45,6 +45,7 @@ const { startGradeAnalysisCron } = require("./src/jobs/gradeAnalysis.job");
 const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
 const { startTaskPenaltyCron } = require("./src/jobs/taskPenalty.job");
+const { startTaskScheduleCron } = require("./src/jobs/taskSchedule.job");
 const { startAttendanceAbsentCron } = require("./src/jobs/attendanceAbsent.job");
 const { startStudentAttendanceAbsentCron } = require("./src/jobs/studentAttendanceAbsent.job");
 const { startGradePenaltyCron } = require("./src/jobs/gradePenalty.job");
@@ -230,6 +231,7 @@ const bootstrap = async () => {
   startTopicIncrementCron();
   startDailyCoinCron();
   await startTaskPenaltyCron();
+  startTaskScheduleCron();
   await startAttendanceAbsentCron();
   await startStudentAttendanceAbsentCron();
   startGradePenaltyCron();

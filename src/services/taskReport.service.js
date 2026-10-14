@@ -295,6 +295,12 @@ const getTaskReport = async (query = {}) => {
   // `scope` yo'q va `applyScope` hech narsa qo'shmaydi.
   const scope = query.scope;
   const scoped = (where) => applyScope(where, scope);
+  // ⚠️ `tasks.reports` KESIMI: yetakchilar, e'tibor talab qiladiganlar,
+  // rollar va topshiriq beruvchilar reytingi — butun jamoaning intizomi,
+  // ya'ni ro'yxatni ko'rishdan KENGROQ kesim (`.claude/rules` doktrinasi).
+  // Dashboard uni so'ramaydi: aks holda `tasks.view` bo'lgan har kim
+  // `tasks.reports` ortidagi hamma narsani ochib olardi.
+  const full = query.full !== false;
 
   const prevEnd = new Date(start.getTime() - 1);
   const prevStart = new Date(start.getTime() - period.days * DAY_MS);
@@ -565,10 +571,10 @@ const getTaskReport = async (query = {}) => {
     trend: [...trendMap.values()],
     weekday,
     people: peopleRows.slice(0, 100),
-    leaders,
-    attention,
-    byRole,
-    creators: creatorRows,
+    leaders: full ? leaders : [],
+    attention: full ? attention : [],
+    byRole: full ? byRole : [],
+    creators: full ? creatorRows : [],
     live: {
       ...live,
       overdue: live.overdue.map(withAssignee),
