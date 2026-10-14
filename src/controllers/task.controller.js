@@ -5,6 +5,7 @@ const taskReportService = require("../services/taskReport.service");
 const taskScopeService = require("../services/taskScope.service");
 const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
+const { config } = require("../config/env.config");
 const { getTaskSettings: loadTaskSettings } = require("../services/settings.service");
 
 /**
@@ -240,7 +241,14 @@ const getTaskDashboard = asyncHandler(async (req, res) => {
  */
 const getTaskSettings = asyncHandler(async (req, res) => {
   const data = await loadTaskSettings();
-  return res.json({ success: true, data });
+  // Fayl hajmi chegarasi sozlamada emas, muhitda (`MAX_UPLOAD_FILE_SIZE_MB`)
+  // — forma uni bilmasa, katta faylni yuborib qo'yardi va foydalanuvchi
+  // "CORS xatosi" ni ko'rardi (hajm bo'yicha rad etilgan javobda CORS
+  // sarlavhalari bo'lmaydi).
+  return res.json({
+    success: true,
+    data: { ...data, maxFileSizeMb: config.maxUploadFileSizeMb },
+  });
 });
 
 /**
