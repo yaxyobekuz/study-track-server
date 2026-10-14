@@ -24,7 +24,7 @@ function fakeModule(request, exports) {
 const day = (iso) => new Date(`${iso}T00:00:00.000Z`);
 const id = (ch) => ch.repeat(24);
 
-const db = { tasks: [], schedules: [] };
+const db = { tasks: [], schedules: [], archived: new Set() };
 
 fakeModule("../src/config/prisma", {
   task: {
@@ -45,7 +45,12 @@ fakeModule("../src/config/prisma", {
       return row ?? { ...where, ...data };
     },
   },
-  user: { findMany: async () => [] },
+  // Qoidadagi ijrochilar — sukut bo'yicha hammasi FAOL (arxivlanmagan).
+  // `db.archived` ga qo'shilgani `isArchived: false` filtriga tushmaydi.
+  user: {
+    findMany: async ({ where }) =>
+      where.id.in.filter((id) => !db.archived.has(id)).map((id) => ({ id })),
+  },
 });
 
 // Qator yozuvchisi — haqiqiy `task.service` o'rniga (u bazaga yozadi)
@@ -61,6 +66,7 @@ fakeModule("../src/services/task.service", {
 });
 
 const { materializeSchedule, runSchedulePass } = require("../src/services/taskSchedule.service");
+const { getTashkentDateUtc } = require("../src/helpers/date.helpers");
 
 const SCHEDULE = {
   id: id("s"),
@@ -88,6 +94,7 @@ const SCHEDULE = {
 test.beforeEach(() => {
   db.tasks = [];
   db.schedules = [];
+  db.archived = new Set();
   written.length = 0;
 });
 
@@ -140,6 +147,49 @@ test("qo'shilgan ijrochiga keyingi passda yoziladi", async () => {
 
   assert.equal(result.created, 1, "faqat yangi odamga");
   assert.equal(written[written.length - 1].assignee, id("c"));
+});
+
+test("ARXIVLANGAN ijrochiga topshiriq yozilmaydi", async () => {
+  // Qoida yaratilganda odam faol edi, keyin ketdi: tekshiruvsiz qoida unga
+  // har hafta topshiriq va JARIMA yozib turardi, u esa tizimga kira
+  // olmagani uchun uni yopa ham olmasdi.
+  db.archived.add(id("b"));
+
+  const result = await materializeSchedule({ ...SCHEDULE }, day("2026-10-18"));
+
+  assert.equal(result.created, 1, "faqat faol ijrochiga");
+  assert.equal(written[0].assignee, id("a"));
+});
+
+test("hamma ijrochisi arxivlangan qoida hech narsa yozmaydi", async () => {
+  db.archived.add(id("a"));
+  db.archived.add(id("b"));
+
+  const result = await materializeSchedule({ ...SCHEDULE }, day("2026-10-18"));
+  assert.deepEqual(result, { created: 0, skipped: 0 });
+});
+
+test("MUDDATI ALLAQACHON O'TGAN hodisa yozilmaydi (darhol jarima bo'lardi)", async () => {
+  // Bugungi kun oynaga kiradi, lekin soati o'tib ketgan bo'lishi mumkin:
+  // "har kuni 00:00" qoidasi kun davomida yaratilsa, xodim o'sha zahoti
+  // muddati o'tgan topshiriq va soatlik cron'dan avtomat jarima olardi.
+  const today = getTashkentDateUtc(0);
+  const result = await materializeSchedule(
+    {
+      ...SCHEDULE,
+      frequency: "days",
+      intervalDays: 1,
+      weekdays: [],
+      startDate: today,
+      startTime: null,
+      dueTime: "00:00",
+      leadDays: 0,
+    },
+    today,
+  );
+
+  assert.equal(result.created, 0, "o'tgan soat uchun topshiriq yozilmadi");
+  assert.equal(result.skipped, 2, "ikkala ijrochi ham o'tkazib yuborildi");
 });
 
 test("to'xtatilgan qoida hech narsa yozmaydi", async () => {

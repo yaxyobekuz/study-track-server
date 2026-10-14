@@ -141,13 +141,23 @@ const _deleteUnsharedAttachments = async (attachments, excludeTaskId) => {
 
   const orphaned = [];
   for (const attachment of list) {
-    const stillUsed = await prisma.task.count({
-      where: {
-        id: { not: excludeTaskId },
-        attachments: { array_contains: [{ key: attachment.key }] },
-      },
-    });
-    if (stillUsed === 0) orphaned.push(attachment);
+    // ⚠️ DOIMIY TOPSHIRIQ QOIDASI HAM SHU FAYLGA ISHORA QILADI. Faqat
+    // topshiriqlar sanalsa, qoidadan yaratilgan yagona topshiriqni
+    // o'chirish qoidaning namuna faylini saqlashdan BUTUNLAY o'chirib
+    // yuborardi — keyingi hafta yoziladigan topshiriqlar esa o'lik
+    // havolaga ishora qilib qolardi.
+    const [usedByTask, usedBySchedule] = await Promise.all([
+      prisma.task.count({
+        where: {
+          id: { not: excludeTaskId },
+          attachments: { array_contains: [{ key: attachment.key }] },
+        },
+      }),
+      prisma.taskSchedule.count({
+        where: { attachments: { array_contains: [{ key: attachment.key }] } },
+      }),
+    ]);
+    if (usedByTask === 0 && usedBySchedule === 0) orphaned.push(attachment);
   }
   await deleteAttachments(orphaned);
 };

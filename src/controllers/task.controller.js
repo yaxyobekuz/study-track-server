@@ -3,6 +3,8 @@ const { BadRequestError } = require("../utils/errors");
 const taskService = require("../services/task.service");
 const taskReportService = require("../services/taskReport.service");
 const taskScopeService = require("../services/taskScope.service");
+const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
+const { ROLES } = require("../utils/constants");
 const { getTaskSettings: loadTaskSettings } = require("../services/settings.service");
 
 /**
@@ -213,11 +215,21 @@ const getTaskAssignees = asyncHandler(async (req, res) => {
  * GET /tasks/dashboard?period=day|week|month|year
  */
 const getTaskDashboard = asyncHandler(async (req, res) => {
+  // ⚠️ DASHBOARD `tasks.reports` NI OCHIB BERMAYDI. Payload hisobot bilan
+  // bitta dvigateldan keladi, shuning uchun reytinglar (yetakchilar,
+  // e'tibor, rollar, topshiriq beruvchilar) faqat o'sha kaliti borlarga
+  // qo'shiladi — aks holda bo'limning bosh sahifasini ochish alohida
+  // ruxsatni chetlab o'tish yo'li bo'lardi.
+  const canSeeReports =
+    hasRole(req.user, ROLES.OWNER) ||
+    hasPermission(req.user.permissions || [], PERMISSIONS.TASKS_REPORTS);
+
   const data = await taskReportService.getTaskReport({
     period: req.query.period || "month",
     from: req.query.from,
     to: req.query.to,
     scope: req.taskScope,
+    full: canSeeReports,
   });
   return res.json({ success: true, data });
 });

@@ -47,14 +47,24 @@ router.get(
   getSchedules,
 );
 
-// Yaratish va boshqarish — topshiriq berish huquqi bilan bir xil:
-// doimiy qoida ham, oxir-oqibat, topshiriq berishdir.
-const MANAGE = authorizeAnyPermission([PERMISSIONS.TASKS_CREATE, PERMISSIONS.TASKS_TEAM]);
+// Amallar topshiriqlar bo'limidagi AYNI kalitlar ortida: qoida yaratish —
+// topshiriq berish, tahrirlash/to'xtatish — tahrirlash, o'chirish —
+// o'chirish. ⚠️ Hammasi bitta `tasks.create` ga tayangan edi: topshiriq
+// bera oladigan odam birovning doimiy qoidasini o'chira ham olardi.
+// `tasks.team` — bo'lim rahbari uchun (doira service'da tekshiriladi).
+const CAN = (permission) => authorizeAnyPermission([permission, PERMISSIONS.TASKS_TEAM]);
 
-router.post("/", MANAGE, upload, handleFileUploadError, createSchedule);
-router.put("/:id", validateObjectId("id"), MANAGE, upload, handleFileUploadError, updateSchedule);
-router.put("/:id/stop", validateObjectId("id"), MANAGE, stopSchedule);
-router.put("/:id/resume", validateObjectId("id"), MANAGE, resumeSchedule);
-router.delete("/:id", validateObjectId("id"), MANAGE, deleteSchedule);
+router.post("/", CAN(PERMISSIONS.TASKS_CREATE), upload, handleFileUploadError, createSchedule);
+router.put(
+  "/:id",
+  validateObjectId("id"),
+  CAN(PERMISSIONS.TASKS_UPDATE),
+  upload,
+  handleFileUploadError,
+  updateSchedule,
+);
+router.put("/:id/stop", validateObjectId("id"), CAN(PERMISSIONS.TASKS_UPDATE), stopSchedule);
+router.put("/:id/resume", validateObjectId("id"), CAN(PERMISSIONS.TASKS_UPDATE), resumeSchedule);
+router.delete("/:id", validateObjectId("id"), CAN(PERMISSIONS.TASKS_DELETE), deleteSchedule);
 
 module.exports = router;

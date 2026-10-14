@@ -353,6 +353,22 @@ const updateSchedule = async (id, body, userId, scope) => {
     data.assignees = await _assertAssignees(body.assigneeIds, scope);
   }
 
+  // ⚠️ YANGI FAYLLAR QO'SHILADI (mavjudlari ustiga yozilmaydi): route
+  // ularni qabul qilib, service e'tiborsiz qoldirsa, foydalanuvchi fayl
+  // yukladim deb o'ylab, qoidada hech narsa o'zgarmagan bo'lardi.
+  const files = body.files || [];
+  let addedAttachments = [];
+  if (files.length > 0) {
+    const kept = Array.isArray(current.attachments) ? current.attachments : [];
+    if (kept.length + files.length > ATTACHMENTS_MAX) {
+      throw new BadRequestError(
+        `Ko'pi bilan ${ATTACHMENTS_MAX} ta fayl biriktirish mumkin`,
+      );
+    }
+    addedAttachments = await uploadAttachments(files);
+    data.attachments = [...kept, ...addedAttachments];
+  }
+
   const startDate = data.startDate ?? current.startDate;
   const endDate = data.endDate !== undefined ? data.endDate : current.endDate;
   if (endDate && endDate.getTime() < startDate.getTime()) {
@@ -366,7 +382,14 @@ const updateSchedule = async (id, body, userId, scope) => {
     throw new BadRequestError("Boshlanish vaqti tugash vaqtidan oldin bo'lishi kerak");
   }
 
-  const updated = await prisma.taskSchedule.update({ where: { id }, data });
+  let updated;
+  try {
+    updated = await prisma.taskSchedule.update({ where: { id }, data });
+  } catch (error) {
+    // Yozuv bo'lmadi — yangi yuklangan fayllar yetim qolmasin
+    await deleteAttachments(addedAttachments);
+    throw error;
+  }
   const generated = await materializeSchedule(updated);
 
   return _serialize(updated, { generatedCount: generated.created });
@@ -521,6 +544,20 @@ const materializeSchedule = async (schedule, today = getTashkentDateUtc(0)) => {
   const days = occurrencesInRange(schedule, today, until);
   if (days.length === 0) return { created: 0, skipped: 0 };
 
+  // ⚠️ ARXIVLANGANGA YOZILMAYDI. Ro'yxat qoida yaratilganda tekshirilgan,
+  // lekin odam keyin ketishi mumkin: tekshiruvsiz qoida arxivlangan
+  // xodimga har hafta topshiriq va JARIMA yozib turardi — u esa tizimga
+  // kira olmaydi, ya'ni uni yopa ham olmaydi.
+  const liveAssignees = schedule.assignees.length
+    ? (
+        await prisma.user.findMany({
+          where: { id: { in: schedule.assignees }, isArchived: false },
+          select: { id: true },
+        })
+      ).map((u) => u.id)
+    : [];
+  if (liveAssignees.length === 0) return { created: 0, skipped: 0 };
+
   // ⚠️ ALLAQACHON YOZILGANLARINI OLDINDAN O'QIYMIZ. Yagona indeksga
   // tayanib xatoni ushlash ham ishlardi, lekin Prisma har bunday urinishni
   // XATO deb logga yozadi: kunlik pass log'ni kutilgan "xato"lar bilan
@@ -535,14 +572,26 @@ const materializeSchedule = async (schedule, today = getTashkentDateUtc(0)) => {
 
   let created = 0;
   let skipped = 0;
+  const now = new Date();
 
   for (const day of days) {
     const dayKey = day.toISOString().slice(0, 10);
-    const pending = schedule.assignees.filter((id) => !done.has(`${dayKey}|${id}`));
-    skipped += schedule.assignees.length - pending.length;
+    const pending = liveAssignees.filter((id) => !done.has(`${dayKey}|${id}`));
+    skipped += liveAssignees.length - pending.length;
     if (pending.length === 0) continue;
 
     const window = buildWindow(schedule, day);
+
+    // ⚠️ MUDDATI ALLAQACHON O'TGAN HODISA YOZILMAYDI. Bugungi kun oynaga
+    // kiradi, lekin uning soati o'tib ketgan bo'lishi mumkin: "har kuni
+    // 09:00" qoidasi soat 14:00 da yaratilsa (yoki qayta yoqilsa), xodim
+    // o'sha zahoti MUDDATI O'TGAN topshiriq va soatlik cron'dan AVTOMAT
+    // JARIMA olardi — ko'rmagan ishi uchun. Bunday hodisa keyingi
+    // takrorlanishga qoldiriladi.
+    if (window.dueDate.getTime() <= now.getTime()) {
+      skipped += pending.length;
+      continue;
+    }
 
     const rows = await taskService.writeTaskRows({
       assigneeIds: pending,
