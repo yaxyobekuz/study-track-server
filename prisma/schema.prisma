@@ -1702,6 +1702,28 @@ model Task {
   // kaskad o'chirish birovning bajarilgan ishini izsiz yo'q qilardi.
   issueId               String?    @map("issue_id") @db.Char(24)
 
+  // O'ZIGA O'ZI BELGILAGAN TOPSHIRIQ — xodim o'zi uchun yozgan ish
+  // ("o'zim belgilagan topshiriq"). `false` — rahbar bergan topshiriq,
+  // ya'ni Lavozimlar markazining o'z oqimi.
+  //
+  // ⚠️ BU KESIM, BAYROQ EMAS: ikki oqim BIR JADVALDA yashaydi (summa
+  // mantig'i, vaqt holati, yakunlash qoidalari va hisobot dvigateli bitta
+  // bo'lib qolishi uchun), lekin HECH QAYERDA ARALASHMAYDI — har bir
+  // ro'yxat, sanoqchi va hisobot shu ustun bo'yicha ANIQ bir tomonni
+  // oladi. Aralashsa, jarimasiz va o'zi yopiladigan shaxsiy topshiriqlar
+  // rahbar bergan ishning bajarilish foizini jimgina ko'tarib yuborardi.
+  //
+  // ⚠️ JARIMA YO'Q (biznes qarori): `penalty_points` har doim 0, soatlik
+  // jarima cron'i (`taskPenalty.job.js`) bu qatorlarni UMUMAN ko'rmaydi va
+  // to'xtatish / muddat surishda ham jarima yozilmaydi — tekshiruv
+  // `task.service.js` da, chaqiruvchida emas.
+  //
+  // ⚠️ IKKINCHI TOMON YO'Q: "Tekshiruvda" bosqichi o'tkazib yuboriladi —
+  // xodim topshirgani YAKUNLANGAN bo'ladi (`submitTaskCompletion`).
+  // Rahbar statistikani ko'radi, lekin birovning shaxsiy rejasini
+  // tasdiqlash navbatiga olmaydi.
+  selfAssigned          Boolean    @default(false) @map("self_assigned")
+
   createdAt             DateTime   @default(now()) @map("created_at")
   updatedAt             DateTime   @updatedAt @map("updated_at")
 
@@ -1720,6 +1742,9 @@ model Task {
   @@index([createdBy, createdAt(sort: Desc)])
   @@index([status, dueDate])
   @@index([dueDate, autopenalized, status])
+  // Shaxsiy topshiriqlar kesimi (dashboard va ro'yxat): ikki oqim bitta
+  // jadvalda yashagani uchun HAR BIR so'rov shu ustun bo'yicha filtrlanadi
+  @@index([selfAssigned, createdAt(sort: Desc)])
   @@map("tasks")
 }
 
@@ -1787,6 +1812,14 @@ model TaskSchedule {
   // Oxirgi yaratilgan hodisa kuni — hisobot va diagnostika uchun
   lastRunDate DateTime? @map("last_run_date") @db.Date
 
+  // O'ZIGA O'ZI BELGILAGAN DOIMIY ISH — xodim o'zi uchun yozgan takrorlanuvchi
+  // qoida ("har dushanba hisobot yozish"). `Task.selfAssigned` ga ko'chadi,
+  // ya'ni qoidadan yozilgan topshiriq ham shaxsiy oqimda qoladi.
+  //
+  // ⚠️ `assignees` BITTA odam bo'ladi va u `created_by` ning O'ZI: shaxsiy
+  // qoidani boshqa odamga yozib bo'lmaydi (`selfTask.service.js` tekshiradi).
+  selfAssigned Boolean @default(false) @map("self_assigned")
+
   createdBy  String    @map("created_by") @db.Char(24)
   stoppedBy  String?   @map("stopped_by") @db.Char(24)
   stopReason String?   @map("stop_reason")
@@ -1798,6 +1831,8 @@ model TaskSchedule {
 
   @@index([isActive, startDate])
   @@index([createdBy, createdAt(sort: Desc)])
+  // Shaxsiy qoidalar kesimi — ro'yxat har doim bir tomonni oladi
+  @@index([selfAssigned, createdAt(sort: Desc)])
   @@map("task_schedules")
 }
 

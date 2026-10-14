@@ -24,6 +24,13 @@ async function runPenaltyPass(ownerUser) {
       dueDate: { lt: now },
       status: { notIn: ["completed", "pending_review", "stopped"] },
       autopenalized: false,
+      // ⚠️ XODIM O'ZIGA BELGILAGAN TOPSHIRIQ — JARIMASIZ (biznes qarori).
+      // Pass uni UMUMAN ko'rmaydi: odam o'ziga reja yozgani uchun jarima
+      // olsa, shaxsiy rejalashtirishdan butunlay voz kechardi. Ustun
+      // bo'yicha filtr — eng ishonchli to'siq: `penalty_points = 0` ga
+      // tayanilsa, sozlamadagi standart ball o'zgarganda yoki eski qator
+      // boshqa yo'l bilan yozilganda jarima jimgina qaytib kelardi.
+      selfAssigned: false,
     },
   });
 

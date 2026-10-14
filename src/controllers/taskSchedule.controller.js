@@ -1,33 +1,10 @@
 const asyncHandler = require("../middleware/async.middleware");
-const { BadRequestError } = require("../utils/errors");
 const scheduleService = require("../services/taskSchedule.service");
-
-/**
- * multipart/form-data'da massivlar JSON satri bo'lib keladi.
- * @param {unknown} value
- * @param {string} label
- */
-const parseList = (value, label) => {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (Array.isArray(value)) return value;
-  try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) throw new Error("not array");
-    return parsed;
-  } catch {
-    throw new BadRequestError(`${label} formati noto'g'ri`);
-  }
-};
-
-/** So'rov tanasini servis kutgan shaklga keltiradi (yaratish ham, tahrir ham). */
-const buildPayload = (req) => ({
-  ...req.body,
-  assigneeIds: parseList(req.body.assigneeIds, "Ijrochilar"),
-  weekdays: parseList(req.body.weekdays, "Hafta kunlari"),
-  monthDays: parseList(req.body.monthDays, "Oy kunlari"),
-  links: req.body.links,
-  files: req.files || [],
-});
+// ⚠️ TANANI SHAKLGA KELTIRISH — YAGONA JOY (`taskRequest.helpers.js`).
+// Shaxsiy topshiriqlar yo'li (`selfTask.controller.js`) ham shuni
+// chaqiradi: ikkita nusxa bo'lsa, keyingi maydon faqat bittasiga
+// qo'shilib qolardi.
+const { buildSchedulePayload: buildPayload } = require("../helpers/taskRequest.helpers");
 
 /**
  * Doimiy topshiriq qoidasini yaratadi

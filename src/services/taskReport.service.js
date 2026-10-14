@@ -15,6 +15,17 @@
  * ("o'lchanmagan"), frontend uni "—" deb ko'rsatadi.
  *
  * Kunlar Toshkent vaqti bo'yicha (+5, DST yo'q) bo'linadi.
+ *
+ * ⚠️ IKKI OQIM, BITTA DVIGATEL. `query.selfAssigned` — RAHBAR BERGAN
+ * topshiriqlar (`false`, sukut) yoki XODIM O'ZIGA BELGILAGANLARI (`true`)
+ * kesimi. Ikkinchisi uchun ikkinchi hisobot dvigateli yozilmadi: KPI,
+ * taqsimot, dinamika, hafta kuni va xodimlar kesimi bir xil savollarga
+ * javob beradi, farqi faqat QAYSI qatorlar o'qilishida.
+ *
+ * ⚠️ FILTR MAJBURIY VA SUKUT `false`: aralashsa, jarimasiz va o'zi
+ * yopiladigan shaxsiy topshiriqlar Lavozimlar markazining bajarilish
+ * foizini jimgina ko'tarib yuborardi — ya'ni rahbar bergan ishning
+ * intizomi haqidagi raqam yolg'on bo'lib qolardi.
  */
 
 const prisma = require("../config/prisma");
@@ -218,9 +229,12 @@ const _finalizePerson = (row, user) => {
 
 // ─── Jonli ro'yxatlar ─────────────────────────────────────────────
 
-const _loadLive = async (settings, now, scope) => {
+const _loadLive = async (settings, now, scope, selfAssigned = false) => {
   const soon = new Date(now.getTime() + settings.dueSoonHours * HOUR_MS);
-  const scoped = (where) => applyScope(where, scope);
+  // Oqim kesimi — hisobotning qolgan qismi bilan AYNI (`getTaskReport`).
+  // ⚠️ "Tekshiruv navbati" shaxsiy oqimda har doim BO'SH bo'ladi va bu
+  // kutilgan hol: shaxsiy topshiriqda tasdiqlash bosqichi yo'q.
+  const scoped = (where) => applyScope({ ...where, selfAssigned }, scope);
   const select = {
     id: true,
     title: true,
@@ -294,7 +308,10 @@ const getTaskReport = async (query = {}) => {
   // Rahbar (`tasks.team`) — faqat o'z bo'limi. `tasks.view` / owner uchun
   // `scope` yo'q va `applyScope` hech narsa qo'shmaydi.
   const scope = query.scope;
-  const scoped = (where) => applyScope(where, scope);
+  // Oqim kesimi HAR BIR so'rovga qo'shiladi (jonli ro'yxatlar ham —
+  // `_loadLive` o'z parametridan oladi).
+  const selfAssigned = query.selfAssigned === true;
+  const scoped = (where) => applyScope({ ...where, selfAssigned }, scope);
   // ⚠️ `tasks.reports` KESIMI: yetakchilar, e'tibor talab qiladiganlar,
   // rollar va topshiriq beruvchilar reytingi — butun jamoaning intizomi,
   // ya'ni ro'yxatni ko'rishdan KENGROQ kesim (`.claude/rules` doktrinasi).
@@ -337,7 +354,11 @@ const getTaskReport = async (query = {}) => {
         status: "completed",
         kind: "status",
         changedAt: { gte: start, lte: end },
-        ...(scope && scope.mode !== "all" ? { task: scope.where } : {}),
+        // ⚠️ OQIM FILTRI BU YERDA HAM: bu so'rov topshiriqdan EMAS,
+        // tarix qatorlaridan o'qiydi, ya'ni `scoped()` ni chetlab o'tadi.
+        // Usiz "bu hafta nechta ish bitdi" diagrammasi ikki oqimni
+        // qo'shib ko'rsatardi.
+        task: { selfAssigned, ...(scope && scope.mode !== "all" ? scope.where : {}) },
       },
       select: { changedAt: true },
     }),
@@ -346,7 +367,7 @@ const getTaskReport = async (query = {}) => {
       where: scoped({ createdAt: { gte: prevStart, lte: prevEnd } }),
       _count: { _all: true },
     }),
-    _loadLive(settings, now, scope),
+    _loadLive(settings, now, scope, selfAssigned),
   ]);
 
   // Jarima ballari — jarima yozuvlaridan (topshiriqdagi `penaltyPoints` —

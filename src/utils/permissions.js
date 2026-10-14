@@ -478,6 +478,19 @@ const PERMISSION_SECTIONS = [
       { key: "review", label: "Tasdiqlash / rad etish" },
       { key: "stop", label: "To'xtatish" },
       { key: "extend", label: "Muddatni uzaytirish" },
+      // XODIMLAR O'ZIGA BELGILAGAN TOPSHIRIQLAR — ALOHIDA kalit va u
+      // `view` ichidagi amal EMAS.
+      //
+      // ⚠️ Sabab: topshiriq registrini ko'rish huquqi xodimlarning o'zlariga
+      // yozgan SHAXSIY rejasini ochib bermasligi kerak — bu boshqa qaror
+      // (`tasks.reports` va `scheduleSync` bilan AYNI mulohaza).
+      //
+      // ⚠️ Kalitning O'ZI butun filialni beradi; `tasks.team` bilan birga
+      // berilsa kesim o'z bo'limiga torayadi (`resolveSelfViewScope`).
+      //
+      // ⚠️ Xodimning O'Z shaxsiy topshiriqlari uchun kalit KERAK EMAS —
+      // id tokendan olinadi (`/payroll/my`, `/devices/me/*` doktrinasi).
+      { key: "self", label: "Xodimlar o'ziga belgilagan topshiriqlari" },
       // Hisobotlar — butun jamoaning intizomi (kim orqada qolyapti),
       // ro'yxatni ko'rish huquqidan kengroq kesim
       { key: "reports", label: "Hisobotlar" },

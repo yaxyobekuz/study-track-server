@@ -340,6 +340,12 @@ async function loadOpenTasks(userId, day, now) {
         assignee: userId,
         status: { in: WORKING_STATUSES },
         dueDate: { lt: dayEnd },
+        // ⚠️ XODIM O'ZIGA BELGILAGAN TOPSHIRIQ KETISHNI TO'SMAYDI (biznes
+        // qarori): darvoza RAHBAR BERGAN ishni to'sadi. Shaxsiy reja
+        // jarimasiz va o'zi yopiladi — uni to'siq qilish o'qituvchini
+        // o'zi yozgan reja uchun har kuni ruxsat so'rashga majburlardi va
+        // natijada u reja yozishni butunlay to'xtatardi.
+        selfAssigned: false,
       },
       orderBy: { dueDate: "asc" },
       select: {

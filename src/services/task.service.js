@@ -169,6 +169,15 @@ const _nextStatusPosition = (taskId) =>
 // _applyPenalty jarima yaratadi, foydalanuvchi ballarini oshiradi va jarima hujjatini
 // qaytaradi. Chaqiruvchi task.penaltyRef/autopenalized ni o'z update data'siga qo'shadi.
 const _applyPenalty = async (task, points, reason, givenById) => {
+  // ⚠️ SHAXSIY TOPSHIRIQDA JARIMA YO'Q (biznes qarori) — va tekshiruv AYNAN
+  // SHU YERDA, chaqiruvchida emas: jarima yozadigan yo'l bitta bo'lgani
+  // uchun yangi yo'l qo'shilganda ham qoida o'z-o'zidan amal qiladi
+  // (`postEntry` doktrinasi). Chaqiruvchilar baribir oldindan to'sadi,
+  // bu — zaxira qavat.
+  if (task.selfAssigned) {
+    throw new BadRequestError("O'ziga belgilagan topshiriq uchun jarima yozilmaydi");
+  }
+
   const now = new Date();
 
   const penalty = await prisma.penalty.create({
@@ -280,7 +289,16 @@ const _withTimeState = (task, now) => ({
   timeState: resolveTimeState(task, now),
 });
 
-const _assertAssignableUsers = async (ids) => {
+/**
+ * @param {string[]} ids
+ * @param {{ self?: boolean }} [options] - `self: true` — xodim O'ZIGA
+ *   yozyapti. U paytda "ownerga topshiriq berib bo'lmaydi" sharti
+ *   QO'LLANMAYDI: o'sha shart owner IJROCHI emas, TOPSHIRIQ BERUVCHI
+ *   bo'lgani uchun bor — o'zi o'ziga yozgan rejada esa beruvchi ham,
+ *   ijrochi ham o'sha odam. Arxivlangan shart joyida qoladi (zaxira
+ *   qavat: arxivlangan odam tizimga kira olmaydi).
+ */
+const _assertAssignableUsers = async (ids, { self = false } = {}) => {
   const users = await prisma.user.findMany({
     where: { id: { in: ids } },
     select: { id: true, role: true, isArchived: true, firstName: true, lastName: true },
@@ -288,7 +306,7 @@ const _assertAssignableUsers = async (ids) => {
   if (users.length !== ids.length) {
     throw new BadRequestError("Ba'zi foydalanuvchilar topilmadi");
   }
-  if (users.some((u) => u.role === "owner")) {
+  if (!self && users.some((u) => u.role === "owner")) {
     throw new BadRequestError("Tizim egasiga topshiriq berib bo'lmaydi");
   }
   if (users.some((u) => u.isArchived)) {
@@ -398,6 +416,10 @@ const createTasks = async ({
   // `undefined` va ustun `null` bo'lib qoladi: topshiriqlar bo'limining
   // o'z oqimi o'zgarmaydi.
   issueId,
+  // XODIM O'ZIGA O'ZI YOZYAPTI (`selfTask.service.js`). Uchta farqni
+  // AYNAN SHU YERDA majburlaydi: ijrochi yaratuvchining O'ZI, jarima bali
+  // 0 va push yo'q. Panel yoki chaqiruvchiga ishonilmaydi.
+  selfAssigned = false,
 }) => {
   if (!assigneeIds || assigneeIds.length === 0) {
     throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
@@ -445,10 +467,13 @@ const createTasks = async ({
   const taskKind = _assertKind(kind);
   const taskLinks = normalizeLinks(links, (msg) => new BadRequestError(msg));
 
-  const points = _assertPenaltyPoints(
-    penaltyPoints ?? settings.defaultPenaltyPoints,
-    settings,
-  );
+  // ⚠️ SHAXSIY TOPSHIRIQDA JARIMA BALI 0 — sozlamadagi standart ball ham,
+  // panel yuborgan qiymat ham olinmaydi. `_assertPenaltyPoints` kamida 1
+  // ni talab qiladi (rahbar bergan ish uchun to'g'ri), shuning uchun u
+  // umuman chaqirilmaydi.
+  const points = selfAssigned
+    ? 0
+    : _assertPenaltyPoints(penaltyPoints ?? settings.defaultPenaltyPoints, settings);
 
   if (settings.requireCreateAttachments && (!files || files.length === 0)) {
     throw new BadRequestError("Topshiriqqa kamida bitta fayl biriktirish kerak");
@@ -457,10 +482,29 @@ const createTasks = async ({
     throw new BadRequestError(`Ko'pi bilan ${TASK_ATTACHMENTS_MAX} ta fayl biriktirish mumkin`);
   }
 
-  await _assertAssignableUsers(assigneeIds);
+  // ⚠️ SHAXSIY TOPSHIRIQ — FAQAT O'ZIGA. Ro'yxat bitta va u aynan
+  // yaratuvchi bo'lishi shart: aks holda "o'ziga belgilash" yo'li
+  // ruxsatlarni chetlab o'tib birovga jarimasiz topshiriq berish yo'liga
+  // aylanardi.
+  if (selfAssigned) {
+    if (assigneeIds.length !== 1 || String(assigneeIds[0]) !== String(createdBy)) {
+      throw new BadRequestError("O'ziga belgilanadigan topshiriqni faqat o'zingizga yozishingiz mumkin");
+    }
+  }
+
+  const [actor] = await _assertAssignableUsers(assigneeIds, { self: selfAssigned });
+
+  // ⚠️ O'QUVCHI SHAXSIY TOPSHIRIQ YOZMAYDI: bu bo'lim XODIMLARNING o'z
+  // ishi uchun (dashboard ham "xodimlar o'ziga belgilagan" deb o'qiladi) va
+  // o'quvchi tomonida tanga/jarima bilan ishlaydigan boshqa mexanizmlar bor.
+  if (selfAssigned && actor?.role === ROLES.STUDENT) {
+    throw new ForbiddenError("O'quvchi o'ziga topshiriq belgilay olmaydi");
+  }
+
   // Rahbar (`tasks.team`) faqat o'z bo'limiga — ro'yxat har yaratishda
-  // qayta tekshiriladi, panel tugmasiga ishonilmaydi.
-  if (scope) taskScopeService.assertCanAssign(assigneeIds, scope);
+  // qayta tekshiriladi, panel tugmasiga ishonilmaydi. Shaxsiy yo'lda doira
+  // umuman berilmaydi: ijrochi baribir o'zining o'zi.
+  if (scope && !selfAssigned) taskScopeService.assertCanAssign(assigneeIds, scope);
 
   let attachments = [];
   if (files && files.length > 0) {
@@ -482,6 +526,7 @@ const createTasks = async ({
         penaltyPoints: points,
         attachments,
         issueId: issueId ?? null,
+        selfAssigned,
       },
     });
   } catch (error) {
@@ -490,7 +535,9 @@ const createTasks = async ({
     throw error;
   }
 
-  _notifyAssignees(TASK_PUSH_EVENTS.CREATED, tasks);
+  // ⚠️ O'ZIGA YOZGANIGA PUSH YUBORILMAYDI: odam shu zahoti formani to'ldirib
+  // chiqdi, "sizga yangi topshiriq berildi" xabari faqat shovqin bo'lardi.
+  if (!selfAssigned) _notifyAssignees(TASK_PUSH_EVENTS.CREATED, tasks);
 
   return tasks;
 };
@@ -500,11 +547,16 @@ const createTasks = async ({
  *   overdue  — faol va muddati o'tgan
  *   due_soon — faol va muddati `dueSoonHours` ichida
  */
-const _buildListFilter = async (query) => {
+const _buildListFilter = async (query, { selfAssigned = false } = {}) => {
   const { status, assigneeId, createdBy, startDate, endDate, search, due, kind, state } =
     query;
 
-  const filter = {};
+  // ⚠️ IKKI OQIM BIR JADVALDA, LEKIN ARALASHMAYDI. Rahbar bergan topshiriq
+  // (`false`) va xodim o'ziga belgilagani (`true`) — har so'rov ANIQ bir
+  // tomonni oladi. Filtrsiz qoldirilsa, jarimasiz va o'zi yopiladigan
+  // shaxsiy topshiriqlar Lavozimlar markazining bajarilish foizini jimgina
+  // ko'tarib yuborardi.
+  const filter = { selfAssigned };
   if (status && status !== "all") filter.status = status;
   if (assigneeId && assigneeId !== "all") filter.assignee = assigneeId;
   if (createdBy && createdBy !== "all") filter.createdBy = createdBy;
@@ -555,9 +607,9 @@ const LIST_SORTS = {
  *   startDate, endDate, search, due, sort)
  * @returns {Promise<object>} Sahifalangan topshiriqlar
  */
-const getTasks = async (req, scope) => {
+const getTasks = async (req, scope, { selfAssigned = false } = {}) => {
   const { page, limit, skip } = getPaginationParams(req);
-  const base = await _buildListFilter(req.query);
+  const base = await _buildListFilter(req.query, { selfAssigned });
   // Rahbar (`tasks.team`) — faqat o'z bo'limi; `tasks.view` — butun filial
   const filter = taskScopeService.applyScope(base, scope);
   const orderBy = LIST_SORTS[req.query.sort] || LIST_SORTS.newest;
@@ -599,11 +651,13 @@ const getTasks = async (req, scope) => {
  * "Asosiy" tab tepasidagi jonli hisoblagichlar (davrga bog'liq emas).
  * @returns {Promise<object>}
  */
-const getTaskStats = async (scope) => {
+const getTaskStats = async (scope, { selfAssigned = false } = {}) => {
   const settings = await getTaskSettings();
   const now = new Date();
   const soon = new Date(now.getTime() + settings.dueSoonHours * HOUR_MS);
-  const scoped = (where) => taskScopeService.applyScope(where, scope);
+  // Oqim kesimi HAR BIR sanoqchiga qo'shiladi (`_buildListFilter` bilan
+  // AYNI sabab): ikki oqim bir jadvalda yashaydi
+  const scoped = (where) => taskScopeService.applyScope({ ...where, selfAssigned }, scope);
 
   const [groups, kindGroups, overdue, dueSoon, activeNow, upcoming] = await Promise.all([
     prisma.task.groupBy({ by: ["status"], where: scoped({}), _count: { _all: true } }),
@@ -669,13 +723,20 @@ const getTaskStats = async (scope) => {
  *
  * ⚠️ `sort` berilmasa tartib AVVALGICHA (yangilari tepada) — mobil ilova
  * ham shu yo'ldan o'qiydi.
+ *
+ * ⚠️ `selfAssigned` SUKUTDA `false`: bu ekran "MENGA BERILGAN topshiriqlar".
+ * Xodim o'ziga o'zi belgilaganlari ALOHIDA ro'yxatda
+ * (`selfTask.service.js`, `/self-tasks`) — ular jarimasiz va o'zi
+ * yopiladigan boshqa oqim, bir ro'yxatda aralashsa "bu ishni menga kim
+ * berdi" degan savol javobsiz qolardi. Mavjud mobil ilova shu yo'ldan
+ * o'qiydi va sukut uning uchun ham o'zgarmaydi.
  */
-const getMyTasks = async (userId, req) => {
+const getMyTasks = async (userId, req, { selfAssigned = false } = {}) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { status, kind, state } = req.query;
   const now = new Date();
 
-  const base = { assignee: userId };
+  const base = { assignee: userId, selfAssigned };
   if (status && status !== "all") base.status = status;
   if (kind && kind !== "all") base.kind = normalizeKind(kind);
 
@@ -732,10 +793,23 @@ const _canManage = (user) =>
  * "aynan BU topshiriq meniki emasligini" esa shu yer hal qiladi.
  */
 const _assertScope = (task, scope, userId) => {
-  // ⚠️ FAQAT `team` rejimida cheklaydi: `tasks.review` / `tasks.stop` kabi
-  // mavjud kalitlar avvalgidek butun filialda ishlaydi — `tasks.team`
-  // QO'SHIMCHA daraja, kuchsizlantirish emas.
-  if (!scope || scope.mode !== taskScopeService.SCOPE_TEAM) return;
+  // ⚠️ FAQAT `team` va `self` rejimida cheklaydi: `tasks.review` /
+  // `tasks.stop` kabi mavjud kalitlar avvalgidek butun filialda ishlaydi —
+  // `tasks.team` QO'SHIMCHA daraja, kuchsizlantirish emas.
+  if (!scope) return;
+
+  // SHAXSIY YO'L (`selfTask.service.js`): qator xodimning O'ZI o'ziga
+  // belgilagani bo'lishi shart. Shu tufayli tahrirlash / to'xtatish /
+  // muddat surish / qayta ochish / o'chirish uchun ikkinchi nusxa
+  // yozilmadi — AYNI funksiyalar, faqat doira boshqa.
+  if (scope.mode === taskScopeService.SCOPE_SELF) {
+    if (!taskScopeService.isInScope(task, scope, userId)) {
+      throw new ForbiddenError("Bu sizning o'zingizga belgilagan topshirig'ingiz emas");
+    }
+    return;
+  }
+
+  if (scope.mode !== taskScopeService.SCOPE_TEAM) return;
   if (!taskScopeService.isInScope(task, scope, userId)) {
     throw new ForbiddenError("Bu topshiriq sizning bo'limingizga tegishli emas");
   }
@@ -774,10 +848,23 @@ const getTaskById = async (taskId, requestingUser, scope) => {
     throw new NotFoundError("Topshiriq topilmadi");
   }
 
+  // SHAXSIY YO'L (`/self-tasks/:id`): qator aynan shu odamning o'ziga
+  // belgilagani bo'lishi shart. ⚠️ Usiz panel o'ziga BERILGAN oddiy
+  // topshiriqni ham shaxsiy ekranda ochib, jarimasiz yopish tugmasini
+  // ko'rsatib qo'yardi.
+  if (scope?.mode === taskScopeService.SCOPE_SELF) {
+    _assertScope(task, scope, requestingUser.id);
+  }
+
   const isAssignee = String(task.assignee) === String(requestingUser.id);
   const canManage =
     _canManage(requestingUser) ||
-    (scope?.mode === taskScopeService.SCOPE_TEAM &&
+    // ⚠️ `self` CHIQARIB TASHLANADI: shaxsiy yo'ldan kelgan odam o'z
+    // qatorining EGASI, boshqaruvchi emas — unga ijrochi intizomi
+    // (`assigneeStats`) va boshqaruv maydonlari berilmaydi.
+    (scope &&
+      scope.mode !== taskScopeService.SCOPE_NONE &&
+      scope.mode !== taskScopeService.SCOPE_SELF &&
       taskScopeService.isInScope(task, scope, requestingUser.id));
 
   if (!isAssignee && !canManage) {
@@ -914,13 +1001,32 @@ const _assertSubmission = (task, settings, { note, files }) => {
   return text;
 };
 
-const submitTaskCompletion = async (taskId, userId, { note, files }) => {
+/**
+ * IJROCHI ISHNI TOPSHIRADI.
+ *
+ * ⚠️ SHAXSIY TOPSHIRIQ DARHOL YAKUNLANADI (biznes qarori): "Tekshiruvda"
+ * bosqichi o'tkazib yuboriladi, chunki ikkinchi tomon yo'q — odam o'ziga
+ * o'zi yozgan ishni o'zi yopadi. Aks holda rahbarlarning tasdiqlash
+ * navbati birovning shaxsiy rejasi bilan to'lib ketardi, holbuki u na
+ * jarima beradi, na birovga majburiyat yuklaydi.
+ *
+ * ⚠️ YAKUNLASH QOIDALARI (nechta fayl, izoh majburiymi, kech topshirish)
+ * IKKI OQIMDA BIR XIL: ular `_assertSubmission` dan o'tadi, shuning uchun
+ * shaxsiy topshiriq uchun ikkinchi tekshiruv ro'yxati yozilmadi.
+ */
+const submitTaskCompletion = async (taskId, userId, { note, files, scope }) => {
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
 
   if (String(task.assignee) !== String(userId)) {
     throw new ForbiddenError("Bu topshiriqni yangilashga ruxsat yo'q");
   }
+
+  // ⚠️ SHAXSIY YO'LDAN (`/self-tasks/:id/complete`) FAQAT SHAXSIY QATOR
+  // yopiladi: usiz xodim o'ziga BERILGAN oddiy topshiriqni ham shu
+  // yo'ldan jo'natib, rahbar tasdig'ini chetlab o'tib yopib qo'ya olardi.
+  // Oddiy yo'l (`/tasks/:id/submit`) doira yubormaydi va o'zgarmaydi.
+  _assertScope(task, scope, userId);
 
   if (!WORKING_STATUSES.includes(task.status)) {
     throw new BadRequestError(
@@ -935,17 +1041,20 @@ const submitTaskCompletion = async (taskId, userId, { note, files }) => {
   const newAttachments = await uploadAttachments(files);
 
   const position = await _nextStatusPosition(task.id);
+  const nextStatus = task.selfAssigned ? "completed" : "pending_review";
 
   const updated = await prisma.task.update({
     where: { id: task.id },
     data: {
       completionNote: cleanNote,
       completionAttachments: newAttachments,
-      status: "pending_review",
+      status: nextStatus,
       statusHistory: {
         create: {
-          status: "pending_review",
-          reason: cleanNote || "Topshiriq bajarildi",
+          status: nextStatus,
+          reason:
+            cleanNote ||
+            (task.selfAssigned ? "O'ziga belgilagan topshiriq yakunlandi" : "Topshiriq bajarildi"),
           changedBy: userId,
           changedAt: new Date(),
           position,
@@ -1110,7 +1219,11 @@ const stopTask = async (
   const data = {};
   let appliedPoints = 0;
 
-  if (withPenalty && !task.autopenalized) {
+  // ⚠️ SHAXSIY TOPSHIRIQ — JARIMASIZ. Panel bayroqni umuman yubormaydi,
+  // lekin qaror shu yerda: `_applyPenalty` ham zaxira qavat sifatida rad
+  // etadi, bu esa "to'xtatdim-u, nega jarima oldim" holatini aniq xato
+  // o'rniga JIM o'tkazib yuborish bilan almashtiradi.
+  if (withPenalty && !task.selfAssigned && !task.autopenalized) {
     const settings = await getTaskSettings();
     const points = _assertPenaltyPoints(penaltyPoints || task.penaltyPoints, settings);
     const penalty = await _applyPenalty(task, points, reason, stoppedBy);
@@ -1137,10 +1250,16 @@ const stopTask = async (
     data,
   });
 
-  _notifyAssignees(TASK_PUSH_EVENTS.STOPPED, updated, {
-    reason,
-    penaltyPoints: appliedPoints,
-  });
+  // ⚠️ PUSH FAQAT BOSHQA ODAM AMAL QILGANDA. Shaxsiy topshiriqni o'zi
+  // to'xtatadi — "topshirig'ingiz to'xtatildi" xabari o'ziga qaytib
+  // kelishi shovqin bo'lardi. (Doimiy qoidadan ERTALAB yoziladigan
+  // topshiriqda push BOR va u o'rinli: u paytda amalni cron qiladi.)
+  if (!updated.selfAssigned) {
+    _notifyAssignees(TASK_PUSH_EVENTS.STOPPED, updated, {
+      reason,
+      penaltyPoints: appliedPoints,
+    });
+  }
 
   return updated;
 };
@@ -1171,7 +1290,9 @@ const extendDeadline = async (
   const data = {};
   let appliedPoints = 0;
 
-  if (withPenalty) {
+  // ⚠️ SHAXSIY TOPSHIRIQDA JARIMA YO'Q (`stopTask` bilan AYNI qoida):
+  // muddatni o'ziga o'zi surgan odam o'zini jarimalamaydi.
+  if (withPenalty && !task.selfAssigned) {
     const settings = await getTaskSettings();
     appliedPoints = _assertPenaltyPoints(penaltyPoints || task.penaltyPoints, settings);
     const penalty = await _applyPenalty(task, appliedPoints, reason, extendedBy);
@@ -1189,7 +1310,10 @@ const extendDeadline = async (
       reason,
       changedBy: extendedBy,
       changedAt: now,
-      withPenalty: !!withPenalty,
+      // ⚠️ `appliedPoints` dan o'qiladi, `withPenalty` dan EMAS: shaxsiy
+      // topshiriqda bayroq kelsa ham jarima yozilmaydi va tarix buni
+      // "jarima bilan uzaytirildi" deb ko'rsatib qo'ymasligi kerak.
+      withPenalty: appliedPoints > 0,
       penaltyPoints: appliedPoints,
       position: deadlinePosition,
     },
@@ -1259,6 +1383,20 @@ const updateTask = async (
   const task = await prisma.task.findUnique({ where: { id: taskId } });
   if (!task) throw new NotFoundError("Topshiriq topilmadi");
   _assertScope(task, scope, editorId);
+
+  // ⚠️ SHAXSIY DOIRADA IKKI MAYDON YOPIQ (`selfTask.service.js`):
+  // IJROCHI — "faqat o'ziga" qoidasi buzilmasin (aks holda tahrir orqali
+  // topshiriq birovga o'tib ketardi), JARIMA BALI — shaxsiy topshiriq
+  // har doim 0 ball bilan qoladi. Panel bu maydonlarni ko'rsatmaydi,
+  // lekin qaror shu yerda.
+  if (scope?.mode === taskScopeService.SCOPE_SELF) {
+    if (assigneeId !== undefined && String(assigneeId) !== String(task.assignee)) {
+      throw new ForbiddenError("O'ziga belgilagan topshiriqning ijrochisini o'zgartirib bo'lmaydi");
+    }
+    if (penaltyPoints !== undefined && penaltyPoints !== null && penaltyPoints !== "") {
+      throw new ForbiddenError("O'ziga belgilagan topshiriqda jarima bali bo'lmaydi");
+    }
+  }
 
   // ⚠️ YAKUNLANGAN TOPSHIRIQDA FAQAT TUR o'zgaradi. Qolgan maydonlar
   // (sarlavha, tavsif, muddat, jarima, fayllar) tasdiqlangan natija NIMAGA
@@ -1516,10 +1654,13 @@ const reopenTask = async (taskId, { newDueDate, reason, reopenedBy, scope }) => 
     },
   });
 
-  _notifyAssignees(TASK_PUSH_EVENTS.REOPENED, updated, {
-    reason: text,
-    deadlineChanged: true,
-  });
+  // Shaxsiy topshiriqni o'zi qayta ochadi — push yo'q (`stopTask` izohi)
+  if (!updated.selfAssigned) {
+    _notifyAssignees(TASK_PUSH_EVENTS.REOPENED, updated, {
+      reason: text,
+      deadlineChanged: true,
+    });
+  }
 
   // Topshiriq muammodan kelgan va muammoni AYNAN SHU topshiriq yopgan
   // bo'lsa, muammo ham qayta ochiladi.

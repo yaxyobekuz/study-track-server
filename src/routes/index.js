@@ -23,6 +23,9 @@ const marketRoutes = require("./market.routes");
 const penaltyRoutes = require("./penalty.routes");
 const taskRoutes = require("./task.routes");
 const taskScheduleRoutes = require("./taskSchedule.routes");
+// XODIM O'ZIGA O'ZI BELGILAGAN TOPSHIRIQLAR — Lavozimlar markazining AYNI
+// dvigateli, jarimasiz va tasdiqlashsiz oqim (`selfTask.service.js`)
+const selfTaskRoutes = require("./selfTask.routes");
 const roleRoutes = require("./role.routes");
 const permissionRoutes = require("./permission.routes");
 const socialNetworkRoutes = require("./socialNetwork.routes");
@@ -114,6 +117,7 @@ router.use("/penalties", penaltyRoutes);
 router.use("/tasks", taskRoutes);
 // Doimiy (takrorlanuvchi) topshiriq QOIDALARI — topshiriqlarning o'zi emas
 router.use("/task-schedules", taskScheduleRoutes);
+router.use("/self-tasks", selfTaskRoutes);
 router.use("/roles", roleRoutes);
 router.use("/permissions", permissionRoutes);
 router.use("/social-networks", socialNetworkRoutes);

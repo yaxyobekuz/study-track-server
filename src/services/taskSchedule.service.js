@@ -31,7 +31,7 @@ const {
   getPaginationParams,
   formatPaginationResponse,
 } = require("../utils/pagination");
-const { BadRequestError, NotFoundError } = require("../utils/errors");
+const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
 const { getTashkentDateUtc } = require("../helpers/date.helpers");
 const { TASK_PUSH_EVENTS } = require("../helpers/taskPush.helpers");
 const { normalizeLinks } = require("../helpers/taskWindow.helpers");
@@ -253,7 +253,15 @@ const _serialize = (schedule, extra = {}) => {
  * foydalanuvchi "yaratdim, lekin hech narsa ko'rinmayapti" holatiga
  * tushmasligi kerak.
  */
-const createSchedule = async (body, createdBy, scope) => {
+/**
+ * @param {object} body
+ * @param {string} createdBy
+ * @param {object} [scope]
+ * @param {{ selfAssigned?: boolean }} [options] - `selfAssigned: true` —
+ *   xodim O'ZIGA doimiy ish yozyapti (`selfTask.service.js`): ijrochi
+ *   yaratuvchining o'zi, jarima bali 0.
+ */
+const createSchedule = async (body, createdBy, scope, { selfAssigned = false } = {}) => {
   const settings = await getTaskSettings();
 
   const title = _text(body.title, {
@@ -284,14 +292,23 @@ const createSchedule = async (body, createdBy, scope) => {
     throw new BadRequestError("Tugash sanasi boshlanish sanasidan oldin bo'lmasligi kerak");
   }
 
-  const penaltyPoints = _int(body.penaltyPoints, {
-    min: 1,
-    max: settings.maxPenaltyPoints,
-    label: "Jarima bali",
-    fallback: settings.defaultPenaltyPoints,
-  });
+  // ⚠️ SHAXSIY QOIDADA JARIMA BALI 0 (`task.service.js` bilan AYNI qoida):
+  // `_int` kamida 1 ni talab qiladi, shuning uchun u umuman chaqirilmaydi.
+  const penaltyPoints = selfAssigned
+    ? 0
+    : _int(body.penaltyPoints, {
+        min: 1,
+        max: settings.maxPenaltyPoints,
+        label: "Jarima bali",
+        fallback: settings.defaultPenaltyPoints,
+      });
 
-  const assignees = await _assertAssignees(body.assigneeIds, scope);
+  // ⚠️ SHAXSIY QOIDA — FAQAT O'ZIGA: ro'yxat bitta va u yaratuvchining
+  // o'zi. Aks holda "o'ziga belgilash" yo'li birovga jarimasiz DOIMIY
+  // topshiriq yozib qo'yish yo'liga aylanardi.
+  const assignees = selfAssigned
+    ? [String(createdBy)]
+    : await _assertAssignees(body.assigneeIds, scope);
   const links = normalizeLinks(body.links, (msg) => new BadRequestError(msg));
 
   const files = body.files || [];
@@ -319,6 +336,7 @@ const createSchedule = async (body, createdBy, scope) => {
         startDate,
         endDate,
         createdBy,
+        selfAssigned,
       },
     });
   } catch (error) {
@@ -341,6 +359,18 @@ const updateSchedule = async (id, body, userId, scope) => {
   const current = await prisma.taskSchedule.findUnique({ where: { id } });
   if (!current) throw new NotFoundError("Doimiy topshiriq topilmadi");
   _assertScheduleScope(current, scope, userId);
+
+  // ⚠️ SHAXSIY DOIRADA IJROCHI VA JARIMA BALI YOPIQ (`updateTask` bilan
+  // AYNI qoida): tahrir orqali qoida birovga o'tib ketmasin va 0 ball
+  // o'z joyida qolsin.
+  if (scope?.mode === taskScopeService.SCOPE_SELF) {
+    if (body.assigneeIds !== undefined) {
+      throw new ForbiddenError("O'ziga belgilagan doimiy ishning ijrochisini o'zgartirib bo'lmaydi");
+    }
+    if (body.penaltyPoints !== undefined) {
+      throw new ForbiddenError("O'ziga belgilagan doimiy ishda jarima bali bo'lmaydi");
+    }
+  }
 
   const merged = {
     frequency: body.frequency ?? current.frequency,
@@ -482,7 +512,23 @@ const deleteSchedule = async (id, userId, scope) => {
 // ─── O'QISH ───────────────────────────────────────────────────────
 
 const _assertScheduleScope = (schedule, scope, userId) => {
-  if (!scope || scope.mode !== taskScopeService.SCOPE_TEAM) return;
+  if (!scope) return;
+
+  // SHAXSIY YO'L: qoida shu odamning O'ZIGA belgilagani bo'lishi shart.
+  // ⚠️ IKKI SHART BIRGA (`taskScope.service.js` dagi `isInScope` bilan
+  // AYNI mulohaza): faqat `createdBy` bo'yicha tekshirilsa, rahbar o'zi
+  // yaratgan ODDIY qoidani shaxsiy yo'ldan tahrirlab, jarima balini
+  // chetlab o'tib yuborardi.
+  if (scope.mode === taskScopeService.SCOPE_SELF) {
+    const mine =
+      schedule.selfAssigned === true && String(schedule.createdBy) === String(userId);
+    if (!mine) {
+      throw new ForbiddenError("Bu sizning o'zingizga belgilagan doimiy ishingiz emas");
+    }
+    return;
+  }
+
+  if (scope.mode !== taskScopeService.SCOPE_TEAM) return;
   const mine =
     String(schedule.createdBy) === String(userId) ||
     schedule.assignees.some((a) => scope.memberIds.includes(String(a)));
@@ -491,15 +537,24 @@ const _assertScheduleScope = (schedule, scope, userId) => {
   }
 };
 
-const listSchedules = async (req, scope) => {
+const listSchedules = async (req, scope, { selfAssigned = false } = {}) => {
   const { page, limit, skip } = getPaginationParams(req);
   const { status, search } = req.query;
 
-  const filter = {};
+  // ⚠️ IKKI OQIM ARALASHMAYDI (`task.service.js` dagi `_buildListFilter`
+  // bilan AYNI sabab): rahbar bergan doimiy ishlar va xodim o'ziga
+  // belgilagan doimiy ishlari har doim alohida ro'yxat.
+  const filter = { selfAssigned };
   if (status === "active") filter.isActive = true;
   if (status === "stopped") filter.isActive = false;
   if (search && String(search).trim()) {
     filter.title = { contains: String(search).trim(), mode: "insensitive" };
+  }
+
+  // Shaxsiy yo'l: faqat o'zi yaratganlari (oqim filtri allaqachon
+  // `selfAssigned: true` ni qo'ygan)
+  if (scope?.mode === taskScopeService.SCOPE_SELF) {
+    filter.createdBy = String(req.user.id);
   }
 
   // Rahbar — o'z bo'limi: o'zi yaratgan yoki a'zolariga berilgan qoidalar
@@ -654,12 +709,22 @@ const materializeSchedule = async (schedule, today = getTashkentDateUtc(0)) => {
           scheduleId: schedule.id,
           occurrenceDate: day,
           occurrenceSlot: slot.due,
+          // ⚠️ OQIM QOIDADAN TOPSHIRIQQA KO'CHADI: shaxsiy qoidadan
+          // yozilgan topshiriq ham shaxsiy oqimda qoladi — jarimasiz,
+          // o'zi yopiladigan va Lavozimlar markazi ro'yxatiga
+          // tushmaydigan.
+          selfAssigned: schedule.selfAssigned,
         },
       });
 
       if (rows.length > 0) {
         created += rows.length;
-        // Yaratilishning O'ZI eslatma — xodimga push boradi
+        // Yaratilishning O'ZI eslatma — xodimga push boradi.
+        // ⚠️ SHAXSIY QOIDADA PUSH BOR va bu to'g'ri: odam qoidani bir
+        // marta yozgan, topshiriq esa keyin — ertalab paydo bo'lgan ishni
+        // u boshqa yo'l bilan bilmaydi. Qo'lda yozilgan shaxsiy topshiriqda
+        // esa push yo'q (`task.service.js` — odam shu zahoti formadan
+        // chiqdi).
         taskService.notifyAssignees(TASK_PUSH_EVENTS.CREATED, rows);
       }
     }
