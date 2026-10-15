@@ -9,6 +9,7 @@ const { validateObjectId } = require("../middleware/validate.middleware");
 // Controllers
 const {
   login,
+  selectLoginBranch,
   getMe,
   switchBranch,
   logout,
@@ -19,6 +20,11 @@ const {
 
 // Public routes
 router.post("/login", login);
+
+// Filialni tanlash — login'ning ikkinchi qadami. PUBLIC va shunday
+// bo'lishi SHART: bu yerda access token hali yo'q. Hakam — tanlov
+// tokeni (`selectionToken`, 5 daqiqa, alohida kalit bilan imzolangan).
+router.post("/login/branch", selectLoginBranch);
 
 // Protected routes
 router.get("/me", protect, getMe);

@@ -11,7 +11,13 @@
 
 const prisma = require("../config/prisma");
 const { runWithBranch } = require("../config/branchContext");
-const { generateToken, generateJti, verifyToken } = require("../utils/jwt");
+const {
+  generateToken,
+  generateJti,
+  verifyToken,
+  generateBranchSelectToken,
+  verifyBranchSelectToken,
+} = require("../utils/jwt");
 const { matchPassword } = require("../utils/password");
 const {
   BadRequestError,
@@ -144,12 +150,19 @@ function tokenExpiry(token) {
  * o'tmagani ham. Yozuv PLATFORMAGA tushadi, shuning uchun filial hali
  * aniqlanmagan holat ham qamrab olinadi.
  *
+ * ⚠️ KO'P FILIALLI XODIMGA SEANS OCHILMAYDI — u filialni tanlashi kerak
+ * (`branchSelect`, pastda `selectLoginBranch`).
+ *
  * @param {string} username - foydalanuvchi nomi
  * @param {string} password - parol
  * @param {object} [client] - `helpers/request.helpers.js` → `clientInfo()`
- * @returns {Promise<{user: object, token: string, branch: object}>}
+ * @param {object} [options]
+ * @param {boolean} [options.branchSelect=false] - mijoz filial tanlash
+ *   oynasini ko'rsata oladi (panellar). Eski mijozlar (mobil ilova) bu
+ *   bayroqni yubormaydi va avvalgidek UY filialiga token oladi.
+ * @returns {Promise<object>} - seans javobi YOKI filial tanlash javobi
  */
-async function login(username, password, client = {}) {
+async function login(username, password, client = {}, options = {}) {
   if (!username || !password) {
     throw new BadRequestError("Username va parol majburiy");
   }
@@ -244,7 +257,158 @@ async function login(username, password, client = {}) {
       );
     }
 
-    return issueSession({ user, branch, client });
+    // ── 3. Ikki yoki undan ortiq filial — ODAM TANLAYDI ────
+    // Parol TO'G'RI, lekin seans hali OCHILMAYDI: token qaysi filialda
+    // ishlanishini bilmasdan berilsa, odam har safar uy filialiga tushib,
+    // keyin almashtirishga majbur bo'lardi — ya'ni har kirishda ikkita
+    // seans qatori (biri darhol `superseded`) paydo bo'lardi.
+    const available = await availableBranchesFor(user);
+
+    if (options.branchSelect && available.length > 1) {
+      return branchSelectionRequired({ user, homeBranch: branch, available });
+    }
+
+    return issueSession({ user, branch, client, available });
+  });
+}
+
+/**
+ * FILIAL TANLASH JAVOBI — token YO'Q, seans YO'Q.
+ *
+ * ⚠️ `recordAttempt` BU YERDA CHAQIRILMAYDI. "Muvaffaqiyatli kirish" —
+ * seans ochilgan kirish; yarim qadam hodisa emas. Aks holda har kirish
+ * jurnalga ikki marta tushib, "bugun nechta kishi kirdi" sanoqchisi
+ * ikki barobar ko'rsatardi. Parol NOTO'G'RI bo'lsa esa hammasi
+ * avvalgidek yoziladi (`fail()`), ya'ni brute-force himoyasi to'liq
+ * saqlanadi.
+ *
+ * @param {object} input
+ * @param {object} input.user - uy filialidagi `User`
+ * @param {object} input.homeBranch
+ * @param {object[]} input.available - `availableBranchesFor` natijasi
+ * @returns {object}
+ */
+function branchSelectionRequired({ user, homeBranch, available }) {
+  const { token, expiresIn } = generateBranchSelectToken({
+    userId: user.id,
+    homeBranchId: homeBranch.id,
+  });
+
+  return {
+    branchSelectionRequired: true,
+    selectionToken: token,
+    expiresIn,
+    branches: available,
+    homeBranchId: homeBranch.id,
+    // Faqat SALOMLASHISH uchun — ruxsat, rol va sinflar bu yerda
+    // BERILMAYDI: ular tanlangan filialga bog'liq va tanlovdan keyin
+    // `issueSession` to'liq javobda qaytaradi.
+    user: {
+      id: user.id,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      fullName: user.fullName,
+    },
+  };
+}
+
+/**
+ * FILIALNI TANLASH — login'ning IKKINCHI qadami.
+ *
+ * Birinchi qadam parolni tekshirgan va 5 daqiqalik tanlov tokenini
+ * bergan; bu yerda aynan shu token bilan seans ochiladi.
+ *
+ * ⚠️ RO'YXAT QAYTA QURILADI (`availableBranchesFor`), tokendan
+ * O'QILMAYDI: tokenda faqat "kim" va "uy filiali" turadi. Shu sababli
+ * oynada ko'rsatilgan ro'yxat va token beriladigan ro'yxat BITTA
+ * manbadan chiqadi — oraliqda biriktirish olib tashlansa, tanlov ham
+ * o'tmaydi.
+ *
+ * ⚠️ BIRIKTIRISH PROFILDAN OLDIN tekshiriladi. Teskari tartibda
+ * filiallararo ko'chirishdan keyin qolgan QOLDIQ PROFIL (`finance.md`
+ * §12) kirish yo'li bo'lib qolardi: qator bor, biriktirish esa yo'q.
+ *
+ * @param {object} input
+ * @param {string} input.selectionToken
+ * @param {string} input.branchId
+ * @param {object} [input.client] - `clientInfo()`
+ * @returns {Promise<object>} - login javobi bilan AYNI shakl
+ */
+async function selectLoginBranch({ selectionToken, branchId, client = {} }) {
+  if (!branchId) throw new BadRequestError("Filial tanlanmadi");
+
+  const decoded = verifyBranchSelectToken(selectionToken);
+  if (!decoded?.sub) {
+    // ⚠️ 400, 401 EMAS: panellar 401 da tokenni o'chirib login sahifasiga
+    // otadi, bu yerda esa odam allaqachon login sahifasida turadi va
+    // shunchaki parolni qaytadan kiritishi kerak.
+    throw new BadRequestError(
+      "Filial tanlash muddati tugadi — qaytadan kiring",
+      { reason: "selection_expired" },
+    );
+  }
+
+  const branch = await branchService.getUsableById(branchId);
+
+  // ── 1. Kira oladigan filiallar ro'yxati ───
+  // Rollar UY filialidan o'qiladi: parol ham, ro'yxat ham birinchi
+  // qadamda aynan o'sha yerdan chiqqan (owner har filialda mavjud,
+  // qolganlar uchun hakam — biriktirish jadvali).
+  const homeBranch = await branchService.getUsableById(decoded.hb);
+  const homeUser = await runWithBranch(homeBranch, () =>
+    prisma.user.findUnique({
+      where: { id: decoded.sub },
+      select: { id: true, username: true, role: true, extraRoles: true },
+    }),
+  );
+
+  if (!homeUser) throw new NotFoundError("Foydalanuvchi topilmadi");
+
+  const available = await availableBranchesFor(homeUser);
+
+  if (!available.some((item) => item.id === branch.id)) {
+    securityService.recordAttempt({
+      username: homeUser.username,
+      userId: decoded.sub,
+      branchId: branch.id,
+      success: false,
+      reason: "branch_denied",
+      client,
+    });
+    throw new ForbiddenError(
+      `Siz "${branch.name}" filialiga biriktirilmagansiz`,
+    );
+  }
+
+  // ── 2. Tanlangan filialdagi profil ────────
+  return runWithBranch(branch, async () => {
+    const user = await prisma.user.findUnique({
+      where: { id: decoded.sub },
+      include: {
+        classes: { include: { class: { select: { id: true, name: true } } } },
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundError(
+        `"${branch.name}" filialida sizning profilingiz yo'q`,
+      );
+    }
+
+    if (!user.isActive) {
+      throw new ForbiddenError(
+        `"${branch.name}" filialidagi profilingiz faol emas`,
+      );
+    }
+
+    if (user.isArchived) {
+      throw new ForbiddenError(
+        `"${branch.name}" filialidagi profilingiz arxivlangan`,
+      );
+    }
+
+    return issueSession({ user, branch, client, available });
   });
 }
 
@@ -265,10 +429,13 @@ async function login(username, password, client = {}) {
  * @param {object} input.user - filialdagi `User` (`classes` bilan)
  * @param {object} input.branch
  * @param {object} [input.client] - `clientInfo()`
+ * @param {object[]} [input.available] - chaqiruvchi allaqachon o'qigan
+ *   filiallar ro'yxati. Berilmasa shu yerda o'qiladi — ro'yxat javobning
+ *   bir qismi va ikki marta o'qilmasligi kerak.
  * @returns {Promise<object>} - login javobi
  * @throws {ConflictError} - `details.reason === "session_limit"`
  */
-async function issueSession({ user, branch, client = {} }) {
+async function issueSession({ user, branch, client = {}, available }) {
   // ⚠️ `jti` TOKENDAN OLDIN tug'iladi: seans qatori va token AYNI
   // qiymatga ega bo'lishi kerak, aks holda "seansni tugat" tugmasi
   // boshqa tokenni qidirib topmasdi.
@@ -307,7 +474,7 @@ async function issueSession({ user, branch, client = {} }) {
     logger.warn(`[auth] seans ochilmadi: ${error.message}`);
   }
 
-  const available = await availableBranchesFor(user);
+  const branches = available ?? (await availableBranchesFor(user));
 
   securityService.recordAttempt({
     username: user.username,
@@ -345,7 +512,7 @@ async function issueSession({ user, branch, client = {} }) {
     },
     token,
     branch: publicBranch(branch),
-    availableBranches: available,
+    availableBranches: branches,
   };
 }
 
@@ -535,6 +702,7 @@ async function logout(jti) {
 
 module.exports = {
   login,
+  selectLoginBranch,
   getMe,
   switchBranch,
   logout,

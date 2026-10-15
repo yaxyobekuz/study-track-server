@@ -195,7 +195,28 @@ const loginLimiter = rateLimit({
     });
   },
 });
-app.use("/api/auth/login", loginLimiter);
+// ⚠️ `app.post`, `app.use` EMAS: `app.use` PREFIKS bo'yicha mos keladi,
+// ya'ni `/api/auth/login/branch` (filial tanlash — login'ning ikkinchi
+// qadami) ham shu 10 urinishlik hisobga tushardi. Ko'p filialli xodim
+// har kirishda IKKI so'rov yuboradi, demak limiti ikki barobar tez
+// tugardi; jurnalga esa `username` siz "rate_limited" qatori yozilardi
+// (tanlov so'rovida username yo'q).
+app.post("/api/auth/login", loginLimiter);
+
+// FILIAL TANLASH — o'z limiti.
+//
+// Bu qadam brute-force nishoni EMAS: hakam — imzolangan tanlov tokeni,
+// uni taxmin qilib bo'lmaydi. Shuning uchun chegara login'dan yumshoq,
+// lekin cheksiz ham emas (bitta tanlov bir necha urinishga arziydi:
+// odam adashib boshqa filialni bosishi mumkin).
+const branchSelectLimiter = rateLimit({
+  max: 30,
+  windowMs: 15 * 60 * 1000,
+  message: {
+    message: "Juda ko'p urinish. 15 daqiqadan so'ng qayta urinib ko'ring.",
+  },
+});
+app.post("/api/auth/login/branch", branchSelectLimiter);
 
 // Request logger (har bir so'rovni log qiladi)
 app.use(requestLogger);

@@ -9,11 +9,34 @@ const { clientInfo } = require("../helpers/request.helpers");
 // qatlamini bilmasligi kerak. Aks holda uni cron'dan yoki skriptdan
 // chaqirib bo'lmasdi va test yozish uchun soxta `req` qurish kerak bo'lardi.
 const login = asyncHandler(async (req, res) => {
-  const { username, password } = req.body;
-  const data = await authService.login(username, password, clientInfo(req));
+  const { username, password, branchSelect } = req.body;
+  const data = await authService.login(username, password, clientInfo(req), {
+    branchSelect: branchSelect === true,
+  });
 
   res.json({
     success: true,
+    data,
+  });
+});
+
+// Filialni tanlash — login'ning IKKINCHI qadami.
+//
+// ⚠️ `protect` YO'Q va bo'lishi ham mumkin emas: bu yo'l aynan access
+// token BERILMAGAN holat uchun. O'rniga tanlov tokeni (`selectionToken`)
+// tekshiriladi — u 5 daqiqa yashaydi, boshqa kalit bilan imzolangan va
+// faqat shu bitta amalni ochadi.
+const selectLoginBranch = asyncHandler(async (req, res) => {
+  const { selectionToken, branchId } = req.body;
+  const data = await authService.selectLoginBranch({
+    selectionToken,
+    branchId,
+    client: clientInfo(req),
+  });
+
+  res.json({
+    success: true,
+    message: `"${data.branch.name}" filialiga kirildi`,
     data,
   });
 });
@@ -98,6 +121,7 @@ const terminateOtherSessions = asyncHandler(async (req, res) => {
 
 module.exports = {
   login,
+  selectLoginBranch,
   getMe,
   switchBranch,
   logout,

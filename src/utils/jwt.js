@@ -132,6 +132,84 @@ const verifyParentalToken = (token) => {
   }
 };
 
+/* ─────────────────── FILIAL TANLASH TOKENI (login) ─────────────────── */
+
+/** Tanlov tokeni maqsadi — `purpose` da majburiy. */
+const BRANCH_SELECT_PURPOSE = "branch-select";
+
+/**
+ * TANLOV TOKENI 5 DAQIQA YASHAYDI.
+ *
+ * ⚠️ Env'ga CHIQARILMAYDI: bu sozlama emas, oynaning umri. Uzaytirilsa
+ * "parol tekshirilgan, lekin seans ochilmagan" holat uzoq turib qolardi;
+ * qisqartirilsa filialni o'qib tanlayotgan odam muddatga ilinardi.
+ */
+const BRANCH_SELECT_TTL_SEC = 5 * 60;
+
+/**
+ * TANLOV TOKENI KALITI — `JWT_SECRET` dan HOSILA, o'zi EMAS.
+ *
+ * ⚠️ Parental token bilan AYNI mulohaza: kalit boshqa bo'lgani uchun
+ * tanlov tokeni access token o'rniga (va aksincha) imzo bosqichidayoq rad
+ * etiladi — `purpose` tekshiruvi esa ikkinchi qavat. Bitta kalit bo'lsa,
+ * tanlov tokeni bilan butun API'ga kirib bo'lardi.
+ */
+const branchSelectSecret = () =>
+  crypto
+    .createHmac("sha256", String(config.jwtSecret))
+    .update("branch-select-token:v1")
+    .digest("hex");
+
+/**
+ * PAROL TEKSHIRILGANINING ISBOTI — filial tanlanmaguncha.
+ *
+ * Ko'p filialli xodimga login SEANS OCHMAYDI (`auth.service.js`): odam
+ * qaysi filialda ishlashini aytmaguncha token berilmaydi. Shu oraliqni
+ * ushlab turadigan narsa — aynan bu token.
+ *
+ * ⚠️ UY FILIALI YUK ICHIDA (`hb`): u birinchi qadamda allaqachon
+ * tekshirilgan (`getUsableById`) va imzolangan, ya'ni ikkinchi qadam
+ * "qaysi filialda rollar o'qiladi" degan savolni qayta hal qilmaydi va
+ * mijoz uni o'zgartira olmaydi.
+ *
+ * ⚠️ `jti` YO'Q: bu seans emas. Seans faqat tanlovdan keyin ochiladi,
+ * aks holda tashlab ketilgan oyna qurilma limitidan joy yeb turardi.
+ *
+ * @param {{ userId: string, homeBranchId: string }} input
+ * @returns {{ token: string, expiresIn: number }}
+ */
+const generateBranchSelectToken = ({ userId, homeBranchId }) => {
+  const token = jwt.sign(
+    {
+      purpose: BRANCH_SELECT_PURPOSE,
+      sub: String(userId),
+      hb: homeBranchId ?? null,
+    },
+    branchSelectSecret(),
+    { algorithm: "HS256", expiresIn: BRANCH_SELECT_TTL_SEC },
+  );
+
+  return { token, expiresIn: BRANCH_SELECT_TTL_SEC };
+};
+
+/**
+ * Tanlov tokenini tekshiradi. Imzo, muddat yoki `purpose` mos kelmasa `null`.
+ *
+ * @param {string} token
+ * @returns {{ sub: string, hb: string|null, exp: number }|null}
+ */
+const verifyBranchSelectToken = (token) => {
+  if (!token || typeof token !== "string") return null;
+  try {
+    const decoded = jwt.verify(token, branchSelectSecret(), {
+      algorithms: ["HS256"],
+    });
+    return decoded?.purpose === BRANCH_SELECT_PURPOSE ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
 module.exports = {
   generateToken,
   verifyToken,
@@ -139,4 +217,8 @@ module.exports = {
   generateParentalToken,
   verifyParentalToken,
   PARENTAL_PURPOSE,
+  generateBranchSelectToken,
+  verifyBranchSelectToken,
+  BRANCH_SELECT_PURPOSE,
+  BRANCH_SELECT_TTL_SEC,
 };

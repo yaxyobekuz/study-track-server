@@ -77,6 +77,9 @@ const REASON_LABELS = {
   rate_limited: "Limitdan oshdi",
   // Parol to'g'ri, lekin o'qituvchining qurilmalar limiti to'lgan
   session_limit: "Qurilmalar limiti to'lgan",
+  // Parol to'g'ri, lekin tanlangan filialga biriktirilmagan (login'ning
+  // ikkinchi qadami) — eskirgan oyna yoki qo'lda yuborilgan so'rov
+  branch_denied: "Filialga biriktirilmagan",
 };
 
 /** Seans tugash sabablarining nomlari. */
