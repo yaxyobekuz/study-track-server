@@ -1577,15 +1577,24 @@ async function getUsersForExport(role) {
  * arxivlashda sinflardan chiqariladi, shuning uchun sinf eksportiga
  * o'z-o'zidan tushmaydi.
  *
- * @param {{ classId?: string }} [options]
+ * `archived` — ARXIV TANLOVI: `"all"` (sukut) ikkalasini ham, `"true"` faqat
+ * arxivlanganlarni, `"false"` faqat joriylarni beradi. ⚠️ Sukut ataylab
+ * `"all"`: moliyaviy eksport arxivlanganni ko'rsatishda davom etadi
+ * (`education.md` §4 "Istisno — moliya") — qarz arxivlash bilan yo'qolmaydi.
+ * Ro'yxat endpointidagi `archived` bilan AYNI so'z boyligi (`true` → faqat
+ * arxivlangan), faqat sukuti boshqa, chunki ro'yxatda tab ikkiga bo'lingan.
+ *
+ * @param {{ classId?: string, archived?: "all"|"true"|"false"|boolean }} [options]
  * @returns {Promise<{ all: object[], debtors: object[] }>}
  */
-async function getStudentsFinanceExport({ classId } = {}) {
+async function getStudentsFinanceExport({ classId, archived = "all" } = {}) {
   const { resolveManyForMonth } = require("./tariffResolution.service");
   const { formatAmount, Decimal } = require("../helpers/money.helpers");
   const month = currentMonthKey();
 
   const where = { role: "student" };
+  if (archived === "true" || archived === true) where.isArchived = true;
+  else if (archived === "false" || archived === false) where.isArchived = false;
   if (classId) {
     // Yo'q sinf jim "bo'sh fayl" bo'lib qaytmasin — sinf o'chirilgan yoki
     // id xato bo'lsa foydalanuvchi buni aniq bilishi kerak.
@@ -1646,6 +1655,9 @@ async function getStudentsFinanceExport({ classId } = {}) {
     const row = {
       fullName: `${user.firstName} ${user.lastName || ""}`.trim(),
       username: user.username,
+      // Ikkalasi bitta faylda bo'lganda qatorni ajratadigan YAGONA ustun —
+      // arxivlangan o'quvchi sinfsiz turadi va boshqa belgisi yo'q
+      status: user.isArchived ? "Arxivlangan" : "Joriy",
       password: user.plainPassword || "N/A",
       className:
         user.classes && user.classes.length > 0

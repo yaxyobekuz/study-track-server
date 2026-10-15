@@ -268,9 +268,16 @@ const restoreUser = asyncHandler(async (req, res) => {
 });
 
 // Export users to Excel (Owner only)
+// Arxiv tanlovi — o'quvchilar eksportida: ikkalasi, faqat joriylar yoki
+// faqat arxivlanganlar. Sukut `all`: moliyaviy eksport arxivlanganni
+// ko'rsatishda davom etadi (`education.md` §4 "Istisno — moliya").
+const ARCHIVE_SCOPES = ["all", "true", "false"];
+
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
   const classId = req.query.classId ? String(req.query.classId) : null;
+  const archived =
+    req.query.archived === undefined ? "all" : String(req.query.archived);
 
   // Sinf kesimi faqat O'QUVCHILAR eksportida: xodim/umumiy eksportda uni
   // jim e'tiborsiz qoldirish "sinf tanladim, hamma chiqdi" holatini berardi.
@@ -283,6 +290,27 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
     }
   }
 
+  // Arxiv tanlovi ham faqat o'quvchilarda — boshqa rollar eksportiga
+  // arxivlangan xodim UMUMAN tushmaydi (`getUsersForExport`), ya'ni u yerda
+  // tanlov "tanladim, lekin hech narsa o'zgarmadi" bo'lib qolardi.
+  if (req.query.archived !== undefined) {
+    if (role !== "student") {
+      throw new BadRequestError("Arxiv tanlovi faqat o'quvchilar eksportida");
+    }
+    if (!ARCHIVE_SCOPES.includes(archived)) {
+      throw new BadRequestError("Arxiv tanlovi noto'g'ri");
+    }
+  }
+
+  // ⚠️ Arxivlangan o'quvchi arxivlashda BARCHA sinflardan chiqariladi
+  // (`education.md` §5), ya'ni "sinf + faqat arxivlanganlar" har doim bo'sh
+  // fayl bo'lardi — foydalanuvchi buni tizim nosozligi deb o'ylardi.
+  if (classId && archived === "true") {
+    throw new BadRequestError(
+      "Arxivlangan o'quvchilar sinflardan chiqarilgan — sinf bilan birga yuklanmaydi",
+    );
+  }
+
   // O'QUVCHILAR eksporti — MOLIYALI va IKKI VARAQLI:
   //   1) "O'quvchilar" — hamma o'quvchi + tarif/to'langan/qarz;
   //   2) "Qarzdorlar" — faqat to'liq to'lamaganlar.
@@ -291,15 +319,24 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   if (role === "student") {
     const { all, debtors } = await userService.getStudentsFinanceExport({
       classId,
+      archived,
     });
 
     const workbook = ExcelService.createWorkbook();
+
+    // "Holat" ustuni FAQAT aralash faylda: bitta turdagi faylda u boshdan-oyoq
+    // bir xil qiymat turgan ustun bo'lib qolardi (varaq nomi buni aytadi).
+    const mixedArchive = archived === "all";
+    const onlyArchived = archived === "true";
 
     const studentColumns = [
       { header: "F.I.O", key: "fullName", width: 28 },
       { header: "Username", key: "username", width: 18 },
       { header: "Parol", key: "password", width: 16 },
       { header: "Sinf", key: "className", width: 14 },
+      ...(mixedArchive
+        ? [{ header: "Holat", key: "status", width: 14 }]
+        : []),
       { header: "Telefon", key: "phone", width: 18 },
       { header: "Ota-ona telefoni", key: "parentPhone", width: 18 },
       { header: "Tarif", key: "tariff", width: 20 },
@@ -310,7 +347,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
     ];
 
     ExcelService.addSheet(workbook, {
-      sheetName: "O'quvchilar",
+      // Varaq nomi faylning O'ZIDA nima borligini aytadi — fayl boshqa odamga
+      // yuborilganda "bu joriylarmi yoki arxivmi" degan savol qolmasin
+      sheetName: onlyArchived ? "Arxivlangan o'quvchilar" : "O'quvchilar",
       columns: studentColumns,
       data: all,
       headerStyle: { bgColor: ExcelService.COLORS.HEADER_BLUE },
@@ -322,6 +361,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       columns: [
         { header: "F.I.O", key: "fullName", width: 28 },
         { header: "Sinf", key: "className", width: 14 },
+        ...(mixedArchive
+          ? [{ header: "Holat", key: "status", width: 14 }]
+          : []),
         { header: "Telefon", key: "phone", width: 18 },
         { header: "Ota-ona telefoni", key: "parentPhone", width: 18 },
         { header: "Tarif", key: "tariff", width: 20 },
@@ -332,7 +374,10 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       headerStyle: { bgColor: ExcelService.COLORS.HEADER_ORANGE },
     });
 
-    const filename = ExcelService.generateFileName("students");
+    let studentsBaseName = "students";
+    if (onlyArchived) studentsBaseName = "students_archived";
+    else if (archived === "false") studentsBaseName = "students_active";
+    const filename = ExcelService.generateFileName(studentsBaseName);
     await ExcelService.sendWorkbook(res, workbook, filename);
     return;
   }
