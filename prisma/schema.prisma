@@ -1182,6 +1182,80 @@ model TeacherAssignment {
   @@map("teacher_assignments")
 }
 
+// DARSGA MAVZU BIRIKTIRISH (ANKOR) — "falon kuni, falon darsda falon mavzu".
+//
+// Mavzu raqami HECH QAYERDA jadval katagiga yozilmaydi: jadval haftalik
+// SHABLON (`Schedule`/`ScheduleLesson`, sanasiz), mavzu esa sanaga bog'liq.
+// Shuning uchun saqlanadigan narsa — ANKOR: bitta aniq kundagi bitta aniq
+// darsning mavzusi. Qolgan hamma dars o'sha ankordan SANAB chiqariladi
+// (`services/lessonTopic.service.js`):
+//
+//   dars mavzusi = ankor mavzusi + ankordan keyin o'sha fandan o'tadigan
+//                  darslar soni   (yakshanba, bayram va ta'til oyi tashqarida)
+//
+// ⚠️ ANKOR BO'LMASA — 1-MAVZUDAN. Birinchi so'rovda tizim o'zi ankor yozadi
+// (`source: "auto"`): bugundan keyingi birinchi darsga 1-mavzu (eski
+// `ClassSubjectProgress.currentTopicNumber` bor bo'lsa — o'sha, maktabning
+// haqiqiy joriy o'rni yo'qolmasin). Ankor YOZILMASA, har kun o'tgani sari
+// bir xil dars boshqa mavzuni ko'rsatardi — sanoqning boshlanish nuqtasi
+// bo'lmasdi.
+//
+// ⚠️ `topicOrder` saqlanadi, `topicId` EMAS. Mavzular faylda qayta
+// yuklanganda hammasi o'chirilib qaytadan yoziladi (`topic.service.js`)
+// — id barqaror emas, tartib raqami esa butun domenning o'lchovi
+// (`Topic.@@unique([subjectId, order])`).
+//
+// ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (`activeKey` NULL ga tushadi): "nega bu
+// darsda 50-mavzu turibdi" degan savolga javob tarixda qoladi. `activeKey`
+// NULL lar PostgreSQL da teng emas, shuning uchun bitta darsga bitta FAOL
+// ankor tushadi (`LessonCredit`, `DevicePolicyAssignment` bilan AYNI yechim).
+model LessonTopicBinding {
+  id String @id @db.Char(24)
+
+  // soft ref'lar — FK yo'q (fan/sinf o'chsa ham tarix o'qilishi kerak)
+  classId     String   @map("class_id") @db.Char(24)
+  subjectId   String   @map("subject_id") @db.Char(24)
+  // Dars kuni — Toshkent kunining UTC yarim tuni, faqat `getUTC*`
+  date        DateTime @db.Date
+  lessonOrder Int      @map("lesson_order")
+  topicOrder  Int      @map("topic_order")
+
+  // "manual" — odam biriktirgan, "auto" — tizim 1-mavzudan boshlagan
+  source String @default("manual")
+  note   String?
+
+  // { className, subjectName, topicName } — qayta nomlansa ham registr
+  // o'qilishi uchun (`LessonCredit.snapshot` doktrinasi)
+  snapshot Json
+
+  // "<classId>|<subjectId>|<YYYY-MM-DD>|<lessonOrder>" — faqat FAOL qatorda
+  activeKey String? @unique @map("active_key")
+
+  createdBy String    @map("created_by") @db.Char(24)
+  revokedAt DateTime? @map("revoked_at")
+  revokedBy String?   @map("revoked_by") @db.Char(24)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  // Resolver: sinf + fan bo'yicha, sana bo'yicha teskari tartibda o'qiydi
+  @@index([classId, subjectId, date])
+  @@index([classId, date])
+  @@map("lesson_topic_bindings")
+}
+
+// ESKI MAVZU HISOBLAGICHI — ENDI FAQAT BOSHLANG'ICH QIYMAT.
+//
+// Ilgari sinf+fan uchun bitta "joriy mavzu raqami" turardi va uni har
+// daqiqada ishlaydigan cron (`topicIncrement.job.js`) dars tugagan sari
+// oshirardi. Unda mavzu FAQAT "hozir" uchun ma'lum edi: o'tgan haftada
+// qaysi mavzu o'tilganini ham, kelasi haftada qaysi mavzu bo'lishini ham
+// aytib bo'lmasdi — jadvalga mavzu chiqarish aynan shu sababdan mumkin emasdi.
+//
+// Hisob `LessonTopicBinding` (ankor + sanoq) ga o'tkazildi va cron olib
+// tashlandi. Bu jadval O'CHIRILMADI: unda maktabning HAQIQIY joriy o'rni
+// turibdi va birinchi avtomatik ankor aynan shundan seed qilinadi
+// (`lessonTopic.service.js` → `ensureAnchors`). Ankor yozilgandan keyin bu
+// qatorga hech kim yozmaydi va hech kim o'qimaydi.
 model ClassSubjectProgress {
   id                 String   @id @db.Char(24)
   classId            String   @map("class_id") @db.Char(24)

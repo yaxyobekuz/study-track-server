@@ -340,12 +340,22 @@ const PERMISSION_SECTIONS = [
     ],
   },
   {
+    // DARS MAVZULARI — katalog (fayldan yuklanadi) va uni JADVALGA biriktirish.
+    //
+    // ⚠️ `assign` — ALOHIDA AMAL va bu `devices.policies` / `devices.assign`
+    // bilan AYNI mulohaza: mavzular ro'yxatini yuklash — texnik ish, o'sha
+    // mavzuni aniq bir darsga biriktirish esa O'QUV JARAYONINING QARORI.
+    // Biriktirish butun sinfning keyingi darslariga ham ta'sir qiladi
+    // (mavzular o'sha nuqtadan sanaladi) va baholar tahlilidagi mavzu
+    // kesimini ham o'zgartiradi, shuning uchun uni "fayl yuklash" huquqi
+    // bilan birga berib bo'lmaydi.
     key: SECTIONS.TOPICS,
     label: "Dars mavzulari",
     group: "Ta'lim",
     actions: [
       A.view,
       { key: "import", label: "Fayldan yuklash" },
+      { key: "assign", label: "Darsga mavzu biriktirish" },
       A.delete,
     ],
   },

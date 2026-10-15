@@ -1,7 +1,14 @@
 /**
- * BAHO MAVZUSI — bugungi darsga qo'yilayotgan bahoga mavzu biriktirish.
+ * BAHO MAVZUSI — qo'yilayotgan bahoga dars mavzusini biriktirish.
  *
- * Hisob `helpers/lessonTopic.js` da (sof funksiya); bu yerda faqat baza.
+ * Hisob `lessonTopic.service.js` da (ankor + sanoq) — bu yerda faqat
+ * chaqiruv va xatolarni yutish qatlami.
+ *
+ * ⚠️ YAGONA HISOB. Ilgari bu yerda alohida mantiq bor edi: sinf+fan uchun
+ * bitta "joriy mavzu raqami" (`ClassSubjectProgress`) cron bilan oshirilar,
+ * baho esa o'sha raqamdan bugun TUGAGAN darslar sonini ayirib hisoblanardi.
+ * Endi mavzu jadvalga ham chiqadi, ya'ni ikkita hisob bo'lsa jurnalda bir
+ * mavzu, jadvalda boshqa mavzu turardi.
  *
  * ⚠️ HECH QACHON XATO TASHLAMAYDI. Mavzu — baholar tahlili uchun QO'SHIMCHA
  * ma'lumot; uni aniqlab bo'lmasa baho baribir yozilishi shart. Shu sababli
@@ -9,64 +16,37 @@
  * o'qituvchi "baho qo'yib bo'lmadi" degan xatoni hech qachon ko'rmaydi.
  */
 
-const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
-const { topicNumberForLesson, cronClockMinutes } = require("../helpers/lessonTopic");
+const { tashkentDayKey } = require("../helpers/lessonHours");
+const { getLessonTopicIds } = require("./lessonTopic.service");
 
 /**
  * @param {object} input
  * @param {string} input.classId
  * @param {string} input.subjectId
- * @param {Array<{order: number, subjectId: string, endTime?: string|null}>} input.lessons - sinfning bugungi darslari
  * @param {number[]} input.lessonOrders - baho yoziladigan dars tartiblari
+ * @param {string} [input.actorId] - bahoni qo'yayotgan odam (avtomatik ankor muallifi)
+ * @param {Date} [input.at] - baho qo'yilayotgan on (sukut: hozir)
  * @returns {Promise<Map<number, string>>} dars tartibi → `Topic.id` (topilmaganlari yo'q)
  */
-async function resolveGradeTopics({ classId, subjectId, lessons, lessonOrders }) {
-  const result = new Map();
-
+async function resolveGradeTopics({ classId, subjectId, lessonOrders, actorId, at }) {
   try {
     if (!classId || !subjectId || !Array.isArray(lessonOrders) || lessonOrders.length === 0) {
-      return result;
+      return new Map();
     }
 
-    const [progress, topics] = await Promise.all([
-      prisma.classSubjectProgress.findUnique({
-        where: { classId_subjectId: { classId, subjectId } },
-        select: { currentTopicNumber: true },
-      }),
-      prisma.topic.findMany({
-        where: { subjectId },
-        select: { id: true, order: true },
-        orderBy: { order: "asc" },
-      }),
-    ]);
-
-    // Fanda mavzular kiritilmagan — biriktiradigan narsa yo'q
-    if (topics.length === 0) return result;
-
-    const byOrder = new Map(topics.map((topic) => [topic.order, topic.id]));
-    const nowMinutes = cronClockMinutes();
-
-    for (const lessonOrder of lessonOrders) {
-      const topicNumber = topicNumberForLesson({
-        // Progress qatori yo'q — cron hali bu sinf+fanga tegmagan, ya'ni 1-mavzu
-        // (jurnal ekranidagi `currentTopic` bilan AYNI qoida).
-        currentTopicNumber: progress?.currentTopicNumber ?? 1,
-        lastTopicOrder: topics[topics.length - 1].order,
-        lessons,
-        subjectId,
-        lessonOrder,
-        nowMinutes,
-      });
-
-      const topicId = topicNumber != null ? byOrder.get(topicNumber) : null;
-      if (topicId) result.set(lessonOrder, topicId);
-    }
+    return await getLessonTopicIds({
+      classId,
+      subjectId,
+      // Baho Toshkent kuniga tegishli (`Grade.date` — INSTANT, `@db.Date` emas)
+      day: tashkentDayKey(at instanceof Date ? at : new Date()),
+      lessonOrders,
+      actorId,
+    });
   } catch (error) {
     logger.warn(`[GradeTopic] Mavzuni aniqlab bo'lmadi (baho mavzusiz yoziladi): ${error.message}`);
+    return new Map();
   }
-
-  return result;
 }
 
 module.exports = { resolveGradeTopics };

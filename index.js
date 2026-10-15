@@ -42,7 +42,6 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 const { startWeeklyStatsCron } = require("./src/jobs/weeklystats.job");
 const { startAcademicInsightCron } = require("./src/jobs/academicInsight.job");
 const { startGradeAnalysisCron } = require("./src/jobs/gradeAnalysis.job");
-const { startTopicIncrementCron } = require("./src/jobs/topicIncrement.job");
 const { startDailyCoinCron } = require("./src/jobs/coinDaily.job");
 const { startTaskPenaltyCron } = require("./src/jobs/taskPenalty.job");
 const { startTaskScheduleCron } = require("./src/jobs/taskSchedule.job");
@@ -249,7 +248,6 @@ const bootstrap = async () => {
   startWeeklyStatsCron();
   startAcademicInsightCron();
   startGradeAnalysisCron();
-  startTopicIncrementCron();
   startDailyCoinCron();
   await startTaskPenaltyCron();
   startTaskScheduleCron();

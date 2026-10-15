@@ -8,6 +8,7 @@ const {
   withScheduleWriteLock,
   assertPlatformMode,
 } = require("./scheduleWriteGuard.service");
+const lessonTopicService = require("./lessonTopic.service");
 
 // Jadval kunlari — YAGONA manba (`ScheduleDay` enumi bilan bir xil tartib).
 const VALID_DAYS = Object.values(DAYS);
@@ -898,107 +899,48 @@ async function getMyTodaySchedule(teacherId) {
 }
 
 /**
- * Fan bo'yicha sinflarni va joriy mavzu raqamini olish.
+ * FAN BO'YICHA SINFLAR VA ULARNING JORIY MAVZUSI.
+ *
+ * ⚠️ HISOB BU YERDA EMAS. Mavzu `lessonTopic.service.js` da (ankor + sanoq)
+ * hisoblanadi — jadvaldagi mavzu bilan AYNI manba. Ilgari bu funksiya
+ * `ClassSubjectProgress.currentTopicNumber` ni to'g'ridan-to'g'ri o'qirdi va
+ * o'sha qatorni har daqiqada cron oshirardi; endi hisoblagich yo'q.
+ *
  * @param {string} subjectId - fan ID
+ * @param {string} actorId - so'rovchi (avtomatik ankor muallifi)
  * @returns {Promise<{classes: Array, subject: object}>}
  */
-async function getClassesBySubject(subjectId) {
-  const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
-  if (!subject) {
-    throw new NotFoundError("Fan topilmadi");
-  }
-
-  const schedules = await prisma.schedule.findMany({
-    where: { lessons: { some: { subjectId } } },
-    include: { lessons: true },
-  });
-
-  const classIds = [
-    ...new Set(schedules.map((s) => s.classId).filter(Boolean)),
-  ];
-
-  const [classes, progressList] = await Promise.all([
-    prisma.class.findMany({
-      where: { id: { in: classIds } },
-      select: { id: true, name: true },
-    }),
-    prisma.classSubjectProgress.findMany({
-      where: { subjectId, classId: { in: classIds } },
-    }),
-  ]);
-
-  const classInfoMap = new Map(
-    classes.map((c) => [c.id, { id: c.id, name: c.name }]),
-  );
-
-  const progressMap = new Map();
-  for (const p of progressList) {
-    progressMap.set(p.classId, p.currentTopicNumber);
-  }
-
-  const classMap = new Map();
-  for (const schedule of schedules) {
-    const classId = schedule.classId;
-
-    if (!classMap.has(classId)) {
-      classMap.set(classId, {
-        class: classInfoMap.get(classId) || null,
-        subjectId: subjectId,
-        currentTopicNumber: progressMap.get(classId) || 1,
-      });
-    }
-  }
-
-  const classesResult = Array.from(classMap.values()).sort((a, b) =>
-    (a.class?.name || "").localeCompare(b.class?.name || ""),
-  );
-
-  return {
-    classes: classesResult,
-    subject: { id: subject.id, name: subject.name },
-  };
+async function getClassesBySubject(subjectId, actorId) {
+  return lessonTopicService.getSubjectClassTopics({ subjectId, actorId });
 }
 
 /**
  * Sinf+fan uchun joriy mavzu raqamini yangilash.
+ *
+ * ⚠️ Bu ham ANKOR yozadi (`lessonTopic.service.js` → `setClassCurrentTopic`),
+ * alohida mexanizm emas: kun va dars tartibini tizim tanlaydi — sinfning
+ * keyingi darsi. Shu sababli bu ekrandagi raqam jadvaldagi raqam bilan
+ * hech qachon farq qilmaydi.
+ *
  * @param {string} classId - sinf ID
  * @param {string} subjectId - fan ID
  * @param {number} topicNumber - mavzu raqami
+ * @param {string} actorId - amalni bajargan xodim
  * @returns {Promise<object>} yangilangan ma'lumot
  */
-async function updateCurrentTopic(classId, subjectId, topicNumber) {
-  if (!topicNumber || topicNumber < 1) {
-    throw new BadRequestError("Mavzu raqami kamida 1 bo'lishi kerak");
-  }
-
-  const classDoc = await prisma.class.findUnique({ where: { id: classId } });
-  if (!classDoc) {
-    throw new NotFoundError("Sinf topilmadi");
-  }
-
-  const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
-  if (!subject) {
-    throw new NotFoundError("Fan topilmadi");
-  }
-
-  const topic = await prisma.topic.findFirst({
-    where: { subjectId, order: topicNumber },
-  });
-
-  if (!topic) {
-    throw new NotFoundError(`${topicNumber}-mavzu ushbu fan uchun topilmadi`);
-  }
-
-  const progress = await prisma.classSubjectProgress.upsert({
-    where: { classId_subjectId: { classId, subjectId } },
-    update: { currentTopicNumber: topicNumber },
-    create: { classId, subjectId, currentTopicNumber: topicNumber },
+async function updateCurrentTopic(classId, subjectId, topicNumber, actorId) {
+  const result = await lessonTopicService.setClassCurrentTopic({
+    classId,
+    subjectId,
+    topicOrder: topicNumber,
+    actorId,
   });
 
   return {
-    class: { id: classDoc.id, name: classDoc.name },
-    subject: { id: subject.id, name: subject.name },
-    currentTopicNumber: progress.currentTopicNumber,
+    class: result.class,
+    subject: result.subject,
+    currentTopicNumber: result.binding.topicOrder,
+    binding: result.binding,
   };
 }
 

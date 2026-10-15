@@ -23,6 +23,8 @@ const { findActiveUnlock } = require("../services/gradingUnlock.service");
 const { assertAtSchool } = require("../services/gradingPresence.service");
 // Baholar tahlili uchun dars mavzusi — xato tashlamaydi (servis izohiga qarang)
 const { resolveGradeTopics } = require("../services/gradeTopic.service");
+const lessonTopicService = require("../services/lessonTopic.service");
+const { dayKey } = require("../helpers/lessonHours");
 // ⚠️ TOSHKENT KUNI. `new Date()` ni to'g'ridan-to'g'ri berib bo'lmaydi:
 // `teacherAccess` sanani FAQAT `getUTC*` bilan o'qiydi, jadval esa
 // `getCurrentDayUz()` (Toshkent devor-soati) bilan olinadi. Toshkentda
@@ -445,18 +447,23 @@ const createGrade = asyncHandler(async (req, res) => {
   // o'tilgan bo'lmay qolardi.
   const now = day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date();
 
-  // DARS MAVZUSI — faqat BUGUNGI darsga (baholar tahlilining mavzu kesimi).
-  // O'tgan kunga yozilmaydi: joriy mavzu o'sha kunning mavzusi emas.
+  // DARS MAVZUSI (baholar tahlilining mavzu kesimi) — `lessonTopic.service.js`
+  // dagi AYNI hisob, jadvalda ko'rinadigan mavzu bilan bitta manba.
+  //
+  // ⚠️ O'TGAN KUNGA HAM YOZILADI. Ilgari yozilmasdi va buning sababi bor edi:
+  // eski hisoblagich faqat "hozirgi" mavzuni bilardi. Ankor + sanoq esa
+  // istalgan kunning mavzusini beradi, shuning uchun ochilgan kunga
+  // (`GradingUnlock`) qo'yilgan baho ham o'z mavzusini oladi.
+  //
   // ⚠️ `resolveGradeTopics` xato TASHLAMAYDI — aniqlab bo'lmasa baho
   // mavzusiz yoziladi, baho qo'yish hech qachon shu sababli yiqilmaydi.
-  const topicByOrder = day.isPast
-    ? new Map()
-    : await resolveGradeTopics({
-        classId,
-        subjectId,
-        lessons: todaySchedule.lessons,
-        lessonOrders: missingLessonOrders,
-      });
+  const topicByOrder = await resolveGradeTopics({
+    classId,
+    subjectId,
+    lessonOrders: missingLessonOrders,
+    actorId: req.user.id,
+    at: now,
+  });
 
   const gradesToCreate = missingLessonOrders.map((order) => ({
     studentId,
@@ -770,19 +777,17 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
     : [];
   const subjectMap = new Map(subjectDocs.map((s) => [s.id, s]));
 
-  // Get progress for all teacher's subjects in this class
-  const progressList = await prisma.classSubjectProgress.findMany({
-    where: {
-      classId,
-      subjectId: { in: teacherSubjectIdList },
-    },
+  // DARS MAVZUSI — har bir DARS uchun alohida (`lessonTopic.service.js`).
+  //
+  // ⚠️ Ilgari bu yerda sinf+fanning bitta "joriy mavzu raqami" o'qilardi va
+  // bir kunda o'sha fandan ikki dars bo'lsa, ikkalasi ham BIR XIL mavzuni
+  // ko'rsatardi. Endi mavzu kun + dars tartibi bo'yicha hal qilinadi, ya'ni
+  // paneldagi raqam jadvaldagi raqam bilan AYNI.
+  const dayTopics = await lessonTopicService.getDayLessonTopics({
+    classId,
+    day: dayKey(day.date),
+    actorId: req.user.id,
   });
-
-  // Create progress map
-  const progressMap = new Map();
-  for (const p of progressList) {
-    progressMap.set(p.subjectId, p.currentTopicNumber);
-  }
 
   todaySchedule.lessons.forEach((item) => {
     const allowed = allowedById.get(item.id);
@@ -803,7 +808,9 @@ const getTeacherSubjectsInClass = asyncHandler(async (req, res) => {
         name: subjectDoc ? subjectDoc.name : undefined,
         order: item.order,
         lessonNumber: subjectCountMap[subjectId], // 1st, 2nd, 3rd occurrence
-        currentTopicNumber: progressMap.get(subjectId) || 1,
+        currentTopicNumber: dayTopics.get(item.order)?.topicOrder ?? null,
+        currentTopicName: dayTopics.get(item.order)?.topic?.name ?? null,
+        topicReason: dayTopics.get(item.order)?.reason ?? null,
         // "own" | "substitution" | "grant" — qaysi yo'l bilan ochilgan
         access: allowed.access,
       });
@@ -881,24 +888,31 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
     class: false,
   });
 
-  // Get current topic for this class and subject from ClassSubjectProgress
+  // SHU KUNGI, SHU DARSNING MAVZUSI (`lessonTopic.service.js`).
+  //
+  // ⚠️ Ilgari bu "sinf+fanning joriy mavzusi" edi: o'tgan kun jurnali
+  // ochilsa ham BUGUNGI mavzu ko'rinardi va bir kunda ikki dars bo'lsa
+  // ikkalasida bir xil turardi. Endi sana va dars tartibi bo'yicha —
+  // jadvalda ko'rinadigan mavzu bilan AYNI.
   let currentTopic = null;
-  const progress = await prisma.classSubjectProgress.findUnique({
-    where: { classId_subjectId: { classId, subjectId } },
+  // ⚠️ `startDate` LOKAL yarim tun (`setHours`) — `dayKey` esa faqat
+  // `getUTC*` bilan o'qiydi va UTC+5 hostda u BIR KUN ORQAGA tushardi.
+  // Kun kaliti so'rovning o'zidan olinadi (`parseDayDate` → UTC yarim tun).
+  const dayTopics = await lessonTopicService.getDayLessonTopics({
+    classId,
+    day: dayKey(parseDayDate(date, "Sana")),
+    actorId: req.user.id,
   });
 
-  const currentTopicNumber = progress?.currentTopicNumber || 1;
+  const lessonEntry = finalLessonOrder
+    ? dayTopics.get(finalLessonOrder)
+    : [...dayTopics.values()].find((entry) => entry.subjectId === subjectId);
 
-  const topic = await prisma.topic.findUnique({
-    where: { subjectId_order: { subjectId, order: currentTopicNumber } },
-    select: { order: true, name: true, description: true },
-  });
-
-  if (topic) {
+  if (lessonEntry?.topic && lessonEntry.subjectId === subjectId) {
     currentTopic = {
-      number: topic.order,
-      name: topic.name,
-      description: topic.description || "",
+      number: lessonEntry.topic.order,
+      name: lessonEntry.topic.name,
+      description: lessonEntry.topic.description || "",
     };
   }
 

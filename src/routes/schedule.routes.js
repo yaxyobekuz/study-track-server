@@ -9,6 +9,10 @@ const {
   createOrUpdateSchedule,
   saveClassSchedule,
   updateCurrentTopic,
+  getClassWeekTopics,
+  bindLessonTopic,
+  unbindLessonTopic,
+  listLessonTopicBindings,
   exportScheduleByClass,
   getClassesBySubject,
   getTeacherWorkload,
@@ -54,6 +58,41 @@ router.get(
   validateObjectId("classId"),
   authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
   getScheduleByDay,
+);
+
+// ── DARS JADVALI MAVZULARI ──
+//
+// Mavzu jadvalning bir qismi bo'lib ko'rinadi, shuning uchun KO'RISH
+// shartlari jadvalnikidek: `schedules.view` yoki o'qituvchi roli. Alohida
+// `topics.view` talab qilinsa, o'z jadvalini ochgan o'qituvchi mavzusiz
+// jadval ko'rardi — bo'limning butun mohiyati esa aynan shu ustun.
+//
+// ⚠️ BIRIKTIRISH — `topics.assign`. Jadvalni TAHRIRLASH huquqi
+// (`schedules.update`) yetmaydi va bu ataylab: jadval tuzuvchi kataklarni
+// joylashtiradi, mavzuni esa o'quv bo'limi belgilaydi.
+router.get(
+  "/class/:classId/topics",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.SCHEDULES_VIEW, ROLES.TEACHER),
+  getClassWeekTopics,
+);
+router.get(
+  "/class/:classId/topics/bindings",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.TOPICS_ASSIGN),
+  listLessonTopicBindings,
+);
+router.post(
+  "/class/:classId/topics",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.TOPICS_ASSIGN),
+  bindLessonTopic,
+);
+router.delete(
+  "/topics/bindings/:id",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.TOPICS_ASSIGN),
+  unbindLessonTopic,
 );
 
 // Dars biriktirish uchun o'qituvchilar ma'lumotnomasi: id, ism va
@@ -108,11 +147,14 @@ router.put(
   authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
   saveClassSchedule,
 );
+// "Joriy mavzu" ni qo'yish — bu ham BIRIKTIRISH (ankor sinfning keyingi
+// darsiga tushadi), shuning uchun ruxsat `topics.assign`, jadvalni
+// tahrirlash huquqi EMAS.
 router.patch(
   "/class/:classId/subject/:subjectId/topic",
   validateObjectId("classId"),
   validateObjectId("subjectId"),
-  authorizePermission(PERMISSIONS.SCHEDULES_UPDATE),
+  authorizePermission(PERMISSIONS.TOPICS_ASSIGN),
   updateCurrentTopic,
 );
 router.delete("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.SCHEDULES_DELETE), deleteSchedule);

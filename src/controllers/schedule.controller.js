@@ -2,6 +2,7 @@ const asyncHandler = require("../middleware/async.middleware");
 const ExcelService = require("../services/excel.service");
 const scheduleService = require("../services/schedule.service");
 const scheduleDraftService = require("../services/scheduleDraft.service");
+const lessonTopicService = require("../services/lessonTopic.service");
 const teacherWorkloadService = require("../services/teacherWorkload.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
@@ -95,24 +96,86 @@ const getMyTodaySchedule = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
-// Get all classes with their current topic number for a subject (Owner only)
+// Fan bo'yicha sinflar va ularning joriy mavzusi
 const getClassesBySubject = asyncHandler(async (req, res) => {
-  const { classes, subject } = await scheduleService.getClassesBySubject(req.params.subjectId);
+  const { classes, subject } = await scheduleService.getClassesBySubject(
+    req.params.subjectId,
+    req.user.id,
+  );
 
   res.json({ success: true, data: classes, subject });
 });
 
-// Update current topic number for a class+subject (Owner only)
+// Sinf+fan uchun joriy mavzuni qo'yish (ankor sinfning keyingi darsiga tushadi)
 const updateCurrentTopic = asyncHandler(async (req, res) => {
   const { classId, subjectId } = req.params;
   const { topicNumber } = req.body;
-  const data = await scheduleService.updateCurrentTopic(classId, subjectId, topicNumber);
+  const data = await scheduleService.updateCurrentTopic(
+    classId,
+    subjectId,
+    topicNumber,
+    req.user.id,
+  );
 
   res.json({
     success: true,
     message: "Hozirgi mavzu raqami yangilandi",
     data,
   });
+});
+
+/* ── DARS JADVALI MAVZULARI (`lessonTopic.service.js`) ── */
+
+// Sinfning bir haftalik jadvali — har bir darsda mavzusi bilan
+const getClassWeekTopics = asyncHandler(async (req, res) => {
+  const data = await lessonTopicService.getClassWeekTopics({
+    classId: req.params.classId,
+    week: req.query.week,
+    actorId: req.user.id,
+  });
+
+  res.json({ success: true, data });
+});
+
+// Darsga mavzu biriktirish — keyingi darslar o'zidan davom etadi
+const bindLessonTopic = asyncHandler(async (req, res) => {
+  const { subjectId, date, lessonOrder, topicOrder, note } = req.body;
+  const data = await lessonTopicService.bindLessonTopic({
+    classId: req.params.classId,
+    subjectId,
+    date,
+    lessonOrder,
+    topicOrder,
+    note,
+    actorId: req.user.id,
+  });
+
+  res.json({
+    success: true,
+    message: `${data.topic.order}-mavzu biriktirildi — keyingi darslar shundan davom etadi`,
+    data,
+  });
+});
+
+// Biriktirishni bekor qilish (o'chirilmaydi — tarixda qoladi)
+const unbindLessonTopic = asyncHandler(async (req, res) => {
+  const data = await lessonTopicService.unbindLessonTopic({
+    id: req.params.id,
+    actorId: req.user.id,
+  });
+
+  res.json({ success: true, message: "Biriktirish bekor qilindi", data });
+});
+
+// Sinfdagi biriktirishlar tarixi
+const listLessonTopicBindings = asyncHandler(async (req, res) => {
+  const data = await lessonTopicService.listBindings({
+    classId: req.params.classId,
+    subjectId: req.query.subjectId,
+    limit: req.query.limit,
+  });
+
+  res.json({ success: true, data });
 });
 
 // O'qituvchining haftalik yuklamasi — profil sahifasi uchun
@@ -227,6 +290,10 @@ module.exports = {
   getMyTodaySchedule,
   getAllTodaySchedules,
   updateCurrentTopic,
+  getClassWeekTopics,
+  bindLessonTopic,
+  unbindLessonTopic,
+  listLessonTopicBindings,
   exportScheduleByClass,
   getClassesBySubject,
   getTeacherWorkload,

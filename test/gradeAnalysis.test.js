@@ -12,7 +12,6 @@ const {
   buildStudentResults,
   FINDING_CODES,
 } = require("../src/helpers/gradeAnalysis");
-const { topicNumberForLesson } = require("../src/helpers/lessonTopic");
 const { collectFactNumbers, ungroundedNumbers } = require("../src/helpers/aiGrounding");
 const { validateStudentNarrative } = require("../src/services/gradeAnalysisAi.service");
 
@@ -104,20 +103,6 @@ test("yig'ma: o'rtacha XOM baholardan, sinfsiz o'quvchi sinf kesimiga kirmaydi",
   assert.equal(overview.previousAverage, 4);
   assert.deepEqual(overview.classes.map((c) => c.name), ["7-A"]);
   assert.equal(overview.students.analyzed, 1);
-});
-
-test("dars mavzusi: tugagan darslar orqaga qaytariladi, noaniq bo'lsa null", () => {
-  const lessons = [
-    { order: 1, subjectId: "m", endTime: "08:45" },
-    { order: 3, subjectId: "m", endTime: "10:25" },
-  ];
-  // 11:00 — ikkala dars tugagan, joriy raqam 7 → bugun 5 dan boshlangan
-  assert.equal(topicNumberForLesson({ currentTopicNumber: 7, lastTopicOrder: 20, lessons, subjectId: "m", lessonOrder: 1, nowMinutes: 660 }), 5);
-  assert.equal(topicNumberForLesson({ currentTopicNumber: 7, lastTopicOrder: 20, lessons, subjectId: "m", lessonOrder: 3, nowMinutes: 660 }), 6);
-  // Mavzular tugagan — taxmin yozilmaydi
-  assert.equal(topicNumberForLesson({ currentTopicNumber: 20, lastTopicOrder: 20, lessons, subjectId: "m", lessonOrder: 1, nowMinutes: 660 }), null);
-  // Jadvalda yo'q dars
-  assert.equal(topicNumberForLesson({ currentTopicNumber: 3, lastTopicOrder: 20, lessons, subjectId: "m", lessonOrder: 2, nowMinutes: 660 }), null);
 });
 
 test("AI raqam nazorati: faktlarda yo'q son — butun javob rad etiladi", () => {

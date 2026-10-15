@@ -23,3 +23,9 @@ src/generated
 # ⚠️ O'quvchilar soni tashxisi ham PRODDA ishga tushiriladi ("bir ekranda
 # 508, boshqasida 524"): u yerdagi ma'lumotsiz savolga javob yo'q.
 !src/scripts/diagnose-student-count.js
+# ⚠️ Ruxsat grant skripti PRODDA ishga tushiriladi va `package.json` dagi
+# `perm:grant` unga ishora qiladi: istisnosiz u toza klonga yetib bormay,
+# buyruq "Cannot find module" bilan yiqilardi (`seedAcademicDemo.js` bilan
+# AYNI tuzoq). Yangi ruxsat kaliti qo'shilganda uni rollarga va o'sha
+# roldagi mavjud xodimlarga yoyadigan yagona yo'l shu skript.
+!src/scripts/grant-permission.js

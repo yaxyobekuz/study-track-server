@@ -16,6 +16,7 @@
     "changes:import": "node src/scripts/import-changes/index.js",
     "platform:migrate": "prisma migrate deploy --schema=prisma/platform/schema.prisma",
     "branch:migrate": "node src/scripts/branch-migrate/index.js",
+    "perm:grant": "node src/scripts/grant-permission.js",
     "branch:bootstrap": "node src/scripts/branch-bootstrap/index.js",
     "enrollment:backfill": "node src/scripts/backfill-enrollments.js",
     "students:diagnose": "node src/scripts/diagnose-student-count.js",
