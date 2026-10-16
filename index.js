@@ -29,6 +29,7 @@ const connectDB = require("./src/config/database");
 
 // Middlewares
 const { errorHandler, notFound } = require("./src/middleware/error.middleware");
+const { aggregateDispatch } = require("./src/middleware/aggregate.middleware");
 const requestLogger = require("./src/middleware/requestLogger.middleware");
 
 // Initialization utilities
@@ -221,7 +222,14 @@ app.post("/api/auth/login/branch", branchSelectLimiter);
 app.use(requestLogger);
 
 // Routes
-app.use("/api", routes);
+//
+// ⚠️ UMUMIY KO'RINISH (`scope: "all"` tokeni) uchun router TO'G'RIDAN-TO'G'RI
+// emas, dispatcher ORQALI chaqiriladi: u so'rovni har filialda alohida
+// bajaradi va javoblarni birlashtiradi (`middleware/aggregate.middleware.js`).
+// Oddiy token bilan kelgan so'rov esa avvalgidek, bitta `if` dan keyin
+// to'g'ridan-to'g'ri router'ga tushadi — mavjud yo'lda hech narsa
+// o'zgarmaydi.
+app.use("/api", aggregateDispatch(routes));
 
 // Error handling
 app.use(notFound);

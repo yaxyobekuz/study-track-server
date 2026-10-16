@@ -180,6 +180,25 @@ const PAGINATION_DEFAULTS = {
 // Grade time constraints
 const ENABLE_SCHEDULE_TIME_VALIDATION = config.enableScheduleTimeValidation;
 
+/**
+ * UMUMIY KO'RINISH — "barcha filiallar birga" rejimi (faqat tizim egasi).
+ *
+ * Filial TOKEN ichida turadi, ya'ni "hamma filial" holati ham token ichida
+ * bo'lishi shart: aks holda mijoz sarlavha bilan o'zini umumiy rejimga
+ * o'tkazib olardi. Shu sababli ikkita qiymat bor:
+ *
+ *  - `AGGREGATE_SCOPE` — token ichidagi `scope` da (imzolangan),
+ *  - `ALL_BRANCHES_ID` — mijoz bilan gaplashishdagi "filial id" i
+ *    (almashtirgich shuni yuboradi, `/auth/me` shuni qaytaradi).
+ *
+ * ⚠️ `ALL_BRANCHES_ID` ATAYLAB 24-hex EMAS: filial id lari
+ * `String @id @db.Char(24)`, ya'ni bu qiymat HECH QACHON haqiqiy filial
+ * id si bilan to'qnashmaydi va adashib `branches` jadvalidan qidirilsa
+ * ham topilmaydi.
+ */
+const ALL_BRANCHES_ID = "__all__";
+const AGGREGATE_SCOPE = "all";
+
 module.exports = {
   ROLES,
   ACTIVITY_CHANNELS,
@@ -198,4 +217,6 @@ module.exports = {
   GRADE_MAX,
   PAGINATION_DEFAULTS,
   ENABLE_SCHEDULE_TIME_VALIDATION,
+  ALL_BRANCHES_ID,
+  AGGREGATE_SCOPE,
 };

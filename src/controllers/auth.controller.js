@@ -43,7 +43,12 @@ const selectLoginBranch = asyncHandler(async (req, res) => {
 
 // Get current user data
 const getMe = asyncHandler(async (req, res) => {
-  const user = await authService.getMe(req.user.id, req.branch);
+  // ⚠️ `req.isAggregate` — umumiy ko'rinish bayrog'i (`auth.middleware`).
+  // Usiz javobda uy filiali JORIY filial bo'lib ko'rinardi va panel
+  // "Umumiy" ni tanlagan bo'lsa ham o'sha filialni ko'rsatardi.
+  const user = await authService.getMe(req.user.id, req.branch, {
+    aggregate: Boolean(req.isAggregate),
+  });
 
   res.json({
     success: true,
@@ -73,7 +78,9 @@ const switchBranch = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
-    message: `"${data.branch.name}" filialiga o'tildi`,
+    message: data.branch.isAggregate
+      ? "Umumiy ko'rinishga o'tildi"
+      : `"${data.branch.name}" filialiga o'tildi`,
     data,
   });
 });

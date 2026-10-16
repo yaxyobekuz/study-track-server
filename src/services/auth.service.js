@@ -13,6 +13,7 @@ const prisma = require("../config/prisma");
 const { runWithBranch } = require("../config/branchContext");
 const {
   generateToken,
+  generateAggregateToken,
   generateJti,
   verifyToken,
   generateBranchSelectToken,
@@ -25,10 +26,11 @@ const {
   ForbiddenError,
   NotFoundError,
 } = require("../utils/errors");
-const { ROLES } = require("../utils/constants");
+const { ROLES, ALL_BRANCHES_ID } = require("../utils/constants");
 const logger = require("../utils/logger");
 const { allRoles, hasRole } = require("../utils/permissions");
 const branchService = require("./branch.service");
+const aggregateScope = require("./aggregateScope.service");
 const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
 const pushService = require("./push.service");
@@ -73,23 +75,18 @@ const publicBranch = (branch) =>
  * Ro'yxatning o'zi grant: alohida "almashtirish" ruxsati YO'Q, aks holda
  * ikkita haqiqat manbai bo'lardi.
  *
+ * ⚠️ RO'YXATNING YADROSI `aggregateScope.service.js` DA
+ * (`accessibleBranches`): "umumiy ko'rinishda qaysi filiallar birlashadi"
+ * degan savol ham AYNI ro'yxatga tayanadi. Ikki nusxa bo'lsa, biri
+ * "almashtirish mumkin" deb, ikkinchisi "umumiyda ko'rinadi" deb boshqa
+ * javob berardi — ya'ni ruxsat ikki xil hisoblanardi.
+ *
  * @param {object} user
  * @returns {Promise<object[]>}
  */
 const availableBranchesFor = async (user) => {
-  if (hasRole(user, ROLES.OWNER)) {
-    const usable = await branchService.listUsable();
-    return usable.map(publicBranch);
-  }
-
-  const access = await userDirectory.listAccess(user.id);
-  const branches = await Promise.all(
-    access.map((row) => branchService.findById(row.branchId)),
-  );
-
-  return branches
-    .filter((b) => b && !b.isArchived && b.isActive && b.status === "ready")
-    .map(publicBranch);
+  const branches = await aggregateScope.accessibleBranches(user);
+  return branches.map(publicBranch);
 };
 
 /**
@@ -552,7 +549,7 @@ function sessionLimitError(error) {
  * @param {object} activeBranch - `req.branch`
  * @returns {Promise<object|null>}
  */
-async function getMe(userId, activeBranch) {
+async function getMe(userId, activeBranch, { aggregate = false } = {}) {
   // ⚠️ `omit` MAJBURIY. Javob `...user` bilan tarqatiladi, ya'ni
   // `password` (bcrypt hash) va `plainPassword` (OCHIQ MATNDAGI parol)
   // to'g'ridan-to'g'ri mijozga ketardi — brauzer konsolida ham,
@@ -572,9 +569,17 @@ async function getMe(userId, activeBranch) {
 
   const entry = await userDirectory.findByUserId(userId);
   const homeBranch = entry ? await branchService.findById(entry.branchId) : null;
-  const available = await availableBranchesFor(user);
+  const accessible = await aggregateScope.accessibleBranches(user);
+  const available = accessible.map(publicBranch);
   const tutorRoles = await loadTutorRoleValues();
   const office = await officeGeofenceFor(user);
+
+  // UMUMIY KO'RINISH: huquq bormi (almashtirgichda ko'rsatish uchun) va
+  // hozir yoqilganmi. Ikkinchisi `auth.middleware` dagi bayroqdan keladi —
+  // umumiy rejimda `/auth/me` uy filialida bajariladi, ya'ni `activeBranch`
+  // haqiqiy filial bo'lib turadi va u JORIY filial deb ko'rsatilsa panel
+  // "Umumiy" ni tanlagani bilan ziddiyatga tushardi.
+  const canViewAllBranches = await aggregateScope.canViewAll(user, accessible);
 
   return {
     ...user,
@@ -585,14 +590,73 @@ async function getMe(userId, activeBranch) {
     isTutor: isTutorUser(user, tutorRoles),
     classes: user.classes.map((uc) => uc.class),
     profilePicture: user.profileImage || null,
-    branch: publicBranch(activeBranch),
+    branch: aggregate
+      ? aggregateScope.AGGREGATE_BRANCH
+      : publicBranch(activeBranch),
     homeBranch: publicBranch(homeBranch ?? activeBranch),
     canSwitchBranch: canSwitchBranch(available),
     availableBranches: available,
+    isAggregate: aggregate,
+    canViewAllBranches,
     // Ofis nuqtasi (metrda radius) — `null` bo'lsa hudud tekshiruvi yo'q
     officeLocation: office?.officeLocation ?? null,
     officeRadius: office?.officeRadius ?? null,
   };
+}
+
+/**
+ * UMUMIY KO'RINISHGA O'TISH — "barcha filiallar" tokeni.
+ *
+ * Oddiy almashtirish bilan AYNI shakl (yangi `jti`, eski seans
+ * `superseded`, push qurilmasi yangi seansga ko'chadi), farqi faqat
+ * tokenda: `branchId` o'rniga `scope: "all"`.
+ *
+ * ⚠️ SEANS BARIBIR BITTA FILIALGA YOZILADI (uy filiali): `UserSession`
+ * qatori filialga bog'langan va xavfsizlik bo'limi seanslarni filial
+ * kesimida ko'rsatadi. "Filialsiz seans" degan holat qo'shilsa, o'sha
+ * ro'yxat va qurilma limiti mantig'i ikkiga bo'linardi.
+ *
+ * ⚠️ IKKI TEKSHIRUV SHU YERDA HAM BOR (dispatcher har so'rovda qaytaradi):
+ * token berilayotgan paytda ham rol va filiallar soni tekshiriladi, aks
+ * holda huquqi yo'q odam "ishlamaydigan" token olib, keyin har so'rovda
+ * 403 ko'rardi — sabab esa noaniq bo'lardi.
+ *
+ * @param {object} user - `req.user`
+ * @param {{client?: object, currentJti?: string}} [context]
+ * @returns {Promise<{token: string, branch: object}>}
+ */
+async function switchToAllBranches(user, { client = {}, currentJti } = {}) {
+  if (!hasRole(user, ROLES.OWNER)) {
+    throw new ForbiddenError("Umumiy ko'rinish faqat tizim egasi uchun");
+  }
+
+  const branches = await aggregateScope.accessibleBranches(user);
+
+  if (branches.length < aggregateScope.MIN_BRANCHES) {
+    throw new ConflictError(
+      "Umumiy ko'rinish uchun kamida ikkita filial kerak",
+      { reason: "aggregate_unavailable" },
+    );
+  }
+
+  const anchor = await aggregateScope.resolveAnchor(user.id, branches);
+  const jti = generateJti();
+  const token = generateAggregateToken(user.id, jti);
+
+  securityService
+    .openSession({
+      user,
+      branchId: anchor.id,
+      jti,
+      expiresAt: tokenExpiry(token),
+      client,
+      supersedeJti: currentJti,
+    })
+    .catch(() => {});
+
+  pushService.moveSession(currentJti, { jti, branchId: anchor.id });
+
+  return { token, branch: aggregateScope.AGGREGATE_BRANCH };
 }
 
 /**
@@ -617,6 +681,11 @@ async function getMe(userId, activeBranch) {
  */
 async function switchBranch(user, branchId, { client = {}, currentJti } = {}) {
   if (!branchId) throw new BadRequestError("Filial tanlanmadi");
+
+  // UMUMIY KO'RINISH — filialning o'rniga "hammasi".
+  if (branchId === ALL_BRANCHES_ID) {
+    return switchToAllBranches(user, { client, currentJti });
+  }
 
   const branch = await branchService.getUsableById(branchId);
 
@@ -705,6 +774,7 @@ module.exports = {
   selectLoginBranch,
   getMe,
   switchBranch,
+  switchToAllBranches,
   logout,
   canSwitchBranch,
   publicBranch,

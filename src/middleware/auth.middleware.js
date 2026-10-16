@@ -1,6 +1,6 @@
 const prisma = require("../config/prisma");
 const { runWithBranch } = require("../config/branchContext");
-const { verifyToken } = require("../utils/jwt");
+const { verifyToken, isAggregateToken } = require("../utils/jwt");
 const asyncHandler = require("./async.middleware");
 const { UnauthorizedError, ForbiddenError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
@@ -46,12 +46,31 @@ const protect = asyncHandler(async (req, res, next) => {
     throw new UnauthorizedError("Noto'g'ri yoki muddati o'tgan token");
   }
 
+  // ── UMUMIY KO'RINISH (`scope: "all"`) ───────────────────────────
+  //
+  // Filial bu holatda TOKENDA YO'Q: uni har so'rovda dispatcher hal qiladi
+  // (`middleware/aggregate.middleware.js`) va `req.aggregateBranch` ga
+  // qo'yadi — fan-out paytida har filial uchun alohida.
+  //
+  // ⚠️ FAIL-CLOSED: umumiy ko'rinish tokeni dispatcher'dan O'TMASDAN kelsa
+  // (yo'l boshqa joyga mount qilingan, dispatcher olib tashlangan) so'rov
+  // RAD ETILADI. Aks holda token `branchId` siz bo'lgani uchun default
+  // filialga tushib, "umumiy" deb so'ralgan ma'lumot jim ravishda BITTA
+  // filialdan kelardi.
+  if (isAggregateToken(decoded) && !req.aggregateBranch) {
+    throw new ForbiddenError(
+      "Umumiy ko'rinish tokeni bu yo'lda ishlamaydi — filialni tanlang",
+    );
+  }
+
   // ORQAGA MOSLIK: filiallashtirishdan oldin berilgan tokenlarda `branchId`
   // yo'q. Ularni default filialga yo'naltiramiz — joriy etish paytida hech
   // kim tizimdan chiqib ketmaydi.
-  const branch = decoded.branchId
-    ? await branchService.getUsableById(decoded.branchId)
-    : await branchService.getDefaultBranch();
+  const branch = req.aggregateBranch
+    ? req.aggregateBranch
+    : decoded.branchId
+      ? await branchService.getUsableById(decoded.branchId)
+      : await branchService.getDefaultBranch();
 
   if (!branch) {
     throw new UnauthorizedError("Filial aniqlanmadi — administratorga murojaat qiling");
@@ -72,6 +91,17 @@ const protect = asyncHandler(async (req, res, next) => {
 
     if (!user.isActive) {
       throw new UnauthorizedError("Sizning hisobingiz faol emas");
+    }
+
+    // ⚠️ UMUMIY KO'RINISH — ROL HAR FILIALDA QAYTA TEKSHIRILADI. Dispatcher
+    // uni uy filialida allaqachon tekshirdi; bu ikkinchi qavat, chunki
+    // `User.role` FILIALGA XOS (root `CLAUDE.md`): bir filialda owner
+    // bo'lgan odam boshqasida oddiy xodim bo'lishi mumkin va o'sha
+    // filialning ma'lumoti umumiy ro'yxatga tushmasligi kerak.
+    if (req.aggregateBranch && !hasRole(user, ROLES.OWNER)) {
+      throw new ForbiddenError(
+        `"${branch.name}" filialida umumiy ko'rinish uchun ruxsatingiz yo'q`,
+      );
     }
 
     if (user.isArchived) {
@@ -122,6 +152,9 @@ const protect = asyncHandler(async (req, res, next) => {
 
     req.user = user;
     req.branch = branch;
+    // Umumiy ko'rinishda joriy filial — fan-out ning SHU qadamidagi filial.
+    // Controllerlar (masalan `/auth/me`) rejimni shu bayroqdan biladi.
+    req.isAggregate = Boolean(req.aggregateBranch);
     // Filial almashtirish eski seansni shu qiymat bilan yopadi
     req.tokenJti = decoded.jti || null;
     // Seans kanali (`SessionChannel`) — `null`: `jti` siz eski token

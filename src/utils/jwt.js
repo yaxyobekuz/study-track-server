@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { config } = require("../config/env.config");
+const { AGGREGATE_SCOPE } = require("./constants");
 
 /**
  * Seans identifikatori (`jti`) — token bilan `UserSession` qatorini
@@ -34,19 +35,56 @@ const generateJti = () => crypto.randomBytes(16).toString("hex");
  * generatsiya qilinmaydi: seans qatori va token AYNI qiymatga ega
  * bo'lishi kerak, ya'ni qiymat ikkalasidan OLDIN tug'ilishi shart.
  *
+ * ⚠️ UMUMIY KO'RINISH (`scope: "all"`) — token ichidagi UCHINCHI holat:
+ * na bitta filial, na eski filialsiz token. Qiymat imzolangan yuk ichida,
+ * shuning uchun mijoz o'zini umumiy rejimga sarlavha bilan o'tkazib
+ * olmaydi. Bunday tokenda `branchId` ATAYLAB `null`: filial har so'rovda
+ * qayta hal qilinadi (`middleware/aggregate.middleware.js`), tokendan
+ * o'qilmaydi — token berilgandan keyin filial arxivlanishi yoki ruxsat
+ * olib qo'yilishi mumkin.
+ *
  * @param {string} userId - Foydalanuvchi ID (filial schema'sidagi User.id)
  * @param {string} [branchId] - Filial ID (platforma reyestridagi Branch.id)
  * @param {string} [jti] - seans identifikatori (`generateJti`)
+ * @param {{scope?: string}} [options] - `scope: "all"` → umumiy ko'rinish
  * @returns {string} JWT token
  */
-const generateToken = (userId, branchId, jti) => {
+const generateToken = (userId, branchId, jti, options = {}) => {
   const payload = { id: userId, branchId: branchId ?? null };
   if (jti) payload.jti = jti;
+  if (options.scope) payload.scope = options.scope;
 
   return jwt.sign(payload, config.jwtSecret, {
     expiresIn: config.jwtExpiresIn,
   });
 };
+
+/**
+ * UMUMIY KO'RINISH TOKENI — barcha filiallarni birga o'qish uchun.
+ *
+ * Oddiy access token bilan AYNI kalit va AYNI muddat: bu alohida maqsadli
+ * token emas (parental / filial tanlash tokenlari kabi), balki o'sha
+ * seansning filial o'rniga "hammasi" yozilgan ko'rinishi. Shu sababli
+ * seans tekshiruvi, qurilma limiti va "seansni tugat" tugmasi avvalgidek
+ * ishlaydi.
+ *
+ * @param {string} userId
+ * @param {string} jti
+ * @returns {string}
+ */
+const generateAggregateToken = (userId, jti) =>
+  generateToken(userId, null, jti, { scope: AGGREGATE_SCOPE });
+
+/**
+ * Token umumiy ko'rinish uchunmi?
+ *
+ * ⚠️ Faqat `verifyToken` dan QAYTGAN (imzosi tekshirilgan) yuk bilan
+ * chaqiriladi — `jwt.decode` natijasi bilan emas.
+ *
+ * @param {object|null} decoded
+ * @returns {boolean}
+ */
+const isAggregateToken = (decoded) => decoded?.scope === AGGREGATE_SCOPE;
 
 /**
  * JWT token tekshirish.
@@ -212,6 +250,8 @@ const verifyBranchSelectToken = (token) => {
 
 module.exports = {
   generateToken,
+  generateAggregateToken,
+  isAggregateToken,
   verifyToken,
   generateJti,
   generateParentalToken,
