@@ -19,6 +19,7 @@
     "perm:grant": "node src/scripts/grant-permission.js",
     "branch:bootstrap": "node src/scripts/branch-bootstrap/index.js",
     "enrollment:backfill": "node src/scripts/backfill-enrollments.js",
+    "tasks:reset": "node src/scripts/tasks-reset.js",
     "students:diagnose": "node src/scripts/diagnose-student-count.js",
     "finance:demo": "node src/scripts/seed-finance-demo/index.js",
     "activity:demo": "node src/scripts/seed-activity-demo/index.js",

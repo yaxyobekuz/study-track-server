@@ -18,6 +18,7 @@ const {
   extendDeadline,
   updateTask,
   reopenTask,
+  delegateTask,
   deleteTask,
 } = require("../controllers/task.controller");
 const {
@@ -71,7 +72,20 @@ router.get("/stats", MANAGE(PERMISSIONS.TASKS_VIEW), getTaskStats);
 router.get("/dashboard", MANAGE(PERMISSIONS.TASKS_VIEW), getTaskDashboard);
 // Ijrochi tanlash ro'yxati — doira bo'yicha. `users.view` talab QILINMAYDI:
 // bo'lim rahbarida u bo'lmasligi mumkin, javobda esa faqat ism va rol bor.
-router.get("/assignees", MANAGE(PERMISSIONS.TASKS_CREATE), getTaskAssignees);
+//
+// ⚠️ `tasks.view` HAM QABUL QILINADI — faqat `create`/`team` emas. Sabab:
+// topshiriqni BIRIKTIRISH (`/:id/delegate`) butun filialni ko'ra oladigan
+// odamga ham ochiq, holbuki unda `tasks.create` bo'lmasligi mumkin. Usiz
+// u biriktirish oynasini ochib, ijrochi ro'yxatini BO'SH ko'rardi.
+router.get(
+  "/assignees",
+  authorizeAnyPermission([
+    PERMISSIONS.TASKS_CREATE,
+    PERMISSIONS.TASKS_TEAM,
+    PERMISSIONS.TASKS_VIEW,
+  ]),
+  getTaskAssignees,
+);
 router.get("/reports", authorizePermission(PERMISSIONS.TASKS_REPORTS), getTaskReport);
 // O'qish: yaratish formasi ham qoidalarni biladi (minimal uzunlik, jarima chegarasi)
 router.get(
@@ -94,6 +108,19 @@ router.get("/:id", validateObjectId("id"), getTaskById);
 
 // ─── Ijrochi amallari ─────────────────────────────────────────────
 router.put("/:id/submit", validateObjectId("id"), upload, handleFileUploadError, submitCompletion);
+
+// BIRIKTIRISH — o'ziga berilgan ishni boshqa xodimga yo'naltirish.
+//
+// ⚠️ RUXSAT KALITI YO'Q va bu ATAYLAB (`/my`, `/:id/submit` bilan AYNI
+// qator): huquq EGALIKDAN keladi — topshiriq aynan shu odamga berilgan.
+// Aks holda topshiriq olgan direktor yoki ma'mur uni o'z xodimiga
+// biriktirish uchun `tasks.create` kalitini kutib turardi, holbuki unga
+// butun filialga topshiriq berish huquqi kerak emas.
+//
+// "KIMGA" degan savol service'da cheklanadi (`assertCanDelegate`): butun
+// filial (`tasks.view`) yoki o'z bo'limi (`tasks.team`), doirasi yo'q
+// xodimga esa ruxsat berilmaydi.
+router.put("/:id/delegate", validateObjectId("id"), delegateTask);
 
 // ─── Boshqaruv amallari ───────────────────────────────────────────
 router.put("/:id", validateObjectId("id"), MANAGE(PERMISSIONS.TASKS_UPDATE), upload, handleFileUploadError, updateTask);

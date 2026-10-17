@@ -29,3 +29,10 @@ src/generated
 # AYNI tuzoq). Yangi ruxsat kaliti qo'shilganda uni rollarga va o'sha
 # roldagi mavjud xodimlarga yoyadigan yagona yo'l shu skript.
 !src/scripts/grant-permission.js
+# ⚠️ Topshiriqlar registrini nolga tushirish skripti PRODDA ishga tushiriladi
+# va `package.json` dagi `tasks:reset` unga ishora qiladi (`perm:grant` bilan
+# AYNI tuzoq: istisnosiz u toza klonga yetib bormay, buyruq "Cannot find
+# module" bilan yiqilardi). Saqlanishining ikkinchi sababi — jarima ballarini
+# QAYTARISH mantig'i: topshiriqni shunchaki o'chirish xodimda oshgan ballni
+# qoldirib ketadi, shuning uchun tozalash har safar shu yo'ldan o'tishi kerak.
+!src/scripts/tasks-reset.js

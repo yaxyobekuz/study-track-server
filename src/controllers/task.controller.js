@@ -325,6 +325,51 @@ const reopenTask = asyncHandler(async (req, res) => {
 });
 
 /**
+ * TOPSHIRIQNI BOSHQA IJROCHIGA BIRIKTIRISH — "Topshiriqlarim" ekranidan.
+ * PUT /tasks/:id/delegate
+ *
+ * ⚠️ RUXSAT KALITI TALAB QILINMAYDI (route'da ham): topshiriq AYNAN shu
+ * odamga berilgan bo'lsa, uni biriktirish huquqi EGALIKDAN keladi va
+ * aktyor TOKENDAN olinadi. "Kimga" degan savol esa service'da
+ * `assertCanDelegate` bilan cheklanadi.
+ *
+ * ⚠️ MULTIPART EMAS, JSON: fayl yuborilmaydi — manba topshiriqning
+ * fayllari havolasi bilan ko'chadi.
+ */
+const delegateTask = asyncHandler(async (req, res) => {
+  const { assigneeIds, dueDate, note, title, description, penaltyPoints, kind } = req.body;
+
+  if (!dueDate) throw new BadRequestError("Ijro muddati majburiy");
+  if (!Array.isArray(assigneeIds) || assigneeIds.length === 0) {
+    throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
+  }
+
+  const tasks = await taskService.delegateTask(
+    req.params.id,
+    {
+      assigneeIds,
+      dueDate,
+      note,
+      title,
+      description,
+      penaltyPoints: penaltyPoints ? Number(penaltyPoints) : undefined,
+      kind,
+    },
+    req.user.id,
+    req.taskScope,
+  );
+
+  return res.status(201).json({
+    success: true,
+    data: tasks,
+    message:
+      tasks.length > 1
+        ? `${tasks.length} ta xodimga biriktirildi`
+        : "Topshiriq biriktirildi",
+  });
+});
+
+/**
  * Topshiriqni o'chirish
  * DELETE /tasks/:id
  */
@@ -347,6 +392,7 @@ module.exports = {
   updateTaskSettings,
   updateTask,
   reopenTask,
+  delegateTask,
   deleteTask,
   getMyTasks,
   getTaskById,

@@ -420,6 +420,19 @@ const createTasks = async ({
   // AYNAN SHU YERDA majburlaydi: ijrochi yaratuvchining O'ZI, jarima bali
   // 0 va push yo'q. Panel yoki chaqiruvchiga ishonilmaydi.
   selfAssigned = false,
+  // ALLAQACHON SAQLANGAN FAYLLAR — yangi yuklanmaydi, havolasi ko'chadi.
+  //
+  // ⚠️ `files` BILAN CHALKASHMASIN: `files` — multipart'dan kelgan XOM
+  // fayllar, ular saqlashga YUKLANADI. Bu esa mavjud topshiriqning
+  // `attachments` i: AYNAN o'sha kalitlar bilan ko'chiriladi, ya'ni bitta
+  // fayl ikki marta saqlanmaydi (`delegateTask` — topshiriqni boshqasiga
+  // biriktirish). O'chirishda `_deleteUnsharedAttachments` bu umumiylikni
+  // allaqachon hisobga oladi: faylga ishora qilayotgan oxirgi topshiriq
+  // o'chirilganda u ham o'chadi.
+  //
+  // ⚠️ ISHONILMAYDI: `key`/`url` i bo'lmagan element tashlanadi — aks holda
+  // tashqaridan yuborilgan buzuq obyekt panelda o'lik havola bo'lib turardi.
+  attachments: existingAttachments,
 }) => {
   if (!assigneeIds || assigneeIds.length === 0) {
     throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
@@ -506,9 +519,26 @@ const createTasks = async ({
   // umuman berilmaydi: ijrochi baribir o'zining o'zi.
   if (scope && !selfAssigned) taskScopeService.assertCanAssign(assigneeIds, scope);
 
-  let attachments = [];
+  // ⚠️ KO'CHIRILGANLAR BIRINCHI, YUKLANGANLAR USTIGA: ko'chirilgan fayl
+  // allaqachon saqlashda turadi, yuklash esa yiqilishi mumkin — tartib
+  // panelda ham shu holida ko'rinadi (manba fayllari, keyin qo'shilganlar).
+  const copied = (Array.isArray(existingAttachments) ? existingAttachments : []).filter(
+    (a) => a && a.key && a.url,
+  );
+  if (copied.length + (files?.length || 0) > TASK_ATTACHMENTS_MAX) {
+    throw new BadRequestError(
+      `Ko'pi bilan ${TASK_ATTACHMENTS_MAX} ta fayl biriktirish mumkin`,
+    );
+  }
+
+  let attachments = [...copied];
+  // ⚠️ ALOHIDA SAQLANADI: xato bo'lganda FAQAT shular o'chiriladi.
+  // Ko'chirilganlari manba topshiriqda hali turadi — ularni ham o'chirish
+  // birovning joyida turgan topshirig'ining fayllarini yo'q qilardi.
+  let uploaded = [];
   if (files && files.length > 0) {
-    attachments = await uploadAttachments(files);
+    uploaded = await uploadAttachments(files);
+    attachments = [...attachments, ...uploaded];
   }
 
   let tasks;
@@ -530,8 +560,9 @@ const createTasks = async ({
       },
     });
   } catch (error) {
-    // Yozuv bo'lmadi — yuklangan fayllar yetim qolmasin
-    await deleteAttachments(attachments);
+    // Yozuv bo'lmadi — YANGI yuklangan fayllar yetim qolmasin.
+    // ⚠️ Ko'chirilganlariga TEGILMAYDI: ular manba topshiriqda hali turadi.
+    await deleteAttachments(uploaded);
     throw error;
   }
 
@@ -1670,6 +1701,162 @@ const reopenTask = async (taskId, { newDueDate, reason, reopenedBy, scope }) => 
 };
 
 /**
+ * TOPSHIRIQNI BIRIKTIRISH — "Topshiriqlarim" ekranining o'zidan.
+ *
+ * MUAMMO: topshiriq olgan odam uni o'z xodimiga biriktirmoqchi bo'lsa,
+ * "Topshiriq berish" oynasiga kirib sarlavha, tavsif, tur, havolalar va
+ * jarima balini QAYTA YOZIB CHIQISHI kerak edi. Bir xil matn ikki marta
+ * qo'lda kiritilgani uchun nusxa manbadan farq qilib ketardi.
+ *
+ * YECHIM: manba topshiriqning MATNI tayyor keladi, ijrochi faqat KIMGA va
+ * QACHONGACHA ni belgilaydi.
+ *
+ * ⚠️ YANGI TOPSHIRIQ YARATILADI, IJROCHI KO'CHIRILMAYDI. Manba o'z egasida
+ * O'Z HOLATI bilan qoladi: topshiriqni olgan odam baribir javobgar
+ * ("biriktirdim-u, bajarilmadi" ham javobsiz qolmasligi kerak). Ijrochi
+ * ustiga yozilsa topshiriqning tarixi, jarimasi va bajarilish foizi birdan
+ * boshqa odamga o'tib ketardi.
+ *
+ * ⚠️ YAGONA YARATUVCHI — `createTasks`. Ikkinchi nusxa yozilsa minimal
+ * muddat, jarima chegarasi, fayl qoidalari va push xabari ikki joyda
+ * boshqa-boshqa bo'lib ketardi (`invoiceBuilder.service.js` doktrinasi).
+ *
+ * ⚠️ RUXSAT KALITI TALAB QILINMAYDI — qaror EGALIKDAN kelib chiqadi:
+ * topshiriq AYNAN shu odamga berilgan bo'lsa, u uni boshqasiga biriktira
+ * oladi (`/payroll/my`, `/devices/me/*` doktrinasi — id tokendan olinadi).
+ * Shuning uchun direktor, moliyachi yoki ma'mur alohida kalit kutmaydi.
+ * IJROCHILAR DOIRASI esa baribir tekshiriladi (`createTasks` → `scope`):
+ * `tasks.team` bilan kelgan rahbar faqat o'z bo'limiga biriktiradi.
+ *
+ * ⚠️ SHAXSIY TOPSHIRIQ BIRIKTIRILMAYDI: u xodimning O'Z rejasi (jarimasiz,
+ * o'zi yopadi). Birovga biriktirilsa, "o'ziga belgilash" yo'li ruxsatlarni
+ * chetlab o'tib topshiriq berish yo'liga aylanardi — `createTasks` dagi
+ * `selfAssigned` sharti bilan AYNI mulohaza.
+ *
+ * ⚠️ YOPILGAN TOPSHIRIQ BIRIKTIRILMAYDI: yakunlangan yoki to'xtatilgan
+ * ishni "boshqasiga o'tkazish" ma'nosiz — ish allaqachon tugagan.
+ *
+ * @param {string} taskId - MANBA topshiriq
+ * @param {object} payload
+ * @param {string[]} payload.assigneeIds - kimga biriktiriladi
+ * @param {string} payload.dueDate - yangi ijro muddati. ⚠️ MAJBURIY va
+ *   manbadan KO'CHIRILMAYDI: manba muddati o'tgan bo'lishi mumkin, holbuki
+ *   `createTasks` kelajakni talab qiladi — ko'chirilsa biriktirish
+ *   "muddat kelajakda bo'lsin" xatosi bilan yiqilardi.
+ * @param {string} [payload.note] - ijrochiga qo'shimcha ko'rsatma; tavsif
+ *   OXIRIGA qo'shiladi (ustiga yozilmaydi — manba matni yo'qolmasin)
+ * @param {string} [payload.title] - ustiga yozish (berilmasa manbadan)
+ * @param {string} [payload.description] - ustiga yozish (berilmasa manbadan)
+ * @param {number} [payload.penaltyPoints] - berilmasa manbaning bali
+ * @param {string} actorId - kim biriktiryapti (TOKENDAN)
+ * @param {object} scope - `resolveTaskScope` natijasi
+ * @returns {Promise<object[]>} yaratilgan topshiriqlar
+ */
+const delegateTask = async (
+  taskId,
+  { assigneeIds, dueDate, note, title, description, penaltyPoints, kind },
+  actorId,
+  scope,
+) => {
+  const task = await prisma.task.findUnique({ where: { id: taskId } });
+  if (!task) throw new NotFoundError("Topshiriq topilmadi");
+
+  // EGALIK YOKI BOSHQARUV. Ijrochining O'ZI (tokendan) yoki shu topshiriqni
+  // boshqarishga haqli odam — ikkinchisi "Topshiriqlar" ro'yxatidan kelgan
+  // rahbar, u o'zgalarning topshirig'ini ham biriktira oladi.
+  const isAssignee = String(task.assignee) === String(actorId);
+  if (!isAssignee) _assertScope(task, scope, actorId);
+
+  if (task.selfAssigned) {
+    throw new BadRequestError(
+      "O'zingizga belgilagan topshiriqni boshqa odamga biriktirib bo'lmaydi",
+    );
+  }
+  if (TERMINAL_STATUSES.includes(task.status)) {
+    throw new BadRequestError(
+      task.status === "completed"
+        ? "Yakunlangan topshiriqni biriktirib bo'lmaydi"
+        : "To'xtatilgan topshiriqni biriktirib bo'lmaydi",
+    );
+  }
+
+  const ids = [...new Set((assigneeIds || []).map(String))];
+  if (ids.length === 0) throw new BadRequestError("Kamida bitta ijrochi tanlash kerak");
+
+  // ⚠️ O'SHA IJROCHIGA QAYTA BIRIKTIRISH MA'NOSIZ: topshiriq allaqachon
+  // unda turadi va ikkinchi nusxa bitta ishni ro'yxatda ikki marta
+  // ko'rsatardi.
+  if (ids.includes(String(task.assignee))) {
+    throw new BadRequestError("Topshiriq allaqachon shu ijrochida — boshqa odamni tanlang");
+  }
+
+  // ⚠️ "KIMGA" DOIRASI — ALOHIDA FUNKSIYA (`assertCanAssign` EMAS). Bu
+  // yo'lda `tasks.create` talab qilinmagani uchun doirasiz (`none`) oddiy
+  // xodim ham shu yerga keladi: yaratish yo'lining tekshiruvi uni ERKIN
+  // o'tkazib, butun filialga topshiriq berish yo'lini ochib qo'yardi
+  // (`taskScope.service.js` dagi izoh).
+  taskScopeService.assertCanDelegate(ids, scope);
+
+  // Tavsif: manbadan + biriktirgan odamning ko'rsatmasi (OXIRIGA, ustiga emas)
+  const baseDescription =
+    description !== undefined && String(description).trim()
+      ? String(description)
+      : task.description;
+  const extra = String(note ?? "").trim();
+  const finalDescription = extra ? `${baseDescription}\n\n${extra}` : baseDescription;
+
+  const created = await createTasks({
+    title: title !== undefined && String(title).trim() ? title : task.title,
+    description: finalDescription,
+    // ⚠️ ORALIQ (`startDate`) KO'CHIRILMAYDI: manbaning oralig'i O'TMISHDA
+    // bo'lishi mumkin, yangi muddat esa butunlay boshqa kunga tushadi.
+    // Oraliq — ko'rsatma ("aynan shu vaqtda bajar"), ko'chirilsa yangi
+    // topshiriq ochilishi bilanoq "vaqti o'tgan" bo'lib ko'rinardi.
+    dueDate,
+    kind: kind !== undefined ? kind : task.kind,
+    links: task.links,
+    penaltyPoints:
+      penaltyPoints !== undefined && penaltyPoints !== null && penaltyPoints !== ""
+        ? penaltyPoints
+        : task.penaltyPoints,
+    assigneeIds: ids,
+    createdBy: actorId,
+    // Fayllar QAYTA YUKLANMAYDI — havolasi ko'chadi (`createTasks` izohi)
+    attachments: Array.isArray(task.attachments) ? task.attachments : [],
+    // ⚠️ DOIRA YUBORILMAYDI: u yuqorida `assertCanDelegate` bilan
+    // ALLAQACHON tekshirildi. Yuborilsa `assertCanAssign` ikkinchi marta
+    // tekshirib, `none` rejimini erkin o'tkazib yuborardi — ya'ni tor
+    // qoidadan keyin keng qoida ishlab, birinchisi ma'nosiz bo'lardi.
+    scope: undefined,
+  });
+
+  // ⚠️ MANBA TOPSHIRIQNING VAQT CHIZIG'IGA YOZILADI: "bu ishni kimga
+  // biriktirdim" degan savolga javob MANBADA turishi kerak. Aks holda
+  // ijrochi topshiriqni boshqasiga berib, o'zida hech qanday iz
+  // qoldirmasdi va rahbar buni faqat yangi topshiriqdan bilib olardi.
+  const names = await _loadUserMap(ids, { id: true, firstName: true, lastName: true });
+  const label = ids.map((id) => _fullName(names.get(String(id)))).join(", ");
+
+  await prisma.taskStatusHistory.create({
+    data: {
+      taskId: task.id,
+      status: task.status,
+      kind: "edit",
+      reason: `Boshqa ijrochiga biriktirildi: ${label}`,
+      changedBy: actorId,
+      position: await _nextStatusPosition(task.id),
+      // ⚠️ `meta` ATAYLAB BERILMAYDI (tahrir yozuvlaridan farqi). Vaqt
+      // chizig'i `meta` bor bo'lsa "oldin → keyin" juftligini ko'rsatadi,
+      // bu yerda esa "oldin" degan qiymat YO'Q: ijrochi almashmagan, yangi
+      // topshiriq yaratilgan. `meta` yuborilsa panel ismlar o'rniga
+      // mazmunsiz "o'zgartirildi" deb yozib qo'yardi — ismlar `reason` da.
+    },
+  });
+
+  return created;
+};
+
+/**
  * Topshiriqni butunlay o'chiradi (xato yaratilganlar uchun).
  * ⚠️ Jarima yozilgan topshiriq o'chirilmaydi: jarima yozuvi manbasiz qolardi
  * — bunday topshiriq to'xtatiladi.
@@ -1780,6 +1967,7 @@ module.exports = {
   extendDeadline,
   updateTask,
   reopenTask,
+  delegateTask,
   deleteTask,
   updateTaskSettings,
 };

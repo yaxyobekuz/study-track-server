@@ -253,6 +253,50 @@ const assertCanAssign = (assigneeIds, scope) => {
 };
 
 /**
+ * BIRIKTIRISH (QAYTA YO'NALTIRISH) DOIRASI — "Topshiriqlarim" ekranidan.
+ *
+ * `delegateTask` — o'ziga berilgan ishni boshqasiga biriktirish. Unga
+ * RUXSAT KALITI kerak emas (qaror egalikdan kelib chiqadi), lekin
+ * "kimga" degan savol HAR DOIM cheklanadi.
+ *
+ * ⚠️ NEGA ALOHIDA FUNKSIYA: `assertCanAssign` faqat `team` rejimini
+ * cheklaydi va `none` ni ERKIN o'tkazadi — bu YARATISH yo'li uchun to'g'ri
+ * (route allaqachon `tasks.create` talab qilgan, ya'ni `none` u yerga
+ * yetib bormaydi). Biriktirish yo'lida esa kalit TALAB QILINMAYDI, ya'ni
+ * `none` rejimidagi oddiy xodim ham shu yerga keladi. O'sha funksiya qayta
+ * ishlatilsa, u butun filialga topshiriq berib yubora olardi — ruxsatlarni
+ * chetlab o'tishning aynan o'zi.
+ *
+ * Qoida:
+ *   `all`  → butun filial (avvalgidek, `tasks.view` / owner)
+ *   `team` → faqat o'z bo'limi
+ *   `none` → HECH KIM: biriktirish uchun yo bo'lim (`tasks.team`), yo
+ *            butun filial (`tasks.view`) kerak. Oddiy xodim o'ziga
+ *            berilgan ishni O'ZI bajaradi — uni birovga o'tkazish
+ *            boshqaruv qarori.
+ *
+ * @param {string[]} assigneeIds
+ * @param {object} scope
+ */
+const assertCanDelegate = (assigneeIds, scope) => {
+  if (!scope || scope.mode === SCOPE_ALL) return;
+
+  if (scope.mode === SCOPE_TEAM) {
+    const outside = assigneeIds.filter((id) => !scope.memberIds.includes(String(id)));
+    if (outside.length > 0) {
+      throw new ForbiddenError(
+        "Faqat o'z bo'limingizdagi xodimlarga biriktira olasiz",
+      );
+    }
+    return;
+  }
+
+  throw new ForbiddenError(
+    "Topshiriqni boshqa xodimga biriktirish uchun ruxsatingiz yo'q",
+  );
+};
+
+/**
  * TOPSHIRIQ BERISH MUMKIN BO'LGAN ODAMLAR — doira bo'yicha.
  *
  * ⚠️ Nima uchun alohida yo'l: xodimlar ro'yxati (`GET /users`) `users.view`
@@ -308,4 +352,5 @@ module.exports = {
   applyScope,
   isInScope,
   assertCanAssign,
+  assertCanDelegate,
 };

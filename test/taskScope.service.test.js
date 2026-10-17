@@ -76,6 +76,7 @@ const {
   applyScope,
   isInScope,
   assertCanAssign,
+  assertCanDelegate,
   SCOPE_ALL,
   SCOPE_TEAM,
   SCOPE_NONE,
@@ -149,6 +150,48 @@ test("lavozimi yo'q rahbar o'zi bergan ishini ko'radi", async () => {
   assert.deepEqual(scope.where.OR, [{ createdBy: noPosition.id }]);
   // Boshqa birovga topshiriq bera olmaydi
   assert.throws(() => assertCanAssign([MEMBER], scope), /bo'limingizdagi/);
+});
+
+// ─── Qayta biriktirish ("Topshiriqlarim" ekrani) ──────────────────
+
+/**
+ * ⚠️ ENG MUHIM FARQ: biriktirish yo'li RUXSAT KALITI TALAB QILMAYDI (huquq
+ * egalikdan keladi), shuning uchun doirasiz (`none`) oddiy xodim ham unga
+ * yetib boradi. `assertCanAssign` esa `none` ni ERKIN o'tkazadi — u faqat
+ * yaratish yo'li uchun to'g'ri, chunki route allaqachon `tasks.create`
+ * talab qilgan. Ikkisi chalkashsa, oddiy xodim o'ziga berilgan ishni
+ * BUTUN FILIALGA biriktira olardi.
+ */
+test("doirasi yo'q xodim biriktira OLMAYDI (`assertCanAssign` dan farqi)", async () => {
+  const scope = await resolveTaskScope(user({ permissions: [] }));
+  assert.equal(scope.mode, SCOPE_NONE);
+
+  // Yaratish yo'li `none` ni erkin o'tkazadi...
+  assert.doesNotThrow(() => assertCanAssign([MEMBER], scope));
+  // ...biriktirish yo'li esa YO'Q
+  assert.throws(() => assertCanDelegate([MEMBER], scope), /ruxsatingiz yo'q/);
+});
+
+test("butun filialni ko'radigan odam istalgan xodimga biriktiradi", async () => {
+  const viewer = await resolveTaskScope(user({ permissions: ["tasks.view"] }));
+  const owner = await resolveTaskScope(user({ role: "owner" }));
+
+  assert.doesNotThrow(() => assertCanDelegate([OUTSIDER], viewer));
+  assert.doesNotThrow(() => assertCanDelegate([OUTSIDER], owner));
+});
+
+test("rahbar faqat o'z bo'limiga biriktiradi", async () => {
+  const scope = await resolveTaskScope(user({ permissions: ["tasks.team"] }));
+
+  assert.doesNotThrow(() => assertCanDelegate([MEMBER], scope));
+  assert.throws(() => assertCanDelegate([MEMBER, OUTSIDER], scope), /bo'limingizdagi/);
+});
+
+test("lavozimi yo'q rahbar hech kimga biriktira olmaydi", async () => {
+  const scope = await resolveTaskScope({ id: id("e"), role: "staff", permissions: ["tasks.team"] });
+
+  assert.equal(scope.mode, SCOPE_TEAM);
+  assert.throws(() => assertCanDelegate([MEMBER], scope), /bo'limingizdagi/);
 });
 
 // ─── Bitta topshiriq ──────────────────────────────────────────────
