@@ -24,6 +24,35 @@ const { Decimal, toDecimal } = require("./money.helpers");
 const MAX_QUANTITY = 1_000_000;
 
 // ─────────────────────────────────────────────
+// XATLOVGA KIRITISH — QATOR VA RASM CHEGARALARI
+// ─────────────────────────────────────────────
+
+// Bir amalda kiritiladigan qatorlar soni. Boshlang'ich xatlovda bitta
+// xonada o'nlab jihoz bo'ladi, lekin chegarasiz ro'yxat bitta so'rovni
+// (va uning tranzaksiyasini) cheksiz uzaytirardi.
+const MAX_STOCK_LINES = 30;
+
+// Bitta jihozga nechta rasm. Uchtasi yetadi: umumiy ko'rinish, yaqindan
+// va seriya raqami. Ko'pi dalil emas, arxiv bo'lib qoladi.
+const MAX_PHOTOS_PER_LINE = 3;
+
+// Butun so'rovdagi rasmlar soni. Multer fayllarni XOTIRADA ushlaydi
+// (`fileUpload.middleware.js`), ya'ni chegara faqat qator bo'yicha
+// qo'yilsa 30 qator × 3 rasm bitta so'rovda 90 ta faylga aylanardi.
+const MAX_PHOTOS_PER_REQUEST = 15;
+
+/**
+ * Qator rasmi yuboriladigan multipart maydon nomi.
+ *
+ * ⚠️ Rasm qaysi qatorga tegishli ekani MAYDON NOMIDAN aniqlanadi, fayllar
+ * massivining TARTIBIDAN emas: oynada jihozi tanlanmagan bo'sh qator ham
+ * turishi mumkin va u tartibni surib yuborardi
+ * (`diagnosticQuestion.routes.js` dagi `optionImage_<i>` bilan AYNI
+ * mulohaza). Indeks — mijoz yuborgan `lines` massividagi o'rin.
+ */
+const linePhotoField = (index) => `linePhotos_${index}`;
+
+// ─────────────────────────────────────────────
 // ISHORA INVARIANTLARI
 // ─────────────────────────────────────────────
 
@@ -445,6 +474,10 @@ const displayNameOf = (person, snapshot) => {
 
 module.exports = {
   MAX_QUANTITY,
+  MAX_STOCK_LINES,
+  MAX_PHOTOS_PER_LINE,
+  MAX_PHOTOS_PER_REQUEST,
+  linePhotoField,
   MOVEMENT_RULES,
   assertMovementSigns,
   assertStockConsistency,

@@ -34,9 +34,17 @@ const {
   parseOptionalQuantity,
   parseSignedQuantity,
   MOVEMENT_TYPE_LABELS,
+  MAX_STOCK_LINES,
+  MAX_PHOTOS_PER_LINE,
+  MAX_PHOTOS_PER_REQUEST,
+  linePhotoField,
 } = require("../helpers/inventory.helpers");
 const { assertActiveItem } = require("./inventoryItem.service");
 const { assertActiveLocation } = require("./inventoryLocation.service");
+// Rasm yuklash — zarar va topshiriq bilan BITTA yuklovchi: ikkita bir xil
+// yo'l bo'lsa, biriga qo'shilgan tozalash mantig'i ikkinchisida yo'q
+// bo'lib qolardi (`file.service.js` izohiga qarang).
+const { uploadAttachments, deleteAttachments } = require("./file.service");
 
 // Moliya modulidagi bilan bir xil: `Serializable` shart emas, lekin
 // `postMovement` ning increment'i qator lock'ini oladi.
@@ -63,6 +71,9 @@ const serializeMovement = (row) => {
     ...rest,
     // BigInt JSON'ga tushmaydi — string sifatida chiqadi
     seq: row.seq != null ? String(row.seq) : null,
+    // Eski qatorlarda ustun yo'q edi — ro'yxat HAR DOIM massiv bo'lib
+    // chiqsin, aks holda panel har qatorda turini tekshirib o'tirardi
+    attachments: Array.isArray(row.attachments) ? row.attachments : [],
     typeLabel: MOVEMENT_TYPE_LABELS[row.type] ?? row.type,
     itemName: item?.name ?? null,
     unit: item?.unit ?? "dona",
@@ -103,6 +114,10 @@ const parseOccurredAt = (value) => {
  * @param {string} [params.transferId] - o'tkazma HUJJATI (ikkala qator uchun bitta)
  * @param {string} [params.counterpartLocationId]
  * @param {string} [params.note]
+ * @param {Array} [params.attachments] - RASMLAR (dalil), yuklangan holda:
+ *   { key, url, type, originalName, sizeBytes }. Yuklash bu yerda EMAS —
+ *   tranzaksiya ichida tarmoq kutilsa, xatlov qatorining lock'i shuncha
+ *   vaqt ushlab turilardi.
  * @returns {Promise<object>} yozilgan qator (xom)
  */
 const postMovement = async (tx, params) => {
@@ -152,6 +167,7 @@ const postMovement = async (tx, params) => {
       transferId: params.transferId ?? null,
       counterpartLocationId: params.counterpartLocationId ?? null,
       note: params.note?.trim() || "",
+      attachments: Array.isArray(params.attachments) ? params.attachments : [],
       createdBy,
     },
   });
@@ -316,6 +332,83 @@ const getMovements = async (req) => {
 // YOZISH
 // ─────────────────────────────────────────────
 
+// ─────────────────────────────────────────────
+// RASM (dalil) — multipart so'rovdan o'qish
+// ─────────────────────────────────────────────
+
+/**
+ * `lines` — massiv YOKI uning matn ko'rinishi.
+ *
+ * Rasm biriktirilganda so'rov `multipart/form-data` bo'ladi va unda HAR
+ * BIR maydon matn: massiv JSON satri sifatida keladi. Oddiy JSON so'rov
+ * esa o'z shaklida qoladi — rasmsiz yuborish va eski mijozlar buzilmaydi.
+ *
+ * @param {*} value
+ * @returns {Array}
+ */
+const parseStockLines = (value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    throw new BadRequestError("Jihozlar ro'yxati noto'g'ri yuborilgan");
+  }
+};
+
+/** Yuborilgan fayl maydonlari (obyekt ham, massiv ham qo'llab-quvvatlanadi). */
+const photoFieldNames = (files) => {
+  if (!files) return [];
+  return Array.isArray(files)
+    ? [...new Set(files.map((file) => file.fieldname))]
+    : Object.keys(files);
+};
+
+/**
+ * Qatorga biriktirilgan rasmlar — MAYDON NOMI bo'yicha
+ * (`linePhotoField()` izohiga qarang).
+ *
+ * @param {object|Array} files - multer natijasi
+ * @param {number} index - mijoz yuborgan `lines` massividagi o'rin
+ */
+const photosOfLine = (files, index) => {
+  if (!files) return [];
+
+  const field = linePhotoField(index);
+  const list = Array.isArray(files)
+    ? files.filter((file) => file.fieldname === field)
+    : files[field];
+
+  return Array.isArray(list) ? list : [];
+};
+
+/**
+ * ⚠️ EGASIZ RASM — XATO, jim tashlab yuborilmaydi.
+ *
+ * Oyna bo'sh qatorlarni (jihozi tanlanmagan) olib tashlab yuboradi, ya'ni
+ * indekslarni QAYTA hisoblashi shart. Mos qatori yo'q fayl jim tashlansa,
+ * xodim rasm biriktirdim deb o'ylab qolardi — dalilning butun mohiyati
+ * esa shunda.
+ *
+ * @param {object|Array} files
+ * @param {number} lineCount
+ */
+const assertNoOrphanPhotos = (files, lineCount) => {
+  const allowed = new Set(
+    Array.from({ length: lineCount }, (_, index) => linePhotoField(index)),
+  );
+
+  for (const name of photoFieldNames(files)) {
+    if (!allowed.has(name)) {
+      throw new BadRequestError(
+        "Rasm qaysi jihozga tegishli ekani aniqlanmadi — oynani yangilab qaytadan urinib ko'ring",
+      );
+    }
+  }
+};
+
 /**
  * BOSHLANG'ICH XATLOV yoki YANGI JIHOZ.
  *
@@ -327,25 +420,41 @@ const getMovements = async (req) => {
  *   `initial`  — tizimga birinchi marta kiritish (yaroqsizi ham bo'lishi mumkin)
  *   `purchase` — yangi jihoz sotib olindi
  *
+ * RASM (ixtiyoriy) — HAR QATORGA ALOHIDA: "shu xonaga shu jihoz AYNAN
+ * shunday kirdi". Faqat RASM qabul qilinadi (route'dagi toifa) va u
+ * daftar qatoriga muhrlanadi (`InventoryMovement.attachments`), xatlov
+ * qatoriga emas: xatlov qatori yig'indi, rasm esa bitta onning dalili.
+ *
  * @param {object} data - { locationId, type, occurredAt, note, lines: [{ itemId, quantity, brokenQuantity, note }] }
  * @param {string} userId
+ * @param {object|Array} [files] - multer fayllari, maydon nomi `linePhotos_<index>`
  */
-const addStock = async (data, userId) => {
+const addStock = async (data, userId, files) => {
   const type = data.type === "purchase" ? "purchase" : "initial";
   const location = await assertActiveLocation(data.locationId);
   const occurredAt = parseOccurredAt(data.occurredAt);
 
-  const rawLines = Array.isArray(data.lines) ? data.lines : [];
+  const rawLines = parseStockLines(data.lines);
   if (rawLines.length === 0) {
     throw new BadRequestError("Kamida bitta jihoz kiritilishi kerak");
   }
+  if (rawLines.length > MAX_STOCK_LINES) {
+    throw new BadRequestError(
+      `Bir amalda ko'pi bilan ${MAX_STOCK_LINES} ta qator kiritiladi`,
+    );
+  }
+
+  // Rasmni qatorga bog'lash MAYDON NOMI bilan — tekshiruv qator o'qishdan
+  // OLDIN, chunki xato indeksda muammo qatorda emas, mijozda
+  assertNoOrphanPhotos(files, rawLines.length);
 
   // Bitta amalda bitta jihoz BIR MARTA: aks holda ikkita qator bir-birini
   // "to'ldirib", nima kiritilgani noaniq bo'lib qolardi.
   const seen = new Set();
   const lines = [];
+  let photoCount = 0;
 
-  for (const raw of rawLines) {
+  for (const [index, raw] of rawLines.entries()) {
     const item = await assertActiveItem(raw.itemId);
     if (seen.has(item.id)) {
       throw new BadRequestError(`"${item.name}" ro'yxatda ikki marta kelgan`);
@@ -370,45 +479,89 @@ const addStock = async (data, userId) => {
       );
     }
 
-    lines.push({ item, quantity, brokenQuantity, note: raw.note?.trim() || "" });
+    const photos = photosOfLine(files, index);
+    if (photos.length > MAX_PHOTOS_PER_LINE) {
+      throw new BadRequestError(
+        `"${item.name}": bitta jihozga ko'pi bilan ${MAX_PHOTOS_PER_LINE} ta rasm biriktiriladi`,
+      );
+    }
+    photoCount += photos.length;
+
+    lines.push({
+      item,
+      quantity,
+      brokenQuantity,
+      note: raw.note?.trim() || "",
+      photos,
+    });
   }
 
-  const result = await prisma.$transaction(async (tx) => {
-    const created = [];
+  if (photoCount > MAX_PHOTOS_PER_REQUEST) {
+    throw new BadRequestError(
+      `Bir amalda ko'pi bilan ${MAX_PHOTOS_PER_REQUEST} ta rasm yuklanadi`,
+    );
+  }
 
-    // Determinlashgan tartib — bir nechta parallel kiritish bir-birini
-    // kutganda deadlock bo'lmasligi uchun (`AccountTransfer` bilan bir xil
-    // mulohaza: lock tartibi HAR DOIM id bo'yicha o'sish tartibida).
-    const ordered = [...lines].sort((a, b) => a.item.id.localeCompare(b.item.id));
+  // ⚠️ RASMLAR TRANZAKSIYADAN TASHQARIDA va undan OLDIN yuklanadi: fayl
+  // saqlash tarmoq orqali sekundlar oladi va tranzaksiya ichida qilinsa
+  // xatlov qatorining lock'i shuncha vaqt ushlab turilardi (kunlik
+  // hisobot va zarar ham aynan shu qatorni lock qiladi).
+  //
+  // Yozuv yiqilsa yuklangan fayllar O'CHIRILADI — aks holda saqlashda
+  // hech qaysi qatorga tegishli bo'lmagan rasm qolib ketardi
+  // (`inventoryDamage.service.js` bilan AYNI naqsh).
+  const uploaded = [];
+  let result;
 
-    for (const line of ordered) {
-      const stock = await ensureStock(tx, location.id, line.item.id, userId);
-
-      const movement = await postMovement(tx, {
-        stock,
-        type,
-        quantityDelta: line.quantity,
-        brokenDelta: line.brokenQuantity,
-        occurredAt,
-        itemName: line.item.name,
-        note: line.note || data.note?.trim() || "",
-        createdBy: userId,
-      });
-
-      created.push({ item: line.item, movement });
+  try {
+    for (const line of lines) {
+      line.attachments =
+        line.photos.length > 0 ? await uploadAttachments(line.photos) : [];
+      uploaded.push(...line.attachments);
     }
 
-    return created;
-  }, TX_OPTIONS);
+    result = await prisma.$transaction(async (tx) => {
+      const created = [];
+
+      // Determinlashgan tartib — bir nechta parallel kiritish bir-birini
+      // kutganda deadlock bo'lmasligi uchun (`AccountTransfer` bilan bir xil
+      // mulohaza: lock tartibi HAR DOIM id bo'yicha o'sish tartibida).
+      const ordered = [...lines].sort((a, b) => a.item.id.localeCompare(b.item.id));
+
+      for (const line of ordered) {
+        const stock = await ensureStock(tx, location.id, line.item.id, userId);
+
+        const movement = await postMovement(tx, {
+          stock,
+          type,
+          quantityDelta: line.quantity,
+          brokenDelta: line.brokenQuantity,
+          occurredAt,
+          itemName: line.item.name,
+          note: line.note || data.note?.trim() || "",
+          attachments: line.attachments,
+          createdBy: userId,
+        });
+
+        created.push({ item: line.item, movement });
+      }
+
+      return created;
+    }, TX_OPTIONS);
+  } catch (error) {
+    await deleteAttachments(uploaded);
+    throw error;
+  }
 
   logger.info(
     `[inventory] ${MOVEMENT_TYPE_LABELS[type]}: ${location.name} · ` +
-      `${result.length} ta qator · actor=${userId}`,
+      `${result.length} ta qator · ${photoCount} ta rasm · actor=${userId}`,
   );
 
   return {
     location: { id: location.id, name: location.name },
     type,
+    photoCount,
     lines: result.map(({ item, movement }) => ({
       itemId: item.id,
       itemName: item.name,
@@ -416,6 +569,7 @@ const addStock = async (data, userId) => {
       brokenDelta: movement.brokenDelta,
       quantityAfter: movement.quantityAfter,
       brokenAfter: movement.brokenAfter,
+      photos: Array.isArray(movement.attachments) ? movement.attachments.length : 0,
     })),
   };
 };
@@ -1096,17 +1250,37 @@ const deleteStock = async (stockId, data, userId) => {
     const checkLines = await tx.inventoryCheckLine.deleteMany({
       where: { stockId, check: { submittedAt: null } },
     });
+    // 4) Qator bilan birga uning RASMLARI ham ketadi. Ro'yxat shu yerda
+    //    olinadi, saqlashdan o'chirish esa TRANZAKSIYADAN KEYIN (pastga
+    //    qarang): hozir o'chirilsa va tranzaksiya orqaga qaytsa, qatorlar
+    //    joyida turib, rasmlari yo'q bo'lib qolardi.
+    const doomed = await tx.inventoryMovement.findMany({
+      where: { stockId },
+      select: { attachments: true },
+    });
+
     const movements = await tx.inventoryMovement.deleteMany({ where: { stockId } });
     await tx.inventoryStock.delete({ where: { id: stockId } });
 
-    return { checkLines: checkLines.count, movements: movements.count };
+    return {
+      checkLines: checkLines.count,
+      movements: movements.count,
+      attachments: doomed.flatMap((row) =>
+        Array.isArray(row.attachments) ? row.attachments : [],
+      ),
+    };
   }, TX_OPTIONS);
+
+  // Endi fayllar ham o'chiriladi — egasiz rasm saqlashda qolib ketmasin.
+  // `deleteAttachments` xato tashlamaydi (`allSettled`), ya'ni saqlash
+  // javob bermasa ham o'chirish muvaffaqiyatli bo'lib qolaveradi.
+  await deleteAttachments(result.attachments);
 
   logger.warn(
     `[inventory] Xatlov qatori O'CHIRILDI: ${locationName} · ${itemName} · ` +
       `miqdor=${stock.quantity}/${stock.brokenQuantity} · ` +
       `daftar=${result.movements} qator · qoralama=${result.checkLines} satr · ` +
-      `actor=${userId} sabab="${reason}"`,
+      `rasm=${result.attachments.length} ta · actor=${userId} sabab="${reason}"`,
   );
 
   return {

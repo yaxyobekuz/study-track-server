@@ -4885,6 +4885,19 @@ model InventoryMovement {
   counterpartLocationId String? @map("counterpart_location_id") @db.Char(24)
 
   note      String   @default("")
+
+  // RASMLAR — "shu jihoz xonaga AYNAN shunday kirdi" degan DALIL.
+  // Shakli `InventoryDamage.attachments` bilan AYNI:
+  // { key, url, type, originalName, sizeBytes } (`file.service.js` —
+  // yagona yuklovchi). Faqat RASM qabul qilinadi (route'dagi toifa).
+  //
+  // ⚠️ RASM DAFTAR QATORIDA, xatlov qatorida (`InventoryStock`) EMAS.
+  // Xatlov qatori — hodisalarning YIG'INDISI ("hozir 20 ta parta bor")
+  // va uning sanasi yo'q; rasm esa bitta ONGA tegishli: 12-sentabrda shu
+  // xonaga aynan shu holatdagi partalar kirgan. Yig'indiga biriktirilsa,
+  // keyingi har bir kirim eski rasmni "hozirgi holat" qilib ko'rsatardi.
+  attachments Json @default("[]")
+
   createdBy String   @map("created_by") @db.Char(24)
   createdAt DateTime @default(now()) @map("created_at")
 

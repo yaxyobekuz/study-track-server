@@ -15,7 +15,17 @@ const {
   authorizeAnyPermission,
 } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
+const {
+  createFieldsUpload,
+  handleFileUploadError,
+} = require("../middleware/fileUpload.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
+const {
+  MAX_STOCK_LINES,
+  MAX_PHOTOS_PER_LINE,
+  MAX_PHOTOS_PER_REQUEST,
+  linePhotoField,
+} = require("../helpers/inventory.helpers");
 
 const {
   getCategories,
@@ -69,6 +79,26 @@ const {
   getPaymentAccountOptions,
   updateSettings,
 } = require("../controllers/inventoryReport.controller");
+
+// ─── Xatlovga kiritishdagi RASM ──────────────
+// ⚠️ FAQAT RASM (`categories: ["image"]`): bu jihozning DALILI, hujjat
+// emas — hujjat qabul qilinsa, xodim skaner qilingan aktni "jihoz rasmi"
+// o'rniga yuklab qo'yardi va registrda ko'rib bo'lmas qator qolardi.
+//
+// ⚠️ Maydon nomi qatorning TARTIB RAQAMINI saqlaydi (`linePhotoField`),
+// fayllar massivining tartibiga tayanilmaydi: oynada jihozi tanlanmagan
+// bo'sh qator ham turishi mumkin va u tartibni surib yuborardi
+// (`diagnosticQuestion.routes.js` dagi `optionImage_<i>` bilan AYNI
+// mulohaza). Rasmsiz yuborilgan JSON so'rov o'zgarishsiz o'tadi —
+// multer faqat `multipart/form-data` ni o'qiydi.
+const uploadStockPhotos = createFieldsUpload({
+  fields: Array.from({ length: MAX_STOCK_LINES }, (_, index) => ({
+    name: linePhotoField(index),
+    maxCount: MAX_PHOTOS_PER_LINE,
+  })),
+  categories: ["image"],
+  maxFiles: MAX_PHOTOS_PER_REQUEST,
+});
 
 router.use(protect);
 
@@ -162,7 +192,15 @@ router.get(
   authorizeAnyPermission([PERMISSIONS.INVENTORY_VIEW, PERMISSIONS.DAMAGES_VIEW]),
   getStockByLocation,
 );
-router.post("/stocks", authorizePermission(PERMISSIONS.INVENTORY_STOCK), addStock);
+// ⚠️ Ruxsat RASMNI O'QISHDAN OLDIN tekshiriladi: multer fayllarni
+// XOTIRADA ushlaydi, ya'ni huquqsiz so'rov ham shuncha xotira egallardi.
+router.post(
+  "/stocks",
+  authorizePermission(PERMISSIONS.INVENTORY_STOCK),
+  uploadStockPhotos,
+  handleFileUploadError,
+  addStock,
+);
 router.post("/stocks/repair", authorizePermission(PERMISSIONS.INVENTORY_REPAIR), repairStock);
 router.post("/stocks/write-off", authorizePermission(PERMISSIONS.INVENTORY_WRITEOFF), writeOffStock);
 router.post("/stocks/adjust", authorizePermission(PERMISSIONS.INVENTORY_ADJUST), adjustStock);

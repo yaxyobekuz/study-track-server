@@ -20,8 +20,10 @@ const getMovements = asyncHandler(async (req, res) => {
   res.json({ success: true, ...data });
 });
 
+// ⚠️ `req.files` — multipart so'rovdagi RASMLAR (`linePhotos_<index>`).
+// Rasmsiz (oddiy JSON) so'rovda u bo'lmaydi va hech narsa o'zgarmaydi.
 const addStock = asyncHandler(async (req, res) => {
-  const data = await stockService.addStock(req.body, req.user.id);
+  const data = await stockService.addStock(req.body, req.user.id, req.files);
   res.status(201).json({ success: true, data, message: "Xatlov yangilandi" });
 });
 
