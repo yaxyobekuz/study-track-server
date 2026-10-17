@@ -44,15 +44,105 @@ const RATIO_SEGMENTS = new Set([
   "mean",
 ]);
 
+/**
+ * QO'SHILMAYDIGAN SONLAR — davr, sahifa va identifikator.
+ *
+ * ⚠️ `month: 202610` ikki filialda ham AYNI bo'lgani uchun odatda shunchaki
+ * saqlanadi; lekin kutilmaganda farq qilsa, uni qo'shib yuborish `405220`
+ * kabi ma'nosiz raqam berardi. Shuning uchun bunday kalitlar hech qachon
+ * qo'shilmaydi: langar filialning qiymati qoladi va meta'da aytiladi.
+ */
+const KEEP_SEGMENTS = new Set([
+  "month",
+  "year",
+  "day",
+  "date",
+  "week",
+  "quarter",
+  "page",
+  "limit",
+  "offset",
+  "version",
+  "seq",
+  "id",
+  "code",
+  "from",
+  "to",
+  "timestamp",
+  "epoch",
+]);
+
+/**
+ * SOZLAMA QIYMATLARI — sanoqchilar ichida yurgan, lekin SANOQ EMAS.
+ *
+ * ⚠️ Masalan `dueSoonHours` ("muddati yaqin" chegarasi, 24 soat)
+ * `GET /tasks/stats` javobida sanoqchilar bilan yonma-yon keladi. Qo'shilsa,
+ * to'rt filialda 96 soat bo'lib, "muddati yaqin" kartasi butunlay boshqa
+ * narsani ko'rsatardi. Bu ro'yxat — nomi bo'yicha aniq TANILADIGAN
+ * sozlamalar; yangisi chiqsa registrdagi `keep` bilan ham berish mumkin.
+ */
+const SETTING_KEYS = new Set([
+  "dueSoonHours",
+  "lateArrivalGraceMinutes",
+  "offlineGraceMinutes",
+  "roundingUnit",
+]);
+
+/** `max*` → eng kattasi, `min*` → eng kichigi (qo'shish ma'nosiz). */
+const MAX_PREFIX = "max";
+const MIN_PREFIX = "min";
+
+/**
+ * Qatorlarni guruhlash uchun kalit nomzodlari.
+ *
+ * Kunlik/oylik qatorlar (hisobot jadvallari, grafiklar) filiallar bo'ylab
+ * ULANMAYDI — AYNI kun AYNI qatorga qo'shiladi. Aks holda bitta sanada
+ * to'rtta qator paydo bo'lib, jadval ham, grafik ham ma'nosini yo'qotardi.
+ */
+const GROUP_KEYS = [
+  "date",
+  "day",
+  "month",
+  "week",
+  "key",
+  "status",
+  "kind",
+  "type",
+  "category",
+  "categoryId",
+  "classId",
+  "subjectId",
+  "tariffId",
+  "discountId",
+  "roleId",
+  "id",
+];
+
 const isPlainObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Kalit foiz/o'rtacha ma'nosidami? */
-const isRatioKey = (key = "") =>
+/** Kalitni camelCase bo'laklariga ajratadi. */
+const keySegments = (key = "") =>
   String(key)
     .split(/(?=[A-Z])|[_\-\s]+/)
     .map((part) => part.toLowerCase())
-    .some((part) => RATIO_SEGMENTS.has(part));
+    .filter(Boolean);
+
+/** Kalit foiz/o'rtacha ma'nosidami? */
+const isRatioKey = (key = "") =>
+  keySegments(key).some((part) => RATIO_SEGMENTS.has(part));
+
+/** Kalit davr/identifikator ma'nosidami (qo'shilmaydi)? */
+const isKeepKey = (key = "") => {
+  if (SETTING_KEYS.has(key)) return true;
+  const segments = keySegments(key);
+  if (segments.some((part) => KEEP_SEGMENTS.has(part))) return true;
+  // `createdAt`, `lastSyncAt`, `updatedAt` — instant, qo'shilmaydi.
+  // ⚠️ Oxirgi BO'LAK tekshiriladi, matnning oxiri emas: aks holda
+  // `format` yoki `seat` kabi so'zlar ham "sana" deb qabul qilinardi
+  // (va `At` katta harf bilan yozilgani uchun matn tekshiruvi jim o'tmasdi).
+  return segments.length > 1 && segments[segments.length - 1] === "at";
+};
 
 /**
  * Nuqtali yo'l bo'yicha qiymat (`"student.fullName"`).
@@ -200,46 +290,168 @@ const inferSort = (rows) => {
  * @param {string} [prefix] - meta uchun to'liq yo'l
  * @returns {*}
  */
-const mergeValue = (key, values, notes, prefix = "") => {
-  const path = prefix ? `${prefix}.${key}` : key;
-  const defined = values.filter((v) => v !== undefined && v !== null);
+/** Bo'sh izohlar to'plami (meta uchun). */
+const newNotes = () => ({
+  summed: new Set(),
+  averaged: new Set(),
+  reduced: new Set(),
+  grouped: new Set(),
+  partial: new Set(),
+});
 
-  if (defined.length === 0) return values[0] ?? null;
-  if (defined.length === 1) return defined[0];
-  if (defined.every((v) => deepEqual(v, defined[0]))) return defined[0];
+/**
+ * QATORLAR RO'YXATINI BIRLASHTIRADI — ulash EMAS, GURUHLASH.
+ *
+ * ⚠️ Kunlik/oylik hisobot qatorlari (kun, oy, holat, sinf kesimi) filiallar
+ * bo'ylab shunchaki ulansa, bitta sanada to'rtta qator paydo bo'lardi va
+ * jadval ham, grafik ham ma'nosini yo'qotardi. Shuning uchun qatorlar
+ * KALIT bo'yicha guruhlanadi (`GROUP_KEYS`) va guruh ichidagi sonlar
+ * qo'shiladi.
+ *
+ * Kaliti yo'q (yoki har filialda boshqa) qatorlar ulanadi va har biriga
+ * qaysi filialdan kelgani yoziladi — "top 5 o'quvchi" kabi ro'yxatlarda
+ * aynan shu kerak.
+ *
+ * @param {Array<{value: any[], branch: object}>} entries
+ * @returns {any[]}
+ */
+const mergeRows = (entries, notes, path, options) => {
+  const all = entries.flatMap(({ value, branch }) =>
+    (value ?? []).map((row) => ({ row, branch })),
+  );
 
-  if (defined.every((v) => typeof v === "number" && Number.isFinite(v))) {
-    if (isRatioKey(key)) {
-      notes.averaged.add(path);
-      const sum = defined.reduce((acc, v) => acc + v, 0);
-      return Math.round((sum / defined.length) * 100) / 100;
+  if (!all.length) return [];
+  // Primitivlar (matn/son ro'yxati) — belgisiz ulanadi
+  if (!all.every(({ row }) => isPlainObject(row))) return all.map(({ row }) => row);
+
+  const groupKey = GROUP_KEYS.find((candidate) =>
+    all.every(({ row }) => row[candidate] !== undefined && row[candidate] !== null),
+  );
+
+  if (!groupKey) return all.map(({ row, branch }) => tagRow(row, branch));
+
+  const buckets = new Map();
+  for (const { row, branch } of all) {
+    const id = String(row[groupKey]);
+    if (!buckets.has(id)) buckets.set(id, []);
+    buckets.get(id).push({ value: row, branch });
+  }
+
+  const out = [];
+  for (const group of buckets.values()) {
+    // Faqat bitta filialda bor qator — o'zi qoladi, filial belgisi bilan
+    if (group.length === 1) {
+      out.push(tagRow(group[0].value, group[0].branch));
+      continue;
     }
-    notes.summed.add(path);
-    return defined.reduce((acc, v) => acc + v, 0);
-  }
 
-  if (defined.every(Array.isArray)) {
-    return defined.flat();
-  }
-
-  if (defined.every(isPlainObject)) {
-    const keys = [...new Set(defined.flatMap((v) => Object.keys(v)))];
+    notes.grouped.add(path);
+    const keys = [...new Set(group.flatMap((g) => Object.keys(g.value)))];
     const merged = {};
     for (const childKey of keys) {
       merged[childKey] = mergeValue(
         childKey,
-        defined.map((v) => v[childKey]),
+        group.map((g) => ({ value: g.value[childKey], branch: g.branch })),
         notes,
         path,
+        options,
+      );
+    }
+    out.push(merged);
+  }
+
+  return out;
+};
+
+/**
+ * Bitta qiymatni filiallar bo'ylab birlashtiradi.
+ *
+ * Qoidalar (tartib bilan):
+ *   1. hamma joyda AYNI qiymat      → o'zi qoladi
+ *   2. registrda "tegilmasin" (`keep`) yoki davr/identifikator kaliti
+ *      (`month`, `page`, `createdAt`...) → langar filialniki qoladi
+ *   3. `max*` / `min*`              → eng katta / eng kichik
+ *   4. foiz, o'rtacha               → o'rtacha (QO'SHILMAYDI)
+ *   5. qolgan sonlar                → qo'shiladi
+ *   6. ro'yxatlar                   → kalit bo'yicha guruhlanadi
+ *   7. obyektlar                    → ichkariga kirib, shu qoidalar qayta
+ *   8. turlar aralash               → langar filialniki + meta'da ogohlantirish
+ *
+ * @param {string} key
+ * @param {Array<{value: any, branch: object}>} entries
+ * @param {object} notes
+ * @param {string} [prefix]
+ * @param {{keep?: Set<string>}} [options]
+ */
+const mergeValue = (key, entries, notes, prefix = "", options = {}) => {
+  const path = prefix ? `${prefix}.${key}` : key;
+  const defined = entries.filter(
+    (entry) => entry.value !== undefined && entry.value !== null,
+  );
+
+  if (defined.length === 0) return entries[0]?.value ?? null;
+  if (defined.length === 1) return defined[0].value;
+  if (defined.every((entry) => deepEqual(entry.value, defined[0].value))) {
+    return defined[0].value;
+  }
+
+  if (
+    defined.every(
+      (entry) => typeof entry.value === "number" && Number.isFinite(entry.value),
+    )
+  ) {
+    const numbers = defined.map((entry) => entry.value);
+
+    // ⚠️ Sozlama va davr qiymatlari QO'SHILMAYDI: "24 soat" chegarasi to'rt
+    // filialda 96 soatga aylanib qolardi.
+    if (options.keep?.has(key) || isKeepKey(key)) {
+      notes.partial.add(path);
+      return numbers[0];
+    }
+
+    const segments = keySegments(key);
+    if (segments[0] === MAX_PREFIX) {
+      notes.reduced.add(path);
+      return Math.max(...numbers);
+    }
+    if (segments[0] === MIN_PREFIX) {
+      notes.reduced.add(path);
+      return Math.min(...numbers);
+    }
+
+    if (isRatioKey(key)) {
+      notes.averaged.add(path);
+      const sum = numbers.reduce((acc, value) => acc + value, 0);
+      return Math.round((sum / numbers.length) * 100) / 100;
+    }
+
+    notes.summed.add(path);
+    return numbers.reduce((acc, value) => acc + value, 0);
+  }
+
+  if (defined.every((entry) => Array.isArray(entry.value))) {
+    return mergeRows(defined, notes, path, options);
+  }
+
+  if (defined.every((entry) => isPlainObject(entry.value))) {
+    const keys = [...new Set(defined.flatMap((entry) => Object.keys(entry.value)))];
+    const merged = {};
+    for (const childKey of keys) {
+      merged[childKey] = mergeValue(
+        childKey,
+        defined.map((entry) => ({ value: entry.value[childKey], branch: entry.branch })),
+        notes,
+        path,
+        options,
       );
     }
     return merged;
   }
 
-  // Turlar aralash (matn/boolean/son) — birlashtirib bo'lmaydi. Birinchi
-  // (langar) filialning qiymati qoladi va bu META da OCHIQ aytiladi.
+  // Turlar aralash (matn/boolean/son) — birlashtirib bo'lmaydi. Langar
+  // filialning qiymati qoladi va bu META da OCHIQ aytiladi.
   notes.partial.add(path);
-  return defined[0];
+  return defined[0].value;
 };
 
 /**
@@ -253,7 +465,7 @@ const mergeValue = (key, values, notes, prefix = "") => {
  * @returns {{data: any[], pagination: object|null, extras: object, notes: object}}
  */
 const mergeList = (results, options = {}) => {
-  const notes = { summed: new Set(), averaged: new Set(), partial: new Set() };
+  const notes = newNotes();
 
   const rows = results.flatMap(({ branch, body }) =>
     (body.data ?? []).map((row) => tagRow(row, branch)),
@@ -315,8 +527,10 @@ const mergeList = (results, options = {}) => {
   for (const key of extraKeys) {
     extras[key] = mergeValue(
       key,
-      results.map(({ body }) => body[key]),
+      results.map(({ branch, body }) => ({ value: body[key], branch })),
       notes,
+      "",
+      options,
     );
   }
 
@@ -332,24 +546,38 @@ const mergeList = (results, options = {}) => {
  * @param {Array<{branch: object, body: object}>} results
  * @returns {{data: *, notes: object}}
  */
-const mergeObject = (results) => {
-  const notes = { summed: new Set(), averaged: new Set(), partial: new Set() };
-  const values = results.map(({ body }) => body.data);
+const mergeObject = (results, options = {}) => {
+  const notes = newNotes();
+  const entries = results.map(({ branch, body }) => ({ value: body?.data, branch }));
 
-  if (values.every(Array.isArray)) {
-    const data = results.flatMap(({ branch, body }) =>
-      (body.data ?? []).map((row) => tagRow(row, branch)),
+  // Ro'yxat bo'lsa — qatorlar kalit bo'yicha guruhlanadi (`mergeRows`),
+  // obyekt bo'lsa — maydonlar bo'yicha ichkariga kiriladi.
+  const data = Array.isArray(entries[0]?.value)
+    ? mergeRows(entries, notes, "data", options)
+    : mergeValue("data", entries, notes, "", options);
+
+  // `data` dan tashqari kalitlar (sarlavha, jami, sozlama) ham birlashadi.
+  const reserved = new Set(["success", "data", "pagination", "message", "meta"]);
+  const extraKeys = [
+    ...new Set(
+      results.flatMap(({ body }) =>
+        Object.keys(body ?? {}).filter((key) => !reserved.has(key)),
+      ),
+    ),
+  ];
+
+  const extras = {};
+  for (const key of extraKeys) {
+    extras[key] = mergeValue(
+      key,
+      results.map(({ branch, body }) => ({ value: body?.[key], branch })),
+      notes,
+      "",
+      options,
     );
-    return { data, notes };
   }
 
-  const data = mergeValue(
-    "data",
-    values,
-    notes,
-  );
-
-  return { data, notes };
+  return { data, extras, notes };
 };
 
 /** `Set` larni meta uchun massivga aylantiradi (bo'shlari tashlanadi). */
@@ -357,12 +585,19 @@ const notesToMeta = (notes) => {
   const meta = {};
   if (notes.summed.size) meta.summed = [...notes.summed];
   if (notes.averaged.size) meta.averaged = [...notes.averaged];
+  if (notes.reduced?.size) meta.reduced = [...notes.reduced];
+  if (notes.grouped?.size) meta.grouped = [...notes.grouped];
   if (notes.partial.size) meta.partial = [...notes.partial];
   return meta;
 };
 
 module.exports = {
   BRANCH_FIELD,
+  newNotes,
+  mergeRows,
+  SETTING_KEYS,
+  isKeepKey,
+  keySegments,
   isPlainObject,
   isRatioKey,
   getPath,

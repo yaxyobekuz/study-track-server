@@ -7,11 +7,20 @@
  *
  *  | Rejim         | Ma'nosi                                                |
  *  |---------------|--------------------------------------------------------|
- *  | `auto`        | sukut: ro'yxat ulanadi, bir xil javob o'zi qoladi,     |
- *  |               | bitta filialdan topilgani o'zi qaytadi                 |
+ *  | `auto`        | sukut: ro'yxat ulanadi, obyekt (sanoqchi) qo'shiladi,  |
+ *  |               | bir xil javob o'zi qoladi, bitta filialdan topilgani   |
+ *  |               | o'zi qaytadi                                           |
  *  | `anchor`      | AYNAN BITTA filialda bajariladi (uy filiali)           |
- *  | `object`      | obyekt javob qo'shiladi (sanoqchilar) — E'LON bilan    |
+ *  | `list`/`object` | sukut bilan AYNI, faqat tartib (`sort`) yoki          |
+ *  |               | "tegilmasin" (`keep`) e'lon qilingan                   |
  *  | `unsupported` | birlashtirilmaydi, toza 409 qaytadi                    |
+ *
+ * ⚠️ 2026-10-17: obyekt javoblar SUKUT BO'YICHA birlashtiriladi. Ilgari ular
+ * e'lon qilinmaguncha 409 berardi va paneldagi sanoq kartalari "—" bo'lib
+ * turardi — holbuki odam umumiy ko'rinishni aynan o'sha raqamlar uchun
+ * ochadi. Xavfsizlik qoidalarda: sozlama va davr qiymatlari qo'shilmaydi,
+ * foiz o'rtachalanadi, bir xil kalitli qatorlar guruhlanadi
+ * (`helpers/aggregateMerge.helpers.js`).
  *
  * ⚠️ NIMA UCHUN `anchor` KERAK: platforma ma'lumoti (rol, tarif, chegirma,
  * o'zgarishlar tarixi) BARCHA filiallarda AYNI — fan-out qilinsa ro'yxat
@@ -115,6 +124,13 @@ const RULES = [
   /* ── Sanoqchilar: qo'shish TO'G'RI (tekshirilgan shakl) ─────────────── */
   // `{telegramUsers, workers, students, premiumUsers}` — sof sanoqchilar.
   { pattern: "GET /users/stats", mode: "object" },
+
+  // ⚠️ Topshiriq sanoqchilari ichida "muddati yaqin" CHEGARASI (soatda)
+  // ham keladi — u sozlama, sanoq emas. `SETTING_KEYS` da ham bor, bu
+  // yerda esa yo'l darajasida QAYD etilgan: shakl o'zgarsa ko'rinib tursin.
+  { pattern: "GET /tasks/stats", mode: "object", keep: ["dueSoonHours"] },
+  { pattern: "GET /tasks/reports", mode: "object", keep: ["dueSoonHours"] },
+  { pattern: "GET /tasks/dashboard", mode: "object", keep: ["dueSoonHours"] },
 
   /* ── Yirik ro'yxatlar: tartib ATAYLAB e'lon qilinadi ───────────────── */
   // Sahifalashning to'g'riligi shunga bog'liq: bu yerdagi tartib filialning
@@ -262,6 +278,7 @@ const matchTable = (upper, path) => {
 
     const resolved = { mode: rule.mode ?? "auto" };
     if (rule.sort) resolved.sort = rule.sort;
+    if (rule.keep) resolved.keep = rule.keep;
 
     if (rule.locate) {
       const index = compiled.names.indexOf(rule.locate.param);

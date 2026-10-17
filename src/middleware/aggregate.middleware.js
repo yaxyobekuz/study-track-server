@@ -393,9 +393,12 @@ const fanOut = async ({ router, req, res, next, scope, rule }) => {
     body,
   }));
 
+  // Registrda "tegilmasin" deb belgilangan maydonlar (sozlama qiymatlari).
+  const keep = rule.keep ? new Set(rule.keep) : undefined;
+
   // ── RO'YXAT ────────────────────────────────────────────────────────
   if (rule.mode === "list" || labelled.every(({ body }) => Array.isArray(body?.data))) {
-    const merged = merge.mergeList(labelled, { page, limit, sort: rule.sort });
+    const merged = merge.mergeList(labelled, { page, limit, sort: rule.sort, keep });
 
     markResponse(res, "merge");
     return res.status(200).json({
@@ -413,14 +416,25 @@ const fanOut = async ({ router, req, res, next, scope, rule }) => {
     });
   }
 
-  // ── OBYEKT (faqat REGISTRDA e'lon qilingan yo'llar) ────────────────
-  if (rule.mode === "object") {
-    const merged = merge.mergeObject(labelled);
+  // ── OBYEKT (sanoqchilar, kartalar, hisobot bloklari) ───────────────
+  //
+  // ⚠️ SUKUT BO'YICHA BIRLASHTIRILADI (2026-10-17): ilgari obyekt javob
+  // registrda e'lon qilinmagan bo'lsa 409 qaytardi va ekrandagi sanoq
+  // kartalari "—" bo'lib turardi. Bu "ehtiyotkorlik" amalda zarar qilardi:
+  // odam umumiy ko'rinishni aynan shu raqamlar uchun ochadi.
+  //
+  // Birlashtirish QOIDALARI bilan xavfsiz (`aggregateMerge.helpers.js`):
+  // sanoqchi qo'shiladi, foiz o'rtachalanadi, sozlama va davr qiymati
+  // (`dueSoonHours`, `month`) QO'SHILMAYDI, bir xil kalitli qatorlar esa
+  // guruhlanadi. Nima qilinganini `meta.aggregate` ochiq aytadi.
+  if (labelled.every(({ body }) => merge.isPlainObject(body))) {
+    const merged = merge.mergeObject(labelled, { keep });
 
     markResponse(res, "merge");
     return res.status(200).json({
       success: true,
       data: merged.data,
+      ...merged.extras,
       meta: {
         aggregate: {
           ...meta,
@@ -432,13 +446,11 @@ const fanOut = async ({ router, req, res, next, scope, rule }) => {
   }
 
   // ── BIRLASHTIRILMAYDI ──────────────────────────────────────────────
-  // ⚠️ ATAYLAB XATO: bitta filialning raqamini "umumiy" deb ko'rsatish
-  // (yoki foizlarni qo'shib yuborish) jim xato bo'lardi. Panel bu sababni
-  // tanib, "filialni tanlang" deb aytadi.
+  // Bu yerga faqat JSON bo'lmagan (matn/ikkilik) javob tushadi.
   return next(
     aggregateScope.withReason(
       new ConflictError(
-        "Bu bo'lim umumiy ko'rinishda birlashtirilmaydi — filialni tanlang",
+        "Bu ma'lumot umumiy ko'rinishda birlashtirilmaydi — filialni tanlang",
       ),
       {
         reason: "aggregate_unsupported",

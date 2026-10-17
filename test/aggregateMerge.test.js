@@ -164,3 +164,109 @@ test("foiz ko'rinishidagi kalitlar bo'lak bo'yicha aniqlanadi", () => {
   assert.equal(merge.isRatioKey("generated"), false);
   assert.equal(merge.isRatioKey("total"), false);
 });
+
+/* ───────── OBYEKT JAVOBLAR (sanoq kartalari, hisobot bloklari) ───────── */
+
+test("sozlama qiymati QO'SHILMAYDI, sanoqchi qo'shiladi", () => {
+  // `GET /tasks/stats` ning haqiqiy shakli: sanoqchilar ichida "muddati
+  // yaqin" chegarasi (24 soat) ham keladi.
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { total: 10, overdue: 3, dueSoonHours: 24 } } },
+    { branch: B, body: { success: true, data: { total: 5, overdue: 1, dueSoonHours: 24 } } },
+  ]);
+
+  assert.equal(out.data.total, 15);
+  assert.equal(out.data.overdue, 4);
+  assert.equal(out.data.dueSoonHours, 24, "24 soat 48 ga aylanmaydi");
+});
+
+test("davr va sahifa qiymatlari qo'shilmaydi", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { month: 202610, count: 2, lastSyncAt: 5 } } },
+    { branch: B, body: { success: true, data: { month: 202610, count: 3, lastSyncAt: 9 } } },
+  ]);
+
+  assert.equal(out.data.month, 202610);
+  assert.equal(out.data.count, 5);
+  assert.equal(out.data.lastSyncAt, 5, "instant qo'shilmaydi");
+});
+
+test("max/min qo'shilmaydi — eng katta/kichik olinadi", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { maxStreak: 7, minScore: 3 } } },
+    { branch: B, body: { success: true, data: { maxStreak: 4, minScore: 1 } } },
+  ]);
+
+  assert.equal(out.data.maxStreak, 7);
+  assert.equal(out.data.minScore, 1);
+});
+
+test("registrdagi `keep` ham hurmat qilinadi", () => {
+  const out = merge.mergeObject(
+    [
+      { branch: A, body: { success: true, data: { limitHours: 8, used: 2 } } },
+      { branch: B, body: { success: true, data: { limitHours: 8, used: 5 } } },
+    ],
+    { keep: new Set(["limitHours"]) },
+  );
+
+  assert.equal(out.data.limitHours, 8);
+  assert.equal(out.data.used, 7);
+});
+
+test("kunlik qatorlar ULANMAYDI — sana bo'yicha GURUHLANADI", () => {
+  const out = merge.mergeObject([
+    {
+      branch: A,
+      body: {
+        success: true,
+        data: {
+          days: [
+            { date: "2026-10-01", income: 100, expense: 20 },
+            { date: "2026-10-02", income: 50, expense: 0 },
+          ],
+        },
+      },
+    },
+    {
+      branch: B,
+      body: {
+        success: true,
+        data: { days: [{ date: "2026-10-01", income: 7, expense: 3 }] },
+      },
+    },
+  ]);
+
+  assert.equal(out.data.days.length, 2, "bitta sanada ikkita qator qolmaydi");
+  assert.deepEqual(out.data.days[0], {
+    date: "2026-10-01",
+    income: 107,
+    expense: 23,
+  });
+  // Faqat bitta filialda bor kun — o'z filiali belgisi bilan qoladi
+  assert.equal(out.data.days[1]._branch.code, "main");
+});
+
+test("kalitsiz qatorlar ulanadi va har biri filial bilan belgilanadi", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { top: [{ fullName: "A", score: 9 }] } } },
+    { branch: B, body: { success: true, data: { top: [{ fullName: "B", score: 8 }] } } },
+  ]);
+
+  assert.equal(out.data.top.length, 2);
+  assert.deepEqual(
+    out.data.top.map((row) => row._branch.code),
+    ["main", "second"],
+  );
+});
+
+test("obyekt javobdagi foiz o'rtachalanadi, matn esa langardan qoladi", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { percent: 80, label: "Bosh" } } },
+    { branch: B, body: { success: true, data: { percent: 90, label: "Ikkinchi" } } },
+  ]);
+
+  assert.equal(out.data.percent, 85);
+  assert.equal(out.data.label, "Bosh");
+  assert.deepEqual(merge.notesToMeta(out.notes).partial, ["data.label"]);
+});
