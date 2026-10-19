@@ -20,7 +20,12 @@
  */
 
 const prisma = require("../config/prisma");
-const { BadRequestError, NotFoundError, ConflictError } = require("../utils/errors");
+const {
+  BadRequestError,
+  NotFoundError,
+  ConflictError,
+  ForbiddenError,
+} = require("../utils/errors");
 const { isValidId } = require("../utils/objectId");
 const { buildNameSearchWhere } = require("../helpers/nameSearch.helpers");
 const { getTashkentDateUtc, formatDateUz } = require("../helpers/date.helpers");
@@ -36,6 +41,10 @@ const {
   daysLeftLabel,
 } = require("../helpers/certificate.helpers");
 const progressService = require("./certificateProgress.service");
+// ⚠️ Tyutor egaligi — `tutorGroup.service.js` dagi YAGONA manbadan
+// (`assertMyGroupClass`): "bu sinf menikimi" degan savolga ikkinchi javob
+// yozilsa, biriga qo'shilgan shart ikkinchisida tushib qolardi.
+const tutorGroupService = require("./tutorGroup.service");
 
 const PAGE_LIMIT_DEFAULT = 50;
 const PAGE_LIMIT_MAX = 200;
@@ -284,32 +293,124 @@ async function createPlan({ studentId, trackId, dueDate, note }, { actorId }) {
 }
 
 /**
- * Muddat va izohni tahrirlash.
+ * MUDDAT, YO'NALISH VA IZOHNI TAHRIRLASH.
  *
- * ⚠️ YO'NALISH O'ZGARMAYDI: boshqa yo'nalish — BOSHQA reja. Uni
- * o'zgartirish `activeKey` ni ko'chirib, "o'quvchi IELTS ni rejalashtirgan
- * edi" degan faktni izsiz yo'q qilardi. Xato kiritilgan reja bekor
- * qilinadi va yangisi yoziladi (sabab bilan).
+ * Muddat surilishi ham, yo'nalishning o'zgarishi ham ODATIY hol: o'quvchi
+ * formani to'ldirgandan keyin fikri aniqlashadi (biznes qarori,
+ * 2026-10-19 — ilgari yo'nalish qotirilgan edi va tuzatish uchun rejani
+ * bekor qilib qaytadan yozish kerak bo'lardi).
+ *
+ * ⚠️ MUDDAT/IZOH — O'SHA QATORDA, YO'NALISH — ALMASHTIRISH BILAN.
+ * Yo'nalish o'zgarganda eski qator `superseded` bo'lib QOLADI va yangisi
+ * yoziladi. Ikki sabab:
+ *   1. "O'quvchi IELTS ni rejalashtirgan edi" degan fakt tarixda qoladi —
+ *      modulning qolgan hamma yo'li ham shunday ishlaydi.
+ *   2. ⚠️ IMPORT IDEMPOTENTLIGI. Idempotentlik kaliti —
+ *      `(o'quvchi, yo'nalish, forma vaqti)`. Qator JOYIDA ko'chirilsa,
+ *      eski kalit bo'shab qolardi va AYNI faylni qayta yuklash admin
+ *      tuzatgan yo'nalishni QAYTA TIKLARDI.
+ *
+ * Yangi qatorda `forma vaqti` YO'Q va manba "qo'lda": u endi forma javobi
+ * emas, odamning qarori.
+ *
+ * ⚠️ Yangi yo'nalishda allaqachon faol reja bo'lsa — `ConflictError`.
+ * `writePlanInTx` ni to'g'ridan-to'g'ri chaqirib bo'lmaydi: u o'sha
+ * slotdagi qatorni ALMASHTIRIB yuborardi, ya'ni ikkinchi reja jimgina
+ * yo'qolardi.
+ *
+ * @param {string} id
+ * @param {{dueDate?: unknown, note?: unknown, trackId?: string}} input
+ * @param {{actorId: string}} options
+ * @returns {Promise<object>} yangilangan (yoki yangi) reja
  */
-async function updatePlan(id, { dueDate, note }, { actorId }) {
+async function updatePlan(id, { dueDate, note, trackId }, { actorId }) {
   const plan = await prisma.certificatePlan.findUnique({
     where: { id },
-    select: { id: true, status: true },
+    select: {
+      id: true,
+      status: true,
+      studentId: true,
+      trackId: true,
+      dueDate: true,
+      note: true,
+      submittedAt: true,
+      source: true,
+      sourceName: true,
+      sourceGroup: true,
+    },
   });
   if (!plan) throw new NotFoundError("Reja topilmadi");
   if (plan.status !== ACTIVE_STATUS) {
     throw new BadRequestError("Faqat faol rejani tahrirlash mumkin");
   }
 
-  const data = {};
-  if (dueDate !== undefined) data.dueDate = parseDueDate(dueDate);
-  if (note !== undefined) data.note = parseText(note, { max: NOTE_MAX, field: "Izoh" });
+  const nextDueDate = dueDate !== undefined ? parseDueDate(dueDate) : plan.dueDate;
+  const nextNote =
+    note !== undefined ? parseText(note, { max: NOTE_MAX, field: "Izoh" }) : plan.note;
 
-  if (Object.keys(data).length > 0) {
-    await prisma.certificatePlan.update({ where: { id }, data });
+  const track = trackId !== undefined ? await assertTrack(trackId) : null;
+  const trackChanged = Boolean(track) && track.id !== plan.trackId;
+
+  if (!trackChanged) {
+    const data = {};
+    if (dueDate !== undefined) data.dueDate = nextDueDate;
+    if (note !== undefined) data.note = nextNote;
+    if (Object.keys(data).length > 0) {
+      await prisma.certificatePlan.update({ where: { id }, data });
+    }
+    return readPlan(id, { actorId });
   }
 
-  return readPlan(id, { actorId });
+  const created = await prisma.$transaction(async (tx) => {
+    const activeKey = planActiveKey(plan.studentId, track.id);
+
+    const clash = await tx.certificatePlan.findUnique({
+      where: { activeKey },
+      select: { id: true },
+    });
+    if (clash) {
+      throw new ConflictError(
+        `Bu o'quvchida "${track.name}" bo'yicha allaqachon faol reja bor — avval uni bekor qiling`,
+      );
+    }
+
+    // Compare-and-swap: oraliqda qator bekor qilingan bo'lsa yangi qator
+    // yozilmaydi (aks holda bekor qilingan reja boshqa nom bilan tirilardi)
+    const released = await tx.certificatePlan.updateMany({
+      where: { id, status: ACTIVE_STATUS },
+      data: {
+        status: PLAN_STATUS.SUPERSEDED,
+        activeKey: null,
+        supersededAt: new Date(),
+      },
+    });
+    if (released.count !== 1) {
+      throw new ConflictError("Reja hozir boshqa joyda o'zgartirildi — qayta urinib ko'ring");
+    }
+
+    return tx.certificatePlan.create({
+      data: {
+        studentId: plan.studentId,
+        trackId: track.id,
+        dueDate: nextDueDate,
+        note: nextNote,
+        // Forma javobi EMAS, odamning qarori — shuning uchun forma vaqti
+        // ko'chmaydi (va import idempotentligi eski qatorda qoladi)
+        submittedAt: null,
+        source: PLAN_SOURCE.MANUAL,
+        // Moslashtirish xotirasi esa KO'CHADI: keyingi import o'sha xom
+        // ismni qayta so'ramasligi kerak
+        sourceName: plan.sourceName,
+        sourceGroup: plan.sourceGroup,
+        status: ACTIVE_STATUS,
+        activeKey,
+        createdBy: actorId,
+      },
+      select: { id: true },
+    });
+  });
+
+  return readPlan(created.id, { actorId });
 }
 
 /** BEKOR QILISH — sabab MAJBURIY, qator registrda qoladi. */
@@ -666,6 +767,140 @@ async function searchStudents(query = {}) {
   }));
 }
 
+/* ─────────────────────── TYUTOR (GURUH RAHBARI) ─────────────────────── */
+
+/**
+ * TYUTORNING O'Z GURUHIDAGI SERTIFIKAT REJALARI.
+ *
+ * Biznes qarori (2026-10-19): muddat surilishi va yo'nalishning o'zgarishi
+ * odatiy hol, va buni o'quvchini eng yaxshi biladigan odam — GURUH RAHBARI
+ * qiladi. Markaziy adminni kutib turish har tuzatishni kechiktirardi.
+ *
+ * ⚠️ RUXSAT KALITI YO'Q — huquq GURUH BIRIKTIRILGANIDAN keladi
+ * (`/tutor-groups/my` bilan AYNI qoida): tyutor id si TOKENDAN olinadi va
+ * sinf uning joriy guruhi bo'lishi SHART. Egalik tekshiruvi
+ * `tutorGroup.service.js` dagi YAGONA manbadan (`assertMyGroupClass`).
+ *
+ * ⚠️ Javobda YO'NALISHLAR KATALOGI ham keladi: tyutorda `certificates.view`
+ * yo'q va tanlagich uchun alohida ruxsat ochib berish kerak emas.
+ *
+ * ⚠️ Forma to'ldirilgan vaqt KELMAYDI (`includeSubmitted: false`): u faqat
+ * ma'muriyat uchun va tyutorga ham kerak emas.
+ *
+ * @param {{actorId: string, classId: string}} params
+ */
+async function getTutorGroupPlans({ actorId, classId }) {
+  if (!isValidId(classId)) throw new BadRequestError("Sinf tanlovi noto'g'ri");
+  await tutorGroupService.assertMyGroupClass(actorId, classId);
+
+  const [group, students, tracks] = await Promise.all([
+    prisma.class.findUnique({ where: { id: classId }, select: { id: true, name: true } }),
+    prisma.user.findMany({
+      where: { ...CURRENT_STUDENTS, classes: { some: { classId } } },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        username: true,
+        classes: { select: { class: { select: { id: true, name: true } } } },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    }),
+    prisma.certificateTrack.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, subject: { select: { id: true, name: true } } },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+
+  const studentById = new Map(students.map((student) => [student.id, student]));
+
+  const plans = students.length
+    ? await prisma.certificatePlan.findMany({
+        where: {
+          studentId: { in: [...studentById.keys()] },
+          status: { in: [ACTIVE_STATUS, PLAN_STATUS.PASSED] },
+        },
+        select: PLAN_SELECT,
+        orderBy: [{ dueDate: { sort: "asc", nulls: "last" } }, { createdAt: "desc" }],
+      })
+    : [];
+
+  // ⚠️ Mavzu progressi O'QISH yo'lida ankor YOZMAYDI (`ensure: false`):
+  // tyutor ro'yxatni ochganda ta'lim domeniga qator qo'shilmasligi kerak.
+  const progress = await progressService.loadProgressForPlans(plans, {
+    actorId,
+    ensure: false,
+  });
+  const today = getTashkentDateUtc();
+
+  const byStudent = new Map(students.map((student) => [student.id, []]));
+  for (const plan of plans) {
+    byStudent.get(plan.studentId)?.push(
+      shapePlan(plan, {
+        student: studentById.get(plan.studentId),
+        progress: progress.get(
+          progressService.progressKey(plan.studentId, plan.track?.subjectId),
+        ),
+        today,
+        includeSubmitted: false,
+      }),
+    );
+  }
+
+  return {
+    group,
+    tracks,
+    // ⚠️ Rejasi YO'Q o'quvchi ham ro'yxatda qoladi: tyutor "kim hali
+    // bildirmagan" degan savolga ham javob olishi kerak.
+    students: students.map((student) => ({
+      id: student.id,
+      fullName: `${student.lastName ?? ""} ${student.firstName ?? ""}`.trim(),
+      username: student.username,
+      plans: byStudent.get(student.id) ?? [],
+    })),
+  };
+}
+
+/**
+ * TYUTOR REJANI TAHRIRLAYDI — faqat MUDDAT va YO'NALISH.
+ *
+ * ⚠️ Izoh TEGILMAYDI: u o'quvchining o'z javobi ("aniq sanani bilmayman"),
+ * tyutorning qarori emas. Qo'shish, bekor qilish va "topshirdi" belgisi ham
+ * yo'q — ular ma'muriyatning qarori (biznes qarori, 2026-10-19).
+ *
+ * ⚠️ EGALIK HAR SO'ROVDA QAYTA tekshiriladi: o'quvchi tyutorning JORIY
+ * guruhlaridan birida bo'lishi shart. Guruh oraliqda olib qo'yilgan bo'lsa
+ * tahrir o'tmaydi — eskirgan ekran begona o'quvchiga tegib ketmaydi.
+ *
+ * @param {string} planId
+ * @param {{dueDate?: unknown, trackId?: string}} input
+ * @param {{actorId: string}} options
+ */
+async function updateTutorPlan(planId, { dueDate, trackId }, { actorId }) {
+  const plan = await prisma.certificatePlan.findUnique({
+    where: { id: planId },
+    select: { id: true, studentId: true },
+  });
+  if (!plan) throw new NotFoundError("Reja topilmadi");
+
+  const classIds = await tutorGroupService.assertMyGroupClass(actorId, null);
+
+  const owned = await prisma.userClass.findFirst({
+    where: { userId: plan.studentId, classId: { in: classIds } },
+    select: { classId: true },
+  });
+  if (!owned) {
+    throw new ForbiddenError("Bu o'quvchi sizning tyutor guruhingizda emas");
+  }
+
+  const updated = await updatePlan(planId, { dueDate, trackId }, { actorId });
+
+  // Tyutorga forma vaqti ko'rsatilmaydi — javob shakli ro'yxat bilan AYNI
+  const { submittedAt, source, sourceName, sourceGroup, ...visible } = updated;
+  return visible;
+}
+
 /**
  * BITTA O'QUVCHINING REJALARI.
  *
@@ -746,6 +981,8 @@ module.exports = {
   markPassed,
   listPlans,
   searchStudents,
+  getTutorGroupPlans,
+  updateTutorPlan,
   getStudentPlans,
   shapePlan,
 };

@@ -80,6 +80,36 @@ const markPlanPassed = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Topshirdi deb belgilandi", data });
 });
 
+/* ─────────────────── tyutor (guruh rahbari) ─────────────────── */
+
+/**
+ * TYUTORNING O'Z GURUHI.
+ *
+ * ⚠️ Ruxsat kaliti YO'Q: tyutor id si TOKENDAN olinadi va sinf uning joriy
+ * guruhi bo'lishi servisda tekshiriladi (`/tutor-groups/my` bilan AYNI
+ * qoida). So'rov tanasidan tyutor id si O'QILMAYDI.
+ */
+const getTutorGroupPlans = asyncHandler(async (req, res) => {
+  const data = await planService.getTutorGroupPlans({
+    actorId: req.user.id,
+    classId: req.params.classId,
+  });
+
+  res.json({ success: true, data });
+});
+
+/** Tyutor rejani tahrirlaydi — faqat muddat va yo'nalish. */
+const updateTutorPlan = asyncHandler(async (req, res) => {
+  const { dueDate, trackId } = req.body;
+  const data = await planService.updateTutorPlan(
+    req.params.id,
+    { dueDate, trackId },
+    { actorId: req.user.id },
+  );
+
+  res.json({ success: true, message: "Reja yangilandi", data });
+});
+
 /* ─────────────────────────── yo'nalishlar ─────────────────────────── */
 
 const getTracks = asyncHandler(async (req, res) => {
@@ -138,6 +168,8 @@ module.exports = {
   updatePlan,
   cancelPlan,
   markPlanPassed,
+  getTutorGroupPlans,
+  updateTutorPlan,
   getTracks,
   createTrack,
   updateTrack,

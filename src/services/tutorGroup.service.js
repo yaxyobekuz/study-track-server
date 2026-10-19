@@ -816,6 +816,47 @@ const previewAmount = async (data = {}) => {
 };
 
 /**
+ * TYUTORNING JORIY OYDAGI GURUHLARI — SINF ID LARI.
+ *
+ * ⚠️ EGALIK TEKSHIRUVINING YAGONA MANBAI. "Bu sinf menikimi" degan savolga
+ * javob beradigan har bir yo'l (xabar yuborish, guruh ko'rinishi, sertifikat
+ * rejasini tahrirlash) shu yerdan o'qiydi: ikkinchi nusxa bo'lsa, biriga
+ * qo'shilgan shart (masalan tugagan biriktirishni chiqarib tashlash)
+ * ikkinchisida tushib qolardi va tyutor begona sinfga tegib ketardi.
+ *
+ * ⚠️ Faqat JORIY OYNI qamragan biriktirishlar: tugagan guruh tyutorga endi
+ * tegishli emas (`getMyGroups` bilan AYNI qoida).
+ *
+ * @param {string} tutorId - HAR DOIM `req.user.id`
+ * @returns {Promise<string[]>}
+ */
+const getMyGroupClassIds = async (tutorId) => {
+  const groups = await prisma.tutorGroup.findMany({
+    where: { tutorId, ...coveringMonthWhere(currentMonthKey()) },
+    select: { classId: true },
+  });
+  return [...new Set(groups.map((group) => group.classId))];
+};
+
+/**
+ * Sinf tyutorning joriy guruhimi — bo'lmasa 403.
+ *
+ * @param {string} tutorId
+ * @param {string} classId
+ * @returns {Promise<string[]>} tyutorning barcha sinf id lari
+ */
+const assertMyGroupClass = async (tutorId, classId) => {
+  const classIds = await getMyGroupClassIds(tutorId);
+  if (classIds.length === 0) {
+    throw new ForbiddenError("Sizga tyutor guruhi biriktirilmagan");
+  }
+  if (classId && !classIds.includes(classId)) {
+    throw new ForbiddenError("Bu sinf sizga tyutor guruhi sifatida biriktirilmagan");
+  }
+  return classIds;
+};
+
+/**
  * TYUTORNING O'Z GURUHLARI — xodim paneli. Ruxsat kaliti yo'q, id tokendan.
  * Tugagan biriktirishlar ko'rsatilmaydi: tyutor bugungi ishini ko'radi.
  *
@@ -1219,18 +1260,13 @@ const sendTutorMessage = async ({ actor, messageText, classId = null, studentId 
     throw new BadRequestError("Xabar matni majburiy");
   }
 
-  // Tyutorning joriy oy uchun faol guruhlari → sinflari
-  const groups = await prisma.tutorGroup.findMany({
-    where: { tutorId: actor.id, ...coveringMonthWhere(currentMonthKey()) },
-    select: { classId: true },
-  });
-  const classIds = [...new Set(groups.map((g) => g.classId))];
+  // ⚠️ EGALIK bitta manbadan (`getMyGroupClassIds`): tanlangan sinf
+  // tyutorning joriy guruhlaridan biri bo'lishi shart, aks holda tyutor
+  // istalgan sinfga xabar yuborardi.
+  const classIds = await getMyGroupClassIds(actor.id);
   if (classIds.length === 0) {
     throw new BadRequestError("Sizga hali guruh biriktirilmagan — xabar yuborib bo'lmaydi");
   }
-
-  // ⚠️ EGALIK: tanlangan sinf tyutorning joriy guruhlaridan biri bo'lishi
-  // shart, aks holda tyutor istalgan sinfga xabar yuborardi.
   if (classId && !classIds.includes(classId)) {
     throw new ForbiddenError("Bu sinf sizga tyutor guruhi sifatida biriktirilmagan");
   }
@@ -1325,6 +1361,8 @@ module.exports = {
   resolveTutorIdsForMonth,
   getStaffGroups,
   getMyGroups,
+  getMyGroupClassIds,
+  assertMyGroupClass,
   getClassOptions,
   getGroupOverview,
   previewAmount,

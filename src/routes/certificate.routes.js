@@ -10,6 +10,8 @@ const {
   updatePlan,
   cancelPlan,
   markPlanPassed,
+  getTutorGroupPlans,
+  updateTutorPlan,
   getTracks,
   createTrack,
   updateTrack,
@@ -35,6 +37,17 @@ router.use(protect);
 router.get("/my", getMyPlans);
 
 router.get("/stats", authorizePermission(PERMISSIONS.CERTIFICATES_VIEW), getStats);
+
+// ⚠️ TYUTOR (GURUH RAHBARI) — RUXSAT KALITI YO'Q, huquq guruh
+// biriktirilganidan keladi (`/tutor-groups/my` bilan AYNI qoida). Id
+// tokendan olinadi, egalik servisda HAR SO'ROVDA qayta tekshiriladi.
+// ⚠️ `/tutor/...` yo'llari `/:id` dan OLDIN turishi SHART.
+router.get(
+  "/tutor/groups/:classId",
+  validateObjectId("classId"),
+  getTutorGroupPlans,
+);
+router.patch("/tutor/plans/:id", validateObjectId("id"), updateTutorPlan);
 
 // O'quvchi tanlagichi — YOZISH yo'lining qismi, shuning uchun `manage`
 router.get(
