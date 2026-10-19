@@ -1,6 +1,8 @@
 const prisma = require("../config/prisma");
 const { getCoinSettings } = require("../services/settings.service");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
+const { getNowInUzbekistan } = require("../helpers/date.helpers");
+const { COIN_PERIOD_TYPES, earnedDelta } = require("../helpers/coin.helpers");
 const logger = require("../utils/logger");
 
 // ─────────────────────────────────────────────
@@ -407,6 +409,174 @@ async function getCoinStats() {
   };
 }
 
+// ─────────────────────────────────────────────
+// DAVR KESIMIDAGI TANGA (ro'yxatdagi "haftalik" ko'rinish)
+// ─────────────────────────────────────────────
+
+/**
+ * Ro'yxatlarda tanga qaysi kesimda ko'rsatilishi.
+ *
+ * `total` — `User.coinBalance`, ya'ni HOZIRGI qoldiq (sarflangani ayrilgan):
+ * tizimning sukutdagi ko'rinishi. `week` — JORIY haftada TOPILGAN tanga.
+ */
+const COIN_PERIODS = Object.freeze({ TOTAL: "total", WEEK: "week" });
+
+/**
+ * TANGA HAFTASI — dushanba 00:00 dan YAKSHANBA 23:59:59.999 gacha.
+ *
+ * Hafta boshi reyting bilan AYNI (dushanba — `getCurrentWeekRange`).
+ *
+ * ⚠️ YAKSHANBA ATAYLAB ICHIDA. Haftalik maktab/sinf bonusi yakshanba
+ * 00:01 da yoziladi (`weeklystats.job.js`) va u endigina tugagan haftaning
+ * mukofoti. Oyna dushanba–shanba qilib olinsa, bonus O'ZI MUKOFOT BO'LGAN
+ * haftaga ham, keyingisiga ham tushmay, hech qayerda ko'rinmay qolardi —
+ * o'quvchining 100 tangasi izsiz yo'qolgandek bo'lardi.
+ *
+ * Joriy haftada bu oyna `getCurrentWeekRange()` (dushanba–bugun) bilan
+ * AYNI natija beradi: kelajak sanali tanga qatori bo'lmaydi.
+ *
+ * @param {Date} anchor - hafta ichidagi istalgan kun
+ * @returns {{from: Date, to: Date}}
+ */
+function weekBounds(anchor) {
+  const dayOfWeek = anchor.getDay(); // 0 = yakshanba
+  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+
+  const from = new Date(anchor);
+  from.setDate(anchor.getDate() - daysFromMonday);
+  from.setHours(0, 0, 0, 0);
+
+  const to = new Date(from);
+  to.setDate(from.getDate() + 6);
+  to.setHours(23, 59, 59, 999);
+
+  return { from, to };
+}
+
+/**
+ * Sanani "YYYY-MM-DD" kalendar kuniga aylantiradi (MAHALLIY — Toshkent).
+ *
+ * ⚠️ `toISOString()` UTC beradi: dushanba 00:00 Toshkent = yakshanba 19:00
+ * UTC, ya'ni hafta boshi "yakshanba" bo'lib ko'rinardi.
+ *
+ * @param {Date} date
+ * @returns {string}
+ */
+function toDayKey(date) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+/**
+ * "YYYY-MM-DD" ni MAHALLIY (Toshkent) kun sifatida o'qiydi.
+ *
+ * ⚠️ `new Date("2026-10-12")` UTC yarim tunini beradi — hafta chegarasi
+ * esa mahalliy `getDay()`/`setHours` bilan hisoblanadi. Ikkisini
+ * aralashtirish ba'zi kunlarda haftani bittaga surib yuborardi.
+ *
+ * @param {string} [value]
+ * @returns {Date|null}
+ */
+function parseWeekAnchor(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value ?? "").trim());
+  if (!match) return null;
+
+  const [, year, month, day] = match.map(Number);
+  const date = new Date(year, month - 1, day, 12, 0, 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/**
+ * So'rovdagi davrni haqiqiy oraliqqa aylantiradi.
+ *
+ * Noma'lum davr → `null`, ya'ni umumiy qoldiq ko'rinishi: xato yozilgan
+ * so'rov parametri ro'yxatni yiqitmasligi kerak.
+ *
+ * ⚠️ KELAJAK HAFTA BERILMAYDI — joriy haftaga qaytariladi: u yerda hali
+ * birorta tanga yo'q va bo'sh ekran "tizim ishlamayapti" bo'lib ko'rinardi
+ * (o'quvchi ekranidagi "kelgusi oylar ro'yxatga kirmaydi" bilan AYNI
+ * mulohaza, `education.md` §1).
+ *
+ * ⚠️ QO'SHNI HAFTALARNING LANGARI HAM SHU YERDA hisoblanadi (`prevWeek` /
+ * `nextWeek`) va kunlar "YYYY-MM-DD" ko'rinishida qaytadi. Panel sanaga
+ * umuman tegmasligi uchun: brauzer boshqa vaqt mintaqasida bo'lsa,
+ * instantdan kun olish haftani bir kunga — demak navigator bir haftaga —
+ * surib yuborardi.
+ *
+ * @param {string} [period] - hozircha faqat `week`
+ * @param {string} [weekAnchor] - "YYYY-MM-DD", hafta ichidagi istalgan kun
+ * @returns {{period: string, from: Date, to: Date, fromDay: string,
+ *   toDay: string, prevWeek: string, nextWeek: string|null,
+ *   isCurrent: boolean}|null}
+ */
+function resolveCoinPeriod(period, weekAnchor) {
+  if (period !== COIN_PERIODS.WEEK) return null;
+
+  const current = weekBounds(getNowInUzbekistan());
+  const anchor = parseWeekAnchor(weekAnchor);
+  const picked = anchor ? weekBounds(anchor) : current;
+
+  const isFuture = picked.from.getTime() > current.from.getTime();
+  const range = isFuture ? current : picked;
+  const isCurrent = range.from.getTime() === current.from.getTime();
+
+  const prev = new Date(range.from);
+  prev.setDate(prev.getDate() - 7);
+  const next = new Date(range.from);
+  next.setDate(next.getDate() + 7);
+
+  return {
+    period: COIN_PERIODS.WEEK,
+    ...range,
+    fromDay: toDayKey(range.from),
+    toDay: toDayKey(range.to),
+    prevWeek: toDayKey(prev),
+    // Joriy haftada "keyingi" YO'Q — kelajakda hali tanga yo'q
+    nextWeek: isCurrent ? null : toDayKey(next),
+    isCurrent,
+  };
+}
+
+/**
+ * Berilgan o'quvchilar uchun davr ichida TOPILGAN tanga.
+ *
+ * ⚠️ Yo'nalish TURDAN olinadi (`coin.helpers.js`): summa bazada musbat
+ * yotgani uchun oddiy `_sum: { amount }` do'kon xaridini ham kirim deb
+ * sanab yuborardi. Shuning uchun guruhlash `(studentId, type)` bo'yicha —
+ * bitta so'rov, yo'nalish esa JS tomonda qo'llanadi.
+ *
+ * ⚠️ Faqat RO'YXATDAGI o'quvchilar uchun chaqiriladi (bitta sahifa): shart
+ * `studentId IN (...)` + `date` oralig'i bo'lgani uchun u
+ * `(student_id, date)` indeksiga tushadi.
+ *
+ * @param {string[]} studentIds
+ * @param {{from: Date, to: Date}} range
+ * @returns {Promise<Map<string, number>>} har o'quvchi uchun summa (0 ham)
+ */
+async function getEarnedCoinsByStudents(studentIds, { from, to }) {
+  const ids = [...new Set((studentIds || []).filter(Boolean))];
+  const totals = new Map(ids.map((id) => [id, 0]));
+  if (!ids.length) return totals;
+
+  const rows = await prisma.coinTransaction.groupBy({
+    by: ["studentId", "type"],
+    where: {
+      studentId: { in: ids },
+      type: { in: [...COIN_PERIOD_TYPES] },
+      date: { gte: from, lte: to },
+    },
+    _sum: { amount: true },
+  });
+
+  for (const row of rows) {
+    const current = totals.get(row.studentId) ?? 0;
+    totals.set(row.studentId, current + earnedDelta(row.type, row._sum.amount));
+  }
+
+  return totals;
+}
+
 async function _updateDailyCoinStat(amount, date = new Date()) {
   if (amount <= 0) return;
 
@@ -682,6 +852,9 @@ async function getCoinLeaderboard(page = 1, limit = 50) {
 }
 
 module.exports = {
+  COIN_PERIODS,
+  resolveCoinPeriod,
+  getEarnedCoinsByStudents,
   getSettings,
   updateSettings,
   distributeDailyCoins,

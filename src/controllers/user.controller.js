@@ -92,9 +92,20 @@ const getStaffReport = asyncHandler(async (req, res) => {
 
 // Get all users (Owner only)
 const getAllUsers = asyncHandler(async (req, res) => {
-  const { users, pagination } = await userService.getAllUsers(req.query, req.user);
+  // `coinPeriod` — faqat tanga kesimi so'ralganda qaytadi: qaysi hafta
+  // hisoblangani (`from`/`to`) va u joriy haftami. Panel navigatorni
+  // shundan chizadi.
+  const { users, pagination, coinPeriod } = await userService.getAllUsers(
+    req.query,
+    req.user,
+  );
 
-  res.json({ success: true, data: users, pagination });
+  res.json({
+    success: true,
+    data: users,
+    pagination,
+    ...(coinPeriod && { coinPeriod }),
+  });
 });
 
 // Create new user (Owner only)

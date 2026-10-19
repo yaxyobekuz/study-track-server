@@ -40,6 +40,12 @@ const {
   summarizeWeek,
 } = require("./scheduleWorkTime.service");
 const classChanges = require("./studentClassChange.service");
+// O'quvchilar ro'yxatidagi tanga ustuni davr kesimida ham ko'rsatiladi —
+// hisob YAGONA nuqtada (`coin.service.js`), bu yerda faqat biriktiriladi.
+const {
+  resolveCoinPeriod,
+  getEarnedCoinsByStudents,
+} = require("./coin.service");
 
 /**
  * Arxivlash o'qish davrini qanday sabab bilan yopadi.
@@ -618,6 +624,8 @@ async function getAllUsers(query, actor = null) {
     search,
     archived,
     createdBy,
+    coinPeriod,
+    coinWeek,
   } = query;
 
   const where = {};
@@ -731,10 +739,45 @@ async function getAllUsers(query, actor = null) {
     return obj;
   });
 
+  // TANGA USTUNI DAVR KESIMIDA (admin → O'quvchilar → "Haftalik").
+  //
+  // Sukut — `coinBalance`, ya'ni hozirgi qoldiq. `coinPeriod=week` bo'lsa
+  // har qatorga `periodCoins` qo'shiladi: TANLANGAN haftada topilgan tanga
+  // (`coinWeek` — o'sha hafta ichidagi istalgan kun, bo'lmasa joriy hafta).
+  // ⚠️ Qoldiq ustiga YOZILMAYDI — ikkalasi boshqa savolga javob beradi
+  // ("qancha tangasi bor" / "shu hafta qancha topdi") va qoldiqni jimgina
+  // almashtirish hisobotlarni ham, do'kon qarorini ham chalg'itardi.
+  const coinRange = resolveCoinPeriod(coinPeriod, coinWeek);
+  if (coinRange) {
+    const students = usersWithSchedule.filter((u) => u.role === ROLES.STUDENT);
+    const earned = await getEarnedCoinsByStudents(
+      students.map((u) => u.id),
+      coinRange,
+    );
+    students.forEach((student) => {
+      student.periodCoins = earned.get(student.id) ?? 0;
+    });
+  }
+
   const totalPages = Math.ceil(total / limitNum);
 
   return {
     users: usersWithSchedule,
+    // Qaysi hafta hisoblanganini panel SERVERDAN oladi: hafta chegarasini
+    // ikkinchi marta frontendda hisoblash "ekranda bir hafta, raqamda
+    // boshqa hafta" holatiga olib kelardi.
+    // ⚠️ Faqat KALENDAR kunlari chiqadi, instantlar emas: panel sana
+    // hisoblamaydi, navigatorning qo'shni haftalari ham tayyor keladi.
+    ...(coinRange && {
+      coinPeriod: {
+        period: coinRange.period,
+        fromDay: coinRange.fromDay,
+        toDay: coinRange.toDay,
+        prevWeek: coinRange.prevWeek,
+        nextWeek: coinRange.nextWeek,
+        isCurrent: coinRange.isCurrent,
+      },
+    }),
     pagination: {
       total,
       page: pageNum,
