@@ -33,6 +33,7 @@ const SECTIONS = {
   SUBSTITUTIONS: "substitutions",
   TUTORS: "tutors",
   TOPICS: "topics",
+  CERTIFICATES: "certificates",
   CLASSES: "classes",
   STUDENT_SYSTEMS: "studentSystems",
   SUBJECTS: "subjects",
@@ -357,6 +358,32 @@ const PERMISSION_SECTIONS = [
       { key: "import", label: "Fayldan yuklash" },
       { key: "assign", label: "Darsga mavzu biriktirish" },
       A.delete,
+    ],
+  },
+  {
+    // SERTIFIKAT REJALARI — "kim qaysi sertifikatni qachon topshirmoqchi".
+    //
+    // ⚠️ ALOHIDA BO'LIM, `topics` yoki `statistics` ichidagi amal EMAS: eski
+    // bare "topics"/"statistics" kalitlari bo'limning HAMMA amalini beradi
+    // (`hasPermission`, `expandLegacyKeys`) va butun maktabning sertifikat
+    // rejasini ommaviy yuklash huquqi jimgina tarqalib ketardi
+    // (`gradeGrants` va `scheduleSync` bilan AYNI sabab).
+    //
+    // Amallar ataylab mayda:
+    //   `view`   — ro'yxat, statistika va yo'nalishlar katalogi
+    //   `manage` — reja qo'shish/tahrirlash/bekor qilish va katalog
+    //   `import` — fayldan OMMAVIY yuklash. `manage` dan ALOHIDA, chunki
+    //              bitta fayl bir necha yuz rejani almashtiradi: bitta
+    //              o'quvchining muddatini to'g'rilash bilan butun maktab
+    //              ro'yxatini qayta yozish — boshqa-boshqa qaror
+    //              (`topics.import` / `topics.assign` bilan AYNI mulohaza).
+    key: SECTIONS.CERTIFICATES,
+    label: "Sertifikat rejalari",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "manage", label: "Reja va yo'nalishlarni boshqarish" },
+      { key: "import", label: "Fayldan ommaviy yuklash" },
     ],
   },
   {

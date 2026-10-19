@@ -938,8 +938,22 @@ async function getDayLessonTopics({ classId, day, actorId }) {
  * ⚠️ Bitta kalendar, bitta mavzular ro'yxati, bitta ankorlar so'rovi —
  * sinflar bo'yicha aylanmaydi. Ilgari bu ekran har sinf uchun alohida
  * so'rov yuborsa, 30 sinfli fanda yuzlab so'rov chiqardi.
+ *
+ * ⚠️ `totalTopics` — mavzular MAXRAJI. Sertifikat progressi ("200 tadan
+ * 100-siga yetdi") aynan shundan quriladi va IKKINCHI hisob yozilmaydi:
+ * jadval ekrani bir raqam, sertifikat ekrani boshqa raqam ko'rsatsa,
+ * mavzu hisobining butun mohiyati (bitta haqiqat) yo'qolardi.
+ *
+ * @param {object} params
+ * @param {string} params.subjectId
+ * @param {string} params.actorId
+ * @param {boolean} [params.ensure=true] - ankorsiz sinfga AVTOMATIK ankor
+ *   yozilsinmi. ⚠️ `false` — FAQAT O'QISH yo'li uchun: o'quvchi o'z
+ *   sertifikat progressini ko'rganda ta'lim domeniga qator yozilmasligi
+ *   kerak (`createdBy` o'quvchi bo'lib qolardi). Admin yo'lida `true`
+ *   qoladi — jadval ekranidagi bilan AYNI qoida.
  */
-async function getSubjectClassTopics({ subjectId, actorId }) {
+async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
   const subject = await prisma.subject.findUnique({
     where: { id: subjectId },
     select: { id: true, name: true },
@@ -966,7 +980,11 @@ async function getSubjectClassTopics({ subjectId, actorId }) {
 
   const classIds = [...slotsByClass.keys()];
   if (classIds.length === 0) {
-    return { subject, classes: [], topics: [] };
+    // Jadvalda bu fandan dars yo'q — lekin MAXRAJ baribir qaytadi:
+    // sertifikat ekrani "mavzu ro'yxati bor, dars yo'q" bilan "mavzu
+    // ro'yxati ham yo'q" ni ajratishi kerak.
+    const empty = await loadTopics([subjectId]);
+    return { subject, classes: [], totalTopics: empty.get(subjectId)?.last ?? 0 };
   }
 
   let [classes, topicsBySubject, bindings] = await Promise.all([
@@ -1008,7 +1026,9 @@ async function getSubjectClassTopics({ subjectId, actorId }) {
   // bo'ladi va har biriga alohida so'rov yuborilsa, sahifa yuzlab so'rov
   // qilardi. Yozuv yiqilsa ekran baribir ochiladi (sababi ko'rinadi).
   const anchored = new Set(bindings.map((row) => row.classId));
-  const missing = classIds.filter((classId) => !anchored.has(classId) && slotByClass.get(classId));
+  const missing = ensure
+    ? classIds.filter((classId) => !anchored.has(classId) && slotByClass.get(classId))
+    : [];
 
   if (missing.length > 0 && topics.last >= 1) {
     try {
@@ -1122,7 +1142,7 @@ async function getSubjectClassTopics({ subjectId, actorId }) {
 
   rows.sort((a, b) => (a.class?.name || "").localeCompare(b.class?.name || ""));
 
-  return { subject, classes: rows };
+  return { subject, classes: rows, totalTopics: topics.last };
 }
 
 /**

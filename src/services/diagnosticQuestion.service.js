@@ -10,7 +10,9 @@
  *   - fan + mavzu + qiyinlik bo'yicha saralash.
  */
 
-const XLSX = require("xlsx");
+// Fayl o'qish YAGONA nuqtada: kengaytma tekshiruvi, CSV kodlashi va sarlavha
+// normallashtirish `sheetReader.helpers.js` da (sertifikat importi bilan AYNI).
+const { readSheet } = require("../helpers/sheetReader.helpers");
 const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
 const { uploadFile } = require("./file.service");
@@ -897,64 +899,6 @@ const IMPORT_LEVEL_ALIASES = {
   expert: "expert",
 };
 
-/**
- * Faylning BIRINCHI varag'ini obyektlar massiviga aylantiradi.
- *
- * ⚠️ Sarlavhalar NORMALLASHTIRILADI (kichik harf, bo'shliqlar → pastki
- * chiziq): foydalanuvchi "To'g'ri javob" deb yozsa ham, "togri_javob" deb
- * yozsa ham bir xil ustun topiladi. Aks holda import faqat namunaviy
- * shablon bilan ishlardi.
- */
-function _readSheet(file) {
-  const name = String(file.originalname || "");
-  const extension = name.includes(".")
-    ? name.split(".").pop().toLowerCase()
-    : "";
-  if (!["xlsx", "xls", "csv"].includes(extension)) {
-    throw new BadRequestError("Faqat .xlsx, .xls yoki .csv fayllar qabul qilinadi");
-  }
-
-  let workbook;
-  try {
-    // ⚠️ CSV MATN sifatida, ATAYLAB UTF-8 deb o'qiladi.
-    //
-    // `XLSX.read(buffer)` kodlashni o'zi taxmin qiladi va BOM'siz UTF-8
-    // faylni CP1252 deb o'qib yuboradi: "O‘zbekistonda" → "OÊ»zbekistonda".
-    // Google Sheets ham, LibreOffice ham BOM qo'ymaydi, ya'ni bu ODATIY
-    // hol edi. Eng yomoni — xato JIM: ustun sarlavhalari ASCII bo'lgani
-    // uchun qator muvaffaqiyatli import bo'ladi va buzuq matn bazaga
-    // tushadi. Sarlavhada apostrof bo'lsa ("To'g'ri javob") u ham buzilib,
-    // HAR BIR qator "To'g'ri javob ko'rsatilmagan" bilan yiqilardi.
-    //
-    // .xlsx/.xls o'z kodlashini ichida olib yuradi — ularga tegilmaydi.
-    if (extension === "csv") {
-      const text = file.buffer.toString("utf8").replace(/^\uFEFF/, "");
-      workbook = XLSX.read(text, { type: "string" });
-    } else {
-      workbook = XLSX.read(file.buffer, { type: "buffer" });
-    }
-  } catch {
-    throw new BadRequestError("Faylni o'qib bo'lmadi — format buzilgan bo'lishi mumkin");
-  }
-
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) throw new BadRequestError("Faylda sahifa topilmadi");
-
-  const raw = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" });
-
-  return raw.map((row) => {
-    const normalized = {};
-    for (const [key, value] of Object.entries(row)) {
-      const clean = String(key)
-        .trim()
-        .toLowerCase()
-        .replace(/[‘’ʻʼ'`´]/g, "")
-        .replace(/[\s.-]+/g, "_");
-      normalized[clean] = value;
-    }
-    return normalized;
-  });
-}
 
 /**
  * Excel/CSV dan ommaviy import.
@@ -971,7 +915,7 @@ async function importQuestions(file, { subjectId, authorId, language = "uz" }) {
   if (!subjectId) throw new BadRequestError("Fan tanlanishi shart");
   await _assertSubjectAndTopic(subjectId, null);
 
-  const rows = _readSheet(file);
+  const { rows } = readSheet(file);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new BadRequestError("Faylda ma'lumot topilmadi");
   }
@@ -1122,7 +1066,7 @@ async function _nextCodeCounter() {
 const LETTERS = ["a", "b", "c", "d", "e", "f"];
 
 function _prepareImportRow(row, { subjectId, topicByName, language }) {
-  // Sarlavhalar `_readSheet` da allaqachon normallashtirilgan
+  // Sarlavhalar `readSheet` da allaqachon normallashtirilgan
   // (kichik harf, `_` bilan), shuning uchun bu yerda faqat bir nechta
   // sinonim nom sinab ko'riladi.
   const pick = (...keys) => {

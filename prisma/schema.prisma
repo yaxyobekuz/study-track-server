@@ -758,6 +758,7 @@ model Subject {
   achievements        StudentAchievement[]
   clubs               Club[]
   diagnosticQuestions DiagnosticQuestion[]
+  certificateTracks   CertificateTrack[]
 
   @@map("subjects")
 }
@@ -1266,6 +1267,164 @@ model ClassSubjectProgress {
 
   @@unique([classId, subjectId])
   @@map("class_subject_progress")
+}
+
+// ─────────────────────────────────────────────
+// SERTIFIKAT REJALARI
+// ─────────────────────────────────────────────
+//
+// "Kim qaysi sertifikatni qachon topshirmoqchi" — o'quvchining O'Z
+// deklaratsiyasi (Google Forms orqali yig'ilgan va platformaga yuklangan
+// yoki qo'lda kiritilgan). Bu BAHO ham, imtihon natijasi ham EMAS: faqat
+// reja va muddat.
+//
+// Ikki jadval, chunki ikki xil savol:
+//   `CertificateTrack` — "qaysi yo'nalishlar bor" (KATALOG)
+//   `CertificatePlan`  — "bu o'quvchi qachon topshiradi" (FAKT)
+
+/// SERTIFIKAT YO'NALISHLARI KATALOGI.
+///
+/// Yo'nalish maktab fani BO'LISHI SHART EMAS: "IELTS", "CEFR", "SAT" —
+/// tashqi imtihonlar, "Ona tili", "Matematika" — maktab fanlari. Shuning
+/// uchun katalog ALOHIDA va `Subject` ga bog'lanish IXTIYORIY.
+///
+/// ⚠️ `subjectId` — mavzu progressining YAGONA manbai. Bog'langanda
+/// o'quvchiga "sinfi mavzuning nechanchisiga yetdi" ko'rsatiladi
+/// (`certificateProgress.service.js` → `lessonTopic.service.js`),
+/// bog'lanmaganda esa ekranda OCHIQ "mavzu ro'yxati bog'lanmagan" deb
+/// turadi. Soxta foiz chiqarilmaydi: IELTS ning maktab mavzulari yo'q.
+///
+/// ⚠️ Bir nechta yo'nalish BITTA fanga bog'lanishi mumkin (IELTS va CEFR —
+/// ikkisi ham ingliz tili): progress ikkalasida bir xil chiqadi va bu
+/// to'g'ri — sinf bitta fanni o'qiyapti.
+model CertificateTrack {
+  id   String @id @db.Char(24)
+  name String @unique
+
+  // Mavzu progressi uchun maktab fani. `onDelete: SetNull` — fan
+  // o'chirilsa yo'nalish QOLADI (unga rejalar ishora qiladi), faqat
+  // progress yo'qoladi.
+  subjectId String?  @map("subject_id") @db.Char(24)
+  subject   Subject? @relation(fields: [subjectId], references: [id], onDelete: SetNull)
+
+  // O'chirilmaydi — arxivlanadi: o'tgan rejalar unga ishora qiladi
+  // (`Tariff` / `DeviceApp` bilan AYNI qaror).
+  isActive Boolean @default(true) @map("is_active")
+
+  // Importda avtomatik yaratilganmi ("import") yoki odam qo'shganmi
+  // ("manual") — katalogni tozalashda kerak.
+  source String @default("manual")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  plans CertificatePlan[]
+
+  @@index([subjectId])
+  @@index([isActive, name])
+  @@map("certificate_tracks")
+}
+
+/// O'QUVCHINING SERTIFIKAT REJASI — bitta yo'nalish, bitta muddat.
+///
+/// ⚠️ FORMADA IKKI USTUN BOR, JADVALDA BITTA QATOR. Google Forms "1-fan" va
+/// "2-fan" deb so'raydi, lekin bu formaning cheklovi: uchinchi sertifikat
+/// kerak bo'lsa ustun qo'shib, butun kodni (statistika, progress, o'quvchi
+/// ekrani) qayta yozish kerak bo'lardi. Shuning uchun import har ustunni
+/// ALOHIDA qator qiladi va "o'quvchi nechta sertifikat rejalashtirgan"
+/// degan savolga sanoq bilan javob beriladi.
+///
+/// ⚠️ `activeKey` — HAR (o'quvchi + yo'nalish) uchun BITTA faol reja.
+/// O'quvchi formani ikki marta to'ldirgan (ma'lumot shunday keldi) va
+/// OXIRGI topshirish YUTADI: eskisi `superseded` bo'lib registrda QOLADI.
+/// O'chirish yo'q — "nega muddat o'zgardi" degan savolga javob tarixda
+/// turadi (`LessonTopicBinding.activeKey` bilan AYNI naqsh).
+///
+/// ⚠️ `@@unique([studentId, trackId, submittedAt])` — IMPORT IDEMPOTENTLIGI.
+/// Forma timestamp'i tashqi tizimdagi yagona kalit: AYNI faylni ikki marta
+/// yuklash ikkinchi qator yozmaydi. Qo'lda kiritilganda `submittedAt` NULL
+/// bo'ladi va PostgreSQL da NULL lar bir-biriga teng emas, ya'ni bu shart
+/// qo'lda kiritishni TO'SMAYDI (`DevicePolicyAssignment.targetKey` dagi
+/// bilan AYNI mulohaza, faqat teskari tomoni ishlatilgan).
+model CertificatePlan {
+  id String @id @db.Char(24)
+
+  // soft ref — FK yo'q: o'quvchi o'chirilsa ham registr o'qilishi kerak
+  // (`User` o'chirilmaydi, arxivlanadi — lekin qoida bir xil saqlanadi)
+  studentId String @map("student_id") @db.Char(24)
+
+  trackId String           @map("track_id") @db.Char(24)
+  track   CertificateTrack @relation(fields: [trackId], references: [id], onDelete: Restrict)
+
+  // Topshirish muddati — KUN aniqligida (`@db.Date`, faqat `getUTC*`).
+  // Ixtiyoriy: o'quvchilarning bir qismi "aniq sanani bilmayman" deb
+  // yuborgan va bu HOLAT, bo'shliq emas.
+  dueDate DateTime? @map("due_date") @db.Date
+
+  status CertificatePlanStatus @default(planned)
+
+  // ⚠️ FORMA TO'LDIRILGAN ON — faqat ADMIN ko'radi. O'quvchi ekraniga
+  // CHIQMAYDI (biznes talabi): unga kerakli narsa — muddat, topshirish
+  // vaqti emas. `@db.Date` EMAS, INSTANT: "oxirgisi yutadi" qarori
+  // soat-daqiqa aniqligida (bitta kunda ikki marta to'ldirilgan).
+  submittedAt DateTime? @map("submitted_at")
+
+  // O'quvchining "Qo'shimcha fikr" javobi
+  note String?
+
+  // "import" | "manual"
+  source String @default("manual")
+
+  // ⚠️ IMPORTDAGI XOM QIYMATLAR — MOSLASHTIRISH XOTIRASI. Keyingi import
+  // o'sha xato yozilgan ismni ("Suhrobbrk") shu ustundan topib, o'quvchini
+  // QAYTA so'ramasdan ulaydi. Alohida moslashtirish jadvali shu sababdan
+  // qo'shilmadi: xotira registrning o'zida turadi.
+  sourceName  String? @map("source_name")
+  sourceGroup String? @map("source_group")
+
+  // "<studentId>|<trackId>" — FAQAT `planned` qatorda, qolganida NULL
+  activeKey String? @unique @map("active_key")
+
+  // Topshirdi — slot BO'SHAYDI: keyingi daraja uchun yangi reja yozilsin
+  // (IELTS ni topshirgan o'quvchi keyingi yil qayta topshiradi).
+  passedAt DateTime? @map("passed_at")
+  passedBy String?   @map("passed_by") @db.Char(24)
+
+  // O'chirilmaydi — bekor qilinadi, SABAB majburiy
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelledBy  String?   @map("cancelled_by") @db.Char(24)
+  cancelReason String?   @map("cancel_reason")
+
+  // Yangiroq topshirish bilan almashtirildi
+  supersededAt DateTime? @map("superseded_at")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([studentId, trackId, submittedAt])
+  // O'quvchi ekrani va admin ro'yxati
+  @@index([studentId, status])
+  @@index([trackId, status])
+  // Statistika: muddat kesimi va "muddati o'tgan"
+  @@index([status, dueDate])
+  // Moslashtirish xotirasi (xom ism bo'yicha qidiruv)
+  @@index([sourceName])
+  @@map("certificate_plans")
+}
+
+/// Reja holati.
+///
+/// `planned`    — amaldagi reja (statistika SHUNI sanaydi)
+/// `passed`     — topshirdi (fakt registrda qoladi)
+/// `cancelled`  — bekor qilindi, sababi bilan
+/// `superseded` — yangiroq topshirish bilan almashtirildi
+enum CertificatePlanStatus {
+  planned
+  passed
+  cancelled
+  superseded
 }
 
 // ─────────────────────────────────────────────

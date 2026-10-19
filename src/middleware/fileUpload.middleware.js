@@ -25,7 +25,7 @@ const FILE_MIME_TYPES = {
   // esa (Excel o'rnatilmagan mashinada) `application/octet-stream`
   // yuboradi. Ilgari panel ".csv qabul qilinadi" deb va'da qilar, fayl
   // esa shu bosqichda rad etilardi. Bu bo'shashish XAVFSIZ, chunki
-  // haqiqiy darvoza — servisdagi KENGAYTMA tekshiruvi (`_readSheet`
+  // haqiqiy darvoza — umumiy KENGAYTMA tekshiruvi (`readSheet`
   // faqat .xlsx/.xls/.csv ni o'tkazadi) va faylni jadval sifatida
   // ochib bo'lmasa import baribir yiqiladi.
   spreadsheet: [
