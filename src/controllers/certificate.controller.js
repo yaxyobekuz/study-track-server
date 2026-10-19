@@ -80,6 +80,15 @@ const markPlanPassed = asyncHandler(async (req, res) => {
   res.json({ success: true, message: "Topshirdi deb belgilandi", data });
 });
 
+/** O'quvchining mavzular manzarasi — "nega bu foiz". */
+const getStudentProgress = asyncHandler(async (req, res) => {
+  const data = await planService.getStudentProgressDetail(req.params.studentId, {
+    actorId: req.user.id,
+  });
+
+  res.json({ success: true, data });
+});
+
 /* ─────────────────── tyutor (guruh rahbari) ─────────────────── */
 
 /**
@@ -162,6 +171,7 @@ const getStats = asyncHandler(async (req, res) => {
 module.exports = {
   getPlans,
   getStudentPlans,
+  getStudentProgress,
   getMyPlans,
   searchStudents,
   createPlan,

@@ -767,6 +767,61 @@ async function searchStudents(query = {}) {
   }));
 }
 
+/**
+ * O'QUVCHINING SERTIFIKAT MANZARASI — "nega bu foiz".
+ *
+ * Ro'yxatdagi foiz o'z-o'zidan savol tug'diradi, shuning uchun o'quvchi
+ * ustiga bosilganda har bir sertifikat FANI bo'yicha mavzular O'TILGAN va
+ * QOLGAN qismga ajratib ko'rsatiladi.
+ *
+ * ⚠️ Foiz va mavzular ro'yxati BITTA hisobdan (`certificateProgress`):
+ * ikki joyda sanalsa, kartadagi "60%" bilan ro'yxatdagi "3 / 5" bir-biriga
+ * mos kelmay qolardi.
+ *
+ * @param {string} studentId
+ * @param {{actorId: string}} options
+ */
+async function getStudentProgressDetail(studentId, { actorId }) {
+  const { student, plans } = await getStudentPlans(studentId, {
+    actorId,
+    includeHistory: false,
+  });
+
+  // Mavzular ro'yxati uchun rejaning fani kerak — `PLAN_SELECT` shaklidagi
+  // xom qatorlar emas, shakllangan javobdan yig'amiz
+  const breakdown = await progressService.loadTopicBreakdown(
+    plans.map((plan) => ({
+      studentId,
+      track: { subjectId: plan.track?.subject?.id ?? null },
+    })),
+    { actorId },
+  );
+
+  return {
+    student,
+    subjects: plans.map((plan) => {
+      const subjectId = plan.track?.subject?.id ?? null;
+      const detail = subjectId
+        ? breakdown.get(progressService.progressKey(studentId, subjectId))
+        : null;
+
+      return {
+        planId: plan.id,
+        status: plan.status,
+        track: plan.track,
+        dueDate: plan.dueDate,
+        dueDateLabel: plan.dueDateLabel,
+        daysLeft: plan.daysLeft,
+        daysLeftLabel: plan.daysLeftLabel,
+        progress: plan.progress,
+        // ⚠️ `topics` BO'LMASLIGI ham javob: yo'nalish fanga bog'lanmagan
+        // yoki fanga mavzu yuklanmagan. Sababi `progress.reason` da.
+        topics: detail?.topics ?? null,
+      };
+    }),
+  };
+}
+
 /* ─────────────────────── TYUTOR (GURUH RAHBARI) ─────────────────────── */
 
 /**
@@ -984,5 +1039,6 @@ module.exports = {
   getTutorGroupPlans,
   updateTutorPlan,
   getStudentPlans,
+  getStudentProgressDetail,
   shapePlan,
 };

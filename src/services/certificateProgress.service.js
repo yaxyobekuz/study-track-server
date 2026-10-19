@@ -224,11 +224,77 @@ async function loadProgressForPlans(plans, { actorId, ensure = false }) {
 /** `loadProgressForPlans` natijasidan bitta reja uchun kalit. */
 const progressKey = (studentId, subjectId) => `${studentId}|${subjectId ?? ""}`;
 
+/**
+ * BITTA O'QUVCHINING MAVZULAR BATAFSILI — "nega 60%".
+ *
+ * Foiz o'z-o'zidan savol tug'diradi: qaysi mavzular o'tilgan, qaysilari
+ * qolgan. Bu funksiya har sertifikat fani uchun mavzular ro'yxatini
+ * O'TILGAN va QOLGAN qismga ajratib beradi.
+ *
+ * ⚠️ JORIY MAVZU "O'TILGAN" TOMONDA — `buildProgress` dagi AYNI hisob
+ * (`yetdi + qoldi = jami`). Ikki joyda ikki xil sanalsa, ekrandagi foiz
+ * bilan ro'yxatdagi mavzular soni bir-biriga mos kelmasdi.
+ *
+ * ⚠️ MAVZU RO'YXATI FANGA tegishli, o'quvchiga emas: platformada
+ * o'quvchining shaxsiy mavzu o'rni yo'q, o'rin SINFNIKI. Shuning uchun
+ * javobda sinf nomi ham bor.
+ *
+ * ⚠️ `ensure: false` — batafsil ko'rinish O'QISH yo'li va u ta'lim
+ * domeniga ankor qatori yozmaydi.
+ *
+ * @param {object[]} plans - `{ studentId, track: { subjectId } }` shaklidagi rejalar
+ * @param {{actorId: string}} options
+ * @returns {Promise<Map<string, {topics: object[], done: number, left: number}>>}
+ *   kalit — `progressKey(studentId, subjectId)`
+ */
+async function loadTopicBreakdown(plans, { actorId }) {
+  const rows = plans || [];
+  const subjectIds = [...new Set(rows.map((plan) => plan.track?.subjectId).filter(Boolean))];
+
+  const out = new Map();
+  if (subjectIds.length === 0) return out;
+
+  const [progress, topicsBySubject] = await Promise.all([
+    loadProgressForPlans(rows, { actorId, ensure: false }),
+    lessonTopicService.loadTopics(subjectIds),
+  ]);
+
+  for (const plan of rows) {
+    const subjectId = plan.track?.subjectId ?? null;
+    if (!subjectId) continue;
+
+    const key = progressKey(plan.studentId, subjectId);
+    if (out.has(key)) continue;
+
+    const entry = progress.get(key);
+    const topics = topicsBySubject.get(subjectId);
+    if (!topics || topics.last < 1) continue;
+
+    // Progress aniqlanmagan bo'lsa (sinfda dars yo'q) — hammasi QOLGAN
+    const reached = entry?.available ? entry.reachedTopics : 0;
+
+    const list = [];
+    for (let order = 1; order <= topics.last; order += 1) {
+      const topic = topics.byOrder.get(order);
+      list.push({
+        order,
+        name: topic?.name ?? `${order}-mavzu`,
+        done: order <= reached,
+      });
+    }
+
+    out.set(key, { topics: list, done: reached, left: topics.last - reached });
+  }
+
+  return out;
+}
+
 module.exports = {
   PROGRESS_REASONS,
   loadSubjectProgress,
   loadStudentClasses,
   buildProgress,
   loadProgressForPlans,
+  loadTopicBreakdown,
   progressKey,
 };

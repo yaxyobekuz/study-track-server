@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   getPlans,
   getStudentPlans,
+  getStudentProgress,
   getMyPlans,
   searchStudents,
   createPlan,
@@ -89,6 +90,14 @@ router.get(
   authorizePermission(PERMISSIONS.CERTIFICATES_VIEW),
   validateObjectId("studentId"),
   getStudentPlans,
+);
+
+// O'quvchining mavzular manzarasi — qaysi mavzu o'tilgan, qaysisi qolgan
+router.get(
+  "/student/:studentId/progress",
+  authorizePermission(PERMISSIONS.CERTIFICATES_VIEW),
+  validateObjectId("studentId"),
+  getStudentProgress,
 );
 
 router.patch(

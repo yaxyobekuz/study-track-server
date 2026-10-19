@@ -68,27 +68,61 @@ async function getCertificateStats(query = {}) {
 
   const scope = await loadArchivedStudentScope();
 
-  const plans = await prisma.certificatePlan.findMany({
-    where: { ...scope, status: { in: [ACTIVE_STATUS, PLAN_STATUS.PASSED] } },
-    select: {
-      studentId: true,
-      trackId: true,
-      dueDate: true,
-      status: true,
-      track: { select: { id: true, name: true, subjectId: true } },
-    },
-  });
+  const [plans, catalog] = await Promise.all([
+    prisma.certificatePlan.findMany({
+      where: { ...scope, status: { in: [ACTIVE_STATUS, PLAN_STATUS.PASSED] } },
+      select: {
+        studentId: true,
+        trackId: true,
+        dueDate: true,
+        status: true,
+        track: { select: { id: true, name: true, subjectId: true } },
+      },
+    }),
+    // ⚠️ KATALOG HAM YUKLANADI: rejasi YO'Q yo'nalish ham ro'yxatda
+    // turishi kerak. Ro'yxat faqat rejalardan yig'ilsa, hali hech kim
+    // tanlamagan yo'nalish ekranda umuman ko'rinmas va uni fanga
+    // bog'lash ham, arxivlash ham mumkin bo'lmay qolardi.
+    // ⚠️ ARXIVLANGANLAR HAM: "Yo'nalishlar" alohida ekrani olib
+    // tashlangan va katalog shu jadvaldan boshqariladi. Arxivlangani
+    // ro'yxatdan butunlay chiqib ketsa, uni arxivdan qaytarish yo'li
+    // qolmasdi. Ekran ularni ALOHIDA, sukut bo'yicha yopiq ko'rsatadi.
+    prisma.certificateTrack.findMany({
+      select: {
+        id: true,
+        name: true,
+        subjectId: true,
+        isActive: true,
+        subject: { select: { id: true, name: true } },
+      },
+      orderBy: { name: "asc" },
+    }),
+  ]);
 
   // O'quvchi → sinflar. ⚠️ `UserClass` sanasiz M2M, o'quvchi bir nechta
   // sinfda bo'lishi mumkin — bunda u HAR IKKI sinf kesimida sanaladi,
   // "Jami" da esa bir marta (sinflar ro'yxatidagi AYNI qoida).
   const studentIds = [...new Set(plans.map((plan) => plan.studentId))];
-  const links = studentIds.length
-    ? await prisma.userClass.findMany({
-        where: { userId: { in: studentIds } },
-        select: { userId: true, class: { select: { id: true, name: true } } },
-      })
-    : [];
+  const [links, people] = studentIds.length
+    ? await Promise.all([
+        prisma.userClass.findMany({
+          where: { userId: { in: studentIds } },
+          select: { userId: true, class: { select: { id: true, name: true } } },
+        }),
+        // Hisobotdagi "O'quvchilar ro'yxati" ustuni uchun — BIR MARTA
+        prisma.user.findMany({
+          where: { id: { in: studentIds } },
+          select: { id: true, firstName: true, lastName: true },
+        }),
+      ])
+    : [[], []];
+
+  const nameById = new Map(
+    people.map((person) => [
+      person.id,
+      `${person.lastName ?? ""} ${person.firstName ?? ""}`.trim(),
+    ]),
+  );
 
   const classesByStudent = new Map(studentIds.map((id) => [id, []]));
   for (const link of links) {
@@ -117,6 +151,8 @@ async function getCertificateStats(query = {}) {
   const byTrack = new Map();
   const byClass = new Map();
   const byMonth = new Map();
+  // "Guruh + fan" kesimi — o'quvchilar ISMI bilan (hisobotdagi asosiy jadval)
+  const byClassTrack = new Map();
 
   for (const plan of plans) {
     if (!inScope(plan.studentId)) continue;
@@ -149,6 +185,15 @@ async function getCertificateStats(query = {}) {
       const bucket = bucketOf(byClass, cls.id, { id: cls.id, name: cls.name });
       bucket.students.add(plan.studentId);
       bucket.plans += 1;
+
+      const cell = bucketOf(byClassTrack, `${cls.id}|${plan.trackId}`, {
+        classId: cls.id,
+        className: cls.name,
+        trackId: plan.trackId,
+        trackName: plan.track?.name ?? "—",
+      });
+      cell.students.add(plan.studentId);
+      cell.plans += 1;
     }
 
     const monthKey = monthKeyOf(plan.dueDate);
@@ -174,9 +219,46 @@ async function getCertificateStats(query = {}) {
       passed: totals.passed,
       passedStudents: totals.passedStudents.size,
     },
-    byTrack: [...byTrack.values()]
-      .map((bucket) => ({ ...bucket, ...countBucket(bucket) }))
-      .sort((a, b) => b.students - a.students || nameCollator.compare(a.name, b.name)),
+    // ⚠️ KATALOGDAGI HAR BIR FAOL YO'NALISH ro'yxatda, rejasi bo'lmasa
+    // ham (0 bilan): ekran shu jadvaldan fanga bog'lanadi va arxivlanadi.
+    byTrack: catalog
+      .map((track) => {
+        const bucket = byTrack.get(track.id);
+        return {
+          id: track.id,
+          name: track.name,
+          subjectId: track.subjectId,
+          subject: track.subject,
+          isActive: track.isActive,
+          students: bucket ? bucket.students.size : 0,
+          plans: bucket ? bucket.plans : 0,
+        };
+      })
+      .sort(
+        (a, b) =>
+          Number(b.isActive) - Number(a.isActive) ||
+          b.students - a.students ||
+          nameCollator.compare(a.name, b.name),
+      ),
+
+    // GURUH + FAN kesimi, o'quvchilar ISMI bilan. Sinf nomi tabiiy
+    // tartibda (5-A, 10-A), ichida fan nomi bo'yicha.
+    byClassTrack: [...byClassTrack.values()]
+      .map((bucket) => ({
+        classId: bucket.classId,
+        className: bucket.className,
+        trackId: bucket.trackId,
+        trackName: bucket.trackName,
+        students: bucket.students.size,
+        studentNames: [...bucket.students]
+          .map((studentId) => nameById.get(studentId) ?? "—")
+          .sort((a, b) => nameCollator.compare(a, b)),
+      }))
+      .sort(
+        (a, b) =>
+          classCollator.compare(a.className, b.className) ||
+          nameCollator.compare(a.trackName, b.trackName),
+      ),
     byClass: [...byClass.values()]
       .map((bucket) => ({ ...bucket, ...countBucket(bucket) }))
       .sort((a, b) => classCollator.compare(a.name, b.name)),
