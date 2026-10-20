@@ -64,6 +64,7 @@ const {
 const { formatDateUz, formatDateTimeUz } = require("../helpers/date.helpers");
 const { dayKey, lessonCreditKey, LESSON_MISS_REASONS } = require("../helpers/lessonHours");
 const { gradePenaltyTitle } = require("../helpers/gradePenalty.helpers");
+const { cancelPenaltyInTx: cancelPenalty } = require("./gradePenalty.service");
 const { Decimal, formatAmount } = require("../helpers/money.helpers");
 const { getTeachersHours } = require("./lessonHours.service");
 const { loadContext, computeForStaff, toEngineHours } = require("./payrollEngine.service");
@@ -442,39 +443,21 @@ async function getDay(query = {}) {
 /* ─────────────────────── Jarima: bekor qilish va qaytarish ─────────────────────── */
 
 /**
- * Jarimani bekor qiladi (compare-and-swap `approved` → `rejected`) va
- * o'qituvchidan ballni oladi — 0 dan pastga tushirmasdan (ball boshqa yo'l
- * bilan kamaytirilgan bo'lishi mumkin). Parallel amal uni ikki marta bekor
- * qilib, ballni ikki marta ayirmaydi.
+ * Jarimani bekor qiladi — hisob `gradePenalty.service.js` da.
+ *
+ * ⚠️ YAGONA NUSXA: qayta tekshirish ham (`recheckRange`) shuni chaqiradi.
+ * Ikki nusxa bo'lsa, biriga qo'shilgan himoya (ball 0 dan pastga
+ * tushmasligi, compare-and-swap) ikkinchisida tushib qolardi.
  *
  * @returns {Promise<number|null>} AYNAN olib tashlangan ball; `null` — jarima
  *   shu orada o'zgargan, tegilmadi
  */
-async function cancelPenaltyInTx(tx, penalty, { reason, actorId, now }) {
-  const updated = await tx.penalty.updateMany({
-    where: { id: penalty.id, status: "approved" },
-    data: {
-      status: "rejected",
-      rejectionReason: `Dars o'tildi deb belgilandi: ${reason}`,
-      reviewedBy: actorId,
-      reviewedAt: now,
-    },
+const cancelPenaltyInTx = (tx, penalty, { reason, actorId, now }) =>
+  cancelPenalty(tx, penalty, {
+    reason: `Dars o'tildi deb belgilandi: ${reason}`,
+    actorId,
+    now,
   });
-  if (updated.count !== 1) return null;
-
-  const user = await tx.user.findUnique({
-    where: { id: penalty.userId },
-    select: { penaltyPoints: true },
-  });
-  const removed = Math.max(0, Math.min(penalty.points, user?.penaltyPoints ?? 0));
-  if (removed > 0) {
-    await tx.user.update({
-      where: { id: penalty.userId },
-      data: { penaltyPoints: { decrement: removed } },
-    });
-  }
-  return removed;
-}
 
 /**
  * Shu belgi bekor qilgan jarimani qaytaradi (`rejected` → `approved`) va

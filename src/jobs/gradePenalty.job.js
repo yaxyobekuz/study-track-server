@@ -1,21 +1,32 @@
 const cron = require("node-cron");
 const { branchCron } = require("../helpers/branchIterator");
 const prisma = require("../config/prisma");
-const { isHoliday } = require("../services/holiday.service");
-const { getSubstitutionCells, effectiveTeacherOf } = require("../helpers/teacherAccess");
 const { currentDayDate } = require("../helpers/month.helpers");
 const { getGradePenaltySettings } = require("../services/settings.service");
-const { gradePenaltyTitle } = require("../helpers/gradePenalty.helpers");
-const logger = require("../utils/logger");
+// ⚠️ HISOB BU YERDA EMAS. "Qaysi darsga jarima haqli" degan savolga javob
+// `gradePenalty.service.js` da — qayta tekshirish ham o'shani chaqiradi.
+// Ikkinchi javob yozilsa, tozalash jarima yozishdan boshqacha ishlardi.
 const {
-  getNowInUzbekistan,
-  getDayNameUz,
-  getDateRangeForDay,
-  isSunday,
-} = require("../helpers/date.helpers");
+  DAY_SKIP,
+  LESSON_SKIP,
+  computeDayPenalties,
+  penaltyDescription,
+} = require("../services/gradePenalty.service");
+const logger = require("../utils/logger");
+
+const SKIP_LOG = {
+  [DAY_SKIP.DISABLED]: "Baho jarima tizimi o'chirilgan",
+  [DAY_SKIP.SUNDAY]: "Yakshanba kuni",
+  [DAY_SKIP.HOLIDAY]: "Bayram kuni",
+};
 
 /**
  * Bugungi qo'yilmagan baholar uchun o'qituvchilarga avtomatik jarima beradi.
+ *
+ * ⚠️ IDEMPOTENT: jarima SARLAVHA bo'yicha qidiriladi (dars sarlavhadan
+ * tanib olinadi — `gradePenalty.helpers.js`), ya'ni pass kuniga necha marta
+ * ishlasa ham takror yozilmaydi.
+ *
  * @param {Object} ownerUser
  */
 async function runGradePenaltyPass(ownerUser) {
@@ -25,143 +36,29 @@ async function runGradePenaltyPass(ownerUser) {
   }
 
   const settings = await getGradePenaltySettings();
+  const day = currentDayDate();
 
-  if (!settings.isEnabled) {
-    logger.info("[GradePenaltyCron] Baho jarima tizimi o'chirilgan, o'tkazib yuborildi");
+  const { skip, lessons } = await computeDayPenalties(day, settings);
+
+  if (skip) {
+    logger.info(`[GradePenaltyCron] ${SKIP_LOG[skip] ?? skip}, o'tkazib yuborildi`);
     return;
   }
-
-  const now = getNowInUzbekistan();
-
-  if (isSunday(now)) {
-    logger.info("[GradePenaltyCron] Yakshanba kuni, o'tkazib yuborildi");
-    return;
-  }
-
-  const { isHoliday: holidayToday } = await isHoliday(now);
-  if (holidayToday) {
-    logger.info("[GradePenaltyCron] Bayram kuni, o'tkazib yuborildi");
-    return;
-  }
-
-  const todayDayName = getDayNameUz(now);
-  const { startDate, endDate } = getDateRangeForDay(now);
-  const dateStr = now.toISOString().split("T")[0];
-
-  const exemptSet = new Set(
-    (settings.exemptTeachers || []).map((id) => id.toString()),
-  );
-
-    // ⚠️ O'RINBOSARLIK — jarima AMALDA DARSGA CHIQQAN odamga yoziladi.
-  //
-  // Bu modulning eng baland xatosi shu yerda bo'lardi: kasal bo'lib
-  // darsini boshqaga bergan o'qituvchi, o'rinbosar baho qo'ymagani uchun
-  // avtomatik jarima olib yurardi. Yozuv bitta so'rov bilan olinadi va
-  // ostidagi siklda faqat xaritadan o'qiladi.
-  // ⚠️ `now` EMAS, TOSHKENT KUNI: `teacherAccess` sanani faqat `getUTC*`
-  // bilan o'qiydi va 00:00–05:00 orasida UTC kechagi kunni ko'rsatardi.
-  const substitutionCells = await getSubstitutionCells(currentDayDate());
-
-  const todaySchedules = await prisma.schedule.findMany({
-    where: { day: todayDayName },
-    include: { lessons: true },
-  });
-
-  // Schedule.classId scalar (relation YO'Q) — sinflarni qo'lda yuklaymiz
-  const classIds = [...new Set(todaySchedules.map((s) => s.classId))];
-  const classes = await prisma.class.findMany({
-    where: { id: { in: classIds } },
-    select: { id: true, name: true, isActive: true },
-  });
-  const classMap = {};
-  classes.forEach((c) => {
-    classMap[c.id] = c;
-  });
 
   let penalized = 0;
   let skipped = 0;
   let errors = 0;
 
-  for (const schedule of todaySchedules) {
-    const scheduleClass = classMap[schedule.classId];
-    if (!scheduleClass || !scheduleClass.isActive) continue;
+  for (const entry of lessons.values()) {
+    if (!entry.deserved) {
+      skipped++;
+      continue;
+    }
 
-    const studentsInClass = await prisma.user.findMany({
-      where: {
-        role: "student",
-        classes: { some: { classId: schedule.classId } },
-        isActive: true,
-      },
-      select: { id: true },
-    });
-
-    const totalStudents = studentsInClass.length;
-    if (totalStudents === 0) continue;
-
-    const todayGrades = await prisma.grade.findMany({
-      where: {
-        classId: schedule.classId,
-        date: { gte: startDate, lte: endDate },
-      },
-    });
-
-    for (const lesson of schedule.lessons) {
-      if (!lesson.teacherId) continue;
-
-      // Darsni kim o'tishi kerak edi — o'rinbosarlik hisobga olingan holda
-      const effective = effectiveTeacherOf(
-        {
-          classId: schedule.classId,
-          day: schedule.day,
-          order: lesson.order,
-          teacherId: lesson.teacherId,
-        },
-        substitutionCells,
-      );
-
-      const teacherId = effective.teacherId.toString();
-
-      if (exemptSet.has(teacherId)) {
-        skipped++;
-        continue;
-      }
-
-      const gradedStudentIds = new Set(
-        todayGrades
-          .filter(
-            (g) =>
-              g.subjectId.toString() === lesson.subjectId.toString() &&
-              g.lessonOrder === lesson.order,
-          )
-          .map((g) => g.studentId.toString()),
-      );
-
-      const missingCount = studentsInClass.filter(
-        (s) => !gradedStudentIds.has(s.id.toString()),
-      ).length;
-
-      const missingPercent = (missingCount / totalStudents) * 100;
-
-      if (missingPercent < settings.missingThresholdPercent) {
-        skipped++;
-        continue;
-      }
-
-      // Sarlavha — darsning yagona belgisi: "o'tildi" belgisi shu jarimani
-      // aynan shu sarlavha bo'yicha topadi (`gradePenalty.helpers.js`)
-      const penaltyTitle = gradePenaltyTitle(
-        scheduleClass.name,
-        lesson.order,
-        dateStr,
-        effective.substituted,
-      );
-
+    try {
       const alreadyPenalized = await prisma.penalty.findFirst({
-        where: {
-          userId: effective.teacherId,
-          title: penaltyTitle,
-          isCustom: true,
-        },
+        where: { userId: entry.teacherId, title: entry.title, isCustom: true },
+        select: { id: true },
       });
 
       if (alreadyPenalized) {
@@ -169,35 +66,51 @@ async function runGradePenaltyPass(ownerUser) {
         continue;
       }
 
-      try {
-        await prisma.penalty.create({
-          data: {
-            userId: effective.teacherId,
-            givenBy: ownerUser.id,
-            title: penaltyTitle,
-            description: `${missingCount}/${totalStudents} o'quvchiga baho qo'yilmagan (${Math.round(missingPercent)}%)`,
-            points: settings.penaltyPoints,
-            status: "approved",
-            isCustom: true,
-            reviewedBy: ownerUser.id,
-            reviewedAt: new Date(),
-          },
-        });
+      await prisma.penalty.create({
+        data: {
+          userId: entry.teacherId,
+          givenBy: ownerUser.id,
+          title: entry.title,
+          description: penaltyDescription(entry),
+          points: settings.penaltyPoints,
+          status: "approved",
+          isCustom: true,
+          reviewedBy: ownerUser.id,
+          reviewedAt: new Date(),
+        },
+      });
 
-        await prisma.user.update({
-          where: { id: effective.teacherId },
-          data: { penaltyPoints: { increment: settings.penaltyPoints } },
-        });
+      await prisma.user.update({
+        where: { id: entry.teacherId },
+        data: { penaltyPoints: { increment: settings.penaltyPoints } },
+      });
 
-        penalized++;
-      } catch (error) {
-        errors++;
-        logger.error(
-          `[GradePenaltyCron] O'qituvchi ${teacherId} ga jarima berishda xato:`,
-          error,
-        );
-      }
+      penalized++;
+    } catch (error) {
+      errors++;
+      logger.error(
+        `[GradePenaltyCron] O'qituvchi ${entry.teacherId} ga jarima berishda xato:`,
+        error,
+      );
     }
+  }
+
+  // ⚠️ BAHO KUTILGAN O'QUVCHISI YO'Q DARS — JIM QOLMAYDI. Maxraj o'qish
+  // davriga tayanadi (`education.md` §3): butun sinfda davr yozilmagan
+  // bo'lsa maxraj nolga tushadi va jarima tizimi o'sha sinf uchun
+  // o'z-o'zidan o'chib qoladi. Ro'yxat logda ko'rinib tursin.
+  const emptyClasses = [
+    ...new Set(
+      [...lessons.values()]
+        .filter((entry) => entry.skip === LESSON_SKIP.NO_STUDENTS)
+        .map((entry) => entry.className),
+    ),
+  ];
+  if (emptyClasses.length > 0) {
+    logger.warn(
+      `[GradePenaltyCron] Baho kutilgan o'quvchi yo'q: ${emptyClasses.join(", ")} — ` +
+        "o'qish davrlari to'ldirilganini tekshiring (npm run enrollment:backfill)",
+    );
   }
 
   logger.info(
@@ -207,11 +120,15 @@ async function runGradePenaltyPass(ownerUser) {
 
 /**
  * Baho qo'ymaslik jarima cron job ni boshlaydi.
- * Har kuni soat 20:00 da ishga tushadi (Asia/Tashkent)
+ *
+ * ⚠️ 22:00 (biznes qarori, 2026-10-20). Ilgari 20:00 edi va baho kun
+ * davomida qo'yilishi mumkin bo'lsa ham (`education.md` §7), 20:00 dan
+ * keyin qo'yilgani jarimani to'xtatmasdi: o'qituvchi hammani baholab
+ * bo'lgan holda jarima olardi.
  */
 async function startGradePenaltyCron() {
   cron.schedule(
-    "0 20 * * *",
+    "0 22 * * *",
     branchCron("[GradePenaltyCron]", async (branch) => {
       logger.info(`[GradePenaltyCron] ${branch.name}: baho qo'ymaslik tekshiruvi boshlandi...`);
       try {
@@ -233,7 +150,7 @@ async function startGradePenaltyCron() {
     },
   );
 
-  logger.info("Baho jarima cron job belgilandi: Har kuni 20:00 (Asia/Tashkent)");
+  logger.info("Baho jarima cron job belgilandi: Har kuni 22:00 (Asia/Tashkent)");
 }
 
 module.exports = { startGradePenaltyCron, runGradePenaltyPass };
