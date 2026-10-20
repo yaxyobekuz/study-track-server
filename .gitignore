@@ -36,3 +36,11 @@ src/generated
 # QAYTARISH mantig'i: topshiriqni shunchaki o'chirish xodimda oshgan ballni
 # qoldirib ketadi, shuning uchun tozalash har safar shu yo'ldan o'tishi kerak.
 !src/scripts/tasks-reset.js
+# ⚠️ Jarimani qayta tekshirish skripti PRODDA ishga tushiriladi va
+# `package.json` dagi `penalty:recheck` unga ishora qiladi (`perm:grant`
+# bilan AYNI tuzoq: istisnosiz u serverga yetib bormay, buyruq "Cannot find
+# module" bilan yiqilgan edi). Saqlanishining ikkinchi sababi — jarima
+# ballarini QAYTARISH mantig'i: jarimani shunchaki o'chirish o'qituvchida
+# oshgan ballni qoldirib ketadi, shuning uchun tozalash har safar shu
+# yo'ldan o'tishi kerak.
+!src/scripts/recheck-grade-penalties.js
