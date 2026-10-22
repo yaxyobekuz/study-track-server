@@ -516,10 +516,6 @@ const writeStaff = async (db, ctx, items, options) => {
         role: "$2",
         permissions: "$3::text[]",
         extra_roles: "$4::text[]",
-        // Xodimda "haqiqiy sinf" bo'lmaydi (u o'quvchi belgisi), lekin ustun
-        // `users` da — manbadagi sinf ID si maqsadda yo'q bo'lgani uchun
-        // nusxa FK ni buzardi. Shuning uchun ochiq-oydin tozalanadi.
-        actual_class_id: "NULL",
         work_time_source: `$5::text::${schemaType(to, "WorkTimeSource")}`,
         work_start_time: "$6::text",
         work_end_time: "$7::text",

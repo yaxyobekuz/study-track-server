@@ -90,6 +90,14 @@ const getStaffReport = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// ASL SINFLAR KESIMI — har darajada nechta o'quvchi bor.
+// Sinflar sanog'idan alohida endpoint: ular ikki boshqa savol.
+const getActualGradeCounts = asyncHandler(async (req, res) => {
+  const data = await userService.getActualGradeCounts();
+
+  res.json({ success: true, data });
+});
+
 // Get all users (Owner only)
 const getAllUsers = asyncHandler(async (req, res) => {
   // `coinPeriod` — faqat tanga kesimi so'ralganda qaytadi: qaysi hafta
@@ -284,23 +292,20 @@ const restoreUser = asyncHandler(async (req, res) => {
 // ko'rsatishda davom etadi (`education.md` §4 "Istisno — moliya").
 const ARCHIVE_SCOPES = ["all", "true", "false"];
 
-// TANLANGAN SINF QAYSI MA'NODA: shu sinfda o'qiydiganlar, haqiqiy sinfi shu
-// bo'lganlar yoki IKKALASI (birlashma — "shu sinfga aloqador hamma").
-const CLASS_SCOPES = ["class", "actual", "both"];
-
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
   const classId = req.query.classId ? String(req.query.classId) : null;
-  // ⚠️ SINF BITTA, MA'NO BITTA: ikkinchi sinf identifikatori olinmaydi —
-  // "A da o'qiydigan, aslida B niki" degan hech kim so'ramagan kesim
-  // paydo bo'lishi STRUKTURAVIY imkonsiz bo'lsin.
-  const classScope =
-    req.query.classScope === undefined ? "class" : String(req.query.classScope);
+  // ASL SINF (daraja) — sinf bilan MUSTAQIL o'lcham: ikkalasi berilsa
+  // shart kesishadi ("IT 1 da o'qiydigan 5-sinf o'quvchilari"). Qiymat
+  // `grade.helpers.js` da tekshiriladi (1 … 11 yoki "none").
+  const actualGrade =
+    req.query.actualGrade === undefined ? undefined : String(req.query.actualGrade);
   const archived =
     req.query.archived === undefined ? "all" : String(req.query.archived);
 
-  if (!CLASS_SCOPES.includes(classScope)) {
-    throw new BadRequestError("Sinf kesimi noto'g'ri");
+  // Daraja kesimi ham faqat O'QUVCHILAR eksportida ma'noga ega
+  if (actualGrade !== undefined && actualGrade !== "" && role !== "student") {
+    throw new BadRequestError("Asl sinf bo'yicha faqat o'quvchilar yuklanadi");
   }
 
   // Sinf kesimi faqat O'QUVCHILAR eksportida: xodim/umumiy eksportda uni
@@ -329,10 +334,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // ⚠️ Arxivlangan o'quvchi arxivlashda BARCHA sinflardan chiqariladi
   // (`education.md` §5), ya'ni "sinf + faqat arxivlanganlar" har doim bo'sh
   // fayl bo'lardi — foydalanuvchi buni tizim nosozligi deb o'ylardi.
-  // ⚠️ Faqat A'ZOLIK kesimiga tegishli: haqiqiy sinf belgisi arxivlashda
-  // O'CHIRILMAYDI, ya'ni "arxiv + haqiqiy sinf" va "arxiv + ikkalasi"
-  // to'la ma'noli ro'yxat beradi (ikkinchisida a'zolik yarmi bo'sh qoladi).
-  if (classId && classScope === "class" && archived === "true") {
+  // ⚠️ Faqat SINF kesimiga tegishli: asl sinf (daraja) arxivlashda
+  // O'CHIRILMAYDI, ya'ni "arxiv + asl sinf" to'la ma'noli ro'yxat beradi.
+  if (classId && archived === "true") {
     throw new BadRequestError(
       "Arxivlangan o'quvchilar sinflardan chiqarilgan — sinf bilan birga yuklanmaydi",
     );
@@ -346,7 +350,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   if (role === "student") {
     const { all, debtors } = await userService.getStudentsFinanceExport({
       classId,
-      classScope,
+      actualGrade,
       archived,
     });
 
@@ -362,9 +366,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Username", key: "username", width: 18 },
       { header: "Parol", key: "password", width: 16 },
       { header: "Sinf", key: "className", width: 14 },
-      // O'quvchining O'Z sinfi — u o'qiyotgan guruhdan farq qilishi mumkin
-      // (kuchli o'quvchi katta guruhda o'qiydi). Ekrandagi ustun bilan AYNI.
-      { header: "Haqiqiy sinfi", key: "actualClassName", width: 14 },
+      // ASL SINF — daraja (1-sinf … 11-sinf), o'quvchi o'qiyotgan guruhdan
+      // farq qilishi mumkin. Ekrandagi ustun bilan AYNI.
+      { header: "Asl sinfi", key: "actualGrade", width: 12 },
       ...(mixedArchive
         ? [{ header: "Holat", key: "status", width: 14 }]
         : []),
@@ -392,7 +396,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       columns: [
         { header: "F.I.O", key: "fullName", width: 28 },
         { header: "Sinf", key: "className", width: 14 },
-        { header: "Haqiqiy sinfi", key: "actualClassName", width: 14 },
+        { header: "Asl sinfi", key: "actualGrade", width: 12 },
         ...(mixedArchive
           ? [{ header: "Holat", key: "status", width: 14 }]
           : []),
@@ -420,7 +424,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // "student"` bilan ishlaydi), jarima esa xodimda ham — shuning uchun
   // "Tangalar" ustuni faqat o'quvchi tushadigan eksportda chiziladi, aks
   // holda xodimlar faylida boshdan-oyoq nol turgan ustun paydo bo'lardi.
-  // "Haqiqiy sinfi" ham faqat o'quvchida bo'ladi — AYNI shart bilan
+  // "Asl sinfi" ham faqat o'quvchida bo'ladi — AYNI shart bilan
   const withStudentColumns = !role || role === "all" || role === "student";
 
   const workbook = ExcelService.createExcel({
@@ -432,7 +436,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 40 },
       ...(withStudentColumns
-        ? [{ header: "Haqiqiy sinfi", key: "actualClass", width: 16 }]
+        ? [{ header: "Asl sinfi", key: "actualGrade", width: 12 }]
         : []),
       { header: "Telefon", key: "phone", width: 20 },
       { header: "Ota-ona telefoni", key: "parentPhone", width: 20 },
@@ -559,6 +563,7 @@ const detachUserFromBranch = asyncHandler(async (req, res) => {
 module.exports = {
   setUserRoles,
   getAllUsers,
+  getActualGradeCounts,
   getAllUsersShort,
   getUser,
   createUser,

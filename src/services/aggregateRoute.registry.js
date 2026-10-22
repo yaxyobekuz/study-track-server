@@ -125,6 +125,11 @@ const RULES = [
   // `{telegramUsers, workers, students, premiumUsers}` — sof sanoqchilar.
   { pattern: "GET /users/stats", mode: "object" },
 
+  // ASL SINFLAR KESIMI — `{grades: [{grade, label, studentCount}], unset, total}`.
+  // Qatorlar `grade` bo'yicha GURUHLANADI (filiallarning 5-sinflari bitta
+  // qatorga qo'shiladi), sanoqchilar esa qo'shiladi.
+  { pattern: "GET /users/actual-grades", mode: "object" },
+
   // ⚠️ Topshiriq sanoqchilari ichida "muddati yaqin" CHEGARASI (soatda)
   // ham keladi — u sozlama, sanoq emas. `SETTING_KEYS` da ham bor, bu
   // yerda esa yo'l darajasida QAYD etilgan: shakl o'zgarsa ko'rinib tursin.

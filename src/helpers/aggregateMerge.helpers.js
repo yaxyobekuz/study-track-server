@@ -116,6 +116,12 @@ const GROUP_KEYS = [
   "discountId",
   "roleId",
   "id",
+  // ⚠️ "id" DAN KEYIN ataylab: baho qatorlarida ikkalasi ham bor
+  // (`id` + `grade`) va ular `id` bo'yicha guruhlanishi kerak — aks holda
+  // turli o'quvchilarning bir xil bahosi bitta qatorga qo'shilib ketardi.
+  // Asl sinf kesimida (`{grade, label, studentCount}`) esa `id` yo'q,
+  // ya'ni guruhlash aynan daraja bo'yicha boradi.
+  "grade",
 ];
 
 const isPlainObject = (value) =>
