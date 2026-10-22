@@ -829,9 +829,29 @@ const writeStudents = async (db, ctx, items, historyCatalog = null) => {
       archive_snapshot: "NULL",
       archive_note: "NULL",
       updated_at: "NOW()",
+      // ⚠️ HAQIQIY SINF — manbadagi sinf ID si MAQSADDA MAVJUD EMAS
+      // (`classes` har filialda o'ziniki): nusxa ko'chirilsa FK buzilib,
+      // butun ko'chirish yiqilardi. Shuning uchun avval tozalanadi, keyin
+      // NOMI bo'yicha moslanadi (pastda).
+      actual_class_id: "NULL",
     },
     onConflict: "update",
   });
+
+  // 2a ── Haqiqiy sinf: maqsadda AYNI NOMLI sinf bo'lsa tiklanadi.
+  //
+  // Moslash TAXMIN QILMAYDI (`education.md` §10 doktrinasi): faqat qat'iy
+  // teng nom. Mos sinf bo'lmasa belgi bo'sh qoladi va admin uni qo'lda
+  // qo'yadi — noto'g'ri sinfni "taxmin qilib" yozishdan ko'ra yaxshiroq.
+  await exec(
+    `UPDATE ${tgt("users")} u
+     SET actual_class_id = tc.id
+     FROM ${src("users")} su
+     JOIN ${src("classes")} sc ON sc.id = su.actual_class_id
+     JOIN ${tgt("classes")} tc ON tc.name = sc.name
+     WHERE u.id = su.id AND u.id = ANY($1::text[])`,
+    ids,
+  );
 
   // 3 ── Sinf: manbadan chiqish JURNALGA (sabab majburiy — `education.md` §5)
   const reasonText = `"${ctx.target.name}" filialiga ko'chirildi. ${ctx.reason}`;

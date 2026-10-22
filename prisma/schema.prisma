@@ -506,6 +506,26 @@ model User {
   // Identifikatsiya maydoni — barcha filiallarga tarqaladi (IDENTITY_FIELDS).
   phone            String?        @map("phone")
   parentPhone      String?        @map("parent_phone")
+  // HAQIQIY SINF — o'quvchining O'Z sinfi (yoshi/darajasi bo'yicha), u
+  // o'qiyotgan guruhdan (`UserClass`) FARQ QILISHI mumkin: bilimi yaxshi
+  // bola IT 2 dan IT 1 ga o'tqazilsa, guruhi IT 1, haqiqiy sinfi IT 2
+  // bo'lib qoladi. Katalog AYNI (`Class`) — ikkinchi sinflar ro'yxati
+  // yaratilmaydi.
+  //
+  // ⚠️ A'ZOLIK EMAS, BELGI: bu yerga yozilgan sinf o'quvchini o'sha sinfga
+  // QO'SHMAYDI (davomat, jurnal, hisobotlar avvalgidek `UserClass` dan
+  // o'qiydi). Shuning uchun sinf o'zgarganda jurnal ham yozilmaydi
+  // (`StudentClassChange` — faqat a'zolik uchun).
+  //
+  // ⚠️ A'ZOLIKKA ERGASHMAYDI: yaratilganda (va bir martalik backfill'da)
+  // o'quvchining joriy sinfi qo'yiladi, keyin esa sinf ko'chirilsa ham
+  // tegilmaydi — aks holda "boshqa guruhga o'tqazildi" fakti darhol
+  // yo'qolardi, modulning butun mohiyati esa shu.
+  //
+  // ⚠️ FILIALGA XOS (`IDENTITY_FIELDS` ga kirmaydi): sinflar har filialda
+  // o'ziniki. Filiallararo ko'chirishda nomi bo'yicha moslanadi, mos
+  // kelmasa NULL bo'ladi (`branchTransferStudent.service.js`).
+  actualClassId    String?        @map("actual_class_id") @db.Char(24)
   // Kim qo'shgan. ⚠️ Bu AUDIT maydoni emas, RUXSAT maydoni: o'qituvchi
   // faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
   // (`assertCanManage`, user.service.js). Eski qatorlarda `null` —
@@ -517,6 +537,8 @@ model User {
 
   profileImage     Image?               @relation("UserProfileImage", fields: [profilePicture], references: [id])
   classes          UserClass[]
+  // Sinf o'chirilsa belgi NULL bo'ladi — qator o'chmaydi (SetNull)
+  actualClass      Class?               @relation("StudentActualClass", fields: [actualClassId], references: [id], onDelete: SetNull)
   classChanges     StudentClassChange[] @relation("StudentClassChanges")
   subjects         UserSubject[]
   achievements     StudentAchievement[] @relation("StudentAchievements")
@@ -535,6 +557,8 @@ model User {
   @@index([isArchived])
   @@index([premiumIsActive])
   @@index([createdBy])
+  // "Haqiqiy sinfi X bo'lganlar" filtri (o'quvchilar ro'yxati)
+  @@index([actualClassId])
   @@map("users")
 }
 
@@ -686,6 +710,8 @@ model Class {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   users           UserClass[]
+  // "Haqiqiy sinfi" shu sinf bo'lgan o'quvchilar — a'zolik EMAS (`User.actualClassId`)
+  actualStudents  User[]                @relation("StudentActualClass")
   testBindings    TestBindingClass[]
   weeklyStats     WeeklyStatsClass[]
   diagnosticTests DiagnosticTestClass[]

@@ -34,10 +34,24 @@ async function getAllClasses() {
   });
   const countMap = new Map(counts.map((c) => [c.classId, c._count.userId]));
 
+  // HAQIQIY SINF — ALOHIDA SANOQ va u a'zolik sanog'i bilan ARALASHMAYDI:
+  // "shu sinfda nechta o'quvchi o'qiydi" va "nechta o'quvchi aslida shu
+  // sinfniki" — IKKI BOSHQA savol (`schema.prisma` → `User.actualClassId`).
+  // Bitta raqamga qo'shilsa, kuchli o'quvchi ikkala sinfda ham sanalardi.
+  const actualCounts = await prisma.user.groupBy({
+    by: ["actualClassId"],
+    where: { role: "student", isArchived: false, actualClassId: { not: null } },
+    _count: { _all: true },
+  });
+  const actualMap = new Map(
+    actualCounts.map((c) => [c.actualClassId, c._count._all]),
+  );
+
   const withCreators = await attachCreators(classes);
   return withCreators.map((item) => ({
     ...item,
     studentCount: countMap.get(item.id) ?? 0,
+    actualStudentCount: actualMap.get(item.id) ?? 0,
   }));
 }
 
@@ -56,6 +70,9 @@ async function getClassById(id) {
   const students = await prisma.user.findMany({
     where: { role: "student", classes: { some: { classId: id } } },
     omit: { password: true },
+    // Haqiqiy sinf — o'quvchining O'Z sinfi, u shu guruhdan farq qilishi
+    // mumkin (`schema.prisma` → `User.actualClassId`)
+    include: { actualClass: { select: { id: true, name: true } } },
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
 
@@ -360,8 +377,17 @@ async function moveStudentsToClass(
 
 /**
  * Sinf o'quvchilarini Excel eksport uchun olish.
+ *
+ * `by` — KESIM va u ikkisini ARALASHTIRMAYDI:
+ *   · `"class"`  (sukut) — shu sinfda O'QIYOTGANLAR (`UserClass`);
+ *   · `"actual"` — HAQIQIY SINFI shu sinf bo'lganlar (`actualClassId`).
+ * Ekrandagi ikki tab bilan AYNI ro'yxat: yuklangan fayl ko'rilgan
+ * ro'yxatning nusxasi bo'lishi kerak.
+ *
+ * @param {string} classId
+ * @param {{ by?: "class"|"actual" }} [options]
  */
-async function getClassStudentsForExport(classId) {
+async function getClassStudentsForExport(classId, { by = "class" } = {}) {
   const classData = await prisma.class.findUnique({ where: { id: classId } });
 
   if (!classData) {
@@ -369,8 +395,14 @@ async function getClassStudentsForExport(classId) {
   }
 
   const students = await prisma.user.findMany({
-    where: { role: "student", classes: { some: { classId } } },
-    include: { classes: { include: { class: { select: { name: true } } } } },
+    where:
+      by === "actual"
+        ? { role: "student", actualClassId: classId }
+        : { role: "student", classes: { some: { classId } } },
+    include: {
+      classes: { include: { class: { select: { name: true } } } },
+      actualClass: { select: { name: true } },
+    },
     orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
   });
 
@@ -383,6 +415,8 @@ async function getClassStudentsForExport(classId) {
       student.classes && student.classes.length > 0
         ? student.classes.map((c) => c.class.name).join(", ")
         : "-",
+    // Sinf sahifasidagi ustun bilan AYNI ma'lumot
+    actualClass: student.actualClass?.name ?? "-",
   }));
 
   return { classData, data };
@@ -392,12 +426,17 @@ async function getClassStudentsForExport(classId) {
  * Barcha sinflarni Excel eksport uchun olish.
  */
 async function getAllClassesForExport() {
-  const classes = await prisma.class.findMany({ orderBy: { name: "asc" } });
-  const withCreators = await attachCreators(classes);
+  // Sanoqlar ro'yxat sahifasi bilan AYNI manbadan (`getAllClasses`):
+  // ikkinchi hisob yozilsa, ekranda bir raqam, faylda boshqasi turardi.
+  const classes = await getAllClasses();
 
-  return withCreators.map((classItem) => ({
+  return classes.map((classItem) => ({
     name: classItem.name,
     status: classItem.isActive ? "Faol" : "Faol emas",
+    // Ikki sanoq ALOHIDA ustun: "shu sinfda o'qiydi" va "aslida shu
+    // sinfniki" bir raqamga qo'shilsa, farqni ko'rish imkoni yo'qolardi
+    studentCount: classItem.studentCount ?? 0,
+    actualStudentCount: classItem.actualStudentCount ?? 0,
     createdBy: classItem.createdBy
       ? `${classItem.createdBy.firstName} ${classItem.createdBy.lastName}`
       : "-",

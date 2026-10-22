@@ -3,6 +3,7 @@ const classService = require("../services/class.service");
 const classChangeService = require("../services/studentClassChange.service");
 const { formatPaginationResponse } = require("../utils/pagination");
 const asyncHandler = require("../middleware/async.middleware");
+const { BadRequestError } = require("../utils/errors");
 
 // Get all classes
 const getAllClasses = asyncHandler(async (req, res) => {
@@ -110,25 +111,44 @@ const getClassChanges = asyncHandler(async (req, res) => {
 });
 
 // Export class students to Excel
+//
+// `by=actual` — HAQIQIY SINFI shu sinf bo'lganlar (ekrandagi ikkinchi tab).
+// Sukut avvalgidek: shu sinfda O'QIYOTGANLAR. Noto'g'ri qiymat JIM
+// o'tkazilmaydi — admin "tanladim, lekin boshqa ro'yxat tushdi" holatiga
+// tushmasligi kerak.
+const CLASS_EXPORT_SCOPES = ["class", "actual"];
+
 const exportClassStudents = asyncHandler(async (req, res) => {
+  const by = req.query.by === undefined ? "class" : String(req.query.by);
+  if (!CLASS_EXPORT_SCOPES.includes(by)) {
+    throw new BadRequestError("Yuklash kesimi noto'g'ri");
+  }
+
   const { classData, data } = await classService.getClassStudentsForExport(
     req.params.id,
+    { by },
   );
 
   const workbook = ExcelService.createExcel({
-    sheetName: classData.name,
+    // Varaq nomi faylning O'ZIDA qaysi kesim ekanini aytadi
+    sheetName:
+      by === "actual" ? `${classData.name} (haqiqiy)` : classData.name,
     columns: [
       { header: "F.I.O", key: "fullName", width: 30 },
       { header: "Username", key: "username", width: 20 },
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 25 },
+      // O'quvchining O'Z sinfi — ekrandagi ustun bilan AYNI
+      { header: "Haqiqiy sinfi", key: "actualClass", width: 16 },
     ],
     data,
   });
 
   const filename = ExcelService.generateFileName(
-    `${classData.name}_oquvchilar`,
+    by === "actual"
+      ? `${classData.name}_haqiqiy_sinf`
+      : `${classData.name}_oquvchilar`,
   );
 
   await ExcelService.sendWorkbook(res, workbook, filename);
@@ -143,6 +163,9 @@ const exportClasses = asyncHandler(async (req, res) => {
     columns: [
       { header: "Sinf nomi", key: "name", width: 25 },
       { header: "Holati", key: "status", width: 12 },
+      // Ikki sanoq ALOHIDA: "shu sinfda o'qiydi" va "aslida shu sinfniki"
+      { header: "O'quvchilar soni", key: "studentCount", width: 18 },
+      { header: "Haqiqiy sinfi bo'yicha", key: "actualStudentCount", width: 22 },
       { header: "Yaratuvchi", key: "createdBy", width: 20 },
       { header: "Yaratilgan sana", key: "createdAt", width: 15 },
     ],

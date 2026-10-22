@@ -284,11 +284,24 @@ const restoreUser = asyncHandler(async (req, res) => {
 // ko'rsatishda davom etadi (`education.md` §4 "Istisno — moliya").
 const ARCHIVE_SCOPES = ["all", "true", "false"];
 
+// TANLANGAN SINF QAYSI MA'NODA: shu sinfda o'qiydiganlar, haqiqiy sinfi shu
+// bo'lganlar yoki IKKALASI (birlashma — "shu sinfga aloqador hamma").
+const CLASS_SCOPES = ["class", "actual", "both"];
+
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
   const classId = req.query.classId ? String(req.query.classId) : null;
+  // ⚠️ SINF BITTA, MA'NO BITTA: ikkinchi sinf identifikatori olinmaydi —
+  // "A da o'qiydigan, aslida B niki" degan hech kim so'ramagan kesim
+  // paydo bo'lishi STRUKTURAVIY imkonsiz bo'lsin.
+  const classScope =
+    req.query.classScope === undefined ? "class" : String(req.query.classScope);
   const archived =
     req.query.archived === undefined ? "all" : String(req.query.archived);
+
+  if (!CLASS_SCOPES.includes(classScope)) {
+    throw new BadRequestError("Sinf kesimi noto'g'ri");
+  }
 
   // Sinf kesimi faqat O'QUVCHILAR eksportida: xodim/umumiy eksportda uni
   // jim e'tiborsiz qoldirish "sinf tanladim, hamma chiqdi" holatini berardi.
@@ -316,7 +329,10 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // ⚠️ Arxivlangan o'quvchi arxivlashda BARCHA sinflardan chiqariladi
   // (`education.md` §5), ya'ni "sinf + faqat arxivlanganlar" har doim bo'sh
   // fayl bo'lardi — foydalanuvchi buni tizim nosozligi deb o'ylardi.
-  if (classId && archived === "true") {
+  // ⚠️ Faqat A'ZOLIK kesimiga tegishli: haqiqiy sinf belgisi arxivlashda
+  // O'CHIRILMAYDI, ya'ni "arxiv + haqiqiy sinf" va "arxiv + ikkalasi"
+  // to'la ma'noli ro'yxat beradi (ikkinchisida a'zolik yarmi bo'sh qoladi).
+  if (classId && classScope === "class" && archived === "true") {
     throw new BadRequestError(
       "Arxivlangan o'quvchilar sinflardan chiqarilgan — sinf bilan birga yuklanmaydi",
     );
@@ -330,6 +346,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   if (role === "student") {
     const { all, debtors } = await userService.getStudentsFinanceExport({
       classId,
+      classScope,
       archived,
     });
 
@@ -345,6 +362,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Username", key: "username", width: 18 },
       { header: "Parol", key: "password", width: 16 },
       { header: "Sinf", key: "className", width: 14 },
+      // O'quvchining O'Z sinfi — u o'qiyotgan guruhdan farq qilishi mumkin
+      // (kuchli o'quvchi katta guruhda o'qiydi). Ekrandagi ustun bilan AYNI.
+      { header: "Haqiqiy sinfi", key: "actualClassName", width: 14 },
       ...(mixedArchive
         ? [{ header: "Holat", key: "status", width: 14 }]
         : []),
@@ -372,6 +392,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       columns: [
         { header: "F.I.O", key: "fullName", width: 28 },
         { header: "Sinf", key: "className", width: 14 },
+        { header: "Haqiqiy sinfi", key: "actualClassName", width: 14 },
         ...(mixedArchive
           ? [{ header: "Holat", key: "status", width: 14 }]
           : []),
@@ -399,7 +420,8 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // "student"` bilan ishlaydi), jarima esa xodimda ham — shuning uchun
   // "Tangalar" ustuni faqat o'quvchi tushadigan eksportda chiziladi, aks
   // holda xodimlar faylida boshdan-oyoq nol turgan ustun paydo bo'lardi.
-  const withCoins = !role || role === "all" || role === "student";
+  // "Haqiqiy sinfi" ham faqat o'quvchida bo'ladi — AYNI shart bilan
+  const withStudentColumns = !role || role === "all" || role === "student";
 
   const workbook = ExcelService.createExcel({
     sheetName: "Foydalanuvchilar",
@@ -409,9 +431,12 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 40 },
+      ...(withStudentColumns
+        ? [{ header: "Haqiqiy sinfi", key: "actualClass", width: 16 }]
+        : []),
       { header: "Telefon", key: "phone", width: 20 },
       { header: "Ota-ona telefoni", key: "parentPhone", width: 20 },
-      ...(withCoins
+      ...(withStudentColumns
         ? [{ header: "Tangalar", key: "coinBalance", width: 12 }]
         : []),
       { header: "Jarimalar", key: "penaltyPoints", width: 12 },

@@ -78,7 +78,44 @@ function flattenRelations(user) {
 const USER_RELATIONS = {
   classes: { include: { class: { select: { id: true, name: true } } } },
   subjects: { include: { subject: { select: { id: true, name: true } } } },
+  // HAQIQIY SINF — o'quvchining O'Z sinfi. A'ZOLIK EMAS, BELGI: u
+  // o'qiyotgan guruh `classes` da qoladi (`schema.prisma` izohi).
+  actualClass: { select: { id: true, name: true } },
 };
+
+/**
+ * "Haqiqiy sinf" filtrining "hali belgilanmagan" qiymati.
+ *
+ * Bo'sh satr ishlatilmaydi: u "filtr yo'q" degani va panelning `Select`
+ * komponenti ham `""` ni aynan shunday o'qiydi.
+ */
+const ACTUAL_CLASS_NONE = "none";
+
+/**
+ * Kiruvchi "haqiqiy sinf" qiymatini tekshirib normallashtiradi:
+ *
+ *   undefined               → undefined (maydonga TEGILMAYDI)
+ *   null | "" | "none"      → null      (belgi olib tashlanadi)
+ *   "<id>"                  → o'sha id  (sinf mavjudligi tekshiriladi)
+ *
+ * Yo'q sinf JIM tashlab yuborilmaydi: aks holda admin "tanladim, lekin
+ * saqlanmadi" holatiga tushardi.
+ *
+ * @param {string|null|undefined} value
+ * @returns {Promise<string|null|undefined>}
+ */
+async function normalizeActualClassId(value) {
+  if (value === undefined) return undefined;
+  if (value === null || value === "" || value === ACTUAL_CLASS_NONE) return null;
+
+  const id = String(value);
+  const exists = await prisma.class.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (!exists) throw new BadRequestError(`Sinf topilmadi: ${id}`);
+  return id;
+}
 
 /**
  * Filialdagi `User` qatorini platformadagi login yo'naltirgichi bilan
@@ -619,6 +656,7 @@ async function getAllUsers(query, actor = null) {
   const {
     role,
     class: classId,
+    actualClass,
     page = 1,
     limit = 24,
     search,
@@ -645,6 +683,10 @@ async function getAllUsers(query, actor = null) {
   if (role === "staff") where.role = { not: "student" };
   else if (role) Object.assign(where, roleFilterWhere(role));
   if (classId) where.classes = { some: { classId } };
+  // HAQIQIY SINF — a'zolik orqali emas, `users.actual_class_id` ustuni
+  // bo'yicha (`schema.prisma` izohi). `none` — hali belgilanmaganlar.
+  if (actualClass === ACTUAL_CLASS_NONE) where.actualClassId = null;
+  else if (actualClass) where.actualClassId = String(actualClass);
 
   // Arxivlangan tab faqat arxivlanganlarni, Asosiy tab esa qolganlarni ko'rsatadi
   if (archived === "true" || archived === true) {
@@ -818,6 +860,8 @@ async function createUser(data, actorId, actor = null) {
     phone,
     parentPhone,
     classes: userClasses,
+    // HAQIQIY SINF — berilmasa birinchi sinfi qo'yiladi (pastga qarang)
+    actualClassId,
     workTimeSource,
     workStartTime,
     workEndTime,
@@ -880,6 +924,21 @@ async function createUser(data, actorId, actor = null) {
         throw new BadRequestError(`Sinf topilmadi: ${classId}`);
       }
     }
+  }
+
+  // HAQIQIY SINF — o'quvchining O'Z sinfi. Berilmasa TANLANGAN BIRINCHI
+  // sinfi qo'yiladi: "hozirgi sinfi haqiqiy sinfi ham bo'lsin" (bir martalik
+  // backfill bilan AYNI qoida). Keyin a'zolik o'zgarsa unga ERGASHMAYDI —
+  // boshqa guruhga o'tqazilgani aynan shu farqdan ko'rinadi.
+  let resolvedActualClassId = null;
+  if (role === "student") {
+    const given = await normalizeActualClassId(actualClassId);
+    resolvedActualClassId =
+      given !== undefined
+        ? given
+        : userClasses && userClasses.length > 0
+          ? String(userClasses[0])
+          : null;
   }
 
   // ── O'quvchi moliyasi — TRANZAKSIYA/CLAIM dan OLDIN tekshiriladi ──
@@ -948,6 +1007,8 @@ async function createUser(data, actorId, actor = null) {
           phone: normalizedPhone,
           parentPhone: normalizedParentPhone,
           createdBy: actorId ?? null,
+          // Xodimda har doim `null` — ustun o'quvchiga tegishli
+          actualClassId: resolvedActualClassId,
           ...(role === "student" && userClasses && userClasses.length > 0
             ? {
                 classes: {
@@ -1045,6 +1106,7 @@ async function updateUser(id, data, options = {}) {
     gender,
     classes: userClasses,
     classChangeReason,
+    actualClassId,
     subjects: userSubjects,
     isActive,
     workTimeSource,
@@ -1077,6 +1139,13 @@ async function updateUser(id, data, options = {}) {
   if (lastName) update.lastName = lastName;
   if (isActive !== undefined) update.isActive = isActive;
   if (gender !== undefined) update.gender = gender || null;
+
+  // HAQIQIY SINF — faqat o'quvchida va `classes` DAN MUSTAQIL: ikkalasi bir
+  // so'rovda kelsa ham bir-biriga ta'sir qilmaydi. Sabab talab qilinmaydi va
+  // jurnalga yozilmaydi — bu a'zolik emas, belgi (`schema.prisma` izohi).
+  if (user.role === "student" && actualClassId !== undefined) {
+    update.actualClassId = await normalizeActualClassId(actualClassId);
+  }
 
   // Ish jadvali override (davomat uchun)
   if (user.role !== "student") {
@@ -1576,7 +1645,10 @@ async function getUsersForExport(role) {
 
   const users = await prisma.user.findMany({
     where,
-    include: { classes: { include: { class: { select: { name: true } } } } },
+    include: {
+      classes: { include: { class: { select: { name: true } } } },
+      actualClass: { select: { name: true } },
+    },
     orderBy: [{ role: "asc" }, { firstName: "asc" }],
   });
 
@@ -1595,6 +1667,9 @@ async function getUsersForExport(role) {
       user.classes && user.classes.length > 0
         ? user.classes.map((c) => c.class.name).join(", ")
         : "-",
+    // HAQIQIY SINF — o'quvchining o'z sinfi (u o'qiyotgan guruhdan farq
+    // qilishi mumkin). Xodimda har doim bo'sh.
+    actualClass: user.actualClass?.name ?? "-",
     // Ekran bilan bir xil ko'rinish (`+998 90 123 45 67`), bo'sh bo'lsa `—`
     phone: formatPhoneUz(user.phone),
     parentPhone: formatPhoneUz(user.parentPhone),
@@ -1620,6 +1695,22 @@ async function getUsersForExport(role) {
  * arxivlashda sinflardan chiqariladi, shuning uchun sinf eksportiga
  * o'z-o'zidan tushmaydi.
  *
+ * `classScope` — TANLANGAN SINF QAYSI MA'NODA olinishi:
+ *   · `"class"`  (sukut) — shu sinfda O'QIYOTGANLAR (`UserClass`);
+ *   · `"actual"` — HAQIQIY SINFI shu sinf bo'lganlar (`actualClassId`);
+ *   · `"both"`   — IKKALASI (BIRLASHMA): "shu sinfga aloqador hamma".
+ *     O'quvchi ikkala shartga ham tushsa, faylga BIR MARTA tushadi — bu
+ *     `OR`, qo'shish emas.
+ *
+ * ⚠️ SINF BITTA, MA'NO BITTA: ikkita alohida sinf identifikatori olinmaydi
+ * (ilgari shunday edi va "A da o'qiydigan, aslida B niki" degan hech kim
+ * so'ramagan kesim paydo bo'lish xavfi bor edi). Shu sababli kesimlarning
+ * kesishib ketishi STRUKTURAVIY imkonsiz.
+ *
+ * ⚠️ Arxivlangan o'quvchida haqiqiy sinf belgisi SAQLANADI (sinf
+ * a'zoligidan farqi), shuning uchun `actual` va `both` arxiv tanlovi bilan
+ * ham ma'noli ro'yxat beradi.
+ *
  * `archived` — ARXIV TANLOVI: `"all"` (sukut) ikkalasini ham, `"true"` faqat
  * arxivlanganlarni, `"false"` faqat joriylarni beradi. ⚠️ Sukut ataylab
  * `"all"`: moliyaviy eksport arxivlanganni ko'rsatishda davom etadi
@@ -1627,10 +1718,14 @@ async function getUsersForExport(role) {
  * Ro'yxat endpointidagi `archived` bilan AYNI so'z boyligi (`true` → faqat
  * arxivlangan), faqat sukuti boshqa, chunki ro'yxatda tab ikkiga bo'lingan.
  *
- * @param {{ classId?: string, archived?: "all"|"true"|"false"|boolean }} [options]
+ * @param {{ classId?: string, classScope?: "class"|"actual"|"both", archived?: "all"|"true"|"false"|boolean }} [options]
  * @returns {Promise<{ all: object[], debtors: object[] }>}
  */
-async function getStudentsFinanceExport({ classId, archived = "all" } = {}) {
+async function getStudentsFinanceExport({
+  classId,
+  classScope = "class",
+  archived = "all",
+} = {}) {
   const { resolveManyForMonth } = require("./tariffResolution.service");
   const { formatAmount, Decimal } = require("../helpers/money.helpers");
   const month = currentMonthKey();
@@ -1646,12 +1741,22 @@ async function getStudentsFinanceExport({ classId, archived = "all" } = {}) {
       select: { id: true },
     });
     if (!cls) throw new NotFoundError("Sinf topilmadi");
-    where.classes = { some: { classId } };
+
+    const studiesHere = { classes: { some: { classId } } };
+    const belongsHere = { actualClassId: classId };
+
+    if (classScope === "actual") Object.assign(where, belongsHere);
+    // `OR` — BIRLASHMA, ikkala shartga tushgan o'quvchi bir marta chiqadi
+    else if (classScope === "both") where.OR = [studiesHere, belongsHere];
+    else Object.assign(where, studiesHere);
   }
 
   const students = await prisma.user.findMany({
     where,
-    include: { classes: { include: { class: { select: { name: true } } } } },
+    include: {
+      classes: { include: { class: { select: { name: true } } } },
+      actualClass: { select: { name: true } },
+    },
     orderBy: [{ firstName: "asc" }, { lastName: "asc" }],
   });
 
@@ -1706,6 +1811,8 @@ async function getStudentsFinanceExport({ classId, archived = "all" } = {}) {
         user.classes && user.classes.length > 0
           ? user.classes.map((c) => c.class.name).join(", ")
           : "—",
+      // Haqiqiy sinf — o'quvchi o'qiyotgan guruhdan farq qilishi mumkin
+      actualClassName: user.actualClass?.name ?? "—",
       phone: formatPhoneUz(user.phone),
       parentPhone: formatPhoneUz(user.parentPhone),
       tariff,
