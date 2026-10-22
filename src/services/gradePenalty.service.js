@@ -6,9 +6,23 @@
  * "qaysi jarima haqli" degan savolga ikkinchi javob yozilsa, tozalash
  * jarima yozishdan boshqacha ishlardi.
  *
- * ⚠️ JARIMA FAQAT O'QITUVCHI BAHO QO'YA OLADIGAN O'QUVCHI UCHUN.
- * Maxraj `gradeExpectation.service.js` dan keladi: maktabdan ketgan,
- * arxivlangan va o'sha kuni KELMAGAN o'quvchi hisobga kirmaydi.
+ * ⚠️ JARIMA — DARSGA BITTA HAM BAHO QO'YILMAGAN BO'LSA (biznes qarori,
+ * 2026-10-22). O'qituvchi bitta o'quvchiga ham baho qo'ygan bo'lsa, qolganlari
+ * baholanmagan bo'lsa ham jarima YOZILMAYDI. Oylikdagi "dars o'tildimi"
+ * (`judgeLesson`) va "Men ketdim" darvozasi bilan AYNI qoida: uchala joy bir
+ * darsni bir xil baholaydi — "dars o'tilgan, soati to'langan, ketishga ruxsat
+ * berilgan, lekin jarima yozilgan" holati bo'lmaydi.
+ *   · Ilgari foiz chegarasi bor edi (`missingThresholdPercent`, sukut 40%) —
+ *     u OLIB TASHLANGAN (migratsiya `20261022120000_drop_grade_penalty_threshold`),
+ *     QAYTA KIRITMANG.
+ *   · Fanga RUXSAT bilan (boshqa o'qituvchi) qo'ygan baho va boshqa filialdan
+ *     KO'CHGAN baho hisob EMAS — `loadLessonFacts` bilan AYNI: aks holda
+ *     dars egasi bitta ham baho qo'ymay jarimadan qutulardi.
+ *
+ * ⚠️ BAHO KUTILGAN O'QUVCHI YO'Q BO'LSA JARIMA YO'Q. Ro'yxat
+ * `gradeExpectation.service.js` dan keladi: maktabdan ketgan, arxivlangan va
+ * o'sha kuni KELMAGAN o'quvchi hisobga kirmaydi (hamma kelmagan darsda
+ * baholaydigan odam yo'q).
  *
  * ⚠️ DARS BO'LMAGAN BO'LSA JARIMA YO'Q:
  *   · o'qituvchining O'ZI kelmagan yoki sababli (`Attendance`);
@@ -39,7 +53,7 @@ const LESSON_SKIP = Object.freeze({
   TEACHER_AWAY: "teacherAway", // o'qituvchi kelmagan / sababli
   CREDITED: "credited",        // dars "o'tildi" deb belgilangan
   NO_STUDENTS: "noStudents",   // baho kutilgan o'quvchi yo'q
-  BELOW: "below",              // chegaradan past
+  GRADED: "graded",            // kamida bitta baho qo'yilgan
 });
 
 const LESSON_SKIP_LABELS = Object.freeze({
@@ -47,7 +61,7 @@ const LESSON_SKIP_LABELS = Object.freeze({
   [LESSON_SKIP.TEACHER_AWAY]: "O'qituvchi o'sha kuni kelmagan",
   [LESSON_SKIP.CREDITED]: "Dars \"o'tildi\" deb belgilangan",
   [LESSON_SKIP.NO_STUDENTS]: "Baho kutilgan o'quvchi yo'q",
-  [LESSON_SKIP.BELOW]: "Chegaradan past",
+  [LESSON_SKIP.GRADED]: "Darsga baho qo'yilgan",
 });
 
 /**
@@ -61,8 +75,8 @@ const LESSON_SKIP_LABELS = Object.freeze({
  * tekshirish buni ALOHIDA sabab bilan qaytaradi va jim taxmin qilmaydi.
  *
  * @param {Date} day - Toshkent kunining UTC yarim tuni
- * @param {{isEnabled: boolean, missingThresholdPercent: number,
- *   penaltyPoints: number, exemptTeachers: string[]}} settings
+ * @param {{isEnabled: boolean, penaltyPoints: number,
+ *   exemptTeachers: string[]}} settings
  * @returns {Promise<{skip: string|null, lessons: Map<string, object>}>}
  *   kalit — jarima SARLAVHASI (darsning yagona belgisi)
  */
@@ -130,7 +144,14 @@ async function computeDayPenalties(day, settings) {
     // `setHours` bilan qurilgan oraliq ishlatilardi va UTC hostda kun
     // besh soatga suriladi.
     prisma.grade.findMany({
-      where: { classId: { in: classIds }, date: { gte: dayStart(day), lte: dayEnd(day) } },
+      where: {
+        classId: { in: classIds },
+        date: { gte: dayStart(day), lte: dayEnd(day) },
+        // Ruxsat bilan qo'yilgan va ko'chgan baho dars egasining ishi emas
+        // (fayl izohi) — `loadLessonFacts` va "Men ketdim" bilan AYNI filtr
+        gradingGrantId: null,
+        transferredFromBranchId: null,
+      },
       select: { classId: true, subjectId: true, lessonOrder: true, studentId: true, date: true },
     }),
   ]);
@@ -187,7 +208,6 @@ async function computeDayPenalties(day, settings) {
         day: dateStr,
         total: expected.length,
         missing: 0,
-        percent: 0,
         deserved: false,
         skip: null,
       };
@@ -224,10 +244,12 @@ async function computeDayPenalties(day, settings) {
         gradedByLesson.get(`${schedule.classId}|${lesson.subjectId}|${lesson.order}`) ?? new Set();
 
       entry.missing = expected.filter((student) => !graded.has(student.id)).length;
-      entry.percent = Math.round((entry.missing / expected.length) * 100);
 
-      if (entry.percent < settings.missingThresholdPercent) {
-        entry.skip = LESSON_SKIP.BELOW;
+      // ⚠️ BITTA BAHO YETADI (fayl izohi). `graded` — darsdagi HAR QANDAY
+      // o'quvchining bahosi, maxrajdagisining emas: kelmagan deb belgilangan
+      // bolaga qo'yilgan baho ham darsni o'tilgan qiladi (`judgeLesson` kabi).
+      if (graded.size > 0) {
+        entry.skip = LESSON_SKIP.GRADED;
         continue;
       }
 
@@ -243,13 +265,13 @@ const dayStart = (day) => new Date(day.getTime() - 5 * 3600000);
 const dayEnd = (day) => new Date(day.getTime() + 19 * 3600000 - 1);
 
 /**
- * JARIMA MATNI — ekranda ham, qayta tekshirish hisobotida ham AYNI.
+ * JARIMA MATNI — faqat haqli jarima uchun (darsda bitta ham baho yo'q).
  *
  * @param {object} entry - `computeDayPenalties` qatori
  * @returns {string}
  */
 const penaltyDescription = (entry) =>
-  `${entry.missing}/${entry.total} o'quvchiga baho qo'yilmagan (${entry.percent}%)`;
+  `Darsdagi ${entry.total} o'quvchidan birortasiga ham baho qo'yilmagan`;
 
 /**
  * JARIMANI BEKOR QILADI — compare-and-swap `approved` → `rejected` va
@@ -340,7 +362,10 @@ async function recheckRange({ from, to, apply = false }, { actorId, settings }) 
     if (existing.length === 0) continue;
 
     report.days += 1;
-    const { lessons } = await computeDayPenalties(day, settings);
+    // ⚠️ `isEnabled` bu yerda SAVOL EMAS: u faqat YANGI jarima yozishni
+    // to'xtatadi. Sozlama o'chiq bo'lsa hisob bo'sh qaytib, mavjud HAMMA
+    // jarima "Jadvalda bu dars topilmadi" deb bekor qilinib ketardi.
+    const { lessons } = await computeDayPenalties(day, { ...settings, isEnabled: true });
 
     for (const penalty of existing) {
       report.checked += 1;
@@ -357,8 +382,7 @@ async function recheckRange({ from, to, apply = false }, { actorId, settings }) 
       }
 
       const why = entry
-        ? (LESSON_SKIP_LABELS[entry.skip] ?? "Endi asoslanmaydi") +
-          (entry.skip === LESSON_SKIP.BELOW ? `: ${penaltyDescription(entry)}` : "")
+        ? (LESSON_SKIP_LABELS[entry.skip] ?? "Endi asoslanmaydi")
         : "Jadvalda bu dars topilmadi";
 
       const row = {

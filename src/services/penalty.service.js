@@ -1094,8 +1094,6 @@ const updateGradePenaltySettings = async (data, userId) => {
   const update = {};
   if (data.isEnabled !== undefined) update.isEnabled = data.isEnabled;
   if (data.penaltyPoints !== undefined) update.penaltyPoints = data.penaltyPoints;
-  if (data.missingThresholdPercent !== undefined)
-    update.missingThresholdPercent = data.missingThresholdPercent;
   if (data.exemptTeachers !== undefined) update.exemptTeachers = data.exemptTeachers;
 
   update.updatedBy = userId;

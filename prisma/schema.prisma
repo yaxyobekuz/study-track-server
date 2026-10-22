@@ -1854,15 +1854,18 @@ model Grade {
   @@map("grades")
 }
 
+// ⚠️ FOIZ CHEGARASI YO'Q va uni QAYTA KIRITMANG (`missingThresholdPercent`,
+// migratsiya `20261022120000_drop_grade_penalty_threshold`). Jarima faqat
+// bitta ham baho qo'yilmagan darsga yoziladi — oylikdagi "dars o'tildimi" va
+// "Men ketdim" darvozasi bilan AYNI qoida (`gradePenalty.service.js`).
 model GradePenaltySettings {
-  id                      String   @id @default("singleton") @db.VarChar(24)
-  isEnabled               Boolean  @default(true) @map("is_enabled")
-  penaltyPoints           Int      @default(1) @map("penalty_points")
-  missingThresholdPercent Int      @default(40) @map("missing_threshold_percent")
-  exemptTeachers          String[] @map("exempt_teachers")
-  updatedBy               String?  @map("updated_by") @db.Char(24)
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  id             String   @id @default("singleton") @db.VarChar(24)
+  isEnabled      Boolean  @default(true) @map("is_enabled")
+  penaltyPoints  Int      @default(1) @map("penalty_points")
+  exemptTeachers String[] @map("exempt_teachers")
+  updatedBy      String?  @map("updated_by") @db.Char(24)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@map("grade_penalty_settings")
 }

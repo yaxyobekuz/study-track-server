@@ -21,7 +21,8 @@ const SKIP_LOG = {
 };
 
 /**
- * Bugungi qo'yilmagan baholar uchun o'qituvchilarga avtomatik jarima beradi.
+ * Bugungi qo'yilmagan baholar uchun o'qituvchilarga avtomatik jarima beradi —
+ * faqat BITTA HAM baho qo'yilmagan darsga (`gradePenalty.service.js`).
  *
  * ⚠️ IDEMPOTENT: jarima SARLAVHA bo'yicha qidiriladi (dars sarlavhadan
  * tanib olinadi — `gradePenalty.helpers.js`), ya'ni pass kuniga necha marta

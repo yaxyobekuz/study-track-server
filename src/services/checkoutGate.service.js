@@ -22,9 +22,10 @@
  * ⚠️ BAHO TALABI — KAMIDA BITTA BAHO (biznes qarori, 2026-09-29): oylikdagi
  * "dars o'tildimi" qoidasi bilan AYNI (`helpers/lessonHours.js` →
  * `judgeLesson`, `finance.md` §10) — ketishga ruxsat bergan dars oylikda ham
- * o'tilgan hisoblanadi. Kechki jarimaning foiz chegarasi
- * (`GradePenaltySettings.missingThresholdPercent`) bu yerda ISHLATILMAYDI —
- * u alohida intizom qoidasi. Jarimadan ozod o'qituvchi darvozadan ham ozod.
+ * o'tilgan hisoblanadi. 2026-10-22 dan kechki baho jarimasi ham AYNI qoida
+ * (`gradePenalty.service.js`, foiz chegarasi olib tashlangan): darvozadan
+ * o'tgan o'qituvchi kechqurun jarima olmaydi. Jarimadan ozod o'qituvchi
+ * darvozadan ham ozod.
  *
  * ⚠️ BOSHLANMAGAN DARS BAHOSI BO'LSA HAM TO'SADI: undan oldin ketish — darsni
  * tashlab ketish. (Vaqt tekshiruvi yoqilgan bo'lsa unga baho qo'yib ham
@@ -533,7 +534,7 @@ async function getCheckoutReadiness(user) {
   const requireTasks = settings.checkoutRequireTasks !== false;
   if (!requireGrades && !requireTasks) return base;
 
-  // Jarima sozlamasidan faqat OZOD ro'yxati o'qiladi (foiz chegarasi emas)
+  // Jarima sozlamasidan faqat OZOD ro'yxati o'qiladi
   const [penaltySettings, record, request] = await Promise.all([
     requireGrades ? getGradePenaltySettings() : null,
     prisma.attendance.findUnique({

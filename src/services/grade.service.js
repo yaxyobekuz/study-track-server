@@ -210,6 +210,18 @@ async function getMissingGradesToday() {
         (s) => !gradedStudentIds.has(s.id),
       );
 
+      // ⚠️ JARIMA BELGISI — kechki pass bilan AYNI qoida
+      // (`gradePenalty.service.js`): jarima faqat dars egasi BITTA HAM baho
+      // qo'ymagan darsga. Ruxsat bilan qo'yilgan va ko'chgan baho hisob emas.
+      // Belgisiz ro'yxat "14/15 baholanmagan" darsni jarimali deb ko'rsatardi.
+      const ungraded = !todayGrades.some(
+        (g) =>
+          g.subjectId === lesson.subjectId &&
+          g.lessonOrder === lesson.order &&
+          !g.gradingGrantId &&
+          !g.transferredFromBranchId,
+      );
+
       // Agar baho olmagan o'quvchilar bo'lsa
       if (missingStudents.length > 0) {
         const lessonSubject = subjectMap.get(lesson.subjectId);
@@ -258,6 +270,7 @@ async function getMissingGradesToday() {
           startTime: lesson.startTime,
           endTime: lesson.endTime,
           totalStudents: studentsInClass.length,
+          ungraded,
           missingStudents: missingStudents.map((s) => ({
             id: s.id,
             firstName: s.firstName,

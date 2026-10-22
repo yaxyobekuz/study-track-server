@@ -18,6 +18,10 @@ const assert = require("node:assert/strict");
  *   · `late` — kelgan;
  *   · O'QITUVCHI kelmagan yoki dars "o'tildi" deb belgilangan bo'lsa
  *     jarima YO'Q — dars bo'lmagan;
+ *   · BITTA BAHO YETADI (2026-10-22): bitta o'quvchiga ham baho qo'yilgan
+ *     darsga jarima YO'Q, foiz chegarasi yo'q; ruxsat bilan qo'yilgan va
+ *     boshqa filialdan ko'chgan baho esa hisob EMAS;
+ *   · qayta tekshirish sozlama o'chiq bo'lsa ham haqli jarimani bekor QILMAYDI;
  *   · yakshanba, bayram va o'chirilgan sozlama — kun umuman tekshirilmaydi.
  */
 
@@ -44,7 +48,8 @@ const db = {
   attendance: [],        // { studentId, status }
   staffAbsent: [],       // { userId }
   credits: [],           // { teacherId, classId, subjectId, lessonOrder }
-  grades: [],            // { classId, subjectId, lessonOrder, studentId }
+  grades: [],            // { classId, subjectId, lessonOrder, studentId, gradingGrantId?, transferredFromBranchId? }
+  penalties: [],         // { id, userId, title, points }
   holiday: false,
 };
 
@@ -86,11 +91,18 @@ fakeModule("../src/config/prisma", {
         .map((row) => ({ studentId: row.studentId })),
   },
   grade: {
-    findMany: async () =>
-      db.grades.map((g) => ({ ...g, date: new Date("2026-10-20T06:00:00.000Z") })),
+    // Servis so'ragan filtrlar HAQIQATAN qo'llanadi — aks holda "ruxsat
+    // bahosi hisob emas" testi filtr yo'qligida ham o'tib ketardi
+    findMany: async ({ where }) =>
+      db.grades
+        .filter((g) => (where.gradingGrantId === null ? !g.gradingGrantId : true))
+        .filter((g) =>
+          where.transferredFromBranchId === null ? !g.transferredFromBranchId : true,
+        )
+        .map((g) => ({ ...g, date: new Date("2026-10-20T06:00:00.000Z") })),
   },
   holiday: { findMany: async () => [] },
-  penalty: { findMany: async () => [] },
+  penalty: { findMany: async () => db.penalties },
 });
 
 fakeModule("../src/services/holiday.service", {
@@ -112,9 +124,15 @@ fakeModule("../src/services/studentAttendance.service", {
     ),
 });
 
-const { computeDayPenalties, DAY_SKIP, LESSON_SKIP } = require("../src/services/gradePenalty.service");
+const {
+  computeDayPenalties,
+  penaltyDescription,
+  recheckRange,
+  DAY_SKIP,
+  LESSON_SKIP,
+} = require("../src/services/gradePenalty.service");
 
-const SETTINGS = { isEnabled: true, missingThresholdPercent: 20, penaltyPoints: 1, exemptTeachers: [] };
+const SETTINGS = { isEnabled: true, penaltyPoints: 1, exemptTeachers: [] };
 
 /** N ta o'quvchi: hammasi o'qiydi, arxivlanmagan, davomati belgilanmagan. */
 function seed(count) {
@@ -124,6 +142,7 @@ function seed(count) {
   db.staffAbsent = [];
   db.credits = [];
   db.grades = [];
+  db.penalties = [];
   db.holiday = false;
 
   for (let i = 0; i < count; i += 1) {
@@ -271,33 +290,114 @@ test("baho kutilgan o'quvchi qolmasa — jarima YO'Q", async () => {
   assert.equal(entry.deserved, false);
 });
 
-/* ─────────────────── CHEGARA VA KUN ─────────────────── */
+/* ─────────────────── BITTA BAHO YETADI ─────────────────── */
 
-test("chegaradan past — jarima YO'Q", async () => {
+/** Bitta o'quvchiga baho (qo'shimcha maydonlar bilan). */
+const gradeOne = (student, extra = {}) => {
+  db.grades = [
+    { classId: CLASS, subjectId: SUBJECT, lessonOrder: 1, studentId: student.id, ...extra },
+  ];
+};
+
+test("⚠️ BITTA o'quvchiga baho — qolganlari baholanmagan bo'lsa ham jarima YO'Q", async () => {
   seed(20);
-  // 2/20 = 10%, chegara 20%
-  db.grades = db.students.slice(2).map((s) => ({
-    classId: CLASS, subjectId: SUBJECT, lessonOrder: 1, studentId: s.id,
-  }));
+  gradeOne(db.students[7]);
 
   const { entry } = await only();
-  assert.equal(entry.percent, 10);
-  assert.equal(entry.skip, LESSON_SKIP.BELOW);
+  // Ilgari 19/20 (95%) → jarima. Endi foiz chegarasi yo'q: dars o'tilgan
+  assert.equal(entry.missing, 19);
+  assert.equal(entry.skip, LESSON_SKIP.GRADED);
   assert.equal(entry.deserved, false);
 });
 
-test("chegaradan yuqori — jarima BOR, matni ham to'g'ri", async () => {
+test("bitta ham baho yo'q — jarima BOR, matni ham to'g'ri", async () => {
   seed(20);
-  db.grades = db.students.slice(5).map((s) => ({
-    classId: CLASS, subjectId: SUBJECT, lessonOrder: 1, studentId: s.id,
-  }));
+  db.grades = [];
 
   const { entry } = await only();
-  assert.equal(entry.missing, 5);
-  assert.equal(entry.percent, 25);
+  assert.equal(entry.missing, 20);
   assert.equal(entry.deserved, true);
+  assert.equal(entry.skip, null);
   assert.equal(entry.title, "Baho qo'ymaslik: IT 1 1-dars (2026-10-20)");
+  assert.equal(
+    penaltyDescription(entry),
+    "Darsdagi 20 o'quvchidan birortasiga ham baho qo'yilmagan",
+  );
 });
+
+test("kelmagan deb belgilangan o'quvchiga qo'yilgan baho ham darsni o'tilgan qiladi", async () => {
+  seed(10);
+  db.attendance = [{ studentId: db.students[0].id, status: "absent" }];
+  gradeOne(db.students[0]);
+
+  const { entry } = await only();
+  assert.equal(entry.total, 9);
+  assert.equal(entry.skip, LESSON_SKIP.GRADED);
+  assert.equal(entry.deserved, false);
+});
+
+test("boshqa darsga qo'yilgan baho bu darsni qutqarmaydi", async () => {
+  seed(10);
+  gradeOne(db.students[0], { lessonOrder: 2 });
+
+  const { entry } = await only();
+  assert.equal(entry.deserved, true);
+});
+
+test("⚠️ fanga RUXSAT bilan qo'yilgan baho hisob EMAS — dars egasi jarima oladi", async () => {
+  seed(10);
+  // Boshqa o'qituvchi ruxsat bilan bitta o'quvchiga qo'ygan, egasi hech kimga
+  gradeOne(db.students[0], { gradingGrantId: id("97") });
+
+  const { entry } = await only();
+  assert.equal(entry.deserved, true);
+});
+
+test("⚠️ boshqa filialdan KO'CHGAN baho hisob EMAS", async () => {
+  seed(10);
+  gradeOne(db.students[0], { transferredFromBranchId: id("b2") });
+
+  const { entry } = await only();
+  assert.equal(entry.deserved, true);
+});
+
+/* ─────────────────── QAYTA TEKSHIRISH ─────────────────── */
+
+const TITLE = "Baho qo'ymaslik: IT 1 1-dars (2026-10-20)";
+
+test("qayta tekshirish: bitta baho bor darsning jarimasi bekor qilinadi (quruq yurish)", async () => {
+  seed(10);
+  gradeOne(db.students[3]);
+  db.penalties = [{ id: id("p1"), userId: TEACHER, title: TITLE, points: 1 }];
+
+  const report = await recheckRange(
+    { from: "2026-10-20", to: "2026-10-20" },
+    { actorId: TEACHER, settings: SETTINGS },
+  );
+
+  assert.equal(report.cancelled, 1);
+  assert.equal(report.kept, 0);
+  assert.equal(report.rows[0].reason, "Darsga baho qo'yilgan");
+  assert.equal(report.rows[0].applied, false);
+});
+
+test("⚠️ qayta tekshirish: sozlama O'CHIQ bo'lsa ham haqli jarima JOYIDA qoladi", async () => {
+  seed(10);
+  db.grades = [];
+  db.penalties = [{ id: id("p1"), userId: TEACHER, title: TITLE, points: 1 }];
+
+  const report = await recheckRange(
+    { from: "2026-10-20", to: "2026-10-20" },
+    { actorId: TEACHER, settings: { ...SETTINGS, isEnabled: false } },
+  );
+
+  // Ilgari o'chiq sozlamada hisob bo'sh qaytib, jarima "Jadvalda bu dars
+  // topilmadi" deb bekor qilinardi
+  assert.equal(report.kept, 1);
+  assert.equal(report.cancelled, 0);
+});
+
+/* ─────────────────── KUN ─────────────────── */
 
 test("yakshanba — kun tekshirilmaydi", async () => {
   seed(10);

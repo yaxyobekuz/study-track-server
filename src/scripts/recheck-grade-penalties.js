@@ -9,6 +9,10 @@
  * bir qismi asossiz bo'lib qoladi — bu skript o'shalarni bekor qiladi va
  * ballni qaytaradi.
  *
+ * 2026-10-22 dan jarima faqat BITTA HAM baho qo'yilmagan darsga (foiz chegarasi
+ * olib tashlangan): eski kunlarni tekshirish darsda kamida bitta bahosi bor
+ * jarimalarni ham "Darsga baho qo'yilgan" sababi bilan bekor qiladi.
+ *
  * ⚠️ FAQAT BEKOR QILADI, yangi jarima YOZMAYDI: bu tozalash, qayta
  * jarimalash emas. Haqiqatan baho qo'yilmagani joyida qoladi.
  *
