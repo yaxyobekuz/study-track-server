@@ -768,7 +768,12 @@ model Topic {
   subjectId   String   @map("subject_id") @db.Char(24)
   order       Int
   name        String
+  // Fayldagi "Nimalar o'rgatiladi" (eski shablonda "Tavsif") — ixtiyoriy
   description String?
+  // Fayldagi "Daraja" va "Kitob" — IXTIYORIY: hamma fanning rejasida ham
+  // bo'lmaydi va bo'lmagani xato emas (`helpers/topicImport.helpers.js`)
+  level       String?
+  book        String?
   createdBy   String   @map("created_by") @db.Char(24)
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")

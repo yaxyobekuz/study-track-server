@@ -1141,6 +1141,9 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
       number: lessonEntry.topic.order,
       name: lessonEntry.topic.name,
       description: lessonEntry.topic.description || "",
+      // Ixtiyoriy — mavzular faylida bo'lmasa `null`
+      level: lessonEntry.topic.level ?? null,
+      book: lessonEntry.topic.book ?? null,
     };
   }
 
