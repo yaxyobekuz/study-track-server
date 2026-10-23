@@ -52,7 +52,9 @@ test("platforma katalogining eksporti esa ISHLAYDI (bitta filial)", () => {
 
 test("`:id` faqat 24-hex: quyi-yo'llar id deb qabul qilinmaydi", () => {
   assert.equal(registry.resolveRule("GET", "/users/all-short").locate, undefined);
-  assert.equal(registry.resolveRule("GET", "/users/stats").mode, "object");
+  // ⚠️ `anchor`: sanoqchilar qo'shilmaydi, controller o'zi filiallar
+  // bo'ylab birlashtiradi (bir odam ikki filialda ikki marta sanalmasin).
+  assert.equal(registry.resolveRule("GET", "/users/stats").mode, "anchor");
   assert.deepEqual(registry.resolveRule("PUT", `/users/${ID}`).locate, {
     model: "user",
     id: ID,

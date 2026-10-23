@@ -7,6 +7,7 @@ const {
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 const staffReportService = require("../services/staffReport.service");
+const aggregateScope = require("../services/aggregateScope.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
 const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
@@ -58,8 +59,51 @@ const generateFirstMonthInvoice = async (req, user, body = {}) => {
   }
 };
 
-// Get user statistics (Owner only)
+/**
+ * Sanoqchilar (faqat tizim egasi).
+ *
+ * ⚠️ UMUMIY KO'RINISHDA SANOQ QO'SHILMAYDI — ODAMLAR BIRLASHTIRILADI.
+ * Xodim bir nechta filialda ishlashi mumkin va har filialda AYNI `id`
+ * bilan turadi (`user.service.js` → `attachToBranch`). Dispatcher
+ * filiallarning sanoqlarini qo'shib yuborsa, ikki filialda ishlaydigan
+ * odam "ikki xodim" bo'lib ko'rinardi. Shu sababli bu yo'l registrda
+ * `anchor` deb belgilangan va sanoqni servisning O'ZI filiallar bo'ylab
+ * yig'adi (`getStatsAcrossBranches`).
+ *
+ * Javobdagi `meta.aggregate` — dispatcher birlashtirgan javoblar bilan
+ * AYNI shaklda (`helpers/aggregateMerge.helpers.js` → `byBranch`), ya'ni
+ * panel uchun bu yo'l hech narsa bilan farq qilmaydi.
+ */
 const getStats = asyncHandler(async (req, res) => {
+  const branches = req.aggregateScope?.branches ?? [];
+
+  if (branches.length > 1) {
+    const { totals, perBranch, shared } =
+      await userService.getStatsAcrossBranches(branches);
+
+    const labels = perBranch.map(({ branch }) =>
+      aggregateScope.publicBranch(branch),
+    );
+    const values = {};
+    for (const key of Object.keys(totals)) {
+      values[`data.${key}`] = perBranch.map((row) => row[key]);
+    }
+
+    return res.json({
+      success: true,
+      data: totals,
+      meta: {
+        aggregate: {
+          mode: "object",
+          branches: labels,
+          byBranch: { branches: labels, values },
+          // Kesim yig'indisi jamidan katta bo'lishi mumkin — farqi shu.
+          shared,
+        },
+      },
+    });
+  }
+
   const data = await userService.getStats();
 
   res.json({ success: true, data });

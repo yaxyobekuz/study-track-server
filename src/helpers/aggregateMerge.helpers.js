@@ -93,6 +93,129 @@ const MAX_PREFIX = "max";
 const MIN_PREFIX = "min";
 
 /**
+ * PUL — 2 XONALI STRING, SON EMAS (`helpers/money.helpers.js` doktrinasi).
+ *
+ * ⚠️ Moliya javoblarida summa HAR DOIM `formatAmount()` dan chiqqan
+ * `"1200000.00"` ko'rinishida keladi. Ilgari bu yerda u oddiy matn deb
+ * qabul qilinardi: to'rt filialning tushumi birlashganda LANGAR filialning
+ * summasi "butun tarmoq" bo'lib ko'rinardi — jim xato, eng qimmat turi.
+ *
+ * Shablon ATAYLAB qat'iy (aniq ikki kasr xonasi): id, chek raqami, telefon,
+ * kod va versiya ("1.0.0") unga tushmaydi, ya'ni ular tasodifan "pul" deb
+ * qo'shilib ketmaydi.
+ */
+const MONEY_PATTERN = /^-?\d{1,15}\.\d{2}$/;
+
+/** `"1200000.00"` → `120000000n` (tiyin). Noto'g'ri shakl — `null`. */
+const toCents = (value) => {
+  if (typeof value !== "string" || !MONEY_PATTERN.test(value)) return null;
+  const negative = value.startsWith("-");
+  const [whole, fraction] = (negative ? value.slice(1) : value).split(".");
+  const cents = BigInt(whole) * 100n + BigInt(fraction);
+  return negative ? -cents : cents;
+};
+
+/** `120000000n` → `"1200000.00"`. */
+const fromCents = (cents) => {
+  const negative = cents < 0n;
+  const abs = negative ? -cents : cents;
+  const whole = abs / 100n;
+  const fraction = (abs % 100n).toString().padStart(2, "0");
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+};
+
+/**
+ * QO'SHIB BO'LMAYDIGAN O'LCHOV BIRLIKLARI.
+ *
+ * ⚠️ Dashboard kartalari `{ key, unit, value, previous, plan, change }`
+ * shaklida keladi va qiymatning kaliti HAR DOIM `value` — ya'ni nomidan
+ * uning foizmi yoki pulmi ekanini bilib bo'lmaydi. Foizli kartaning
+ * (`margin`, `attendanceRate`) `value` i qo'shilsa, to'rt filialda
+ * "96% foyda margini" kabi ma'nosiz raqam chiqardi.
+ *
+ * Shuning uchun qiymat YONIDAGI `unit` o'qiladi: u ham javobning o'z
+ * shartnomasi (`formatByUnit(row.value, row.unit)` — panel ham shundan
+ * o'qiydi), taxmin emas.
+ */
+const NON_SUM_UNITS = new Set([
+  // ⚠️ "%" ham shu yerda: faollik lentasi birlikni AYNAN shu belgi bilan
+  // yuboradi (`activityDashboard.service.js`), "percent" deb emas. U
+  // ro'yxatda bo'lmagani uchun "bot qamrovi" to'rt filialda 240% bo'lib
+  // chiqardi.
+  "%",
+  "percent",
+  "point",
+  "rate",
+  "ratio",
+  "grade",
+  "score",
+  "index",
+  "avg",
+  "average",
+]);
+
+/** Qaysi kalitlar yonidagi `unit` ga bo'ysunadi. */
+const UNIT_FIELDS = new Map([
+  ["value", "unit"],
+  ["previous", "unit"],
+  ["plan", "unit"],
+  ["target", "unit"],
+  ["actual", "unit"],
+  // ⚠️ `change` o'z birligiga ega (`changeUnit`): pul kartasida ham u FOIZ
+  // o'zgarishi, ya'ni hech qachon qo'shilmaydi.
+  ["change", "changeUnit"],
+]);
+
+/**
+ * Obyektning bolalariga beriladigan birlik maslahati.
+ *
+ * Faqat HAMMA filial AYNI birlikni aytgan bo'lsa qabul qilinadi: filiallar
+ * boshqa-boshqa birlik qaytargan bo'lsa, bu javob shakli o'zgargani degani
+ * va taxmin qilishdan ko'ra umumiy qoidaga qaytgan ma'qul.
+ *
+ * @param {Array<{value: object}>} defined
+ * @returns {Object<string, string>}
+ */
+const unitHints = (defined) => {
+  const hints = {};
+  for (const [field, source] of UNIT_FIELDS) {
+    const units = defined.map((entry) => entry.value?.[source]);
+    const first = units[0];
+    if (typeof first !== "string") continue;
+    if (units.every((unit) => unit === first)) hints[field] = first;
+  }
+  return hints;
+};
+
+/**
+ * FILIALLAR KESIMI — "bu raqamning qanchasi qaysi filialdan".
+ *
+ * ⚠️ Jami raqam ASOSIY javob bo'lib qoladi; kesim esa `meta.aggregate` da
+ * YONIDA turadi. Panel uni karta ostida ko'rsatadi va bosilganda o'sha
+ * filialga o'tkazadi — "461 o'quvchi" degan raqam "qayerda?" degan
+ * savolsiz qolmasin.
+ *
+ * ⚠️ FAQAT OBYEKT YO'LIDA yoziladi (`track: false` — massiv ichida emas):
+ * massiv qatorlarining kaliti takrorlanadi (`data.days` ichidagi har kun
+ * bitta yo'lga tushardi) va qatorlar allaqachon `_branch` bilan belgilangan.
+ */
+const MAX_BRANCH_PATHS = 300;
+
+const recordBranchValues = (notes, path, entries, options) => {
+  if (options.track === false) return;
+  if (!notes.byBranch || entries.length < 2) return;
+  if (notes.byBranch.has(path) || notes.byBranch.size >= MAX_BRANCH_PATHS) return;
+
+  notes.byBranch.set(
+    path,
+    entries.map((entry) => ({
+      branch: entry.branch,
+      value: entry.value === undefined ? null : entry.value,
+    })),
+  );
+};
+
+/**
  * Qatorlarni guruhlash uchun kalit nomzodlari.
  *
  * Kunlik/oylik qatorlar (hisobot jadvallari, grafiklar) filiallar bo'ylab
@@ -123,6 +246,26 @@ const GROUP_KEYS = [
   // ya'ni guruhlash aynan daraja bo'yicha boradi.
   "grade",
 ];
+
+/**
+ * KESIM YOZILADIGAN GURUH KALITLARI (massiv qatorlari uchun).
+ *
+ * ⚠️ VAQT QATORLARI (kun, oy, hafta) ATAYLAB YO'Q: ular grafik ma'lumoti
+ * va har kun uchun alohida kesim yozilsa, 30 kunlik trend butun kesim
+ * chegarasini (`MAX_BRANCH_PATHS`) yeb qo'yardi — holbuki odam kesimni
+ * KARTADAGI raqam uchun ochadi, grafikning bitta nuqtasi uchun emas.
+ *
+ * Qolganlari — kartaga aylanadigan, soni tabiiy cheklangan kalitlar
+ * (ko'rsatkich kaliti, holat, toifa, sinf darajasi).
+ */
+const SPLIT_GROUP_KEYS = new Set([
+  "key",
+  "status",
+  "kind",
+  "type",
+  "category",
+  "grade",
+]);
 
 const isPlainObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -303,6 +446,8 @@ const newNotes = () => ({
   reduced: new Set(),
   grouped: new Set(),
   partial: new Set(),
+  // yo'l → `[{branch, value}]` (filiallar kesimi, `recordBranchValues`)
+  byBranch: new Map(),
 });
 
 /**
@@ -353,14 +498,34 @@ const mergeRows = (entries, notes, path, options) => {
 
     notes.grouped.add(path);
     const keys = [...new Set(group.flatMap((g) => Object.keys(g.value)))];
+
+    // ⚠️ Qator kesimi FAQAT kartaga aylanadigan kalitlarda yoziladi
+    // (`SPLIT_GROUP_KEYS`) va yo'lga qatorning kaliti qo'shiladi
+    // ("data.metrics[bot_today].value") — aks holda massivning hamma
+    // qatori BITTA yo'lga tushib, kesim ma'nosini yo'qotardi.
+    const splittable = SPLIT_GROUP_KEYS.has(groupKey) && options.track !== false;
+    const rowPath = splittable
+      ? `${path}[${String(group[0].value[groupKey])}]`
+      : path;
+    const rowOptions = {
+      ...options,
+      track: splittable,
+      units: unitHints(group),
+    };
     const merged = {};
     for (const childKey of keys) {
+      // ⚠️ GURUH KALITI BIRLASHTIRILMAYDI. U qatorning KIMLIGI: "5-sinf"
+      // ikki filialda ham 5 bo'lgani uchun qo'shilsa 10-sinfga aylanardi.
+      if (childKey === groupKey) {
+        merged[childKey] = group[0].value[groupKey];
+        continue;
+      }
       merged[childKey] = mergeValue(
         childKey,
         group.map((g) => ({ value: g.value[childKey], branch: g.branch })),
         notes,
-        path,
-        options,
+        rowPath,
+        rowOptions,
       );
     }
     out.push(merged);
@@ -373,21 +538,25 @@ const mergeRows = (entries, notes, path, options) => {
  * Bitta qiymatni filiallar bo'ylab birlashtiradi.
  *
  * Qoidalar (tartib bilan):
- *   1. hamma joyda AYNI qiymat      → o'zi qoladi
- *   2. registrda "tegilmasin" (`keep`) yoki davr/identifikator kaliti
+ *   1. registrda "tegilmasin" (`keep`) yoki davr/identifikator kaliti
  *      (`month`, `page`, `createdAt`...) → langar filialniki qoladi
- *   3. `max*` / `min*`              → eng katta / eng kichik
- *   4. foiz, o'rtacha               → o'rtacha (QO'SHILMAYDI)
- *   5. qolgan sonlar                → qo'shiladi
+ *   2. `max*` / `min*`              → eng katta / eng kichik
+ *   3. foiz, o'rtacha yoki yonidagi `unit` qo'shib bo'lmaydigan birlik
+ *                                   → o'rtacha (QO'SHILMAYDI)
+ *   4. qolgan sonlar va PUL ("1200000.00") → qo'shiladi
+ *   5. hamma joyda AYNI qiymat (son emas) → o'zi qoladi
  *   6. ro'yxatlar                   → kalit bo'yicha guruhlanadi
  *   7. obyektlar                    → ichkariga kirib, shu qoidalar qayta
  *   8. turlar aralash               → langar filialniki + meta'da ogohlantirish
+ *
+ * ⚠️ SONLAR TENGLIK TEKSHIRUVIDAN OLDIN keladi (ilgari teskari edi): ikki
+ * filialda ham 120 o'quvchi bo'lsa, jami 240 — 120 emas.
  *
  * @param {string} key
  * @param {Array<{value: any, branch: object}>} entries
  * @param {object} notes
  * @param {string} [prefix]
- * @param {{keep?: Set<string>}} [options]
+ * @param {{keep?: Set<string>, units?: object, track?: boolean}} [options]
  */
 const mergeValue = (key, entries, notes, prefix = "", options = {}) => {
   const path = prefix ? `${prefix}.${key}` : key;
@@ -396,51 +565,80 @@ const mergeValue = (key, entries, notes, prefix = "", options = {}) => {
   );
 
   if (defined.length === 0) return entries[0]?.value ?? null;
-  if (defined.length === 1) return defined[0].value;
-  if (defined.every((entry) => deepEqual(entry.value, defined[0].value))) {
-    return defined[0].value;
-  }
 
-  if (
+  const numeric = defined.every(
+    (entry) => typeof entry.value === "number" && Number.isFinite(entry.value),
+  );
+
+  // Pul — 2 xonali string (`MONEY_PATTERN` izohiga qarang).
+  const money =
+    !numeric &&
     defined.every(
-      (entry) => typeof entry.value === "number" && Number.isFinite(entry.value),
-    )
-  ) {
-    const numbers = defined.map((entry) => entry.value);
+      (entry) => typeof entry.value === "string" && MONEY_PATTERN.test(entry.value),
+    );
 
+  if (numeric || money) {
     // ⚠️ Sozlama va davr qiymatlari QO'SHILMAYDI: "24 soat" chegarasi to'rt
     // filialda 96 soatga aylanib qolardi.
     if (options.keep?.has(key) || isKeepKey(key)) {
-      notes.partial.add(path);
-      return numbers[0];
+      if (!defined.every((entry) => entry.value === defined[0].value)) {
+        notes.partial.add(path);
+      }
+      return defined[0].value;
     }
 
+    // Kesim jami raqam bilan BIRGA yoziladi: "qancha" yonida "qayerda".
+    recordBranchValues(notes, path, entries, options);
+
+    const numbers = numeric ? defined.map((entry) => entry.value) : null;
+    const cents = money ? defined.map((entry) => toCents(entry.value)) : null;
     const segments = keySegments(key);
-    if (segments[0] === MAX_PREFIX) {
+
+    if (segments[0] === MAX_PREFIX || segments[0] === MIN_PREFIX) {
       notes.reduced.add(path);
-      return Math.max(...numbers);
-    }
-    if (segments[0] === MIN_PREFIX) {
-      notes.reduced.add(path);
-      return Math.min(...numbers);
+      const takeMax = segments[0] === MAX_PREFIX;
+      if (numeric) return takeMax ? Math.max(...numbers) : Math.min(...numbers);
+      return fromCents(
+        cents.reduce((acc, value) =>
+          takeMax ? (value > acc ? value : acc) : value < acc ? value : acc,
+        ),
+      );
     }
 
-    if (isRatioKey(key)) {
+    if (defined.length === 1) return defined[0].value;
+
+    // Foiz/baho/ball — nomidan ham (`attendancePercent`), yonidagi `unit`
+    // dan ham (`{unit: "percent", value: 24.1}`) aniqlanadi.
+    const unit = options.units?.[key];
+    if (isRatioKey(key) || (typeof unit === "string" && NON_SUM_UNITS.has(unit))) {
       notes.averaged.add(path);
-      const sum = numbers.reduce((acc, value) => acc + value, 0);
-      return Math.round((sum / numbers.length) * 100) / 100;
+      if (numeric) {
+        const sum = numbers.reduce((acc, value) => acc + value, 0);
+        return Math.round((sum / numbers.length) * 100) / 100;
+      }
+      const total = cents.reduce((acc, value) => acc + value, 0n);
+      const count = BigInt(cents.length);
+      const half = count / 2n;
+      return fromCents((total + (total >= 0n ? half : -half)) / count);
     }
 
     notes.summed.add(path);
-    return numbers.reduce((acc, value) => acc + value, 0);
+    if (numeric) return numbers.reduce((acc, value) => acc + value, 0);
+    return fromCents(cents.reduce((acc, value) => acc + value, 0n));
   }
 
-  if (defined.every((entry) => Array.isArray(entry.value))) {
-    return mergeRows(defined, notes, path, options);
-  }
+  if (defined.length === 1) return defined[0].value;
 
+  // ⚠️ OBYEKT HAR DOIM ICHKARIGA KIRIB birlashtiriladi — tenglikdan OLDIN.
+  // Ikki filialning sanoqchilar bloki tasodifan aynan teng chiqishi mumkin
+  // (`{students: 120, workers: 0}`) va "teng → o'zi qoladi" qoidasi butun
+  // blokni yarmiga tushirib qo'yardi. Ichkarida esa har kalit O'Z qoidasini
+  // oladi: sanoqchi qo'shiladi, sozlama tegilmaydi, foiz o'rtachalanadi.
   if (defined.every((entry) => isPlainObject(entry.value))) {
     const keys = [...new Set(defined.flatMap((entry) => Object.keys(entry.value)))];
+    // Birlik maslahati HAR OBYEKT uchun qaytadan hisoblanadi — yuqoridagi
+    // kartaning `unit` i pastdagi boshqa blokka ergashib ketmasin.
+    const childOptions = { ...options, units: unitHints(defined) };
     const merged = {};
     for (const childKey of keys) {
       merged[childKey] = mergeValue(
@@ -448,10 +646,20 @@ const mergeValue = (key, entries, notes, prefix = "", options = {}) => {
         defined.map((entry) => ({ value: entry.value[childKey], branch: entry.branch })),
         notes,
         path,
-        options,
+        childOptions,
       );
     }
     return merged;
+  }
+
+  // Massiv va qolgan turlar uchun tenglik SAQLANADI: har filialda AYNI
+  // ro'yxat (platforma katalogi) ulansa, u filial soniga ko'payib ko'rinardi.
+  if (defined.every((entry) => deepEqual(entry.value, defined[0].value))) {
+    return defined[0].value;
+  }
+
+  if (defined.every((entry) => Array.isArray(entry.value))) {
+    return mergeRows(defined, notes, path, options);
   }
 
   // Turlar aralash (matn/boolean/son) — birlashtirib bo'lmaydi. Langar
@@ -586,7 +794,24 @@ const mergeObject = (results, options = {}) => {
   return { data, extras, notes };
 };
 
-/** `Set` larni meta uchun massivga aylantiradi (bo'shlari tashlanadi). */
+/**
+ * `Set` larni meta uchun massivga aylantiradi (bo'shlari tashlanadi).
+ *
+ * FILIALLAR KESIMI ixcham shaklda chiqadi: filiallar ro'yxati BIR MARTA,
+ * qiymatlar esa o'sha ro'yxatga MOS TARTIBDAGI massiv bilan:
+ *
+ *   byBranch: {
+ *     branches: [{id, code, name, shortName}, ...],
+ *     values:   { "data.students": [120, 90, null, 251] }
+ *   }
+ *
+ * ⚠️ Ro'yxat kesimning O'Z ICHIDA turadi, `meta.branches` ga ISHORA
+ * QILMAYDI: ikki ro'yxatning tartibi kelajakda ajralib ketsa, raqamlar
+ * jimgina boshqa filialga yozilib ketardi.
+ *
+ * `null` — o'sha filial bu raqamni umuman qaytarmagan (bo'lim yo'q yoki
+ * ruxsat yopiq); nol bilan adashtirmaslik uchun ataylab `null`.
+ */
 const notesToMeta = (notes) => {
   const meta = {};
   if (notes.summed.size) meta.summed = [...notes.summed];
@@ -594,11 +819,43 @@ const notesToMeta = (notes) => {
   if (notes.reduced?.size) meta.reduced = [...notes.reduced];
   if (notes.grouped?.size) meta.grouped = [...notes.grouped];
   if (notes.partial.size) meta.partial = [...notes.partial];
+
+  if (notes.byBranch?.size) {
+    const branches = [];
+    const index = new Map();
+
+    for (const rows of notes.byBranch.values()) {
+      for (const { branch } of rows) {
+        if (!branch?.id || index.has(branch.id)) continue;
+        index.set(branch.id, branches.length);
+        branches.push(branch);
+      }
+    }
+
+    if (branches.length > 1) {
+      const values = {};
+      for (const [path, rows] of notes.byBranch) {
+        const line = new Array(branches.length).fill(null);
+        for (const { branch, value } of rows) {
+          const at = index.get(branch?.id);
+          if (at !== undefined) line[at] = value;
+        }
+        values[path] = line;
+      }
+      meta.byBranch = { branches, values };
+    }
+  }
+
   return meta;
 };
 
 module.exports = {
   BRANCH_FIELD,
+  MONEY_PATTERN,
+  NON_SUM_UNITS,
+  toCents,
+  fromCents,
+  unitHints,
   newNotes,
   mergeRows,
   SETTING_KEYS,

@@ -381,6 +381,112 @@ async function getStats() {
   return { telegramUsers, workers, students, premiumUsers };
 }
 
+/**
+ * UMUMIY KO'RINISH UCHUN SANOQCHILAR — ODAM BIR MARTA SANALADI.
+ *
+ * ⚠️ XODIM BIR NECHTA FILIALDA ISHLASHI MUMKIN va u HAR filial
+ * schema'sida AYNAN O'SHA `id` bilan turadi (`attachToBranch` — profil
+ * maqsad filialga `id: source.id` bilan ko'chiriladi). Shuning uchun
+ * filiallarning sanoqlarini shunchaki QO'SHIB bo'lmaydi: ikki filialda
+ * ishlaydigan odam "ikki xodim" bo'lib ko'rinardi va "nechta xodimimiz
+ * bor" degan savolga yolg'on javob chiqardi.
+ *
+ * Shu sabab bu yerda sanoq EMAS, KIMLIK yig'iladi va to'plam birlashtiriladi.
+ * Telegram hisobida ham AYNI holat: bolalari ikki filialda o'qiydigan
+ * ota-ona har ikkala filialning `tg_users` jadvalida turadi (`telegram_id`
+ * — filial ichida yagona), ya'ni u ham `telegramId` bo'yicha birlashtiriladi.
+ *
+ * ⚠️ O'QUVCHI va PREMIUM dedup QILINMAYDI va bu ataylab: o'quvchi
+ * BITTA filialda o'qiydi (`attachToBranch` o'quvchini rad etadi), boshqa
+ * filialga ko'chirilganda esa manbadagi profili ARXIVLANADI va sanoqdan
+ * chiqadi. Ular uchun oddiy yig'indi — to'g'ri javob.
+ *
+ * ⚠️ Filiallar kesimi (`byBranch`) HAR FILIALNING O'Z soni bilan qoladi:
+ * ikki filialda ishlaydigan odam ikkala qatorda ham ko'rinadi, shuning
+ * uchun kesim yig'indisi jamidan KATTA bo'lishi mumkin. Farq `shared`
+ * da ochiq aytiladi — "nega qo'shilmayapti" degan savol qolmasin.
+ *
+ * @param {object[]} branches - ruxsat etilgan filial qatorlari
+ * @returns {Promise<{totals: object, perBranch: Array, shared: object}>}
+ */
+async function getStatsAcrossBranches(branches) {
+  const rows = await Promise.all(
+    branches.map((branch) =>
+      runWithBranch(branch, async () => {
+        const [staff, telegram, students, premiumUsers] = await Promise.all([
+          prisma.user.findMany({
+            where: { role: { notIn: ["owner", "student"] } },
+            select: { id: true },
+          }),
+          prisma.tgUser.findMany({
+            where: { linkKind: "student" },
+            select: { telegramId: true },
+          }),
+          prisma.user.count({ where: { role: "student", isArchived: false } }),
+          prisma.premium.count({ where: { status: "active" } }),
+        ]);
+
+        return {
+          branch,
+          staffIds: staff.map((row) => row.id),
+          telegramIds: telegram.map((row) => row.telegramId),
+          students,
+          premiumUsers,
+        };
+      }),
+    ),
+  );
+
+  return foldBranchStats(rows);
+}
+
+/**
+ * Filiallardan yig'ilgan xom qatorlarni jamiga aylantiradi (sof funksiya).
+ *
+ * Bazadan ajratilgan: dedup qoidasi — kimlik to'plamini birlashtirish —
+ * aynan shu yerda va u bazasiz sinaladi (`test/userStatsAggregate.test.js`).
+ *
+ * @param {Array<{branch: object, staffIds: string[], telegramIds: string[],
+ *   students: number, premiumUsers: number}>} rows
+ * @returns {{totals: object, perBranch: Array, shared: object}}
+ */
+function foldBranchStats(rows) {
+  const staffIds = new Set();
+  const telegramIds = new Set();
+  let students = 0;
+  let premiumUsers = 0;
+
+  for (const row of rows) {
+    row.staffIds.forEach((id) => staffIds.add(id));
+    row.telegramIds.forEach((id) => telegramIds.add(id));
+    students += row.students;
+    premiumUsers += row.premiumUsers;
+  }
+
+  const sumOf = (key) => rows.reduce((acc, row) => acc + row[key].length, 0);
+
+  return {
+    totals: {
+      telegramUsers: telegramIds.size,
+      workers: staffIds.size,
+      students,
+      premiumUsers,
+    },
+    perBranch: rows.map((row) => ({
+      branch: row.branch,
+      telegramUsers: row.telegramIds.length,
+      workers: row.staffIds.length,
+      students: row.students,
+      premiumUsers: row.premiumUsers,
+    })),
+    // Nechta odam bir nechta filialda sanalgan (kesim yig'indisi − jami).
+    shared: {
+      workers: sumOf("staffIds") - staffIds.size,
+      telegramUsers: sumOf("telegramIds") - telegramIds.size,
+    },
+  };
+}
+
 // ─────────────────────────────────────────────
 // KO'P ROLLILIK
 // ─────────────────────────────────────────────
@@ -2303,6 +2409,8 @@ module.exports = {
   // Ko'p filialli xodim
   getUserBranches,
   attachToBranch,
+  getStatsAcrossBranches,
+  foldBranchStats,
   setHomeBranch,
   detachFromBranch,
   propagateIdentity,
