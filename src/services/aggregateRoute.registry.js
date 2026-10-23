@@ -98,6 +98,10 @@ const RULES = [
   { pattern: "* /parental/*", mode: "anchor" },
   // AI yordamchi: SSE oqimi (ikkilik emas, lekin oqim) va yozadigan amallar.
   { pattern: "* /ai-assistant/*", mode: "anchor" },
+  // O'qituvchining O'Z darsiga davomati: shaxsiy ekran, huquq shu filialning
+  // dars jadvalidan keladi. Yo'lda "my" bo'lagi yo'q, shuning uchun
+  // `isPersonalPath` uni ushlamaydi va qoida ATAYLAB yozilgan.
+  { pattern: "* /student-attendance/teacher/*", mode: "anchor" },
 
   /* ── Platforma kataloglari: barcha filiallarda AYNI ─────────────────── */
   // ⚠️ Ularni fan-out qilish ro'yxatni filial soniga ko'paytirardi, yozuvni

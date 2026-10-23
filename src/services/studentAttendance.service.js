@@ -29,7 +29,10 @@ const STUDENT_SELECT = {
   classes: { select: { class: { select: { id: true, name: true } } } },
 };
 
-// Davomat qatoridagi `attendance` shakli (studentId — xaritalash uchun)
+// Davomat qatoridagi `attendance` shakli (studentId — xaritalash uchun).
+// `lastModifiedBy` — KIM belgilagani: o'qituvchi o'z darsiga davomat
+// qilayotganda qabulxona/ma'muriyat qarorini jimgina bosib ketmasligi uchun
+// (`studentAttendanceTeacher.service.js` → `markedBy`).
 const ATTENDANCE_SELECT = {
   id: true,
   studentId: true,
@@ -39,6 +42,7 @@ const ATTENDANCE_SELECT = {
   absenceReason: true,
   classId: true,
   autoMarked: true,
+  lastModifiedBy: true,
 };
 
 // classes junctionni tekis massivga aylantiramiz (populate shakli saqlanadi)
@@ -888,6 +892,13 @@ async function getAllRecords(req) {
 }
 
 module.exports = {
+  // ⚠️ YAGONA MANBA: "faol o'quvchi" ta'rifi va yig'indi kalitlari
+  // o'qituvchi yo'lida ham (`studentAttendanceTeacher.service.js`) SHU
+  // YERDAN olinadi — ikkinchi nusxa bo'lsa bir ekranda "jami 20", boshqasida
+  // "jami 22" bo'lib qolardi.
+  ACTIVE_STUDENT_WHERE,
+  STUDENT_STATUSES,
+  buildSummary,
   markAttendance,
   updateRecord,
   getTodayClassAttendance,
