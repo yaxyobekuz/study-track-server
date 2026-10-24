@@ -286,6 +286,56 @@ const rewritePagination = (query) => {
   };
 };
 
+/**
+ * SAHIFALANGAN OBYEKT JAVOB uchun birlashgan `pagination`.
+ *
+ * ⚠️ Loyihadagi ro'yxatlarning bir qismi `data` da emas, O'Z nomi bilan
+ * keladi (`{ students, summary, date, pagination }` — kunlik davomat).
+ * Ular obyekt sifatida birlashtiriladi va `pagination` javobdan butunlay
+ * tushib qolardi: panel "jami nechta" ni ham, sahifalarni ham ko'rsata
+ * olmasdi. Jami — filiallar yig'indisi, sahifa esa mijoz so'ragani.
+ *
+ * @returns {object|null} har filial sahifalagan bo'lsa — birlashgan shakl
+ */
+const mergePagination = (labelled, page, limit) => {
+  const list = labelled.map(({ body }) => body?.pagination);
+  if (!list.every(merge.isPlainObject)) return null;
+
+  const resolvedPage = Math.max(1, Number(page) || Number(list[0].page) || 1);
+  const resolvedLimit = Math.max(1, Number(limit) || Number(list[0].limit) || 1);
+  const total = list.reduce((acc, row) => acc + (Number(row.total) || 0), 0);
+  const totalPages = Math.ceil(total / resolvedLimit);
+
+  return {
+    page: resolvedPage,
+    limit: resolvedLimit,
+    total,
+    totalPages,
+    hasNextPage: resolvedPage < totalPages,
+    hasPrevPage: resolvedPage > 1,
+  };
+};
+
+/**
+ * Javobdagi YAGONA massiv kalitini topadi (`students`, `rows`).
+ *
+ * ⚠️ Ikkita massiv bo'lsa — `null`: qaysi biri "sahifalanadigan ro'yxat"
+ * ekanini taxmin qilish mumkin emas va noto'g'ri tanlov qatorlarni
+ * jimgina qirqib tashlardi.
+ */
+const singleArrayKey = (labelled) => {
+  const keys = [
+    ...new Set(
+      labelled.flatMap(({ body }) =>
+        Object.keys(body).filter((key) => Array.isArray(body[key])),
+      ),
+    ),
+  ];
+  if (keys.length !== 1) return null;
+  const [key] = keys;
+  return labelled.every(({ body }) => Array.isArray(body[key])) ? key : null;
+};
+
 /* ───────────────────────────── FAN-OUT ───────────────────────────── */
 
 /**
@@ -430,10 +480,24 @@ const fanOut = async ({ router, req, res, next, scope, rule }) => {
   if (labelled.every(({ body }) => merge.isPlainObject(body))) {
     const merged = merge.mergeObject(labelled, { keep });
 
+    // Ro'yxat `data` da emas, o'z nomi bilan kelgan va sahifalangan bo'lsa
+    // — kerakli bo'lakni qirqamiz (`mergePagination` izohiga qarang).
+    const pagination = mergePagination(labelled, page, limit);
+    const rowsKey = pagination ? singleArrayKey(labelled) : null;
+
+    if (rowsKey && Array.isArray(merged.extras[rowsKey])) {
+      const offset = (pagination.page - 1) * pagination.limit;
+      merged.extras[rowsKey] = merged.extras[rowsKey].slice(
+        offset,
+        offset + pagination.limit,
+      );
+    }
+
     markResponse(res, "merge");
     return res.status(200).json({
       success: true,
       data: merged.data,
+      ...(rowsKey ? { pagination } : {}),
       ...merged.extras,
       meta: {
         aggregate: {
@@ -558,4 +622,11 @@ const handleAggregate = async ({ router, req, res, next, decoded }) => {
   }
 };
 
-module.exports = { aggregateDispatch, ROW_CAP, BRANCH_TIMEOUT_MS };
+module.exports = {
+  aggregateDispatch,
+  ROW_CAP,
+  BRANCH_TIMEOUT_MS,
+  // test uchun
+  mergePagination,
+  singleArrayKey,
+};
