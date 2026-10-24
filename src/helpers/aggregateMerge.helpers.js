@@ -270,6 +270,43 @@ const SPLIT_GROUP_KEYS = new Set([
 const isPlainObject = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+/** 24-hex id (loyihadagi barcha id lar shunday). */
+const ID_VALUE = /^[0-9a-fA-F]{24}$/;
+
+/**
+ * QATOR ODAMNI (yoki YOZUVNI) bildiradimi — "kimlik" testi.
+ *
+ * ⚠️ BU TEST GURUHLASHNI TO'XTATADI va u MAJBURIY. `GROUP_KEYS` dagi
+ * kalitlar (`status`, `type`, `category`...) hisobot qatorlari uchun
+ * o'ylangan: "to'langan — 12 ta" degan qator filiallar bo'ylab
+ * QO'SHILISHI kerak. Lekin AYNI kalitlar odamlar ro'yxatida ham uchraydi:
+ * kunlik davomatda har xodimning o'z `status` i bor
+ * (`attendance.service.js` → `getTodayAllRecords`). Natijada 115 ta
+ * xodim holat bo'yicha guruhlanib, ekranda UCHTA qator qolgan edi —
+ * "Keldi", "Kech keldi", "Belgilanmagan" — va ularning nomi langar
+ * filialning birinchi xodimidan olingan edi.
+ *
+ * Kimlik belgisi: qatorda 24-hex id (`id`, `userId`, `classId`...) yoki
+ * `id` si bor ichki obyekt (`{user: {id}}`) bo'lishi. Hisobot qatorida
+ * bunday narsa bo'lmaydi — unda o'lchov (kun, holat) va sonlar turadi.
+ *
+ * ⚠️ Qoida AMALDAGI natijani faqat BITTA holatda o'zgartiradi: kalit
+ * takrorlanadigan VA kimligi bor qatorlar. Id bo'yicha guruhlash
+ * allaqachon bo'sh ish edi — id har schema'da alohida generatsiya
+ * qilinadi, ya'ni guruhda doim bitta qator qolardi.
+ *
+ * @param {object} row
+ * @returns {boolean}
+ */
+const hasIdentity = (row) => {
+  for (const value of Object.values(row)) {
+    if (typeof value === "string" && ID_VALUE.test(value)) return true;
+    if (isPlainObject(value) && typeof value.id === "string") return true;
+  }
+  return false;
+};
+
+
 /** Kalitni camelCase bo'laklariga ajratadi. */
 const keySegments = (key = "") =>
   String(key)
@@ -474,6 +511,12 @@ const mergeRows = (entries, notes, path, options) => {
   if (!all.length) return [];
   // Primitivlar (matn/son ro'yxati) — belgisiz ulanadi
   if (!all.every(({ row }) => isPlainObject(row))) return all.map(({ row }) => row);
+
+  // Odamlar/yozuvlar ro'yxati guruhlanmaydi — har qator alohida
+  // (`hasIdentity` izohiga qarang).
+  if (all.some(({ row }) => hasIdentity(row))) {
+    return all.map(({ row, branch }) => tagRow(row, branch));
+  }
 
   const groupKey = GROUP_KEYS.find((candidate) =>
     all.every(({ row }) => row[candidate] !== undefined && row[candidate] !== null),

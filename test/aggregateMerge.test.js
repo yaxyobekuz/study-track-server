@@ -416,3 +416,60 @@ test("kartaga aylanadigan qator kesimi KALIT bilan yoziladi", () => {
   assert.deepEqual(meta.byBranch.values["data.metrics[botCoverage].value"], [40, 80]);
   assert.deepEqual(meta.byBranch.values["data.metrics[events].value"], [100, 50]);
 });
+
+test("ODAMLAR RO'YXATI holat bo'yicha GURUHLANMAYDI", () => {
+  // Kunlik davomatning haqiqiy shakli (`getTodayAllRecords`): har xodimning
+  // o'z `status` i bor va u `GROUP_KEYS` da — guruhlansa, 115 ta xodim
+  // uchta qatorga ("Keldi", "Kech keldi", "Belgilanmagan") siqilib qolardi.
+  const row = (n, status) => ({
+    user: { id: n.repeat(24), firstName: `Xodim ${n}`, role: "teacher" },
+    status,
+    lateMinutes: 0,
+  });
+
+  const out = merge.mergeObject([
+    {
+      branch: A,
+      body: {
+        success: true,
+        rows: [row("1", "present"), row("2", "late"), row("3", "not_marked")],
+        summary: { total: 3, present: 1 },
+      },
+    },
+    {
+      branch: B,
+      body: {
+        success: true,
+        rows: [row("4", "present"), row("5", "not_marked")],
+        summary: { total: 2, present: 1 },
+      },
+    },
+  ]);
+
+  assert.equal(out.extras.rows.length, 5, "har xodim o'z qatori bilan qoladi");
+  assert.deepEqual(
+    out.extras.rows.map((r) => r._branch.code),
+    ["main", "main", "main", "second", "second"],
+    "har qator qaysi filialdan kelgani bilan belgilanadi",
+  );
+  assert.deepEqual(out.extras.summary, { total: 5, present: 2 }, "sanoqchi qo'shiladi");
+});
+
+test("kimligi bor qator ichki obyektsiz ham taniladi (24-hex maydon)", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, rows: [{ userId: "1".repeat(24), status: "paid", amount: 5 }] } },
+    { branch: B, body: { success: true, rows: [{ userId: "2".repeat(24), status: "paid", amount: 7 }] } },
+  ]);
+
+  assert.equal(out.extras.rows.length, 2, "ikki odamning qatori qo'shilib ketmaydi");
+});
+
+test("HISOBOT qatorlari esa avvalgidek guruhlanadi (kimlik yo'q)", () => {
+  const out = merge.mergeObject([
+    { branch: A, body: { success: true, data: { byStatus: [{ status: "paid", count: 12 }] } } },
+    { branch: B, body: { success: true, data: { byStatus: [{ status: "paid", count: 3 }] } } },
+  ]);
+
+  assert.equal(out.data.byStatus.length, 1);
+  assert.equal(out.data.byStatus[0].count, 15);
+});
