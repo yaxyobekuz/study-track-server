@@ -509,6 +509,244 @@ async function getDormClassBreakdown({ date } = {}) {
   };
 }
 
+/* ─────────────────────── SINF SAHIFASI VA TARIX ─────────────────────── */
+
+/**
+ * Tarix oynasi — necha kun orqaga qaraladi.
+ *
+ * ⚠️ MAXRAJ — "DAVOMAT OLINGAN KUNLAR", kalendar kunlari EMAS
+ * (`countTrackedDays`). Modul endi ishga tushgan bo'lsa, kalendar bo'yicha
+ * har bir o'quvchi "14 kundan 11 tasida belgilanmagan" bo'lib chiqar va bu
+ * raqam hech qanday savolga javob bermasdi. Yotoqxonada davomat olinmagan
+ * kun — ma'lumotning yo'qligi, bolaning yo'qligi emas.
+ */
+const HISTORY_DAYS_DEFAULT = 14;
+const HISTORY_DAYS_MAX = 60;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseHistoryDays(value) {
+  const days = Number.parseInt(value, 10);
+  if (!Number.isFinite(days) || days < 1) return HISTORY_DAYS_DEFAULT;
+  return Math.min(days, HISTORY_DAYS_MAX);
+}
+
+/** Oynaning birinchi kuni (oxirgi kun — `day` ning o'zi, inklyuziv). */
+const windowStart = (day, days) => new Date(day.getTime() - (days - 1) * DAY_MS);
+
+/**
+ * Oynadagi HAR BIR kalendar kuni, eskidan yangiga.
+ * `@db.Date` emas, lekin kun UTC yarim tunida — oddiy qo'shish yetadi
+ * (Toshkentda DST yo'q, `education.md` §9).
+ */
+function listDays(day, days) {
+  const start = windowStart(day, days);
+  return Array.from({ length: days }, (_, i) => new Date(start.getTime() + i * DAY_MS));
+}
+
+/**
+ * SINF SAHIFASI — "guruh ichiga kirib" ko'riladigan to'liq manzara.
+ *
+ * Bitta sinfning kunlik ro'yxati + har o'quvchining oxirgi kunlardagi
+ * yo'nalishi + sinfning kunlar kesimi.
+ *
+ * ⚠️ KUNLIK QATOR SHAKLI `getDormDay` BILAN AYNI (`status`, `note`,
+ * `markedBy`): belgilash jadvali ikkala ekranda bitta komponent va u
+ * ikkinchi shaklni bilmasligi kerak. Shu sababli ro'yxatning o'zi
+ * `getDormDay` dan OLINADI — nusxa qurilsa, bir ekranda sinfsiz o'quvchi
+ * yoki ketgan bola boshqacha ko'rinardi.
+ *
+ * @param {object} actor - `req.user`
+ * @param {{classId: string, date?: string, status?: string, search?: string, days?: string}} params
+ */
+async function getDormClassDetail(actor, { classId, date, status, search, days } = {}) {
+  if (!classId) throw new BadRequestError("Sinf ko'rsatilmagan (classId)");
+
+  const classDoc = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { id: true, name: true, isActive: true },
+  });
+  if (!classDoc) throw new NotFoundError("Sinf topilmadi");
+
+  // Kunlik ro'yxat — AYNI quruvchidan (shakl va doira bir xil bo'lsin)
+  const day = await getDormDay(actor, { date, classId, status, search });
+
+  const dayState = resolveDormDay(date);
+  const historyDays = parseHistoryDays(days);
+  const from = windowStart(dayState.day, historyDays);
+
+  // ⚠️ Doira QAYTA o'qiladi: `getDormDay` qaytargan ro'yxat holat va
+  // qidiruv bilan FILTRLANGAN, sinfning kunlar kesimi esa butun sinf
+  // bo'yicha bo'lishi kerak — aks holda "Kelmadi" filtrida turganda
+  // kunlar kesimi ham bitta bolaga qisqarib qolardi.
+  const { students } = await loadScope(dayState.day, classId);
+  const studentIds = students.map((s) => s.id);
+
+  const [records, trackedDayRows] = await Promise.all([
+    studentIds.length
+      ? prisma.dormAttendance.findMany({
+          where: { studentId: { in: studentIds }, date: { gte: from, lte: dayState.day } },
+          select: { studentId: true, date: true, status: true },
+        })
+      : [],
+    // ⚠️ Maxraj BUTUN MAKTAB bo'yicha: tarbiyachi o'sha kuni davomatni
+    // boshqa sinfdan boshlagan bo'lishi mumkin, lekin kun baribir "olingan"
+    // hisoblanadi. Sinf bo'yicha sanalsa, yangi sinf har safar nolga
+    // tushib, "hech qachon belgilanmagan" bo'lib ko'rinardi.
+    prisma.dormAttendance.groupBy({
+      by: ["date"],
+      where: { date: { gte: from, lte: dayState.day } },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const trackedKeys = new Set(trackedDayRows.map((row) => dayKey(row.date)));
+
+  // studentId → (kun kaliti → holat)
+  const byStudent = new Map(studentIds.map((id) => [id, new Map()]));
+  for (const rec of records) {
+    byStudent.get(rec.studentId)?.set(dayKey(rec.date), rec.status);
+  }
+
+  const emptyCounts = () => ({ present: 0, absent: 0, excused: 0, missing: 0 });
+
+  const historyOf = (studentId) => {
+    const marks = byStudent.get(studentId) ?? new Map();
+    const counts = emptyCounts();
+    const daysList = [];
+
+    for (const d of listDays(dayState.day, historyDays)) {
+      const key = dayKey(d);
+      const tracked = trackedKeys.has(key);
+      const value = marks.get(key) ?? null;
+
+      if (value) counts[value]++;
+      else if (tracked) counts.missing++;
+
+      daysList.push({ date: key, status: value, tracked });
+    }
+
+    return { ...counts, tracked: trackedKeys.size, days: daysList };
+  };
+
+  // Sinfning kunlar kesimi — "qaysi kuni nechta qoldi"
+  const trend = listDays(dayState.day, historyDays).map((d) => {
+    const key = dayKey(d);
+    const counts = emptyCounts();
+    for (const id of studentIds) {
+      const value = byStudent.get(id)?.get(key) ?? null;
+      if (value) counts[value]++;
+    }
+    return {
+      date: key,
+      dateLabel: formatDateUz(d, { utc: true }),
+      tracked: trackedKeys.has(key),
+      total: studentIds.length,
+      present: counts.present,
+      absent: counts.absent,
+      excused: counts.excused,
+      unmarked: Math.max(0, studentIds.length - counts.present - counts.absent - counts.excused),
+    };
+  });
+
+  return {
+    ...day,
+    classInfo: { id: classDoc.id, name: classDoc.name, isActive: classDoc.isActive },
+    history: { days: historyDays, trackedDays: trackedKeys.size },
+    students: day.students.map((row) => ({
+      ...row,
+      history: historyOf(row.student.id),
+    })),
+    trend,
+  };
+}
+
+/**
+ * BITTA O'QUVCHINING TARIXI — "nega bu bola tez-tez yo'q" degan savol uchun.
+ *
+ * Kun-ba-kun: holat, izoh, kim va qachon belgilagan.
+ *
+ * ⚠️ DAVOMAT OLINMAGAN KUN ro'yxatda TURADI, lekin `tracked: false` bilan:
+ * usiz bo'shliq "bola yo'q edi" deb o'qilardi, holbuki o'sha kuni umuman
+ * hech kim belgilanmagan.
+ *
+ * @param {{studentId: string, date?: string, days?: string}} params
+ */
+async function getDormStudentHistory({ studentId, date, days } = {}) {
+  if (!studentId) throw new BadRequestError("O'quvchi ko'rsatilmagan (studentId)");
+
+  const student = await prisma.user.findFirst({
+    where: { id: studentId, role: "student" },
+    select: { id: true, firstName: true, lastName: true, username: true },
+  });
+  if (!student) throw new NotFoundError("O'quvchi topilmadi");
+
+  const dayState = resolveDormDay(date);
+  const historyDays = parseHistoryDays(days);
+  const from = windowStart(dayState.day, historyDays);
+
+  const [records, trackedDayRows] = await Promise.all([
+    prisma.dormAttendance.findMany({
+      where: { studentId, date: { gte: from, lte: dayState.day } },
+      // `date` ham kerak: qatorlar kun bo'yicha xaritalanadi
+      // (`RECORD_SELECT` kunlik ro'yxat uchun va unda sana YO'Q — u yerda
+      // kun allaqachon so'rovning o'zida).
+      select: { ...RECORD_SELECT, date: true },
+    }),
+    prisma.dormAttendance.groupBy({
+      by: ["date"],
+      where: { date: { gte: from, lte: dayState.day } },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const trackedKeys = new Set(trackedDayRows.map((row) => dayKey(row.date)));
+  const recordOf = new Map(records.map((rec) => [dayKey(rec.date), rec]));
+
+  const markedByIds = [...new Set(records.map((r) => r.lastModifiedBy).filter(Boolean))];
+  const people = markedByIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: markedByIds } },
+        select: { id: true, firstName: true, lastName: true },
+      })
+    : [];
+  const nameOf = new Map(
+    people.map((p) => [p.id, [p.firstName, p.lastName].filter(Boolean).join(" ").trim() || "Noma'lum"]),
+  );
+
+  const counts = { present: 0, absent: 0, excused: 0, missing: 0 };
+
+  // Yangisi yuqorida: odam oxirgi kunlarni birinchi ko'radi
+  const rows = listDays(dayState.day, historyDays)
+    .reverse()
+    .map((d) => {
+      const key = dayKey(d);
+      const rec = recordOf.get(key) ?? null;
+      const tracked = trackedKeys.has(key);
+
+      if (rec) counts[rec.status]++;
+      else if (tracked) counts.missing++;
+
+      return {
+        date: key,
+        dateLabel: formatDateUz(d, { utc: true }),
+        tracked,
+        status: rec?.status ?? null,
+        note: rec?.note ?? "",
+        markedAt: rec?.markedAt ?? null,
+        markedBy: rec?.lastModifiedBy ? (nameOf.get(rec.lastModifiedBy) ?? "Noma'lum") : null,
+      };
+    });
+
+  return {
+    student,
+    days: historyDays,
+    trackedDays: trackedKeys.size,
+    counts,
+    rows,
+  };
+}
+
 /* ──────────────────────────── YOZUV YO'LI ──────────────────────────── */
 
 /**
@@ -714,6 +952,10 @@ module.exports = {
   buildSummary,
   getDormDay,
   getDormClassBreakdown,
+  getDormClassDetail,
+  getDormStudentHistory,
+  HISTORY_DAYS_DEFAULT,
+  HISTORY_DAYS_MAX,
   markDormAttendance,
   getSettings,
   updateSettings,

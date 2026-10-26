@@ -14,6 +14,24 @@ const getClassBreakdown = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// Bitta sinf — kunlik ro'yxat + har o'quvchining oxirgi kunlari + kunlar kesimi
+const getClassDetail = asyncHandler(async (req, res) => {
+  const data = await dormAttendance.getDormClassDetail(req.user, {
+    classId: req.params.classId,
+    ...req.query,
+  });
+  res.json({ success: true, data });
+});
+
+// Bitta o'quvchining tarixi — kun-ba-kun
+const getStudentHistory = asyncHandler(async (req, res) => {
+  const data = await dormAttendance.getDormStudentHistory({
+    studentId: req.params.studentId,
+    ...req.query,
+  });
+  res.json({ success: true, data });
+});
+
 // Belgilash — bitta yoki bir nechta o'quvchi
 const mark = asyncHandler(async (req, res) => {
   const data = await dormAttendance.markDormAttendance(req.user, req.body);
@@ -39,6 +57,8 @@ const exportExcel = asyncHandler(async (req, res) => {
 module.exports = {
   getDay,
   getClassBreakdown,
+  getClassDetail,
+  getStudentHistory,
   mark,
   getSettings,
   updateSettings,

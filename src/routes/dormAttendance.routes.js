@@ -1,10 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const { protect, authorizePermission } = require("../middleware/auth.middleware");
+const { validateObjectId } = require("../middleware/validate.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
 const {
   getDay,
   getClassBreakdown,
+  getClassDetail,
+  getStudentHistory,
   mark,
   getSettings,
   updateSettings,
@@ -34,6 +37,23 @@ router.get(
   "/export",
   authorizePermission(PERMISSIONS.DORMATTENDANCE_EXPORT),
   exportExcel,
+);
+
+// ⚠️ `/classes` va `/export` dan KEYIN, lekin id li yo'llar bilan
+// to'qnashmaydi: ikkalasi ham `/class/:id` va `/student/:id` prefiksi
+// bilan ajratilgan — statik bo'lak id deb o'qilmasin
+// (`studentAttendance.routes.js` dagi `/teacher/...` bilan AYNI ehtiyot).
+router.get(
+  "/class/:classId",
+  validateObjectId("classId"),
+  authorizePermission(PERMISSIONS.DORMATTENDANCE_VIEW),
+  getClassDetail,
+);
+router.get(
+  "/student/:studentId",
+  validateObjectId("studentId"),
+  authorizePermission(PERMISSIONS.DORMATTENDANCE_VIEW),
+  getStudentHistory,
 );
 
 // ⚠️ `/settings` GET — `view` bilan: ekran "16:00 dan boshlanadi" deb
