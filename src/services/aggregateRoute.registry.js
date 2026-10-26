@@ -228,6 +228,7 @@ const RULES = [
   { pattern: "* /holidays/:id", locate: { model: "holiday", param: "id" } },
   { pattern: "* /vacation-months/:id", locate: { model: "vacationMonth", param: "id" } },
   { pattern: "* /tutor-groups/:id", locate: { model: "tutorGroup", param: "id" } },
+  { pattern: "* /class-leaders/:id", locate: { model: "classLeader", param: "id" } },
   { pattern: "* /grades/:id", locate: { model: "grade", param: "id" } },
   { pattern: "* /messages/:id", locate: { model: "message", param: "id" } },
   { pattern: "* /messages/:id/*", locate: { model: "message", param: "id" } },

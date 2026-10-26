@@ -69,6 +69,7 @@ const payrollRoutes = require("./payroll.routes");
 const lessonHoursRoutes = require("./lessonHours.routes");
 const payrollRequestRoutes = require("./payrollRequest.routes");
 const tutorGroupRoutes = require("./tutorGroup.routes");
+const classLeaderRoutes = require("./classLeader.routes");
 const expenseCategoryRoutes = require("./expenseCategory.routes");
 const expenseRoutes = require("./expense.routes");
 const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
@@ -174,6 +175,9 @@ router.use("/lesson-hours", lessonHoursRoutes);
 router.use("/payroll-requests", payrollRequestRoutes);
 // Tyutor guruhlari — sinf biriktirish va o'quvchilar soniga qarab qo'shimcha oylik
 router.use("/tutor-groups", tutorGroupRoutes);
+// Sinf rahbarlari — xodimga sinf biriktirish (PULSIZ): biriktirishdan
+// keladigan yagona huquq — shu sinfning kunlik davomatini belgilash
+router.use("/class-leaders", classLeaderRoutes);
 router.use("/expense-categories", expenseCategoryRoutes);
 router.use("/expenses", expenseRoutes);
 router.use("/student-finance-statuses", studentFinanceStatusRoutes);

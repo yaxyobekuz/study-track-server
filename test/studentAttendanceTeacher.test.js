@@ -5,10 +5,11 @@ const assert = require("node:assert/strict");
  * O'QITUVCHI O'Z DARSIGA O'QUVCHILAR DAVOMATINI BELGILAYDI.
  *
  * Servislar HAQIQIY (darvoza ham, yozuv yadrosi ham), baza xotirada.
- * Tekshiriladi: sinflar qaysi manbadan chiqadi (o'z darsi, o'rinbosarlik),
- * fanga baho ruxsati bu yo'lda UMUMAN so'ralmasligi, yopiq kunlar, faqat
- * bugun sharti, maktabda bo'lish sharti va yozuvning yadroga qanday
- * tushishi (sinf SERVERDAN, ro'yxatda yo'q o'quvchi rad etiladi).
+ * Tekshiriladi: sinflar qaysi manbadan chiqadi (o'z darsi, o'rinbosarlik,
+ * SINF RAHBARLIGI), fanga baho ruxsati bu yo'lda UMUMAN so'ralmasligi,
+ * yopiq kunlar, faqat bugun sharti, maktabda bo'lish sharti va yozuvning
+ * yadroga qanday tushishi (sinf SERVERDAN, ro'yxatda yo'q o'quvchi rad
+ * etiladi).
  */
 
 function fakeModule(request, exports) {
@@ -42,6 +43,9 @@ const CLASS_B = "2".repeat(24); // TEACHER ning 2-darsi berib yuborilgan sinf
 const CLASS_C = "3".repeat(24); // nofaol sinf
 const CLASS_D = "4".repeat(24); // faqat fanga RUXSAT berilgan sinf
 const SUBJECT = "9".repeat(24);
+
+// Sinf rahbari roli — DINAMIK kalit (platforma belgisi bo'yicha topiladi)
+const LEADER_ROLE = "sinf_rahbari";
 
 const ALI = "aa1".padEnd(24, "0");
 const VALI = "bb2".padEnd(24, "0");
@@ -113,6 +117,9 @@ const reset = () => {
   ];
   db.records = [];
   db.upserts = [];
+  // SINF RAHBARLIGI: biriktirishlar va rol belgisi qo'yilgan rol kalitlari
+  db.classLeaders = [];
+  db.leaderRoles = [LEADER_ROLE];
 };
 reset();
 
@@ -255,6 +262,25 @@ fakeModule("../src/config/prisma", {
         (a) =>
           a.userId === where.userId_date.userId && sameDay(a.date, where.userId_date.date),
       ) ?? null,
+  },
+  classLeader: {
+    findMany: async ({ where }) =>
+      db.classLeaders
+        .filter((row) => row.leaderId === where.leaderId)
+        .filter((row) => {
+          const wanted = where.class?.isActive;
+          if (wanted === undefined) return true;
+          return (CLASSES.get(row.classId)?.isActive ?? false) === wanted;
+        })
+        .map((row) => ({ classId: row.classId })),
+  },
+});
+
+// Rol belgilari platformada yotadi (`Role.isClassLeader` / `Role.isTutor`)
+fakeModule("../src/config/platformPrisma", {
+  role: {
+    findMany: async ({ where } = {}) =>
+      where?.isClassLeader ? db.leaderRoles.map((value) => ({ value })) : [],
   },
 });
 
@@ -447,12 +473,12 @@ test("begona sinf ro'yxati berilmaydi", async (t) => {
 
   await assert.rejects(
     service.getTeacherClassRoster(actor, { classId: CLASS_D }),
-    /sizning darsingiz yo'q/,
+    /sinf rahbarligingizda ham emas/,
   );
   // Nofaol sinf ham begona
   await assert.rejects(
     service.getTeacherClassRoster(actor, { classId: CLASS_C }),
-    /sizning darsingiz yo'q/,
+    /sinf rahbarligingizda ham emas/,
   );
 });
 
@@ -491,7 +517,7 @@ test("belgilash rad etiladi: begona sinf, ro'yxatda yo'q o'quvchi, takror, xato 
 
   await assert.rejects(
     service.markTeacherAttendance(actor, { classId: CLASS_D, records }),
-    /sizning darsingiz yo'q/,
+    /sinf rahbarligingizda ham emas/,
   );
 
   // Boshqa sinfning o'quvchisi va davri yopilgani — ro'yxatda yo'q
@@ -588,4 +614,149 @@ test("bayram kunida belgilash yopiq", async (t) => {
     }),
     /Bayram kuni/,
   );
+});
+
+/* ─────────────── Sinf rahbarligi: ikkinchi manba ─────────────── */
+
+/** TEACHER ni 7-D (darsi yo'q sinf) ning rahbari qiladi. */
+const makeLeaderOfD = () => {
+  db.classLeaders.push({ leaderId: TEACHER, classId: CLASS_D });
+};
+
+const leaderActor = { id: TEACHER, role: "teacher", extraRoles: [LEADER_ROLE] };
+
+test("sinf rahbarligi: DARSI YO'Q sinf ham ro'yxatga tushadi", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  makeLeaderOfD();
+
+  const day = await service.getTeacherDay(leaderActor, {});
+
+  // 7-D — TEACHER ning darsi YO'Q (u SUB ning darsi), lekin rahbarligida
+  assert.deepEqual(day.classes.map((c) => c.name), ["5-A", "6-B", "7-D"]);
+
+  const d = day.classes.find((c) => c.name === "7-D");
+  assert.equal(d.access, "leader");
+  // ⚠️ Darslar ro'yxati BO'SH bo'lishi normal hol: huquq jadvaldan emas
+  assert.deepEqual(d.lessons, []);
+  // Yig'indi baribir hisoblanadi (7-D da bitta o'quvchi)
+  assert.equal(d.summary.total, 1);
+
+  // Dars orqali kelgan sinflar o'z belgisini saqlaydi
+  assert.equal(day.classes.find((c) => c.name === "5-A").access, "lesson");
+});
+
+test("ikki asos birlashadi: dars + rahbarlik → both", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  db.classLeaders.push({ leaderId: TEACHER, classId: CLASS_A });
+
+  const day = await service.getTeacherDay(leaderActor, {});
+
+  // Sinf IKKI MARTA chiqmaydi — bitta qator, ikki asos
+  assert.deepEqual(day.classes.map((c) => c.name), ["5-A", "6-B"]);
+  const a = day.classes.find((c) => c.name === "5-A");
+  assert.equal(a.access, "both");
+  // Darslari saqlanadi (rahbarlik ularni bosib ketmaydi)
+  assert.equal(a.lessons.length, 1);
+});
+
+test("ROL BELGISI YO'Q bo'lsa biriktirish huquq bermaydi", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  makeLeaderOfD();
+
+  // ⚠️ Biriktirish BOR, lekin odamda sinf rahbari roli YO'Q: rolni olish
+  // aynan "bu odam endi sinf rahbari emas" degani
+  const noRole = await service.getTeacherDay(actor, {});
+  assert.deepEqual(noRole.classes.map((c) => c.name), ["5-A", "6-B"]);
+
+  // Rolga belgi QO'YILMAGAN bo'lsa ham (platformada hech qaysi rol sinf
+  // rahbari emas) — huquq yo'q
+  db.leaderRoles = [];
+  const noFlag = await service.getTeacherDay(leaderActor, {});
+  assert.deepEqual(noFlag.classes.map((c) => c.name), ["5-A", "6-B"]);
+});
+
+test("nofaol sinfning rahbarligi ro'yxatga tushmaydi", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  db.classLeaders.push({ leaderId: SUB, classId: CLASS_C });
+
+  const subLeader = { id: SUB, role: "teacher", extraRoles: [LEADER_ROLE] };
+  const day = await service.getTeacherDay(subLeader, {});
+
+  // "Yopiq sinf" (nofaol) chiqmaydi — SUB da faqat o'z darsi (7-D) qoladi
+  assert.deepEqual(day.classes.map((c) => c.name), ["7-D"]);
+});
+
+test("sinf rahbari o'z sinfiga belgilaydi, begonasiga yo'q", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  makeLeaderOfD();
+
+  // Ro'yxat ochiladi
+  const roster = await service.getTeacherClassRoster(leaderActor, { classId: CLASS_D });
+  assert.equal(roster.classInfo.name, "7-D");
+  assert.equal(roster.access, "leader");
+  assert.deepEqual(roster.lessons, []);
+  assert.deepEqual(roster.students.map((r) => r.student.id), [OTHER]);
+
+  // Yozuv yadroga tushadi, sinf SERVERDAN qo'yiladi
+  const marked = await service.markTeacherAttendance(leaderActor, {
+    classId: CLASS_D,
+    records: [{ studentId: OTHER, status: "present" }],
+  });
+  assert.equal(marked.length, 1);
+  assert.equal(db.upserts[0].create.classId, CLASS_D);
+  assert.equal(db.upserts[0].create.status, "present");
+
+  // Rahbarligida ham, darsida ham bo'lmagan sinf — 403
+  db.classLeaders = [];
+  await assert.rejects(
+    service.markTeacherAttendance(leaderActor, {
+      classId: CLASS_D,
+      records: [{ studentId: OTHER, status: "present" }],
+    }),
+    /sinf rahbarligingizda ham emas/,
+  );
+});
+
+test("sinf rahbariga ham maktabda bo'lish sharti qo'llanadi", async (t) => {
+  if (IS_SUNDAY) return t.skip("yakshanba — dars yo'q");
+  reset();
+  makeLeaderOfD();
+  db.staffAttendance = [];
+
+  const day = await service.getTeacherDay(leaderActor, {});
+  assert.equal(day.canMark, false);
+  // Ro'yxat ko'rinadi, yozish yopiq — dars yo'li bilan AYNI
+  assert.equal(day.classes.length, 3);
+
+  await assert.rejects(
+    service.markTeacherAttendance(leaderActor, {
+      classId: CLASS_D,
+      records: [{ studentId: OTHER, status: "present" }],
+    }),
+    /Siz maktabda emassiz/,
+  );
+});
+
+test("o'quvchi bu yo'lga umuman kirmaydi", async () => {
+  reset();
+  const student = { id: ALI, role: "student" };
+
+  await assert.rejects(service.getTeacherDay(student, {}), /xodimlar uchun/);
+  await assert.rejects(
+    service.getTeacherClassRoster(student, { classId: CLASS_A }),
+    /xodimlar uchun/,
+  );
+  await assert.rejects(
+    service.markTeacherAttendance(student, {
+      classId: CLASS_A,
+      records: [{ studentId: ALI, status: "present" }],
+    }),
+    /xodimlar uchun/,
+  );
+  assert.equal(db.upserts.length, 0);
 });

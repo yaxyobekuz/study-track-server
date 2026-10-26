@@ -33,6 +33,7 @@ const SECTIONS = {
   PLANNER: "planner",
   SUBSTITUTIONS: "substitutions",
   TUTORS: "tutors",
+  CLASS_LEADERS: "classLeaders",
   TOPICS: "topics",
   CERTIFICATES: "certificates",
   CLASSES: "classes",
@@ -771,6 +772,26 @@ const PERMISSION_SECTIONS = [
     actions: [
       { key: "view", label: "Ko'rish (guruh, davomat, baho, qo'shimcha oylik)" },
       { key: "assign", label: "Guruh biriktirish va qo'shimcha oylik belgilash" },
+    ],
+  },
+  {
+    // SINF RAHBARI — xodimga sinf biriktirish. Biriktirishdan keladigan
+    // yagona huquq: shu sinfning KUNLIK davomatini belgilash.
+    //
+    // ⚠️ `tutors` DAN ALOHIDA BO'LIM va bu ataylab: tyutor biriktirishi
+    // PULNI belgilaydi (qo'shimcha oylik ustamasi), sinf rahbarligi esa
+    // faqat huquq beradi. Bitta bo'limga qo'shilsa, "davomat uchun sinf
+    // biriktirish" huquqi jimgina qo'shimcha oylik yozish huquqiga
+    // aylanardi (`gradeGrants` va `scheduleSync` bilan AYNI sabab).
+    //
+    // ⚠️ Xodimning O'Z sinflari (`/class-leaders/my`) va davomat belgilash
+    // yo'li KALITSIZ — huquq biriktirishdan keladi, ruxsat kalitidan emas.
+    key: SECTIONS.CLASS_LEADERS,
+    label: "Sinf rahbarlari",
+    group: "Ta'lim",
+    actions: [
+      { key: "view", label: "Ko'rish (kim qaysi sinfga rahbar)" },
+      { key: "assign", label: "Sinf biriktirish va olib tashlash" },
     ],
   },
   {

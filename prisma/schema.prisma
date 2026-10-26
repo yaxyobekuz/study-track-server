@@ -709,6 +709,7 @@ model Class {
   weeklyStats     WeeklyStatsClass[]
   diagnosticTests DiagnosticTestClass[]
   tutorGroups     TutorGroup[]
+  leaders         ClassLeader[]
 
   @@map("classes")
 }
@@ -761,6 +762,42 @@ model TutorGroup {
   @@index([tutorId, startMonth])
   @@index([classId, startMonth])
   @@map("tutor_groups")
+}
+
+/// SINF RAHBARI — xodimga sinf biriktirish. Bitta vazifasi bor: shu sinfning
+/// KUNLIK davomatini belgilash huquqi (`classLeader.service.js`).
+///
+/// ⚠️ TUTORGROUP NING PULSIZ KO'ZGUSI, lekin NUSXASI EMAS. `TutorGroup` da
+/// stavkalar va DAVR bor, chunki u oylik dvigatelida ustama bo'lib
+/// majburiyatga muhrlanadi — o'tgan oylar eski summada qolishi kerak. Bu
+/// yerda pul yo'q, ya'ni muhrlanadigan fakt ham yo'q: davr ustunlari
+/// qo'shilsa, ular hech narsani himoya qilmasdi va "qaysi oydan" degan
+/// savol har ekranga bekordan-bekor chiqib turardi.
+///
+/// ⚠️ BIR SINFGA BITTA RAHBAR — `@@unique([classId])`. Tyutorda bu advisory
+/// lock ichida tekshiriladi (davr kesishuvi indeks bilan ifodalanmaydi), bu
+/// yerda esa indeksning O'ZI kafolat beradi: ikki parallel so'rov bitta
+/// sinfni ikki kishiga yoza OLMAYDI.
+model ClassLeader {
+  id String @id @db.Char(24)
+
+  // soft ref → User (sinf rahbari). FK yo'q: xodim arxivlansa ham qator
+  // qoladi va ro'yxatda "arxivlangan" bo'lib ko'rinadi (`TutorGroup` bilan AYNI).
+  leaderId String @map("leader_id") @db.Char(24)
+  classId  String @map("class_id") @db.Char(24)
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Restrict: sinf o'chirilishidan oldin service tushunarli xato beradi
+  class Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+
+  @@unique([classId])
+  @@index([leaderId])
+  @@map("class_leaders")
 }
 
 model Subject {

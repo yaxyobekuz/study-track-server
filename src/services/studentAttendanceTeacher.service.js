@@ -1,23 +1,39 @@
 /**
- * O'QITUVCHI O'Z DARSIGA KIRGAN O'QUVCHILARNING DAVOMATINI BELGILAYDI.
+ * XODIM O'ZI JAVOB BERADIGAN SINFNING O'QUVCHILAR DAVOMATINI BELGILAYDI.
  *
  * Qoida bitta jumlada:
  *
- * > O'qituvchi BUGUN o'zi dars o'tadigan (yoki o'rinbosar bo'lib chiqadigan)
- * > sinfning shu kuni O'QIYOTGAN o'quvchilarini belgilaydi — maktabda turib.
+ * > Xodim BUGUN o'zi dars o'tadigan (yoki o'rinbosar bo'lib chiqadigan)
+ * > sinfning, HAMDA o'zi SINF RAHBARI bo'lgan sinfning shu kuni O'QIYOTGAN
+ * > o'quvchilarini belgilaydi — maktabda turib.
+ *
+ * ⚠️ IKKI MANBA, BITTA EKRAN (`resolveMarkableClasses`):
+ *
+ *   1. DARS JADVALI — o'z darsi va o'rinbosarlik (`resolveLessonAccess`,
+ *      `education.md` §8). Sinf shu kuni darsi bo'lsa chiqadi.
+ *   2. SINF RAHBARLIGI — biriktirish (`classLeader.service.js`). Sinf
+ *      darsidan QAT'I NAZAR chiqadi: sinf rahbari ertalab guruhiga kelib
+ *      bor-yo'qni belgilaydi, bu esa dars jadvaliga bog'liq ish emas.
+ *
+ * Ikkalasi ALOHIDA ekran bo'lsa, ikki rolni birga olib yurgan odam (odatiy
+ * hol: o'qituvchi + sinf rahbari) "qaysi tabda ekan" deb izlab yurardi va
+ * bitta sinf ikki joyda ikki xil yig'indi bilan ko'rinardi. Shuning uchun
+ * sinflar BITTA ro'yxatga qo'shiladi, har qatorda esa NEGA u yerda ekani
+ * turadi (`access`: `lesson` | `leader` | `both`) — "nega bu sinf menda"
+ * degan savol qo'lda qidirib topiladigan bo'lmasin (`devices.md` §4 dagi
+ * `reason` doktrinasi).
  *
  * ⚠️ YADRO BITTA. Yozuvni `studentAttendance.service.js` dagi
  * `markAttendance` yozadi, bu servis esa faqat DARVOZA: kun, maktabda
  * bo'lish, sinfga huquq va o'quvchining ro'yxatda borligi. Mustaqil SQL
  * yozilsa, qabulxona yo'liga qo'shilgan shart (izoh qoidasi, `autoMarked`
- * tozalash, upsert kaliti) o'qituvchi yo'lida jimgina tushib qolardi.
+ * tozalash, upsert kaliti) bu yo'lda jimgina tushib qolardi.
  *
- * ⚠️ HUQUQ DARS JADVALIDAN KELADI, ruxsat kalitidan EMAS
+ * ⚠️ HUQUQ JADVAL VA BIRIKTIRISHDAN KELADI, ruxsat kalitidan EMAS
  * (`/tutor-groups/my` va `/grades/teacher/classes` bilan AYNI qoida):
- * o'qituvchi id si TOKENDAN, sinflar esa `resolveLessonAccess` dan — o'z
- * darsi va o'rinbosarlik (`education.md` §8). Har so'rovda QAYTA
- * hisoblanadi: jadval o'zgarsa yoki dars o'rinbosarga berilsa, eskirgan
- * ekran begona sinfga tegib ketmaydi.
+ * xodim id si TOKENDAN olinadi. Har so'rovda QAYTA hisoblanadi: jadval
+ * o'zgarsa, dars o'rinbosarga berilsa yoki sinf rahbarligi olib qo'yilsa,
+ * eskirgan ekran begona sinfga tegib ketmaydi.
  *
  * ⚠️ FANGA BAHO RUXSATI (`GradingGrant`) DAVOMATGA HUQUQ BERMAYDI. U
  * ataylab faqat BAHO uchun berilgan qo'shimcha huquq (`education.md` §7):
@@ -54,6 +70,7 @@
 
 const prisma = require("../config/prisma");
 const { BadRequestError, ForbiddenError } = require("../utils/errors");
+const { ROLES } = require("../utils/constants");
 const { currentDayDate, parseDayDate, monthKeyOfDate } = require("../helpers/month.helpers");
 const { dayKey } = require("../helpers/lessonHours");
 const { formatDateUz } = require("../helpers/date.helpers");
@@ -67,16 +84,45 @@ const { getVacationSet } = require("./vacationMonth.service");
 const { getGradingPresence, assertAtSchool } = require("./gradingPresence.service");
 const { getScheduleSettings } = require("./settings.service");
 const studentAttendance = require("./studentAttendance.service");
+const classLeader = require("./classLeader.service");
 
 const { STUDENT_STATUSES } = studentAttendance;
 
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-const NO_LESSON_MESSAGE =
-  "Bugun bu sinfda sizning darsingiz yo'q — davomat faqat o'zingiz dars o'tadigan sinflarga belgilanadi";
+// ⚠️ XABAR IKKI MANBANI HAM AYTADI. "Darsingiz yo'q" deb qolsa, sinf rahbari
+// o'z guruhiga tegib ko'rib, sababni dars jadvalida izlab yurardi.
+const NO_ACCESS_MESSAGE =
+  "Bu sinfga davomat belgilay olmaysiz — bugun bu sinfda darsingiz yo'q va u " +
+  "sizning sinf rahbarligingizda ham emas";
+
+// Eski nom — tashqi iste'molchilar uchun saqlanadi
+const NO_LESSON_MESSAGE = NO_ACCESS_MESSAGE;
 
 const PAST_DAY_MESSAGE =
   "O'qituvchi faqat BUGUNGI davomatni belgilaydi — boshqa kunni ma'muriyat to'g'rilaydi";
+
+/**
+ * BU YO'L XODIMLAR UCHUN — o'quvchi rad etiladi.
+ *
+ * ⚠️ DARVOZA ROUTE'DAN SHU YERGA KO'CHDI. Ilgari route `authorize(TEACHER)`
+ * bilan yopilgan edi, lekin sinf rahbari roli DINAMIK (platforma belgisi
+ * `Role.isClassLeader`) va `teacher` bo'lishi SHART EMAS — tarbiyachi ham
+ * sinf rahbari bo'ladi. Rollar ro'yxatini route'ga qotirib qo'ysak, boshqa
+ * rolda ishlayotgan sinf rahbari o'z guruhiga davomat qila olmay qolardi;
+ * "hamma rolni sanab o'tish" esa rollar dinamik bo'lgani uchun imkonsiz.
+ *
+ * Huquqning O'ZI baribir tekshiriladi (`resolveMarkableClasses`): sinfi yo'q
+ * xodim BO'SH ro'yxat oladi, begona sinfga tegsa 403. Bu yerda faqat
+ * o'quvchi to'siladi — unga bu bo'lim umuman atalmagan.
+ *
+ * @param {{role?: string}} actor
+ */
+function assertStaff(actor) {
+  if (!actor || actor.role === ROLES.STUDENT) {
+    throw new ForbiddenError("Bu bo'lim xodimlar uchun");
+  }
+}
 
 /**
  * KUN — faqat bugun.
@@ -240,6 +286,60 @@ function groupByClass(rows) {
   );
 }
 
+/**
+ * BUGUN DAVOMAT BELGILASH MUMKIN BO'LGAN SINFLAR — YAGONA HAL QILUVCHI.
+ *
+ * Uch yo'l (kunlik ro'yxat, bitta sinf ro'yxati, belgilash) HAM shuni
+ * chaqiradi: huquq bir joyda hal qilinsa, "ekranda ko'rindi-yu, saqlashda
+ * 403 berdi" holati STRUKTURAVIY imkonsiz bo'ladi.
+ *
+ * ⚠️ SINF RAHBARLIGI DARSDAN MUSTAQIL: darsi bo'lmagan sinf ham ro'yxatga
+ * tushadi (`lessons: []`). Aks holda sinf rahbari faqat o'zi dars o'tadigan
+ * kunlari guruhiga davomat qila olardi — ertalabki ish esa jadvalga bog'liq
+ * emas.
+ *
+ * ⚠️ NOFAOL SINF IKKALA MANBADA HAM CHIQIB KETADI: dars yo'lida
+ * `loadTeacherLessons` (`isActive: true`), rahbarlik yo'lida
+ * `getMyLeaderClassIds` filtrlaydi.
+ *
+ * @param {{id: string, role?: string, extraRoles?: string[]}} actor
+ * @param {Date} day
+ * @returns {Promise<Array<{id: string, name: string, lessons: Array, access: "lesson"|"leader"|"both"}>>}
+ */
+async function resolveMarkableClasses(actor, day) {
+  const [lessons, leaderClassIds] = await Promise.all([
+    loadTeacherLessons(actor, day),
+    classLeader.getMyLeaderClassIds(actor),
+  ]);
+
+  const byId = new Map();
+  for (const entry of groupByClass(await attachSubjectNames(lessons))) {
+    byId.set(entry.id, { ...entry, access: "lesson" });
+  }
+
+  // Dars jadvalida ham bor sinf — ikki asos bilan ochiq
+  for (const classId of leaderClassIds) {
+    const entry = byId.get(classId);
+    if (entry) entry.access = "both";
+  }
+
+  // Faqat rahbarlik orqali kelgan sinflar: nomi kerak, darslari esa yo'q
+  const leaderOnly = leaderClassIds.filter((id) => !byId.has(id));
+  if (leaderOnly.length > 0) {
+    const classes = await prisma.class.findMany({
+      where: { id: { in: leaderOnly }, isActive: true },
+      select: { id: true, name: true },
+    });
+    for (const cls of classes) {
+      byId.set(cls.id, { id: cls.id, name: cls.name, lessons: [], access: "leader" });
+    }
+  }
+
+  return [...byId.values()].sort((a, b) =>
+    a.name.localeCompare(b.name, "uz", { numeric: true }),
+  );
+}
+
 /** Fan nomlari — scalar ref, bitta so'rovda yuklanadi. */
 async function attachSubjectNames(lessons) {
   const ids = [...new Set(lessons.map((l) => l.subjectId).filter(Boolean))];
@@ -362,6 +462,7 @@ function dayHeader(day, state, presence) {
  * @param {{date?: string}} [query]
  */
 async function getTeacherDay(actor, { date } = {}) {
+  assertStaff(actor);
   const day = resolveTeacherDay(date);
   const [state, presence] = await Promise.all([
     buildDayState(day),
@@ -371,10 +472,9 @@ async function getTeacherDay(actor, { date } = {}) {
   const base = { ...dayHeader(day, state, presence), classes: [] };
   if (state.closed) return base;
 
-  const lessons = await loadTeacherLessons(actor, day);
-  if (lessons.length === 0) return base;
+  const classes = await resolveMarkableClasses(actor, day);
+  if (classes.length === 0) return base;
 
-  const classes = groupByClass(await attachSubjectNames(lessons));
   return { ...base, classes: await attachClassSummaries(classes, day) };
 }
 
@@ -389,6 +489,7 @@ async function getTeacherDay(actor, { date } = {}) {
  * @param {{classId: string, date?: string}} params
  */
 async function getTeacherClassRoster(actor, { classId, date } = {}) {
+  assertStaff(actor);
   if (!classId) throw new BadRequestError("Sinf ko'rsatilmagan (classId)");
 
   const day = resolveTeacherDay(date);
@@ -398,20 +499,21 @@ async function getTeacherClassRoster(actor, { classId, date } = {}) {
   ]);
   if (state.closed) throw new ForbiddenError(state.message);
 
-  const lessons = await loadTeacherLessons(actor, day);
-  const mine = lessons.filter((l) => l.classId === classId);
-  if (mine.length === 0) throw new ForbiddenError(NO_LESSON_MESSAGE);
+  const classes = await resolveMarkableClasses(actor, day);
+  const mine = classes.find((c) => c.id === classId);
+  if (!mine) throw new ForbiddenError(NO_ACCESS_MESSAGE);
 
   // ⚠️ `null` — "bugun": kun matn orqali aylanib o'tmaydi (`resolveDay`
   // bugunni o'zi beradi va u `currentDayDate()` bilan AYNI qiymat)
   const roster = await studentAttendance.getTodayClassAttendance(classId, null);
 
-  const [classLessons] = groupByClass(await attachSubjectNames(mine));
-
   return {
     ...dayHeader(day, state, presence),
     classInfo: { id: roster.classInfo.id, name: roster.classInfo.name },
-    lessons: classLessons.lessons,
+    // Panel "nega bu sinf menda" ni shundan yozadi: faqat rahbarlik orqali
+    // ochilgan sinfda darslar ro'yxati BO'SH bo'lishi normal hol
+    access: mine.access,
+    lessons: mine.lessons,
     students: await attachMarkedBy(roster.students, actor.id),
     summary: roster.summary,
   };
@@ -424,6 +526,7 @@ async function getTeacherClassRoster(actor, { classId, date } = {}) {
  * @param {{classId: string, date?: string, records: Array}} params
  */
 async function markTeacherAttendance(actor, { classId, date, records } = {}) {
+  assertStaff(actor);
   if (!classId) throw new BadRequestError("Sinf ko'rsatilmagan (classId)");
   if (!Array.isArray(records) || records.length === 0) {
     throw new BadRequestError("Belgilash uchun yozuvlar yo'q");
@@ -437,9 +540,9 @@ async function markTeacherAttendance(actor, { classId, date, records } = {}) {
   // Maktabda bo'lish — baho qo'yish bilan AYNI shart
   await assertAtSchool(actor);
 
-  const lessons = await loadTeacherLessons(actor, day);
-  if (!lessons.some((l) => l.classId === classId)) {
-    throw new ForbiddenError(NO_LESSON_MESSAGE);
+  const classes = await resolveMarkableClasses(actor, day);
+  if (!classes.some((c) => c.id === classId)) {
+    throw new ForbiddenError(NO_ACCESS_MESSAGE);
   }
 
   const roster = await studentAttendance.getTodayClassAttendance(classId, null);
@@ -491,11 +594,14 @@ async function markTeacherAttendance(actor, { classId, date, records } = {}) {
 }
 
 module.exports = {
+  NO_ACCESS_MESSAGE,
+  assertStaff,
   NO_LESSON_MESSAGE,
   PAST_DAY_MESSAGE,
   resolveTeacherDay,
   buildDayState,
   loadTeacherLessons,
+  resolveMarkableClasses,
   getTeacherDay,
   getTeacherClassRoster,
   markTeacherAttendance,
