@@ -33,6 +33,7 @@ const socialNetworkRoutes = require("./socialNetwork.routes");
 const monitorRoutes = require("./monitor.routes");
 const attendanceRoutes = require("./attendance.routes");
 const studentAttendanceRoutes = require("./studentAttendance.routes");
+const dormAttendanceRoutes = require("./dormAttendance.routes");
 const absenceReasonRoutes = require("./absenceReason.routes");
 const issueRoutes = require("./issue.routes");
 const telegramGroupRoutes = require("./telegramGroup.routes");
@@ -126,6 +127,8 @@ router.use("/social-networks", socialNetworkRoutes);
 router.use("/monitor", monitorRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/student-attendance", studentAttendanceRoutes);
+// Yotoqxona davomati — kechqurun yotoqxonada kim qoldi (tarbiyachi belgilaydi)
+router.use("/dorm-attendance", dormAttendanceRoutes);
 router.use("/absence-reasons", absenceReasonRoutes);
 router.use("/issues", issueRoutes);
 // Bot guruhlari — "Muammolar → Bot sozlamalari" tabi. ALOHIDA prefiks:
