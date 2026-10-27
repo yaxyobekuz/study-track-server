@@ -233,6 +233,42 @@ const RULES = [
   { pattern: "* /expense-categories/:id", locate: { model: "expenseCategory", param: "id" } },
   { pattern: "* /external-incomes/:id", locate: { model: "externalIncome", param: "id" } },
   { pattern: "* /income-categories/:id", locate: { model: "incomeCategory", param: "id" } },
+  /* ── Chiqib ketganlar registri ────────────────────────────────────── */
+  // ⚠️ `windowDays` — OYNA UZUNLIGI (30 kun), sanoq EMAS: qo'shilsa ikki
+  // filialda 60 kun bo'lib, kartaning sarlavhasi butunlay boshqa davrni
+  // ko'rsatardi (`dueSoonHours` bilan AYNI sabab).
+  { pattern: "GET /student-enrollments/departures/summary", mode: "object", keep: ["windowDays"] },
+  {
+    pattern: "GET /student-enrollments/departures",
+    mode: "list",
+    sort: [
+      { field: "endDate", dir: "desc" },
+      { field: "createdAt", dir: "desc" },
+    ],
+  },
+
+  /* ── O'quvchilar harakati (keldi / ketdi) ─────────────────────────── */
+  // ⚠️ O'QUVCHILAR HARAKATI — `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI.
+  // Bu yo'llar FAQAT umumiy ko'rinishda ochiladi va filiallar bo'ylab
+  // aylanishni O'ZLARI bajaradi (`studentMovementNetwork.service.js`).
+  // Sabab ikkita, ikkalasi ham jim xato edi:
+  //
+  //  1. FOIZ. Birlashtiruvchi `*Percent` ni filiallar bo'yicha OG'IRLIKSIZ
+  //     o'rtachalaydi; 344 o'quvchili filial bilan 0 o'quvchili filial teng
+  //     hissa qo'shsa "tarmoq o'sishi" ma'nosiz raqam bo'lardi. Tarmoq
+  //     foizi yig'indidan QAYTA hisoblanadi.
+  //  2. WORD FAYLI. Ikkilik hujjat birlashtirilmaydi, shuning uchun eksport
+  //     `unsupported` bo'lib turardi va aynan o'sha ekranda tugma O'CHIQ
+  //     edi — holbuki "butun tarmoq bo'yicha bitta hujjat" bo'limning
+  //     maqsadi. `anchor` da javob haqiqiy `res` ga yoziladi, ya'ni fayl
+  //     ushlab olinmaydi.
+  //
+  // ⚠️ Filialni tanlab turgan odam bu yo'llarga 403 oladi (darvoza
+  // `studentEnrollment.controller.js` da) — registr buni ifodalamaydi.
+  { pattern: "GET /student-enrollments/movement/export", mode: "anchor" },
+  { pattern: "GET /student-enrollments/movement/summary", mode: "anchor" },
+  { pattern: "GET /student-enrollments/movement", mode: "anchor" },
+
   { pattern: "* /student-enrollments/:id", locate: { model: "studentEnrollment", param: "id" } },
   { pattern: "* /student-enrollments/:id/*", locate: { model: "studentEnrollment", param: "id" } },
   { pattern: "* /student-tariffs/:id", locate: { model: "studentTariff", param: "id" } },

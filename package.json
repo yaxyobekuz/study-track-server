@@ -40,6 +40,7 @@
     "firebase-admin": "^14.4.0",
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
     "node-telegram-bot-api": "^0.67.0",

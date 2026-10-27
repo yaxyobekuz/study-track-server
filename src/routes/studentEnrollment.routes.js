@@ -10,6 +10,11 @@ const { PERMISSIONS } = require("../utils/permissions");
 // Controller
 const {
   getEnrollments,
+  getDepartures,
+  getDepartureSummary,
+  getMovement,
+  getMovementSummary,
+  exportMovement,
   getStudentEnrollments,
   getEnrollment,
   createEnrollment,
@@ -18,6 +23,24 @@ const {
   previewEnrollment,
   deleteEnrollment,
 } = require("../controllers/studentEnrollment.controller");
+
+// CHIQIB KETGANLAR — yopilgan davrlar registri ("nega, qachon ketdi").
+// ⚠️ `/:id` dan OLDIN: `validateObjectId` "departures" ni id deb o'qib
+// yiqilardi (pastdagi `/student/:studentId` bilan AYNI tuzoq).
+// Ruxsat — `enrollment.view`: ketish sababi davr sahifasida allaqachon
+// ko'rinadi, registr faqat uni bitta ekranga yig'adi (alohida kalit
+// kiritilsa, o'sha bitta fakt ikki xil huquq ortida qolardi).
+router.get("/departures/summary", protect, authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), getDepartureSummary);
+router.get("/departures", protect, authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), getDepartures);
+
+// O'QUVCHILAR HARAKATI — "nechtasi keldi, nechtasi ketdi va qancha foizga
+// o'zgardi" + o'sha hisobotning Word fayli.
+// ⚠️ `/:id` dan OLDIN (yuqoridagi AYNI tuzoq) va `/movement` dan OLDIN
+// `/movement/summary` + `/movement/export`: Express birinchi mos kelgan
+// yo'lni oladi, shuning uchun aniqroq yo'l yuqorida turadi.
+router.get("/movement/summary", protect, authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), getMovementSummary);
+router.get("/movement/export", protect, authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), exportMovement);
+router.get("/movement", protect, authorizePermission(PERMISSIONS.ENROLLMENT_VIEW), getMovement);
 
 // `/student/:studentId` `/:id` dan OLDIN — aks holda "student" id sifatida
 // o'qiladi va validateObjectId yiqiladi (tariff.routes.js dagi tuzoq).
