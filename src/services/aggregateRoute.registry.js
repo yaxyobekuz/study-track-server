@@ -99,6 +99,38 @@ const RULES = [
   // AI yordamchi: SSE oqimi (ikkilik emas, lekin oqim) va yozadigan amallar.
   { pattern: "* /ai-assistant/*", mode: "anchor" },
 
+  /* ── FACE ID: kiosk yo'llari umumiy rejimga TUSHMAYDI ──────────────── */
+  //
+  // `/kiosk/*` qurilma tokeni bilan ishlaydi (`X-Kiosk-Token`), ya'ni
+  // dispatcher ularni ko'rmaydi (u faqat `Bearer` ni tekshiradi). Qoida
+  // shunga qaramay yozilgan: kelgusida kimdir kiosk yo'liga odam tokeni
+  // bilan murojaat qilsa, so'rov FILIALLAR BO'YLAB TARQALMASLIGI kerak —
+  // bitta skaner N ta filialda N ta davomat yozib yuborardi.
+  { pattern: "* /kiosk/*", mode: "anchor" },
+  { pattern: "* /kiosk", mode: "anchor" },
+
+  // KADR RASMI — IKKILIK javob (`image/jpeg`). Ikki rasmni
+  // "birlashtirish" degan narsa yo'q, jim ravishda bittasini berish esa
+  // noto'g'ri odamning yuzini ko'rsatardi: toza 409 va "filialni
+  // tanlang" (Excel eksporti bilan AYNI mulohaza).
+  {
+    pattern: "GET /face-id/events/:id/snapshot",
+    mode: "unsupported",
+    reason: "Kadr rasmini umumiy ko'rinishda ochib bo'lmaydi — filialni tanlang",
+  },
+  {
+    pattern: "GET /face-id/samples/:id/snapshot",
+    mode: "unsupported",
+    reason: "Kadr rasmini umumiy ko'rinishda ochib bo'lmaydi — filialni tanlang",
+  },
+
+  // Chegaralar va maxfiylik sozlamasi — FILIALGA XOS (`isSettingsPath`
+  // o'zi ham ushlaydi, lekin model almashtirish yo'li `/settings/model`
+  // bo'lgani uchun aniq yozilgan: u MIGRATSIYA va uni fan-out qilish
+  // barcha filiallarning galereyasini birdan yaroqsiz qilardi).
+  { pattern: "* /face-id/settings", mode: "anchor" },
+  { pattern: "* /face-id/settings/*", mode: "anchor" },
+
   /* ── Platforma kataloglari: barcha filiallarda AYNI ─────────────────── */
   // ⚠️ Ularni fan-out qilish ro'yxatni filial soniga ko'paytirardi, yozuvni
   // esa baribir platformaga yozardi — ya'ni fan-out bu yerda faqat zarar.

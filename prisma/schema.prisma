@@ -1222,7 +1222,7 @@ model LessonTopicBinding {
   topicOrder  Int      @map("topic_order")
 
   // "manual" — odam biriktirgan, "auto" — tizim 1-mavzudan boshlagan
-  source String @default("manual")
+  source String  @default("manual")
   note   String?
 
   // { className, subjectName, topicName } — qayta nomlansa ham registr
@@ -1625,7 +1625,14 @@ model Attendance {
   checkInLocation        Json?            @map("check_in_location")
   checkOutLocation       Json?            @map("check_out_location")
   // Qaror ALOHIDA ustunda — kelish va ketish bir-birini YUVIB TASHLAMASLIGI
-  // uchun. Qiymatlar: inside | edge | outside | missing | invalid | unconfigured
+  // uchun. Qiymatlar: inside | edge | outside | missing | invalid |
+  // unconfigured | kiosk
+  //
+  // ⚠️ `kiosk` — FACE ID kioskidan kelgan qayd. Ofis koordinatasi
+  // NUSXALANMAYDI ("inside" deb yozilmaydi): odam telefonini uyda
+  // qoldirib kelgan bo'lishi mumkin va soxta GPS yozish yolg'on bo'lardi.
+  // Binodagi qurilma oldida turgani esa GPS'dan KUCHLIROQ dalil
+  // (`.claude/rules/face-id.md` §6).
   checkInLocationStatus  String?          @map("check_in_location_status")
   checkOutLocationStatus String?          @map("check_out_location_status")
   // Ofisgacha masofa (metr) — "12 m narida" va "5 km narida" ni ajratish uchun
@@ -1868,13 +1875,13 @@ model GradePenaltySettings {
 }
 
 model Task {
-  id                    String     @id @db.Char(24)
-  title                 String
-  description           String
-  assignee              String     @db.Char(24)
-  createdBy             String     @map("created_by") @db.Char(24)
-  status                TaskStatus @default(pending)
-  dueDate               DateTime   @map("due_date")
+  id          String     @id @db.Char(24)
+  title       String
+  description String
+  assignee    String     @db.Char(24)
+  createdBy   String     @map("created_by") @db.Char(24)
+  status      TaskStatus @default(pending)
+  dueDate     DateTime   @map("due_date")
 
   // TOPSHIRIQ TURI — "main" (asosiy, lavozim bo'yicha doimiy ish) yoki
   // "extra" (qo'shimcha, bir martalik vazifa).
@@ -1883,7 +1890,7 @@ model Task {
   // (`finance.md` §12 — `public."Gender"` ≠ `br_x."Gender"`) va yangi tur
   // qo'shish har bir schema'ga alohida migratsiya talab qilardi.
   // `TaskStatusHistory.kind` bilan AYNI qaror.
-  kind                  String     @default("main") @db.VarChar(16)
+  kind String @default("main") @db.VarChar(16)
 
   // VAQT ORALIG'INING BOSHI. `null` — faqat muddat berilgan ("shu vaqtgacha
   // bajaring"), to'ldirilgan bo'lsa topshiriq AYNAN shu oraliqda bajariladi
@@ -1893,18 +1900,18 @@ model Task {
   // darvozasi faqat unga qaraydi. Oraliq — KO'RSATMA (qachondan boshlash),
   // ikkinchi muddat emas: aks holda "qaysi vaqt haqiqiy muddat" degan savol
   // ikki xil javob olardi.
-  startDate             DateTime?  @map("start_date")
+  startDate DateTime? @map("start_date")
 
   // HAVOLALAR — [{ url, label }]. Fayl bilan bir qatorda tashqi manbaga
   // ishora (hujjat, video, shakl). Faqat http(s), service tekshiradi.
-  links                 Json       @default("[]")
-  penaltyPoints         Int        @default(1) @map("penalty_points")
+  links                 Json    @default("[]")
+  penaltyPoints         Int     @default(1) @map("penalty_points")
   // attachments[] / completionAttachments[] — { key, url, type, ... }
-  attachments           Json       @default("[]")
-  completionNote        String?    @map("completion_note")
-  completionAttachments Json       @default("[]") @map("completion_attachments")
-  penaltyRef            String?    @map("penalty_ref") @db.Char(24)
-  autopenalized         Boolean    @default(false)
+  attachments           Json    @default("[]")
+  completionNote        String? @map("completion_note")
+  completionAttachments Json    @default("[]") @map("completion_attachments")
+  penaltyRef            String? @map("penalty_ref") @db.Char(24)
+  autopenalized         Boolean @default(false)
 
   // DOIMIY TOPSHIRIQ QOIDASI — topshiriq takrorlanuvchi qoidadan avtomat
   // yaratilgan bo'lsa to'ladi (`taskSchedule.service.js`). Qo'lda berilgan
@@ -1924,7 +1931,7 @@ model Task {
   // ⚠️ Qoidada bir xil tugash vaqti ikki marta bo'lishi TAQIQLANGAN
   // (service tekshiradi) — aks holda bu kalit ikkita boshqa topshiriqni
   // bitta deb hisoblardi.
-  occurrenceSlot String?  @map("occurrence_slot") @db.VarChar(5)
+  occurrenceSlot String?   @map("occurrence_slot") @db.VarChar(5)
 
   // MANBA MUAMMO — topshiriq botdan kelgan muammoni hal qilish uchun
   // berilgan bo'lsa to'ladi (`issueTask.service.js`). Oddiy topshiriqda
@@ -1933,7 +1940,7 @@ model Task {
   // ⚠️ `onDelete: SetNull` — muammo o'chirilsa TOPSHIRIQ QOLADI. Odam
   // allaqachon ish qilyapti va unda jarima bali ham bo'lishi mumkin:
   // kaskad o'chirish birovning bajarilgan ishini izsiz yo'q qilardi.
-  issueId               String?    @map("issue_id") @db.Char(24)
+  issueId String? @map("issue_id") @db.Char(24)
 
   // O'ZIGA O'ZI BELGILAGAN TOPSHIRIQ — xodim o'zi uchun yozgan ish
   // ("o'zim belgilagan topshiriq"). `false` — rahbar bergan topshiriq,
@@ -1955,10 +1962,10 @@ model Task {
   // xodim topshirgani YAKUNLANGAN bo'ladi (`submitTaskCompletion`).
   // Rahbar statistikani ko'radi, lekin birovning shaxsiy rejasini
   // tasdiqlash navbatiga olmaydi.
-  selfAssigned          Boolean    @default(false) @map("self_assigned")
+  selfAssigned Boolean @default(false) @map("self_assigned")
 
-  createdAt             DateTime   @default(now()) @map("created_at")
-  updatedAt             DateTime   @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   statusHistory   TaskStatusHistory[]
   deadlineHistory TaskDeadlineHistory[]
@@ -1988,17 +1995,15 @@ model Task {
 /**
  * DOIMIY TOPSHIRIQ QOIDASI — "har dushanba 08:10 da", "har 10 kunda bir",
  * "3 oyda bir, oyning 1-kuni".
- *
  * ⚠️ QOIDANING O'ZI TOPSHIRIQ EMAS. Undan cron HAQIQIY topshiriqlarni
  * VAQTIDAN OLDIN yaratadi (`leadDays`, sukut 1 kun) — shu yaratilishning
  * o'zi xodim uchun ESLATMA bo'ladi. Ikkinchi "eslatma" mexanizmi
  * qo'shilmaydi: u holda bitta hodisa ikki joydan boshqarilardi.
- *
  * ⚠️ Yaratilgan topshiriq ODDIY topshiriq: o'z holati, muddati, natijasi,
  * jarimasi bor va qoida o'chirilsa ham joyida qoladi.
  */
 model TaskSchedule {
-  id            String  @id @db.Char(24)
+  id            String   @id @db.Char(24)
   title         String
   description   String
   // Ijrochilar — har hodisada HAR BIRIGA ALOHIDA topshiriq
@@ -2033,15 +2038,15 @@ model TaskSchedule {
   //
   // ⚠️ Massiv, alohida ustunlar emas: ustun bo'lsa ikkinchi vaqt uchun
   // `dueTime2` kerak bo'lardi va uchinchisida yana migratsiya.
-  slots Json @default("[]")
+  slots    Json @default("[]")
   // Topshiriq necha kun OLDIN yaratiladi (= eslatma)
-  leadDays      Int     @default(1) @map("lead_days")
+  leadDays Int  @default(1) @map("lead_days")
 
   // ── AMAL QILISH DAVRI ── (Toshkent kuni, UTC yarim tunida)
   startDate DateTime  @map("start_date") @db.Date
   endDate   DateTime? @map("end_date") @db.Date
 
-  isActive Boolean @default(true) @map("is_active")
+  isActive    Boolean   @default(true) @map("is_active")
   // Oxirgi yaratilgan hodisa kuni — hisobot va diagnostika uchun
   lastRunDate DateTime? @map("last_run_date") @db.Date
 
@@ -5043,7 +5048,7 @@ model InventoryMovement {
   // Xonalar orasidagi o'tkazmada juftini ko'rsatadi (ikki qator, bitta hodisa)
   counterpartLocationId String? @map("counterpart_location_id") @db.Char(24)
 
-  note      String   @default("")
+  note String @default("")
 
   // RASMLAR — "shu jihoz xonaga AYNAN shunday kirdi" degan DALIL.
   // Shakli `InventoryDamage.attachments` bilan AYNI:
@@ -7337,7 +7342,6 @@ model ParentalUnlockRequest {
 
 /**
  * Muammoning ko'rib chiqilish holati.
- *
  * `new` → kelgan, hech kim ko'rmagan. `in_review` → mas'ul oldi.
  * `resolved` / `rejected` — YAKUNIY: ikkalasida ham yuborgan odamga
  * javob ketadi (`issueNotification.service.js`), shuning uchun "rad
@@ -7352,11 +7356,9 @@ enum IssueStatus {
 
 /**
  * MUAMMO KATEGORIYASI — faqat NOMI va HOLATI.
- *
  * ⚠️ ATAYLAB MINIMAL: tavsif, rang, mas'ul, rol filtri YO'Q. Kategoriya
  * botdagi klaviatura tugmasi bo'lib xizmat qiladi va tugmada nomdan
  * boshqa hech narsa ko'rinmaydi.
- *
  * ⚠️ `isActive` — botdagi KO'RINISH kaliti. Bot faqat faol kategoriyalarni
  * ko'rsatadi (`issue.service.js#getActiveCategories`), lekin eski
  * muammolar o'z kategoriyasini saqlab qoladi: shu sababli o'chirish
@@ -7379,13 +7381,11 @@ model IssueCategory {
 
 /**
  * BOTDAN KELGAN MUAMMO.
- *
  * ⚠️ `authorKind` — bog'lanish TURI (`tg_users.link_kind` bilan ayni
  * ma'noda), ROL EMAS. "student" da `userId` — O'QUVCHI, lekin botdan
  * foydalanadigan odam uning OTA-ONASI: panelda shuning uchun "O'quvchi
  * (ota-ona)" deb ko'rsatiladi. Rolni muhrlamaymiz — odamning roli
  * keyin o'zgarishi mumkin va u `users` dan jonli o'qiladi.
- *
  * ⚠️ `chatId` MUHRLANADI va `tg_users` dan qayta izlanmaydi. Javob
  * yuborilayotganda odam bog'lanishni uzgan yoki boshqa hisobga o'tgan
  * bo'lishi mumkin — javob MUAMMONI YUBORGAN chatga borishi kerak, hozir
@@ -7403,18 +7403,18 @@ model Issue {
   chatId     String? @map("chat_id")
 
   // Ko'rib chiqish natijasi — faqat panel yozadi.
-  reply      String?
-  reviewedBy String?   @map("reviewed_by") @db.Char(24)
-  reviewedAt DateTime? @map("reviewed_at")
+  reply        String?
+  reviewedBy   String?   @map("reviewed_by") @db.Char(24)
+  reviewedAt   DateTime? @map("reviewed_at")
   // MUAMMONI TOPSHIRIQ YOPDIMI. Qo'lda yopilgan bilan farqlash SHART:
   // topshiriq qayta ochilsa muammo ham qayta ochiladi, lekin ma'muriyat
   // qo'lda "hal qilindi" degan qarorni topshiriq bekor qila olmaydi
   // (`issueTask.service.js`).
-  closedByTask Boolean  @default(false) @map("closed_by_task")
+  closedByTask Boolean   @default(false) @map("closed_by_task")
   // Javob botga YETIB BORDIMI. `reviewedAt` bor-u bu bo'sh bo'lsa —
   // Telegram rad etdi (odam botni bloklagan): panelda shu farq
   // ko'rsatiladi, aks holda ma'muriyat javob ketdi deb o'ylardi.
-  repliedAt  DateTime? @map("replied_at")
+  repliedAt    DateTime? @map("replied_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -7429,4 +7429,276 @@ model Issue {
   @@index([categoryId])
   @@index([userId])
   @@map("issues")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// FACE ID — YUZ NAMUNALARI, URINISHLAR JURNALI VA SOZLAMA
+// ═════════════════════════════════════════════════════════════════════
+//
+// To'liq qoida: `.claude/rules/face-id.md`. Eng muhimi:
+//
+//   KIOSK YANGI DAVOMAT TIZIMI EMAS. U kimligini aniqlaydi, davomatni esa
+//   mavjud `attendance.service` / `studentAttendance.service` yozadi.
+//   Kechikish, jarima, `checkoutGate` va o'qish davri mantig'ining
+//   NUSXASI bu modulda yo'q.
+//
+// Kiosk reyestri (`Kiosk`) PLATFORMADA — token filial kontekstidan oldin
+// tekshiriladi. Biometrika esa SHU YERDA: odam bilan bir schema'da.
+
+// Namuna qanday olingani — "nega bu yuz bazada?" degan savolga javob.
+enum FaceSampleSource {
+  kiosk // kiosk ekranidagi "Ro'yxatga olish" rejimi
+  panel // admin paneldagi veb-kamera
+  import // bir martalik ko'chirish (profil rasmidan)
+}
+
+// Urinishning NATIJASI — jurnal shu bo'yicha o'qiladi.
+//
+// ⚠️ `no_match` va `ambiguous` ALOHIDA. Birinchisi "bazada yo'q"
+// (ro'yxatga olish kerak), ikkinchisi "ikki odamga baravar o'xshadi"
+// (aka-uka, egizak) — qo'lda belgilash kerak. Ikkalasini bitta qiymatga
+// yig'ish "nega ishlamayapti" degan savolni javobsiz qoldirardi.
+enum FaceCheckResult {
+  marked // davomat yozildi
+  cooldown // allaqachon o'tgan (takror skaner)
+  already // amal allaqachon bajarilgan (masalan ketish qayd etilgan)
+  no_match // galereyada topilmadi
+  ambiguous // bir nechta odamga baravar o'xshadi — hech kimga yozilmadi
+  spoof // tiriklik tekshiruvidan o'tmadi (rasm/ekran)
+  low_quality // kadr sifatsiz (kichik yuz, qiyshiq, qorong'i)
+  not_enrolled // o'quvchida sinf yoki o'qish davri yo'q
+  blocked // arxivlangan / nofaol hisob, yoki rejim o'chirilgan
+  rejected // darvoza rad etdi (masalan `checkoutGate` — ishlar tugamagan)
+  error // ichki xato
+}
+
+// Qaysi amal urinilgan.
+enum FaceCheckKind {
+  checkIn
+  checkOut
+  studentMark
+  enroll // ro'yxatga olish paytidagi kadr (dublikat tekshiruvi)
+  unknown // kimligi aniqlanmagan urinish
+}
+
+// YUZ PROFILI — odamga bitta.
+//
+// ⚠️ `FaceSample` dan ALOHIDA: odam bir nechta namuna bilan ro'yxatga
+// olinadi (ko'zoynakli/ko'zoynaksiz, yorug'/qorong'i) va taqqoslash
+// ularning ENG YAXSHISI bo'yicha ketadi. Bitta vektor bilan ko'zoynak
+// kiygan odam har kuni "topilmadi" bo'lardi.
+model FaceProfile {
+  id     String @id @db.Char(24)
+  userId String @unique @map("user_id") @db.Char(24)
+
+  // Profilni vaqtincha o'chirish — namunani O'CHIRMASDAN. "Yuzi
+  // o'zgargan, qayta olish kerak" holati uchun: namunalar tarixda
+  // qoladi, taqqoslashga esa kirmaydi.
+  isActive Boolean @default(true) @map("is_active")
+
+  // Denormalizatsiya — ro'yxatni chizishda `_count` so'ramaslik uchun.
+  // Yagona yozuvchi — `faceProfile.service.js` (tranzaksiya ichida).
+  sampleCount Int @default(0) @map("sample_count")
+
+  enrolledBy String?  @map("enrolled_by") @db.Char(24)
+  enrolledAt DateTime @default(now()) @map("enrolled_at")
+
+  // Oxirgi muvaffaqiyatli mos kelish — "bu profil ishlayaptimi" degan
+  // savolga javob. Ro'yxatda "3 oydan beri tanilmagan" ko'rinadi.
+  lastMatchedAt DateTime? @map("last_matched_at")
+  lastScore     Float?    @map("last_score")
+  matchCount    Int       @default(0) @map("match_count")
+
+  note String @default("")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  samples FaceSample[]
+
+  @@index([isActive])
+  @@index([enrolledAt(sort: Desc)])
+  @@map("face_profiles")
+}
+
+// BITTA KADRDAN OLINGAN VEKTOR.
+//
+// ⚠️ `embedding` — `Float32Array` ning XOM BAYTLARI (`Bytes`), matn yoki
+// JSON massiv EMAS. 1024 o'lchamli vektor JSON'da ~12 KB, baytlarda
+// 4 KB bo'ladi va parse qilish shart emas. `pgvector` ISHLATILMAYDI:
+// u baza kengaytmasiga bog'liqlik qo'shardi, 5000 namunani JS'da
+// taqqoslash esa ~5 ms.
+//
+// ⚠️ `model` va `dim` HAR NAMUNADA. Model almashtirilsa eski namunalar
+// taqqoslashga KIRMAYDI (`faceGallery.service.js` filtrlaydi) — jim
+// noto'g'ri natija o'rniga ochiq "qayta ro'yxatdan o'tkazish kerak".
+model FaceSample {
+  id        String @id @db.Char(24)
+  profileId String @map("profile_id") @db.Char(24)
+
+  embedding Bytes
+  dim       Int
+  model     String
+
+  // Detektorning kadrga ishonchi (0..1) — eng yaxshi namunani tanlash va
+  // "sifatsiz namunani almashtir" degan maslahat uchun.
+  quality Float @default(0)
+
+  // Tiriklik ballari — namuna OLINGAN paytdagi. Keyin chegara
+  // oshirilsa, past tiriklik bilan olingan namunalarni topish mumkin.
+  liveness  Float?
+  antispoof Float?
+
+  // Audit rasmi — S3 kaliti va public URL. ⚠️ IXTIYORIY:
+  // `FaceSettings.storeSnapshots` o'chirilgan filialda rasm saqlanmaydi.
+  snapshotKey String? @map("snapshot_key")
+  snapshotUrl String? @map("snapshot_url")
+
+  source FaceSampleSource @default(kiosk)
+
+  // Qaysi kioskda olingan (soft ref -> platform.Kiosk) — panelda olinsa `null`.
+  kioskId String? @map("kiosk_id") @db.Char(24)
+
+  createdBy String?  @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  profile FaceProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@index([profileId])
+  @@index([model, dim])
+  @@map("face_samples")
+}
+
+// URINISHLAR JURNALI — APPEND-ONLY (`AccountEntry` uslubi).
+//
+// ⚠️ Tahrirlanmaydi va o'chirilmaydi. Muvaffaqiyatsiz urinish ham
+// yoziladi: "nega kiosk meni tanimayapti" va "kim telefondagi rasm bilan
+// o'tishga urindi" degan savollarning javobi aynan shu jadvalda.
+//
+// ⚠️ `clientEventId` YAGONA — oflayn navbat IDEMPOTENTLIGI. Tarmoq
+// uzilib navbat ikki marta yuborilsa, ikkinchi qator yozilmaydi va
+// bitta kelish ikki marta hisoblanmaydi.
+model FaceCheckEvent {
+  id String @id @db.Char(24)
+
+  // Soft ref -> platform.Kiosk (cross-schema FK yo'q). Panelda qilingan
+  // ro'yxatga olish kadri uchun `null`.
+  kioskId   String? @map("kiosk_id") @db.Char(24)
+  kioskName String? @map("kiosk_name")
+
+  // Kimligi aniqlanmagan urinishda `null` — jurnal shunda ham yoziladi.
+  userId   String? @map("user_id") @db.Char(24)
+  // Odam nomi MUHRLANADI: keyin ismi o'zgarsa yoki hisob o'chirilsa ham
+  // jurnal o'qiladigan bo'lib qolishi kerak.
+  userName String? @map("user_name")
+  userRole String? @map("user_role")
+
+  kind   FaceCheckKind
+  result FaceCheckResult
+
+  // Taqqoslash raqamlari — chegarani sozlashda shu ustunlardan o'qiladi.
+  score     Float?
+  margin    Float?
+  liveness  Float?
+  antispoof Float?
+
+  // Rad etilgan bo'lsa — nega (foydalanuvchiga ko'rsatilgan matn).
+  message String?
+
+  // Yozilgan davomat qatori (soft ref -> Attendance / StudentAttendance).
+  attendanceId String? @map("attendance_id") @db.Char(24)
+
+  snapshotKey String? @map("snapshot_key")
+  snapshotUrl String? @map("snapshot_url")
+
+  // Oflayn navbatdan kelganmi — panelda "internetsiz yozilgan" deb
+  // ko'rinadi (qayd vaqti va yuborilgan vaqti farq qiladi).
+  offline       Boolean  @default(false)
+  clientEventId String   @unique @map("client_event_id")
+  // ⚠️ KIOSKDAGI VAQT — qayd HAQIQATDA bo'lgan payt (oflaynda bu
+  // `createdAt` dan soatlar oldin bo'lishi mumkin). Hisobot shu bo'yicha.
+  occurredAt    DateTime @map("occurred_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([occurredAt(sort: Desc)])
+  @@index([userId, occurredAt(sort: Desc)])
+  @@index([result, occurredAt(sort: Desc)])
+  @@index([kioskId, occurredAt(sort: Desc)])
+  @@map("face_check_events")
+}
+
+// FACE ID SOZLAMASI — filialga bitta (singleton).
+//
+// ⚠️ Chegaralar SOZLAMADA va kodda emas: har kameraning sifati boshqa va
+// "0.62" raqami bitta filialda juda qattiq, boshqasida juda yumshoq
+// bo'lib chiqadi. Default qiymat esa SCHEMA'NING O'ZIDA — yangi filial
+// ochilganda `settings.service.js` dagi getter seed bo'lib ishlaydi
+// (`branchProvision.service.js`), alohida seed fayli yo'q.
+model FaceSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // ── TAQQOSLASH ──────────────────────────────────────────────────
+  // Kosinus o'xshashlikning minimal qiymati (0..1).
+  matchThreshold Float @default(0.62) @map("match_threshold")
+
+  // ⚠️ IKKINCHI SHART — eng yaxshi va IKKINCHI odam natijasi orasidagi
+  // minimal farq. Usiz aka-uka (yoki egizak) navbatma-navbat
+  // bir-birining davomatini belgilab ketardi. Past bo'lsa javob
+  // `ambiguous` va hech kimga davomat yozilmaydi.
+  marginThreshold Float @default(0.05) @map("margin_threshold")
+
+  // ── TIRIKLIK ────────────────────────────────────────────────────
+  // ⚠️ Kiosk ham tekshiradi, server ham QAYTA tekshiradi: kiosk dasturi
+  // almashtirilgan bo'lishi mumkin. 0 — tekshiruvsiz (ogohlantirish bilan).
+  livenessThreshold  Float @default(0.7) @map("liveness_threshold")
+  antispoofThreshold Float @default(0.7) @map("antispoof_threshold")
+  // Kadrdagi yuzga detektor ishonchi — sifatsiz kadr taqqoslanmaydi.
+  minFaceQuality     Float @default(0.55) @map("min_face_quality")
+
+  // ── TAKROR SKANER ───────────────────────────────────────────────
+  // Shu oynada ayni odamga ikkinchi amal YOZILMAYDI.
+  cooldownSeconds    Int @default(90) @map("cooldown_seconds")
+  // Kelishdan keyin ketishga o'tish uchun minimal vaqt. Aks holda
+  // eshikdan kirib ikkinchi marta turgan xodim darhol "ketdi" bo'lardi.
+  checkoutMinMinutes Int @default(60) @map("checkout_min_minutes")
+
+  // ── RO'YXATGA OLISH ─────────────────────────────────────────────
+  maxSamplesPerPerson Int   @default(5) @map("max_samples_per_person")
+  // Ro'yxatga olishda boshqa odamga shu chegaradan yuqori mos kelsa —
+  // RAD etiladi (dublikat darvozasi). Odatda `matchThreshold` dan past
+  // qo'yiladi: ro'yxatga olish taqqoslashdan QATTIQROQ tekshiriladi.
+  duplicateThreshold  Float @default(0.55) @map("duplicate_threshold")
+
+  // ── KIMGA ISHLAYDI ──────────────────────────────────────────────
+  staffEnabled            Boolean @default(true) @map("staff_enabled")
+  studentEnabled          Boolean @default(true) @map("student_enabled")
+  // O'quvchi kechikishi: sinfining birinchi darsidan shu daqiqa o'tgach.
+  studentLateGraceMinutes Int     @default(10) @map("student_late_grace_minutes")
+
+  // ── MAXFIYLIK ───────────────────────────────────────────────────
+  storeSnapshots        Boolean @default(true) @map("store_snapshots")
+  snapshotRetentionDays Int     @default(30) @map("snapshot_retention_days")
+  // ⚠️ O'chirilsa kiosk internetsiz ISHLAMAYDI — biometrika qurilmada
+  // yotishini xohlamaydigan filial uchun ataylab qo'yilgan tanlov.
+  offlineGalleryEnabled Boolean @default(true) @map("offline_gallery_enabled")
+
+  // ── MODEL ───────────────────────────────────────────────────────
+  // Kioskdagi model nomi va o'lchami. Mos kelmagan namunalar
+  // taqqoslashga kirmaydi (`faceGallery.service.js`).
+  embeddingModel String @default("human/faceres") @map("embedding_model")
+  embeddingDim   Int    @default(1024) @map("embedding_dim")
+
+  // ⚠️ GALEREYA VERSIYASI — kiosk keshini va server keshini bir vaqtda
+  // yangilaydigan YAGONA son. Har namuna qo'shilganda/o'chirilganda
+  // oshadi. Server xotirasidagi kesh shu raqamni taqqoslaydi, ya'ni
+  // bir nechta jarayon (PM2 cluster) bo'lsa ham eskirgan galereya
+  // ishlatilmaydi.
+  galleryVersion Int @default(1) @map("gallery_version")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("face_settings")
 }

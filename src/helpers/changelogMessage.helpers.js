@@ -20,6 +20,7 @@ const PANEL_LABELS = {
   student: "O'quvchi paneli",
   server: "Server",
   bot: "Telegram bot",
+  kiosk: "Kiosk (Face ID)",
 };
 
 /**

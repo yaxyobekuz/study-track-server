@@ -84,6 +84,7 @@ model Branch {
   sessions      UserSession[]
   transfersOut  BranchTransfer[]    @relation("TransfersOut")
   transfersIn   BranchTransfer[]    @relation("TransfersIn")
+  kiosks        Kiosk[]
 
   @@index([isArchived, isActive, sortOrder])
   @@map("branches")
@@ -143,8 +144,8 @@ model TelegramDirectory {
 
   branchId String @map("branch_id") @db.Char(24)
 
-  userId   String  @map("user_id") @db.Char(24)
-  linkKind String  @default("student") @map("link_kind")
+  userId    String  @map("user_id") @db.Char(24)
+  linkKind  String  @default("student") @map("link_kind")
   studentId String? @map("student_id") @db.Char(24)
 
   createdAt DateTime @default(now()) @map("created_at")
@@ -314,6 +315,7 @@ enum ChangelogPanel {
   student
   server
   bot
+  kiosk
 }
 
 enum ChangelogBump {
@@ -847,15 +849,12 @@ model SecurityAlert {
 
 /**
  * PUSH QURILMASI — mobil ilova login qilgach yuboradigan FCM tokeni.
- *
  * ⚠️ NIMA UCHUN PLATFORMADA: xodim bir nechta filialda ishlaydi va `userId`
  * hamma filialda BIR XIL (`UserDirectory.id`). Topshiriq qaysi filialdan
  * kelmasin, u o'sha odamning telefoniga borishi kerak.
- *
  * ⚠️ `token` YAGONA: bitta telefonga boshqa odam kirsa, qator unga
  * KO'CHADI (upsert). Aks holda oldingi egasining topshiriqlari yangi
  * odamning telefoniga tushib qolardi.
- *
  * ⚠️ SEANSGA BOG'LANGAN (`jti`): push faqat seansi TIRIK qurilmaga
  * ketadi. Admin seansni bekor qilsa yoki yangi kirish eskisini yopsa,
  * o'sha telefon topshiriq matnini ko'rishda davom etmasligi kerak.
@@ -891,26 +890,21 @@ model PushDevice {
 
 /**
  * BOT KO'RGAN GURUH/KANAL.
- *
  * ⚠️ NIMA UCHUN REYESTR KERAK: Telegram Bot API'da "men qaysi guruhlarda
  * adminman" degan savolga javob beradigan metod YO'Q (`getChats` faqat
  * MTProto — bot emas, ODAM nomidan ulanish). Bot faqat O'ZIGA kelgan
  * hodisadan biladi, shuning uchun ro'yxat bizda to'planadi:
- *
- *   my_chat_member  → status o'zgardi (qo'shildi / admin bo'ldi / chiqdi)
- *   guruhdagi xabar → zaxira yo'l (hodisa o'tkazib yuborilgan bo'lsa)
- *
+ * my_chat_member  → status o'zgardi (qo'shildi / admin bo'ldi / chiqdi)
+ * guruhdagi xabar → zaxira yo'l (hodisa o'tkazib yuborilgan bo'lsa)
  * ⚠️ O'TMISHGA QARAMAYDI: bu kod joylashtirilishidan OLDIN bot a'zo bo'lgan
  * guruh ro'yxatga o'zi tushmaydi — o'sha guruhda status o'zgarishi yoki
  * xabar kerak. Shuning uchun `SocialNetwork` dan farqli, bu jadval
  * QO'LDA to'ldirilmaydi: chatId ni odam kiritsa, bot u guruhda haqiqatan
  * admin ekanini tasdiqlay olmaydi.
- *
  * ⚠️ NIMA UCHUN PLATFORMADA: `my_chat_member` kelganda filial konteksti
  * YO'Q — botni guruhga qo'shgan odam ro'yxatdan o'tmagan bo'lishi mumkin.
  * Guruhni filialga bog'lash uchun ishonchli signal bo'lmagani uchun
  * reyestr barcha filiallarga umumiy (changelog bilan ayni mulohaza).
- *
  * ⚠️ `SocialNetwork` BILAN ARALASHTIRMANG: u — monitor ekranida
  * ko'rsatiladigan maktabning ijtimoiy tarmoq HAVOLALARI (qo'lda
  * kiritiladi, bot bilmaydi). Bu — botning haqiqiy a'zoligi.
@@ -934,7 +928,6 @@ model TelegramGroup {
    * Botning o'sha guruhdagi holati — Telegram'ning `ChatMember.status`
    * qiymati: "administrator" | "member" | "left" | "kicked" |
    * "restricted" | "migrated".
-   *
    * ⚠️ QATOR O'CHIRILMAYDI, holat yoziladi. Bot guruhdan chiqarilsa ham
    * "rasmiy guruh" belgisi va tarix saqlanishi kerak — qayta qo'shilganda
    * belgi o'zi tiklanadi.
@@ -950,11 +943,9 @@ model TelegramGroup {
 
   /**
    * RASMIY GURUH — admin paneldan qo'yiladigan belgi.
-   *
    * ⚠️ HOZIRCHA FAQAT BELGI: tizim bu guruhga hech narsa yubormaydi.
    * Ma'nosi — "bu maktabning tanilgan guruhi", ya'ni keyin xabar
    * yuborish qo'shilganda manba ro'yxati TAYYOR bo'ladi.
-   *
    * ⚠️ FAQAT ADMIN BO'LGAN GURUHDA qo'yiladi (service tekshiradi):
    * bot oddiy a'zo bo'lgan guruhni "rasmiy" deb belgilash, keyinchalik
    * yuborish qo'shilganda jim ishlamaydigan sozlamaga aylanardi.
@@ -985,20 +976,16 @@ model TelegramGroup {
 
 /**
  * RASMIY GURUHDAN KELGAN XABAR — AI tahlili uchun XOMASHYO.
- *
  * Bot rasmiy deb belgilangan guruhlarda KUZATUVCHI: hech narsa yozmaydi,
  * javob bermaydi, faqat o'qiydi va shu jadvalga yozib qo'yadi. Har 30
  * daqiqada server shu yozuvlarni AI'ga beradi (`groupSignal.job.js`).
- *
  * ⚠️ FAQAT `isOfficial` GURUHDAN. Bot a'zo bo'lgan har qanday guruh emas:
  * reyestrda tasodifiy qo'shilgan, test va begona guruhlar ham bor. Rasmiy
  * belgisi — ma'muriyatning "bu guruh bizniki" degan ochiq qarori, ya'ni
  * kuzatuvga ROZILIK. Belgisiz guruhda xabar O'QILMAYDI ham, yozilmaydi ham.
- *
  * ⚠️ PLATFORMADA, FILIALDA EMAS — `telegram_groups` bilan bir xil sabab:
  * guruh xabari kelganda filial konteksti yo'q va uni taxmin qilish
  * noto'g'ri bo'lardi (`bot/src/services/group.service.js` izohi).
- *
  * ⚠️ TAHLILDAN KEYIN O'CHIRILADI (`groupSignal.service.js#sweep`): bu
  * navbat, arxiv emas. Guruh yozishmalarini muddatsiz saqlash — tahlil
  * uchun kerak bo'lmagan shaxsiy ma'lumotni yig'ish bo'lardi. Saqlanadigan
@@ -1038,15 +1025,12 @@ model GroupMessage {
 
 /**
  * AI ANIQLAGAN SIGNAL — "guruhda shunga o'xshash muammo bor".
- *
  * ⚠️ BU MUAMMO EMAS, SIGNAL. Ataylab `issues` jadvaliga tushmaydi:
  * qarorni AI chiqargan, ya'ni u XATO BO'LISHI MUMKIN. Muammolar ro'yxati
  * — ma'muriyat ishlaydigan rasmiy navbat; unga AI taxminini to'g'ridan
  * to'g'ri qo'yish o'sha navbatning ishonchliligini buzardi.
- *
  * Odam ko'radi → kategoriya tanlaydi → "Muammolarga biriktirish" bosadi.
  * Shundagina `issues` da haqiqiy yozuv paydo bo'ladi (`issueId` to'ladi).
- *
  * ⚠️ `issueId` — FILIAL schema'sidagi `issues.id` ga ishora, lekin
  * RELATION EMAS: bu jadval platformada, muammo esa filialda. Prisma ikki
  * schema orasida bog'lanish qura olmaydi va buni qo'lda o'qiymiz.
@@ -1062,7 +1046,7 @@ model GroupSignal {
 
   // AI bergan baho.
   kind     String // complaint | suggestion | question
-  severity String @default("normal") // low | normal | high
+  severity String  @default("normal") // low | normal | high
   summary  String
   // AI matndan OLGAN iqtibos — o'zi yozgan emas. Odam "signal haqiqatan
   // shu gapdanmi" degan savolga xabarni ochmasdan javob topadi.
@@ -1099,4 +1083,108 @@ model GroupSignal {
   @@index([status, createdAt(sort: Desc)])
   @@index([chatId])
   @@map("group_signals")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// FACE ID KIOSKLARI — yuz orqali davomatdan o'tish qurilmalari
+// ═════════════════════════════════════════════════════════════════════
+//
+// NIMA UCHUN PLATFORMADA: kiosk tokeni filial kontekstidan OLDIN
+// tekshiriladi. "Bu qurilma qaysi filialning?" degan savolga javob
+// `UserDirectory` bilan AYNI mulohaza bilan shu yerda yashaydi — aks holda
+// `middleware/kiosk.middleware.js` qaysi schema'ga borishni bilmasdi va
+// `config/prisma` ni ishlatib bo'lmasdi.
+//
+// Yuz namunalari (`FaceProfile` / `FaceSample`) esa FILIAL schema'sida:
+// biometrika odamning o'zi bilan bir joyda turadi va Chilonzor kioski
+// Yunusobod galereyasini ko'rmaydi (`.claude/rules/face-id.md` §1).
+
+enum KioskStatus {
+  pending // yaratilgan, hali qurilmaga biriktirilmagan
+  active // ishlayapti
+  suspended // vaqtincha to'xtatilgan (token tirik, API rad etadi)
+  revoked // token kuchsiz — qayta biriktirish kerak
+}
+
+// KIOSK REJIMI — shu qurilma kimni o'tkazadi.
+//
+// Kirish eshigidagi kiosk ikkalasini ham, o'qituvchilar xonasidagi faqat
+// xodimni o'tkazadi: bir binoda ikki xil joy, ikki xil siyosat. Filial
+// darajasidagi `FaceSettings.staffEnabled/studentEnabled` bundan YUQORI
+// turadi — u o'chirilgan bo'lsa kiosk rejimi yordam bermaydi.
+enum KioskMode {
+  both
+  staffOnly
+  studentOnly
+}
+
+model Kiosk {
+  id       String @id @db.Char(24)
+  branchId String @map("branch_id") @db.Char(24)
+
+  name     String // "Asosiy kirish eshigi"
+  location String @default("") // "1-qavat, qo'riqchi yonida"
+
+  mode   KioskMode   @default(both)
+  status KioskStatus @default(pending)
+
+  // ── BIRIKTIRISH ─────────────────────────────────────────────────
+  // Bir martalik kod HASH bilan saqlanadi: reyestrdan o'qib kiosk
+  // biriktirib olish mumkin bo'lmasligi kerak. Kod admin panelda FAQAT
+  // bir marta (yaratilgan paytda) ko'rsatiladi.
+  pairingCodeHash  String?   @map("pairing_code_hash")
+  pairingExpiresAt DateTime? @map("pairing_expires_at")
+  pairedAt         DateTime? @map("paired_at")
+
+  // Biriktirilgan qurilma. ⚠️ YAGONA EMAS (indeks bor, unique yo'q):
+  // bitta kompyuterga ikki kiosk profili (test va ish) biriktirilishi
+  // mumkin, lekin bu odatda xato — ro'yxatda ko'rinib turadi.
+  deviceUid String? @map("device_uid")
+
+  // ⚠️ TOKEN BEKOR QILISH KALITI. "Bekor qilish" bosilganda raqam oshadi
+  // va chiqarilgan token DARHOL o'ladi (`verifyKioskToken` tekshiradi).
+  // Usiz o'g'irlangan kiosk 365 kun ishlashda davom etardi.
+  tokenVersion  Int       @default(1) @map("token_version")
+  tokenIssuedAt DateTime? @map("token_issued_at")
+
+  // ── SOZLAMA PAROLI ──────────────────────────────────────────────
+  // Kiosk ekranidagi "Sozlamalar" shu PIN bilan ochiladi. PBKDF2 —
+  // `helpers/parentalPin.helpers.js` bilan AYNI naqsh: iteratsiya soni
+  // qatorda saqlanadi, shuning uchun chegara oshirilsa eski PIN'lar
+  // tekshirilaveradi.
+  setupPinHash       String   @map("setup_pin_hash")
+  setupPinSalt       String   @map("setup_pin_salt")
+  setupPinIterations Int      @map("setup_pin_iterations")
+  setupPinUpdatedAt  DateTime @default(now()) @map("setup_pin_updated_at")
+
+  // ── QURILMA HOLATI (heartbeat yozadi) ───────────────────────────
+  lastSeenAt   DateTime? @map("last_seen_at")
+  lastIp       String?   @map("last_ip")
+  appVersion   String?   @map("app_version")
+  osVersion    String?   @map("os_version")
+  cameraLabel  String?   @map("camera_label")
+  // Oflayn navbatda qolgan qayd soni — panelda "12 qayd yuborilmagan"
+  pendingCount Int       @default(0) @map("pending_count")
+
+  // ── STATISTIKA ──────────────────────────────────────────────────
+  checkCount  Int       @default(0) @map("check_count")
+  lastCheckAt DateTime? @map("last_check_at")
+
+  note String @default("")
+
+  // Bekor qilish / to'xtatish sababi — "nega ishlamayapti" degan savolga
+  // javob reyestrda turadi, log faylida emas.
+  statusReason String? @map("status_reason")
+
+  createdBy String?  @map("created_by") @db.Char(24)
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([branchId, status])
+  @@index([deviceUid])
+  @@index([status, lastSeenAt(sort: Desc)])
+  @@map("kiosks")
 }

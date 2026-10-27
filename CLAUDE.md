@@ -137,6 +137,29 @@ plus a shared `platform` schema. See the root `CLAUDE.md` for the full rules.
   copy. Sessions idle for 4 days are closed anyway (`idle`,
   `security.service.js` → `SESSION_IDLE_DAYS`).
 
+## Face ID (kiosk davomati)
+
+Yuz orqali davomat: `face-id/` (Windows kiosk) + serverdagi ikki router.
+**Qoida: `.claude/rules/face-id.md` — kod yozishdan oldin o'qing.**
+
+- ⚠️ `faceAttendance.service.js` DAVOMAT MANTIG'INI YOZMAYDI. U kimligini
+  aniqlaydi va `attendance.service.checkIn/checkOut` yoki
+  `studentAttendance.service.markAttendance` ni chaqiradi. Kechikish,
+  jarima, `checkoutGate`, o'qish davri — hammasi o'sha servislarda qoladi.
+- **Ikki router, ikki hakam:** `faceId.routes.js` (odam tokeni +
+  `faceId.*` ruxsatlari) va `kiosk.routes.js` (`X-Kiosk-Token`,
+  `req.user` YO'Q). Biometrika YOZADIGAN amal faqat birinchisida.
+- `Kiosk` — **platformada** (`platformPrisma`), chunki token filial
+  kontekstidan OLDIN tekshiriladi. Qolgan hammasi filialda.
+- Vektor — `Bytes` (xom `Float32`), matematika
+  `helpers/faceEmbedding.helpers.js` da, galereya keshi
+  `faceGallery.service.js` da (`FaceSettings.galleryVersion` bo'yicha
+  eskiradi — TTL bilan EMAS, izohi faylda).
+- Kadr rasmlari **`uploadPrivateBuffer`** bilan: ochiq URL berilmaydi,
+  ular `faceId.events` ruxsati tekshiradigan endpoint orqali beriladi.
+- `prisma.faceSettings` getter'i `settings.service.js` da, yozish esa
+  `faceSettings.service.js` da (chegaralar va ogohlantirishlar bilan).
+
 ## Logging
 
 - Use the shared `logger` from `utils/logger.js` everywhere.

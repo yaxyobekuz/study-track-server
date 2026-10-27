@@ -67,6 +67,7 @@ const SECTIONS = {
   ISSUES: "issues",
   SECURITY: "security",
   DEVICES: "devices",
+  FACE_ID: "faceId",
 };
 
 // Tez-tez takrorlanadigan amal nomlari (qisqartma uchun).
@@ -1071,6 +1072,47 @@ const PERMISSION_SECTIONS = [
       { key: "unlock", label: "Vaqtinchalik ochish" },
       { key: "apps", label: "Ilovalar katalogi" },
       { key: "reports", label: "Foydalanish hisoboti" },
+      A.settings,
+    ],
+  },
+  {
+    // FACE ID — kiosk orqali yuz bilan davomatdan o'tish
+    // (`.claude/rules/face-id.md`).
+    //
+    // ⚠️ `attendance` ICHIDAGI AMAL EMAS, ALOHIDA BO'LIM. Davomat
+    // ruxsati "kim keldi" ni ko'rish va belgilash huquqini beradi; bu
+    // bo'lim esa BIOMETRIKA bilan ishlaydi — yuz namunasini olish,
+    // o'chirish va kirish eshigidagi kameraning yozuvini ko'rish.
+    // Ikkalasini bitta bo'limga yig'ish "davomat belgilasin" degan
+    // ruxsatni "maktabning butun biometrik bazasini boshqarsin" ga
+    // aylantirardi.
+    //
+    // Amallar ATAYLAB mayda:
+    //   `kiosks`    — qurilma yaratish, tahrirlash, PIN almashtirish.
+    //                 Hali hech kimning yuzini ko'rmaydi.
+    //   `pair`      — biriktirish kodi berish va tokenni bekor qilish.
+    //                 ⚠️ `kiosks` DAN ALOHIDA: kod — YANGI KOMPYUTERNI
+    //                 maktab davomatiga ulash huquqi, `devices.policies`
+    //                 va `devices.assign` ajratilgani bilan ayni mulohaza.
+    //   `enroll`    — yuz namunasini OLISH.
+    //   `unenroll`  — namunani/profilni O'CHIRISH. ⚠️ `enroll` dan
+    //                 alohida: biometrikani olib tashlash odamni davomat
+    //                 tizimidan chiqarish degani va u ertasiga kiosk
+    //                 oldida "tanilmadi" bo'lib qoladi.
+    //   `events`    — urinishlar jurnali. ⚠️ `view` DAN ALOHIDA va bu
+    //                 `security.sessions` / `devices.reports` bilan ayni
+    //                 mulohaza: jurnal kirish eshigidagi kamera
+    //                 KADRLARINI ko'rsatadi, ya'ni shaxsiy ma'lumot.
+    key: SECTIONS.FACE_ID,
+    label: "Face ID (kiosk davomati)",
+    group: "Nazorat",
+    actions: [
+      A.view,
+      { key: "kiosks", label: "Kiosklarni boshqarish" },
+      { key: "pair", label: "Qurilmani biriktirish / bekor qilish" },
+      { key: "enroll", label: "Yuzni ro'yxatga olish" },
+      { key: "unenroll", label: "Yuz namunasini o'chirish" },
+      { key: "events", label: "Urinishlar jurnali (kadrlar bilan)" },
       A.settings,
     ],
   },

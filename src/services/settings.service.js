@@ -254,6 +254,25 @@ async function getDeviceSettings() {
   });
 }
 
+/**
+ * FACE ID sozlamalari (`.claude/rules/face-id.md`).
+ *
+ * ⚠️ Default qiymatlar SCHEMA'DA, bu yerda emas: yangi filial ochilganda
+ * shu getter seed bo'lib ishlaydi (`branchProvision.service.js`) va
+ * ikkinchi haqiqat manbai bo'lmasligi kerak.
+ *
+ * ⚠️ Chegaralar (`matchThreshold`, tiriklik) sozlamada va kodda EMAS: har
+ * kameraning sifati boshqa va "0.62" bitta filialda juda qattiq,
+ * boshqasida juda yumshoq bo'lib chiqadi.
+ */
+async function getFaceSettings() {
+  return prisma.faceSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
 module.exports = {
   getCoinSettings,
   getScheduleSettings,
@@ -271,6 +290,7 @@ module.exports = {
   getFinanceSettings,
   getInventorySettings,
   getDeviceSettings,
+  getFaceSettings,
   getChangelogSettings,
   DEFAULT_NAME_COLORS,
 };

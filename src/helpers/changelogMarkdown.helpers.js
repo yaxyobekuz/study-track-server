@@ -28,7 +28,8 @@
 const { ValidationError } = require("../utils/errors");
 const { isValidBump } = require("./semver.helpers");
 
-const PANELS = ["admin", "teacher", "student", "server", "bot"];
+// ⚠️ `ChangelogPanel` enumi (prisma/platform/schema.prisma) bilan QO'LDA sinxron.
+const PANELS = ["admin", "teacher", "student", "server", "bot", "kiosk"];
 
 const STATUSES = ["draft", "published"];
 

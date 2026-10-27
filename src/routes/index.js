@@ -92,6 +92,11 @@ const pushRoutes = require("./push.routes");
 const deviceRoutes = require("./device.routes");
 const parentalRoutes = require("./parental.routes");
 const globalSearchRoutes = require("./globalSearch.routes");
+// FACE ID — kiosk orqali yuz bilan davomatdan o'tish. IKKI ROUTER:
+// `faceIdRoutes` panel uchun (odam tokeni), `kioskRoutes` qurilma uchun
+// (`X-Kiosk-Token`). Ajratilgani — `.claude/rules/face-id.md` §8.
+const faceIdRoutes = require("./faceId.routes");
+const kioskRoutes = require("./kiosk.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -206,6 +211,18 @@ router.use("/devices", deviceRoutes);
 // telefoni (`/parental/device/*`). Maktabning "Qurilma nazorati" dan ALOHIDA:
 // u yerda qoidani maktab, bu yerda ota-ona yozadi.
 router.use("/parental", parentalRoutes);
+// FACE ID — kiosk davomati.
+//
+// ⚠️ IKKI ALOHIDA YO'L va bu ataylab:
+//   `/face-id/*` — PANEL (odam tokeni + `faceId.*` ruxsatlari). Yuz
+//                  namunasini olish/o'chirish FAQAT shu yerdan o'tadi.
+//   `/kiosk/*`   — QURILMA (`X-Kiosk-Token`), `req.user` qo'yilmaydi.
+//                  Biometrika yozadigan amal yo'q: kiosk tokeni
+//                  qurilmaning kimligi, odamning emas.
+// Bitta prefiksga yig'ilsa, bitta unutilgan middleware kiosk tokeni
+// bilan butun bo'limni ochib qo'yardi.
+router.use("/face-id", faceIdRoutes);
+router.use("/kiosk", kioskRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

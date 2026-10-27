@@ -248,6 +248,84 @@ const verifyBranchSelectToken = (token) => {
   }
 };
 
+/* ──────────────────────── FACE ID KIOSK TOKENI ──────────────────────── */
+
+/** Kiosk tokeni maqsadi — `purpose` da majburiy. */
+const KIOSK_PURPOSE = "kiosk";
+
+/**
+ * KIOSK TOKENI BIR YIL YASHAYDI.
+ *
+ * ⚠️ Uzun muddat ATAYLAB: kiosk kirish eshigida turadigan qurilma, uni
+ * har 30 kunda qo'lda qayta biriktirish "davomat ishlamayapti" degan
+ * qo'ng'iroqqa aylanardi. Xavfsizlik muddatda emas, `tokenVersion` da:
+ * admin "Bekor qilish" bossa raqam oshadi va token DARHOL o'ladi.
+ */
+const KIOSK_TOKEN_TTL_SEC = 365 * 24 * 60 * 60;
+
+/**
+ * KIOSK TOKENI KALITI — `JWT_SECRET` dan HOSILA, o'zi EMAS.
+ *
+ * ⚠️ Parental va tanlov tokenlari bilan AYNI mulohaza: kalit boshqa
+ * bo'lgani uchun kiosk tokeni oddiy access token o'rniga (va aksincha)
+ * imzo bosqichidayoq rad etiladi. Bitta kalit bo'lsa, kirish eshigidagi
+ * qurilmadan o'g'irlangan token butun API'ni ochib berardi.
+ */
+const kioskSecret = () =>
+  crypto.createHmac("sha256", String(config.jwtSecret)).update("kiosk-token:v1").digest("hex");
+
+/**
+ * Kiosk qurilmasining tokeni — `X-Kiosk-Token`.
+ *
+ * ⚠️ FILIAL YUK ICHIDA (`br`), lekin `middleware/kiosk.middleware.js` uni
+ * TOKENDAN O'QIMAYDI — reyestrdan qayta oladi. Token berilgandan keyin
+ * kiosk boshqa filialga ko'chirilishi yoki filial arxivlanishi mumkin.
+ * Yukdagi qiymat faqat diagnostika uchun.
+ *
+ * ⚠️ `deviceUid` ham yuk ichida: bitta kompyuterdan olingan token boshqa
+ * kompyuterga ko'chirilsa, `heartbeat` dagi `deviceUid` mos kelmaydi va
+ * panelda ko'rinadi.
+ *
+ * @param {{ kioskId: string, branchId: string, deviceUid: string, tokenVersion: number }} input
+ * @returns {{ token: string, expiresAt: Date }}
+ */
+const generateKioskToken = ({ kioskId, branchId, deviceUid, tokenVersion }) => {
+  const token = jwt.sign(
+    {
+      purpose: KIOSK_PURPOSE,
+      sub: String(kioskId),
+      br: branchId ?? null,
+      dev: deviceUid ? String(deviceUid) : null,
+      tv: Number(tokenVersion) || 1,
+    },
+    kioskSecret(),
+    { algorithm: "HS256", expiresIn: KIOSK_TOKEN_TTL_SEC },
+  );
+  const { exp } = jwt.decode(token);
+  return { token, expiresAt: new Date(exp * 1000) };
+};
+
+/**
+ * Kiosk tokenini tekshiradi. Imzo, muddat yoki `purpose` mos kelmasa `null`.
+ *
+ * ⚠️ `tokenVersion` BU YERDA TEKSHIRILMAYDI — u bazadagi qiymat bilan
+ * solishtirilishi kerak va bu middleware'ning ishi (`kiosk.middleware.js`).
+ * Sof funksiyani bazaga bog'lab qo'yish uni test qilib bo'lmaydigan
+ * holatga tushirardi.
+ *
+ * @param {string} token
+ * @returns {{ sub: string, br: string|null, dev: string|null, tv: number, exp: number }|null}
+ */
+const verifyKioskToken = (token) => {
+  if (!token || typeof token !== "string") return null;
+  try {
+    const decoded = jwt.verify(token, kioskSecret(), { algorithms: ["HS256"] });
+    return decoded?.purpose === KIOSK_PURPOSE ? decoded : null;
+  } catch {
+    return null;
+  }
+};
+
 module.exports = {
   generateToken,
   generateAggregateToken,
@@ -261,4 +339,8 @@ module.exports = {
   verifyBranchSelectToken,
   BRANCH_SELECT_PURPOSE,
   BRANCH_SELECT_TTL_SEC,
+  generateKioskToken,
+  verifyKioskToken,
+  KIOSK_PURPOSE,
+  KIOSK_TOKEN_TTL_SEC,
 };

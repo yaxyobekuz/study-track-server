@@ -4,6 +4,10 @@ logs
 package-lock.json
 *scripts
 uploads
+# MAXFIY fayllar (yuz kadrlari) — lokal dev uchun. `uploads` dan ALOHIDA
+# papka, chunki u `express.static` bilan tarqatiladi va maxfiy fayl
+# havola orqali ochiq bo'lib qolardi (`fileStorage.service.js` izohi).
+uploads-private
 # Migratsiya skriptini git'da saqlaymiz (yuqoridagi *scripts istisnosi)
 !src/scripts/
 src/scripts/*

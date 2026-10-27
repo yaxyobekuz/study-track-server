@@ -34,6 +34,24 @@ const { resyncAfterAttendanceChange } = require("./payrollAbsence.service");
 const { formatDateUz, formatTimeUz } = require("../helpers/date.helpers");
 const { dayKey } = require("../helpers/lessonHours");
 
+/**
+ * DAVOMAT QAYDINING MANBAI — kim/nima tetiklagan.
+ *
+ * ⚠️ Bu QIYMAT BAZADA SAQLANMAYDI (xodim davomatida alohida ustun yo'q):
+ * u faqat joylashuv qarorini va jarima aktyorini hal qiladi. Kioskdan
+ * kelgan qayd `checkInLocationStatus = "kiosk"` bo'lib ajralib turadi,
+ * tafsilot esa Face ID jurnalida (`FaceCheckEvent`).
+ *
+ * ⚠️ `self` va `panel` ORASIDA FARQ YO'Q va bo'lmasligi kerak: ikkalasi
+ * ham GPS bilan keladi va qoidalari bir xil. Qiymat faqat o'qiydigan
+ * odam uchun.
+ */
+const ATTENDANCE_SOURCE = Object.freeze({
+  SELF: "self",
+  PANEL: "panel",
+  KIOSK: "kiosk",
+});
+
 function getTodayNormalized() {
   const now = new Date();
   const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
@@ -310,6 +328,61 @@ function locationFields(prefix, location) {
 }
 
 /**
+ * KIOSKDAN KELGAN QAYDNING JOYLASHUVI.
+ *
+ * ⚠️ OFIS KOORDINATASI NUSXALANMAYDI va `inside` deb yozilmaydi. Buni
+ * qilish YOLG'ON bo'lardi: odam telefonini uyda qoldirib kelgan bo'lishi
+ * mumkin va biz GPS o'qimaganmiz. Shuning uchun `checkInLocationStatus`
+ * ga alohida `kiosk` qiymati yoziladi — u haqiqatni aytadi va GPS'dan
+ * KUCHLIROQ dalil: odam binodagi qurilma oldida turgan va yuzi
+ * tekshirilgan (`.claude/rules/face-id.md` §6).
+ *
+ * Shu sababli `outOfOffice` va `locationWarning` ikkalasi ham `false`:
+ * bu qayd "joylashuv noma'lum" emas, "joyida" degani.
+ *
+ * @param {{ id: string, name: string, location?: string }} kiosk
+ * @returns {object} `resolveLocation()` natijasining shakliga mos obyekt
+ */
+function kioskLocation(kiosk) {
+  return {
+    status: "kiosk",
+    distance: 0,
+    accuracy: null,
+    buffer: 0,
+    trusted: true,
+    lowAccuracy: false,
+    outOfOffice: false,
+    locationWarning: false,
+    snapshot: {
+      source: "kiosk",
+      kioskId: kiosk.id,
+      kioskName: kiosk.name,
+      label: kiosk.location || null,
+      status: "kiosk",
+    },
+  };
+}
+
+/**
+ * Joylashuvni manbaga qarab hal qiladi — kelish va ketish uchun bitta joy.
+ *
+ * ⚠️ Kiosk GPS BERMAYDI, shuning uchun `resolveLocation` ga umuman
+ * borilmaydi: u koordinatasiz chaqiruvni `missing` deb baholaydi va
+ * `locationWarning` ni yoqib qo'yardi — ya'ni binodagi qurilma oldida
+ * turgan odam "joylashuvi noma'lum" bo'lib hisobotga tushardi.
+ *
+ * @param {object} locationPayload - mijozdan kelgan koordinata
+ * @param {object} settings - davomat sozlamasi
+ * @param {{ source?: string, kiosk?: object }} options
+ */
+function resolveAttendanceLocation(locationPayload, settings, options = {}) {
+  if (options.source === ATTENDANCE_SOURCE.KIOSK && options.kiosk) {
+    return kioskLocation(options.kiosk);
+  }
+  return resolveLocation(locationPayload, settings.officeLocation, settings.officeRadius);
+}
+
+/**
  * Shubhali joylashuvni jurnalga yozadi.
  *
  * Bu TO'SIQ EMAS — qayd baribir o'tadi. Maqsad: buzuq yoki qalbaki
@@ -367,12 +440,20 @@ function describeLateArrival(schedule, arrivedAt, graceMin) {
  * `missing` bo'lib YOZILADI. Ilgari u umuman yozilmasdi va GPS-ni
  * o'chirib qo'ygan xodim ofisda o'tirgani bilan bir xil ko'rinardi.
  *
+ * ⚠️ KIOSK — UCHINCHI TETIK, YANGI QOIDA EMAS. `options.source = "kiosk"`
+ * bilan chaqirilganda SHU FUNKSIYA ishlaydi: kechikish, imtiyoz, jarima
+ * va dars jadvali qoidasi bir xil qoladi, faqat joylashuv GPS o'rniga
+ * `kiosk` holatini oladi (`kioskLocation`). Face ID moduli o'z
+ * hisoblovchisini yozmaydi — yozsa, "kioskdan kelgan kechikish jarimasiz"
+ * degan holat tug'ilardi (`.claude/rules/face-id.md` §0).
+ *
  * @param {string} userId
  * @param {{ lat?: *, lng?: *, accuracy?: * }} [locationPayload] - mijozdan
  * @param {string} [adminUserId] - jarima "kim tomonidan" uchun
+ * @param {{ source?: "self"|"panel"|"kiosk", kiosk?: {id: string, name: string, location?: string} }} [options]
  * @returns {Promise<object>} Attendance qatori
  */
-async function checkIn(userId, locationPayload, adminUserId) {
+async function checkIn(userId, locationPayload, adminUserId, options = {}) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
@@ -393,12 +474,9 @@ async function checkIn(userId, locationPayload, adminUserId) {
 
   const settings = await getAttendanceSettings();
 
-  // Joylashuv — qaror BITTA joyda hal qilinadi (geolocation.helpers.js)
-  const location = resolveLocation(
-    locationPayload,
-    settings.officeLocation,
-    settings.officeRadius,
-  );
+  // Joylashuv — qaror BITTA joyda hal qilinadi (geolocation.helpers.js),
+  // kioskdan kelgan qayd esa GPS o'rniga `kiosk` holatini oladi.
+  const location = resolveAttendanceLocation(locationPayload, settings, options);
   logSuspiciousLocation("kelish", userId, location);
 
   // Kech kelish tekshiruvi.
@@ -499,12 +577,18 @@ async function checkIn(userId, locationPayload, adminUserId) {
  * (`checkoutReport`). Rahbar ruxsati bilan ketishda erta ketish jarimasi
  * yozilmaydi — bu ruxsat berilgan ketish.
  *
+ * ⚠️ KIOSKDAN CHAQIRILGANDA HAM DARVOZA ISHLAYDI: o'qituvchi bahosini
+ * qo'ymagan bo'lsa kiosk ekranida ham 409 chiqadi va sabab ko'rsatiladi.
+ * Shunday bo'lishi SHART — aks holda kiosk darvozadan o'tish yo'liga
+ * aylanardi.
+ *
  * @param {string} userId
  * @param {{ lat?: *, lng?: *, accuracy?: * }} [locationPayload]
  * @param {string} [adminUserId]
+ * @param {{ source?: "self"|"panel"|"kiosk", kiosk?: {id: string, name: string, location?: string} }} [options]
  * @returns {Promise<object>} Attendance qatori
  */
-async function checkOut(userId, locationPayload, adminUserId) {
+async function checkOut(userId, locationPayload, adminUserId, options = {}) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new NotFoundError("Foydalanuvchi topilmadi");
 
@@ -530,11 +614,7 @@ async function checkOut(userId, locationPayload, adminUserId) {
   const settings = await getAttendanceSettings();
 
   // Joylashuv — kelish bilan AYNI helper, ikkinchi nusxa yo'q
-  const location = resolveLocation(
-    locationPayload,
-    settings.officeLocation,
-    settings.officeRadius,
-  );
+  const location = resolveAttendanceLocation(locationPayload, settings, options);
   logSuspiciousLocation("ketish", userId, location);
 
   // Erta ketish tekshiruvi (dars jadvalidagi o'qituvchida — bugun o'tiladigan
@@ -1446,4 +1526,5 @@ module.exports = {
   createAttendancePenalty,
   getDayOfWeekTashkent,
   normalizeDateTashkent,
+  ATTENDANCE_SOURCE,
 };

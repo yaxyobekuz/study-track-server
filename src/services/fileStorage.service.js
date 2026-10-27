@@ -20,6 +20,17 @@ const isLocalStorage =
 
 const LOCAL_UPLOADS_DIR = path.join(__dirname, "../../uploads");
 
+/**
+ * MAXFIY fayllarning lokal papkasi.
+ *
+ * ⚠️ `uploads` DAN TASHQARIDA. `index.js` `uploads` ni `express.static`
+ * bilan tarqatadi, shuning uchun maxfiy fayl o'sha papkaga tushsa
+ * havola orqali hammaga ochiq bo'lardi. Bu papka hech qayerga mount
+ * qilinmaydi: fayl faqat `getObjectBuffer` orqali, ruxsat tekshiruvidan
+ * o'tgan controller qo'li bilan beriladi.
+ */
+const LOCAL_PRIVATE_DIR = path.join(__dirname, "../../uploads-private");
+
 const normalizedEndpoint = config.doEndpoint.startsWith("http")
   ? config.doEndpoint
   : `https://${config.doEndpoint}`;
@@ -101,6 +112,19 @@ const uploadBuffer = async ({ key, buffer, contentType }) => {
  * @returns {Promise<{key:string,size:number}>}
  */
 const uploadPrivateBuffer = async ({ key, buffer, contentType }) => {
+  // Lokal dev: `LOCAL_PRIVATE_DIR` ga yoziladi.
+  //
+  // ⚠️ `LOCAL_UPLOADS_DIR` EMAS va bu ataylab: o'sha papka `index.js` da
+  // `express.static` bilan tarqatiladi, ya'ni maxfiy fayl havola orqali
+  // hammaga ochiq bo'lib qolardi — ya'ni `uploadPrivateBuffer` nomi
+  // yolg'onga aylanardi. Alohida papka esa hech qayerga mount qilinmaydi.
+  if (isLocalStorage) {
+    const filePath = path.join(LOCAL_PRIVATE_DIR, key);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(filePath, buffer);
+    return { key, size: buffer.length };
+  }
+
   await spacesClient.send(
     new PutObjectCommand({
       Bucket: config.doBucketName,
@@ -121,6 +145,17 @@ const uploadPrivateBuffer = async ({ key, buffer, contentType }) => {
  * @returns {Promise<{buffer:Buffer,contentType:string|null}>}
  */
 const getObjectBuffer = async (key) => {
+  if (isLocalStorage) {
+    // ⚠️ Yo'l NORMALIZATSIYA qilinadi va papkadan chiqib ketish rad
+    // etiladi: kalit mijoz so'rovidan kelishi mumkin ("../../.env").
+    const filePath = path.resolve(LOCAL_PRIVATE_DIR, key);
+    if (!filePath.startsWith(path.resolve(LOCAL_PRIVATE_DIR))) {
+      throw new Error("Fayl kaliti papkadan tashqariga ishora qiladi");
+    }
+    const buffer = await fs.promises.readFile(filePath);
+    return { buffer, contentType: null };
+  }
+
   const response = await spacesClient.send(
     new GetObjectCommand({
       Bucket: config.doBucketName,
@@ -144,10 +179,13 @@ const deleteObject = async (key) => {
   if (!key) return;
 
   if (isLocalStorage) {
-    // Lokal fayl bo'lmasa ham jim o'tamiz — o'chirish best-effort
-    await fs.promises
-      .unlink(path.join(LOCAL_UPLOADS_DIR, key))
-      .catch(() => {});
+    // Lokal fayl bo'lmasa ham jim o'tamiz — o'chirish best-effort.
+    // ⚠️ IKKALA papka: chaqiruvchi fayl ochiq yoki maxfiy ekanini
+    // bilishi shart emas (va bilmasligi kerak — kalit bitta).
+    await Promise.all([
+      fs.promises.unlink(path.join(LOCAL_UPLOADS_DIR, key)).catch(() => {}),
+      fs.promises.unlink(path.join(LOCAL_PRIVATE_DIR, key)).catch(() => {}),
+    ]);
     return;
   }
 
@@ -167,4 +205,5 @@ module.exports = {
   getPublicUrl,
   isLocalStorage,
   LOCAL_UPLOADS_DIR,
+  LOCAL_PRIVATE_DIR,
 };
