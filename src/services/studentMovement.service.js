@@ -47,6 +47,7 @@
  */
 
 const prisma = require("../config/prisma");
+const platformPrisma = require("../config/platformPrisma");
 const { getBranch } = require("../config/branchContext");
 const { BadRequestError } = require("../utils/errors");
 const { ROLES } = require("../utils/constants");
@@ -334,7 +335,15 @@ const groupByReason = (leftRows) => {
  * @param {{openCount: number, closeCount: number, joined: Array, left: Array,
  *   firstStart: Map<string, number>}} input
  */
-const buildMetrics = ({ openCount, closeCount, joined, left, firstStart }) => {
+const buildMetrics = ({
+  openCount,
+  closeCount,
+  joined,
+  left,
+  movedIn = [],
+  movedOut = [],
+  firstStart,
+}) => {
   const joinedNew = joined.filter(
     (row) => firstStart.get(row.studentId) === row.startDate.getTime(),
   ).length;
@@ -346,6 +355,12 @@ const buildMetrics = ({ openCount, closeCount, joined, left, firstStart }) => {
     joinedReturned: joined.length - joinedNew,
     left: left.length,
     net: joined.length - left.length,
+    // ⚠️ KO'CHISH ALOHIDA O'LCHOV va `net` ga KIRMAYDI: u maktabning
+    // o'sishi emas, tarmoq ichidagi joy almashish. Lekin oy oxiridagi
+    // songa TA'SIR QILADI, shuning uchun tenglikda o'z hadi bor.
+    movedIn: movedIn.length,
+    movedOut: movedOut.length,
+    moveNet: movedIn.length - movedOut.length,
     closeCount,
     // ⚠️ Maxraj — DAVR BOSHIDAGI son: "450 tadan 12 ta ko'paydi" degan
     // jumlaning o'zi. Oxirgi songa bo'linsa, o'sish va tushish bir xil
@@ -380,6 +395,8 @@ const combineMetrics = (items) => {
   const openCount = sum("openCount");
   const joined = sum("joined");
   const left = sum("left");
+  const movedIn = sum("movedIn");
+  const movedOut = sum("movedOut");
 
   return {
     openCount,
@@ -388,6 +405,13 @@ const combineMetrics = (items) => {
     joinedReturned: sum("joinedReturned"),
     left,
     net: joined - left,
+    // ⚠️ TARMOQ DARAJASIDA KO'CHISH ODATDA O'ZINI YO'QOTADI (bitta bola
+    // bir filialdan chiqib, boshqasiga kiradi), lekin NOLGA TENG EMAS:
+    // ko'chish oyning 1-kuni bo'lsa, chiqish OLDINGI oyga tushadi
+    // (`finance.md` §12). Shuning uchun ikkala son ham saqlanadi.
+    movedIn,
+    movedOut,
+    moveNet: movedIn - movedOut,
     closeCount: sum("closeCount"),
     joinedPercent: percentOf(joined, openCount),
     leftPercent: percentOf(left, openCount),
@@ -436,6 +460,108 @@ const combineReasons = (lists) => {
   return items;
 };
 
+/* ─────────────── FILIALLARARO KO'CHISH — "keldi/ketdi" EMAS ─────────────── */
+
+/**
+ * ⚠️ BOSHQA FILIALGA O'TISH MAKTABGA KELISH VA MAKTABDAN KETISH EMAS
+ * (biznes qarori, 2026-10-27). Ko'chishda manbada davr T−1 da YOPILADI,
+ * maqsadda esa T dan OCHILADI (`finance.md` §12) — ya'ni bitta bola
+ * tarmoq ichida joyini o'zgartirgani uchun "ketdi" ham, "keldi" ham
+ * bo'lib sanalardi va ikkala sanoqchi ham shishib ketardi. Tarmoq
+ * darajasida esa bu umuman harakat emas: maktabda o'quvchilar soni
+ * o'zgarmaydi.
+ *
+ * ⚠️ `endReason = "transferred"` BO'YICHA ANIQLAB BO'LMAYDI va bu eng
+ * muhim tuzoq: o'sha toifani admin QO'LDA ham qo'yadi ("boshqa maktabga
+ * o'tdi") — u esa HAQIQIY ketish. Toifaga tayansak, maktabni butunlay
+ * tashlab ketgan bolalar jimgina "ichki ko'chish" bo'lib yo'qolardi.
+ *
+ * Yagona ishonchli manba — platformadagi KO'CHIRISH JURNALI
+ * (`branch_transfers` + `branch_transfer_items`, append-only).
+ * `attention` ham hisob: asosiy tranzaksiya o'tgan, faqat undan keyingi
+ * qadam yiqilgan (`BranchTransferStatus` izohi).
+ */
+const loadBranchMoves = async (from, to, branchId) => {
+  if (!branchId) return [];
+
+  // Ko'chish sanasi T: manbada oxirgi kun T−1, maqsadda birinchi kun T.
+  // Demak oraliqqa ta'sir qiladigan T lar — [oraliq boshi, oraliq oxiri+1].
+  const since = monthStartDate(from);
+  const until = new Date(monthEndDate(to).getTime() + DAY_MS);
+
+  return platformPrisma.branchTransfer.findMany({
+    where: {
+      effectiveDate: { gte: since, lte: until },
+      OR: [{ sourceBranchId: branchId }, { targetBranchId: branchId }],
+    },
+    select: {
+      effectiveDate: true,
+      sourceBranchId: true,
+      targetBranchId: true,
+      sourceBranch: { select: { name: true } },
+      targetBranch: { select: { name: true } },
+      items: {
+        where: { subjectType: "user" },
+        select: { subjectId: true },
+      },
+    },
+  });
+};
+
+/**
+ * Jurnaldan "qaysi qator ko'chish" degan savolga javob beradigan indeks.
+ *
+ * ⚠️ KALIT — O'QUVCHI + KUN, ko'chirish id si EMAS: hisobot o'qish
+ * davrlarini o'qiydi va ular jurnalga ISHORA QILMAYDI (boshqa schema, FK
+ * yo'q). Bog'lovchi yagona narsa — sana:
+ *   · maqsadda  `startDate === T`
+ *   · manbada   `endDate   === T − 1`
+ *
+ * Sof funksiya: bazasiz sinaladi (`test/studentMovement.test.js`).
+ *
+ * @param {Array} transfers - `loadBranchMoves` natijasi
+ * @param {string} branchId - JORIY filial
+ */
+const buildMoveIndex = (transfers, branchId) => {
+  const movedIn = new Map();
+  const movedOut = new Map();
+
+  for (const transfer of transfers) {
+    const arrival = iso(transfer.effectiveDate);
+    const lastDay = iso(new Date(transfer.effectiveDate.getTime() - DAY_MS));
+
+    for (const item of transfer.items) {
+      if (transfer.targetBranchId === branchId) {
+        movedIn.set(`${item.subjectId}|${arrival}`, {
+          fromBranch: transfer.sourceBranch?.name ?? null,
+          toBranch: transfer.targetBranch?.name ?? null,
+        });
+      }
+      if (transfer.sourceBranchId === branchId) {
+        movedOut.set(`${item.subjectId}|${lastDay}`, {
+          fromBranch: transfer.sourceBranch?.name ?? null,
+          toBranch: transfer.targetBranch?.name ?? null,
+        });
+      }
+    }
+  }
+
+  return {
+    movedIn,
+    movedOut,
+    /** Qator — boshqa filialdan ko'chib kelganmi? */
+    isIn: (row) => movedIn.get(`${row.studentId}|${iso(row.startDate)}`) ?? null,
+    /** Qator — boshqa filialga ko'chib ketganmi? */
+    isOut: (row) =>
+      row.endDate
+        ? (movedOut.get(`${row.studentId}|${iso(row.endDate)}`) ?? null)
+        : null,
+  };
+};
+
+/** Ko'chish indeksi yo'q bo'lganda (sinov, bitta filial) — hech narsa ko'chmagan. */
+const EMPTY_MOVES = { movedIn: new Map(), movedOut: new Map(), isIn: () => null, isOut: () => null };
+
 /**
  * Oraliqdagi kelgan va ketgan davrlar — XOTIRADA, bitta o'tishda.
  *
@@ -445,32 +571,42 @@ const combineReasons = (lists) => {
  * Sababsiz qatorlar kesimda "Sabab ko'rsatilmagan" bo'lib ko'rinadi, ya'ni
  * bo'shliq yashirilmaydi.
  */
-const collectRange = (rows, from, to) => {
+const collectRange = (rows, from, to, moves = EMPTY_MOVES) => {
   const joined = [];
   const left = [];
+  const movedIn = [];
+  const movedOut = [];
 
   for (const row of rows) {
     const startMonth = monthKeyOfDate(row.startDate);
-    if (startMonth >= from && startMonth <= to) joined.push(row);
+    if (startMonth >= from && startMonth <= to) {
+      // ⚠️ KO'CHIB KELGAN "keldi" GA TUSHMAYDI — u boshqa filialdan
+      // o'tdi, maktabga yangi kelmadi.
+      (moves.isIn(row) ? movedIn : joined).push(row);
+    }
 
     if (row.endDate) {
       const endMonth = monthKeyOfDate(row.endDate);
-      if (endMonth >= from && endMonth <= to) left.push(row);
+      if (endMonth >= from && endMonth <= to) {
+        (moves.isOut(row) ? movedOut : left).push(row);
+      }
     }
   }
 
-  return { joined, left };
+  return { joined, left, movedIn, movedOut };
 };
 
 /** Oraliq ko'rsatkichlari — bosh sahifa kartasi shuni chaqiradi. */
-const metricsFor = (rows, from, to, firstStart) => {
-  const { joined, left } = collectRange(rows, from, to);
+const metricsFor = (rows, from, to, firstStart, moves = EMPTY_MOVES) => {
+  const { joined, left, movedIn, movedOut } = collectRange(rows, from, to, moves);
 
   return buildMetrics({
     openCount: openCountAt(rows, from),
     closeCount: openCountAt(rows, nextMonth(to)),
     joined,
     left,
+    movedIn,
+    movedOut,
     firstStart,
   });
 };
@@ -538,6 +674,46 @@ const serializeLeft = (row, { studentById, classByKey, todayMs, laterStarts }) =
     studiedDays: Math.floor((row.endDate - row.startDate) / DAY_MS) + 1,
     returnedAt: returned ? iso(new Date(returned)) : null,
     isArchived: Boolean(student?.isArchived),
+  };
+};
+
+/**
+ * FILIALLARARO KO'CHGAN QATOR — "qayerdan qayerga va qachon".
+ *
+ * ⚠️ Yo'nalish qatorning O'ZIDAN chiqadi, taxmin qilinmaydi: ko'chib
+ * KELGANDA sana — davr boshlangan kun, ko'chib KETGANDA esa ko'chish kuni
+ * (oxirgi o'qigan kundan bir kun keyin, `finance.md` §12). Ikkalasini
+ * bitta sana deb yozsak, jadvalda bir kunlik siljish paydo bo'lardi.
+ *
+ * @param {{row: object, move: {fromBranch: string|null, toBranch: string|null}}} entry
+ * @param {"in"|"out"} direction
+ */
+const serializeMoved = (entry, direction, { studentById, classByKey }) => {
+  const { row, move } = entry;
+  const student = studentById.get(row.studentId) ?? null;
+
+  const date =
+    direction === "in"
+      ? row.startDate
+      : new Date(row.endDate.getTime() + DAY_MS);
+
+  const snapshotClass =
+    direction === "out"
+      ? (classByKey.get(`${row.studentId}|${monthKeyOfDate(row.endDate)}`) ?? null)
+      : null;
+
+  return {
+    id: row.id,
+    studentId: row.studentId,
+    name: nameOf(student),
+    username: student?.username ?? null,
+    className: snapshotClass ?? classNameOf(student),
+    direction,
+    directionLabel: direction === "in" ? "Ko'chib keldi" : "Ko'chib ketdi",
+    fromBranch: move.fromBranch,
+    toBranch: move.toBranch,
+    date: iso(date),
+    month: monthKeyOfDate(date),
   };
 };
 
@@ -625,21 +801,41 @@ const getMovementReport = async (query = {}) => {
   const range = resolveRange(query);
   const months = monthsBetween(range.from, range.to);
 
-  const rows = await loadEnrollments(range.to);
+  const branch = getBranch();
+
+  const [rows, transfers] = await Promise.all([
+    loadEnrollments(range.to),
+    loadBranchMoves(range.from, range.to, branch?.id),
+  ]);
+
+  const moves = buildMoveIndex(transfers, branch?.id);
   const firstStart = firstStartByStudent(rows);
   const laterStarts = buildLaterStarts(rows);
 
-  // Oy → kelganlar / ketganlar (bitta o'tishda)
+  // Oy → kelganlar / ketganlar / ko'chib kelganlar / ko'chib ketganlar
+  // (bitta o'tishda)
   const joinedByMonth = new Map(months.map((m) => [m, []]));
   const leftByMonth = new Map(months.map((m) => [m, []]));
+  const movedInByMonth = new Map(months.map((m) => [m, []]));
+  const movedOutByMonth = new Map(months.map((m) => [m, []]));
 
   for (const row of rows) {
     const startMonth = monthKeyOfDate(row.startDate);
-    if (joinedByMonth.has(startMonth)) joinedByMonth.get(startMonth).push(row);
+    if (joinedByMonth.has(startMonth)) {
+      const moveIn = moves.isIn(row);
+      (moveIn ? movedInByMonth : joinedByMonth).get(startMonth).push(
+        moveIn ? { row, move: moveIn } : row,
+      );
+    }
 
     if (row.endDate) {
       const endMonth = monthKeyOfDate(row.endDate);
-      if (leftByMonth.has(endMonth)) leftByMonth.get(endMonth).push(row);
+      if (leftByMonth.has(endMonth)) {
+        const moveOut = moves.isOut(row);
+        (moveOut ? movedOutByMonth : leftByMonth).get(endMonth).push(
+          moveOut ? { row, move: moveOut } : row,
+        );
+      }
     }
   }
 
@@ -661,6 +857,8 @@ const getMovementReport = async (query = {}) => {
       shortLabel: formatMonthShort(month),
       isCurrent: month === currentMonthKey(),
       ...buildMetrics({
+        movedIn: movedInByMonth.get(month),
+        movedOut: movedOutByMonth.get(month),
         openCount: openByMonth.get(month),
         closeCount: closeOf(month),
         joined,
@@ -673,29 +871,47 @@ const getMovementReport = async (query = {}) => {
 
   const joinedRows = months.flatMap((m) => joinedByMonth.get(m));
   const leftRows = months.flatMap((m) => leftByMonth.get(m));
+  const movedInRows = months.flatMap((m) => movedInByMonth.get(m));
+  const movedOutRows = months.flatMap((m) => movedOutByMonth.get(m));
 
   const totals = buildMetrics({
     openCount: openByMonth.get(range.from),
     closeCount: closeOfLast,
     joined: joinedRows,
     left: leftRows,
+    movedIn: movedInRows,
+    movedOut: movedOutRows,
     firstStart,
   });
 
+  // ⚠️ KO'CHGANLAR HAM RO'YXATDA: ular "keldi/ketdi" dan chiqarilgani
+  // bilan YO'QOLMAYDI, alohida bo'limda turadi. Aks holda jadvaldagi
+  // "ko'chish: 12" degan raqamning orqasida kim borligini bilib
+  // bo'lmasdi (`wipedByDiscount` sanoqchisi bilan AYNI mulohaza:
+  // sanoqchining butun mohiyati — jim qolmaslik).
+  const moveRows = [...movedInRows, ...movedOutRows];
+
   const studentIds = [
-    ...new Set([...joinedRows, ...leftRows].map((row) => row.studentId)),
+    ...new Set(
+      [...joinedRows, ...leftRows, ...moveRows.map((m) => m.row)].map(
+        (row) => row.studentId,
+      ),
+    ),
   ];
 
   const [studentById, classByKey, context] = await Promise.all([
     loadStudents(studentIds),
-    loadDepartureClasses(leftRows.map((row) => ({ studentId: row.studentId, endDate: row.endDate }))),
+    loadDepartureClasses(
+      [...leftRows, ...movedOutRows.map((m) => m.row)].map((row) => ({
+        studentId: row.studentId,
+        endDate: row.endDate,
+      })),
+    ),
     buildContext(),
   ]);
 
   const todayMs = currentDayDate().getTime();
   const serializeCtx = { studentById, classByKey, firstStart, laterStarts, todayMs };
-
-  const branch = getBranch();
 
   return {
     range: {
@@ -728,6 +944,10 @@ const getMovementReport = async (query = {}) => {
     leftStudents: leftRows
       .map((row) => serializeLeft(row, serializeCtx))
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
+    movedStudents: [
+      ...movedInRows.map((entry) => serializeMoved(entry, "in", serializeCtx)),
+      ...movedOutRows.map((entry) => serializeMoved(entry, "out", serializeCtx)),
+    ].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)),
     context,
   };
 };
@@ -746,8 +966,16 @@ const getMovementReport = async (query = {}) => {
 const getMovementSummary = async () => {
   const month = currentMonthKey();
   const year = Math.trunc(month / 100);
+  const branch = getBranch();
 
-  const rows = await loadEnrollments(month);
+  const [rows, transfers] = await Promise.all([
+    loadEnrollments(month),
+    // ⚠️ Ko'chish KARTADA ham chiqariladi: aks holda bosh sahifadagi
+    // "+39 / −15" hujjatdagi raqamdan farq qilardi.
+    loadBranchMoves(year * 100 + 1, month, branch?.id),
+  ]);
+
+  const moves = buildMoveIndex(transfers, branch?.id);
   const firstStart = firstStartByStudent(rows);
 
   // ⚠️ `monthKey` / `yearKey` — oddiy `key` EMAS: umumiy ko'rinishda
@@ -758,12 +986,12 @@ const getMovementSummary = async () => {
     month: {
       monthKey: month,
       label: formatMonthKey(month),
-      ...metricsFor(rows, month, month, firstStart),
+      ...metricsFor(rows, month, month, firstStart, moves),
     },
     year: {
       yearKey: year,
       label: `${year}-yil`,
-      ...metricsFor(rows, year * 100 + 1, month, firstStart),
+      ...metricsFor(rows, year * 100 + 1, month, firstStart, moves),
     },
   };
 };
@@ -778,6 +1006,7 @@ module.exports = {
   // buzilsa, hisobotdagi "farq" ustuni jimgina bir birlikka og'ib ketardi.
   openCountAt,
   collectRange,
+  buildMoveIndex,
   buildMetrics,
   combineMetrics,
   combineReasons,

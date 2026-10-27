@@ -134,6 +134,32 @@ const getNetworkMovementReport = async (query = {}, branches = []) => {
       .sort(byDateDesc);
 
   /**
+   * KO'CHISH RO'YXATI — BITTA ko'chish BITTA qator.
+   *
+   * ⚠️ Har ko'chish IKKI filial hisobotida ko'rinadi: manbada "ko'chib
+   * ketdi", maqsadda "ko'chib keldi". Tarmoq ro'yxatida ikkalasini ham
+   * ko'rsatsak, bitta bola ikki marta sanalgandek bo'lardi — holbuki
+   * harakat bitta. Kalit `o'quvchi + sana`: ikkala qatorda ham sana AYNI
+   * ko'chish kuni (manbadagi "oxirgi kun + 1").
+   *
+   * Qolgani — "kelgan" tomoni: unda o'quvchining HOZIRGI sinfi turadi
+   * (manbadagi qator ketish oyining suratini oladi).
+   */
+  const movedStudents = (() => {
+    const byKey = new Map();
+
+    for (const item of tagged("movedStudents")) {
+      const key = `${item.studentId}|${item.date}`;
+      const known = byKey.get(key);
+      if (!known || (known.direction === "out" && item.direction === "in")) {
+        byKey.set(key, item);
+      }
+    }
+
+    return [...byKey.values()].sort(byDateDesc);
+  })();
+
+  /**
    * FILIALLAR KESIMI — "qaysi filial o'sdi, qaysi biri tushdi".
    *
    * Tarmoq jamisi savolning faqat yarmiga javob beradi: "+10" ning
@@ -182,6 +208,7 @@ const getNetworkMovementReport = async (query = {}, branches = []) => {
     byBranch,
     joinedStudents: tagged("joinedStudents"),
     leftStudents: tagged("leftStudents"),
+    movedStudents,
     context,
   };
 };

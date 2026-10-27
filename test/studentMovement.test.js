@@ -18,6 +18,7 @@ const assert = require("node:assert/strict");
 const {
   openCountAt,
   collectRange,
+  buildMoveIndex,
   buildMetrics,
   combineMetrics,
   combineReasons,
@@ -315,4 +316,149 @@ test("TARMOQ SABABLARI: hech kim ketmasa ulush `null` (0% EMAS)", () => {
   assert.ok(merged.length > 0, "toifalar qatori nollari bilan qoladi");
   assert.ok(merged.every((item) => item.count === 0 && item.percent === null));
   assert.ok(!merged.some((item) => item.key === "unknown"));
+});
+
+/* ───────────── FILIALLARARO KO'CHISH — "keldi/ketdi" EMAS ───────────── */
+
+/** Platformadagi ko'chirish jurnalining qatori. */
+const transfer = (effective, sourceId, targetId, studentIds) => ({
+  effectiveDate: day(effective),
+  sourceBranchId: sourceId,
+  targetBranchId: targetId,
+  sourceBranch: { name: `Filial ${sourceId}` },
+  targetBranch: { name: `Filial ${targetId}` },
+  items: studentIds.map((id) => ({ subjectId: id })),
+});
+
+/**
+ * ⚠️ ENG MUHIM TUZOQ SHU TESTDA.
+ *
+ * Ko'chirish manbada `endReason = "transferred"` yozadi — LEKIN o'sha
+ * toifani admin qo'lda ham qo'yadi ("boshqa maktabga o'tdi"), va u
+ * HAQIQIY ketish. Toifaga tayangan kod maktabni butunlay tashlab ketgan
+ * bolani "ichki ko'chish" deb jimgina yo'qotardi, ya'ni "nechta o'quvchi
+ * ketdi" degan savolga KAM raqam qaytarardi.
+ */
+test("KO'CHISH jurnal bo'yicha aniqlanadi, `endReason` bo'yicha EMAS", () => {
+  const moves = buildMoveIndex(
+    [transfer("2026-03-01", "A", "B", ["s1"])],
+    "A",
+  );
+
+  // s1 — HAQIQATAN ko'chgan: manbada oxirgi kun 28-fevral (1-mart − 1)
+  const moved = row("s1", "2025-09-01", "2026-02-28");
+  // s2 — admin qo'lda "transferred" qo'ygan (boshqa MAKTABGA ketdi)
+  const reallyLeft = row("s2", "2025-09-01", "2026-02-28");
+
+  assert.ok(moves.isOut(moved), "jurnalda bor — ko'chish");
+  assert.equal(moves.isOut(reallyLeft), null, "jurnalda yo'q — haqiqiy ketish");
+
+  // Ikkalasining ham `endReason` i bir xil bo'lishi mumkin.
+  assert.equal(moved.endReason, reallyLeft.endReason);
+});
+
+test("KO'CHISH: manba va maqsad kunlari BIR KUN farq qiladi", () => {
+  const log = [transfer("2026-03-01", "A", "B", ["s1"])];
+
+  const source = buildMoveIndex(log, "A");
+  const target = buildMoveIndex(log, "B");
+
+  // Manbada oxirgi kun — ko'chish kunidan BIR KUN oldin
+  assert.ok(source.isOut(row("s1", "2025-09-01", "2026-02-28")));
+  assert.equal(source.isOut(row("s1", "2025-09-01", "2026-03-01")), null);
+
+  // Maqsadda davr AYNAN ko'chish kunidan boshlanadi
+  assert.ok(target.isIn(row("s1", "2026-03-01")));
+  assert.equal(target.isIn(row("s1", "2026-03-02")), null);
+
+  // ⚠️ YO'NALISH ALMASHMAYDI: manba filial uchun bu "ketish", maqsad
+  // uchun "kelish" — ikkalasi bir xil ko'rinsa, bitta bola ikki marta
+  // sanalardi.
+  assert.equal(source.isIn(row("s1", "2026-03-01")), null);
+  assert.equal(target.isOut(row("s1", "2025-09-01", "2026-02-28")), null);
+
+  assert.equal(source.isOut(row("s1", "2025-09-01", "2026-02-28")).toBranch, "Filial B");
+});
+
+test("KO'CHGANLAR `keldi`/`ketdi` ro'yxatidan CHIQARILADI", () => {
+  const rows = [
+    row("moved", "2025-09-01", "2026-02-28"), // ko'chib ketdi
+    row("left", "2025-09-01", "2026-02-28"), // haqiqatan ketdi
+    row("new", "2026-02-10"), // haqiqatan keldi
+    row("in", "2026-03-01"), // ko'chib keldi
+  ];
+
+  const moves = buildMoveIndex(
+    [
+      transfer("2026-03-01", "A", "B", ["moved"]),
+      transfer("2026-03-01", "B", "A", ["in"]),
+    ],
+    "A",
+  );
+
+  const split = collectRange(rows, 202602, 202603, moves);
+
+  assert.deepEqual(split.left.map((r) => r.studentId), ["left"]);
+  assert.deepEqual(split.movedOut.map((r) => r.studentId), ["moved"]);
+  assert.deepEqual(split.joined.map((r) => r.studentId), ["new"]);
+  assert.deepEqual(split.movedIn.map((r) => r.studentId), ["in"]);
+});
+
+/**
+ * ⚠️ TENGLIK KO'CHISH BILAN HAM BAJARILADI va bu shunchaki chiroyli
+ * emas — aynan shu sabab ko'chish "keldi/ketdi" dan chiqarilgani bilan
+ * jadvaldan YO'QOLMAYDI, o'z hadi bo'lib qoladi:
+ *
+ *   oxiri = boshi + keldi − ketdi + ko'chib kelgan − ko'chib ketgan
+ */
+test("TENGLIK: ko'chish o'z hadi bilan saqlanadi", () => {
+  const m = buildMetrics({
+    openCount: 100,
+    closeCount: 103,
+    joined: [{ studentId: "a", startDate: day("2026-03-05") }],
+    left: [{ studentId: "b" }],
+    movedIn: [{ studentId: "c" }, { studentId: "d" }, { studentId: "e" }, { studentId: "f" }],
+    movedOut: [{ studentId: "g" }],
+    firstStart: new Map(),
+  });
+
+  assert.equal(m.joined, 1);
+  assert.equal(m.left, 1);
+  assert.equal(m.movedIn, 4);
+  assert.equal(m.movedOut, 1);
+  assert.equal(m.moveNet, 3);
+
+  // ⚠️ `net` — MAKTABNING o'sishi; ko'chish unga KIRMAYDI.
+  assert.equal(m.net, 0);
+  assert.equal(m.growthPercent, 0, "ko'chish o'sish foizini ko'tarmaydi");
+
+  assert.equal(
+    m.closeCount,
+    m.openCount + m.joined - m.left + m.movedIn - m.movedOut,
+  );
+});
+
+test("TARMOQ: ko'chish qo'shiladi va odatda o'zini yo'qotadi", () => {
+  const branch = (movedIn, movedOut) =>
+    buildMetrics({
+      openCount: 50,
+      closeCount: 50 + movedIn - movedOut,
+      joined: [],
+      left: [],
+      movedIn: Array.from({ length: movedIn }, (_, i) => ({ studentId: `i${i}` })),
+      movedOut: Array.from({ length: movedOut }, (_, i) => ({ studentId: `o${i}` })),
+      firstStart: new Map(),
+    });
+
+  // Bitta bola A dan B ga o'tdi: A da −1, B da +1
+  const network = combineMetrics([branch(0, 1), branch(1, 0)]);
+
+  assert.equal(network.movedIn, 1);
+  assert.equal(network.movedOut, 1);
+  assert.equal(network.moveNet, 0, "tarmoqda ko'chish o'zini yo'qotadi");
+  assert.equal(network.net, 0);
+  assert.equal(
+    network.closeCount,
+    network.openCount + network.joined - network.left + network.moveNet,
+  );
 });

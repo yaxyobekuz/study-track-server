@@ -133,6 +133,7 @@ const headerBlocks = (report) => {
  */
 const summaryBlocks = (report, index) => {
   const t = report.totals;
+  const hasMoves = t.movedIn > 0 || t.movedOut > 0;
 
   const rows = [
     [
@@ -165,6 +166,28 @@ const summaryBlocks = (report, index) => {
       { text: signed(t.net), bold: true, color: toneOf(t.net), align: "right" },
       { text: percent(t.growthPercent), bold: true, color: toneOf(t.net), align: "right" },
     ],
+    // ⚠️ KO'CHISH YUQORIDAGI UCH QATORGA KIRMAYDI, lekin davr oxiridagi
+    // songa ta'sir qiladi — shuning uchun u "o'zgarish" bilan "davr
+    // oxirida" ORASIDA turadi: jadval yuqoridan pastga o'qilganda
+    // arifmetika ko'rinib boradi.
+    ...(hasMoves
+      ? [
+          [
+            "Boshqa filialdan ko'chib kelgan",
+            { text: signed(t.movedIn), color: COLOR.muted, align: "right" },
+            DASH,
+          ],
+          [
+            "Boshqa filialga ko'chib ketgan",
+            {
+              text: t.movedOut ? `${MINUS}${t.movedOut}` : "0",
+              color: COLOR.muted,
+              align: "right",
+            },
+            DASH,
+          ],
+        ]
+      : []),
     [
       "Davr oxirida o'qiyotganlar",
       { text: String(t.closeCount), bold: true, align: "right" },
@@ -190,8 +213,25 @@ const summaryBlocks = (report, index) => {
         `(${t.joined} − ${t.left}) ÷ ${t.openCount || 0}.`,
       size: 17,
       color: COLOR.muted,
-      after: 160,
+      after: hasMoves ? 40 : 160,
     },
+    // ⚠️ IZOH MAJBURIY: "keldi 5, ketdi 2, lekin oxirida 20 ta ko'paydi"
+    // degan jadval izohsiz hisob xatosi bo'lib o'qilardi.
+    ...(hasMoves
+      ? [
+          {
+            type: "paragraph",
+            text:
+              "Filiallararo ko'chish \"kelgan\" va \"ketgan\" soniga " +
+              "KIRMAYDI: o'quvchi maktabni tashlab ketmagan, faqat boshqa " +
+              "filialga o'tgan. Shuning uchun davr oxiridagi son = davr " +
+              "boshi + kelgan − ketgan + ko'chib kelgan − ko'chib ketgan.",
+            size: 17,
+            color: COLOR.muted,
+            after: 160,
+          },
+        ]
+      : []),
   ];
 };
 
@@ -201,6 +241,11 @@ const summaryBlocks = (report, index) => {
  * bo'lardi.
  */
 const monthlyBlocks = (report, index) => {
+
+  // ⚠️ KO'CHISH USTUNI faqat haqiqatan ko'chish bo'lgan hisobotda
+  // chiziladi: doimiy "0" ustuni jadvalni toraytirib, hech narsa
+  // aytmasdi.
+  const hasMoves = report.byMonth.some((item) => item.movedIn || item.movedOut);
 
   const rows = report.byMonth.map((item) => [
     { text: item.isCurrent ? `${item.label} (davom etmoqda)` : item.label },
@@ -213,6 +258,9 @@ const monthlyBlocks = (report, index) => {
     },
     { text: signed(item.net), bold: true, color: toneOf(item.net), align: "right" },
     { text: percent(item.growthPercent), color: toneOf(item.net), align: "right" },
+    ...(hasMoves
+      ? [{ text: signed(item.moveNet), color: COLOR.muted, align: "right" }]
+      : []),
     { text: String(item.closeCount), bold: true, align: "right" },
   ]);
 
@@ -227,6 +275,7 @@ const monthlyBlocks = (report, index) => {
         { label: "Ketdi", width: 2, align: "right" },
         { label: "Farq", width: 2, align: "right" },
         { label: "Foiz", width: 2, align: "right" },
+        ...(hasMoves ? [{ label: "Ko'chish", width: 2, align: "right" }] : []),
         { label: "Oy oxirida", width: 2, align: "right" },
       ],
       rows,
@@ -243,6 +292,12 @@ const monthlyBlocks = (report, index) => {
  * qatorini ham, tarmoq yig'indisini ham ko'rsatadi.
  */
 const branchBlocks = (report, index) => {
+  // ⚠️ FILIAL KESIMIDA KO'CHISH ENG MUHIM USTUN: tarmoq jamisida u
+  // o'zini yo'qotadi (biridan chiqib, boshqasiga kiradi), filial
+  // darajasida esa aynan u "nega bu filial o'sdi" degan savolga javob
+  // beradi.
+  const hasMoves = report.byBranch.some((item) => item.movedIn || item.movedOut);
+
   const row = (label, item, bold) => [
     { text: label, bold },
     { text: String(item.openCount), bold, align: "right" },
@@ -260,6 +315,9 @@ const branchBlocks = (report, index) => {
     },
     { text: signed(item.net), bold: true, color: toneOf(item.net), align: "right" },
     { text: percent(item.growthPercent), bold, color: toneOf(item.net), align: "right" },
+    ...(hasMoves
+      ? [{ text: signed(item.moveNet), bold, color: COLOR.muted, align: "right" }]
+      : []),
     { text: String(item.closeCount), bold: true, align: "right" },
   ];
 
@@ -277,6 +335,7 @@ const branchBlocks = (report, index) => {
         { label: "Ketdi", width: 2, align: "right" },
         { label: "Farq", width: 2, align: "right" },
         { label: "Foiz", width: 2, align: "right" },
+        ...(hasMoves ? [{ label: "Ko'chish", width: 2, align: "right" }] : []),
         { label: "Davr oxirida", width: 2, align: "right" },
       ],
       rows,
@@ -444,6 +503,57 @@ const leftBlocks = (report, index) => {
 };
 
 /**
+ * FILIALLARARO KO'CHGANLAR — "ko'chish: 12" raqamining orqasida kim bor.
+ *
+ * ⚠️ Bu bo'lim ULAR "keldi/ketdi" dan CHIQARILGANI UCHUN kerak: sanoqchi
+ * jim qolmasligi kerak (`wipedByDiscount` bilan AYNI mulohaza). Ko'chish
+ * bo'lmasa bo'lim umuman chizilmaydi.
+ */
+const movedBlocks = (report, index) => {
+  const items = report.movedStudents ?? [];
+  if (items.length === 0) return [];
+
+  const rows = items.map((item, i) => [
+    { text: String(i + 1), align: "center" },
+    { text: item.name, bold: true },
+    { text: text(item.className) },
+    { text: text(item.fromBranch), align: "center" },
+    { text: text(item.toBranch), align: "center", color: COLOR.up },
+    { text: day(item.date), align: "center" },
+  ]);
+
+  return [
+    {
+      type: "heading",
+      level: 2,
+      text: `${index}. Filiallararo ko'chganlar (${items.length} ta)`,
+    },
+    {
+      type: "table",
+      columns: [
+        { label: "№", width: 1, align: "center" },
+        { label: "F.I.Sh.", width: 6 },
+        { label: "Sinf", width: 3 },
+        { label: "Qaysi filialdan", width: 4, align: "center" },
+        { label: "Qaysi filialga", width: 4, align: "center" },
+        { label: "Sana", width: 3, align: "center" },
+      ],
+      rows,
+    },
+    {
+      type: "paragraph",
+      text:
+        "Bu o'quvchilar maktabni tashlab ketmagan — ular tarmoq ichida " +
+        "boshqa filialga o'tgan, shuning uchun \"kelgan\" va \"ketgan\" " +
+        "ro'yxatlariga kirmaydi.",
+      size: 17,
+      color: COLOR.muted,
+      after: 160,
+    },
+  ];
+};
+
+/**
  * IZOH — ikki xil "o'quvchilar soni" farqi.
  *
  * Farq bo'lmasa yozilmaydi: "0 ta nomuvofiqlik" degan qator hujjatni
@@ -529,9 +639,12 @@ const buildMovementDocx = (report) => {
     ...reasonBlocks(report, next()),
     ...joinedBlocks(report, next()),
     ...leftBlocks(report, next()),
-    { type: "spacer" },
-    ...contextBlocks(report),
   );
+
+  // Faqat haqiqatan ko'chish bo'lgan hisobotda.
+  if (report.movedStudents?.length) blocks.push(...movedBlocks(report, next()));
+
+  blocks.push({ type: "spacer" }, ...contextBlocks(report));
 
   return buildDocx({
     title: `O'quvchilar harakati — ${report.range.label}`,
