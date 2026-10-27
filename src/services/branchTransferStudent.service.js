@@ -829,6 +829,11 @@ const writeStudents = async (db, ctx, items, historyCatalog = null) => {
       archive_snapshot: "NULL",
       archive_note: "NULL",
       updated_at: "NOW()",
+      // ⚠️ ASL SINF (daraja) nusxada O'ZGARMAYDI va shu ataylab: u 1 … 11
+      // oralig'idagi son, sinflar katalogiga ham, filialga ham bog'liq
+      // emas — bola qaysi filialga ko'chsa ham o'sha sinf o'quvchisi
+      // bo'lib qoladi. (Ilgari bu ustun sinfga FK edi va manbadagi id
+      // maqsadda mavjud emasligi uchun tozalanishi kerak bo'lardi.)
     },
     onConflict: "update",
   });

@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const {
   getAllUsers,
+  getActualGradeCounts,
   getAllUsersShort,
   getUser,
   createUser,
@@ -80,6 +81,18 @@ router.use(protect);
 router.use(authorizeSection(SECTIONS.USERS));
 
 router.get("/stats", authorizePermission(PERMISSIONS.USERS_VIEW), getStats);
+
+// ASL SINFLAR KESIMI — har darajada nechta o'quvchi (1-sinf … 11-sinf).
+//
+// ⚠️ `/:id` DAN OLDIN: pastdagi `GET /:id` bo'lsa "actual-grades" so'zi id
+// deb o'qilib, 404 qaytardi (`payroll.routes.js` dagi `/my` bilan AYNI tuzoq).
+// Alohida ruxsat kaliti YO'Q — bu o'quvchilar ro'yxatining kesimi,
+// `users.view` yetadi.
+router.get(
+  "/actual-grades",
+  authorizePermission(PERMISSIONS.USERS_VIEW),
+  getActualGradeCounts,
+);
 router.get("/reports", authorizePermission(PERMISSIONS.USERS_REPORTS), getStaffReport);
 router.get("/export", authorizePermission(PERMISSIONS.USERS_EXPORT), exportUsersToExcel);
 

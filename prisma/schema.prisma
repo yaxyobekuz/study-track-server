@@ -506,6 +506,23 @@ model User {
   // Identifikatsiya maydoni — barcha filiallarga tarqaladi (IDENTITY_FIELDS).
   phone            String?        @map("phone")
   parentPhone      String?        @map("parent_phone")
+  // ASL SINF — o'quvchining MAKTAB DARAJASI (1-sinf … 11-sinf).
+  //
+  // ⚠️ SINFLAR KATALOGI (`Class`) EMAS va unga FK ham yo'q. Katalogdagi
+  // "IT 1", "Union 2", "Bog'cha — katta guruh" — o'quvchi O'QIYDIGAN
+  // guruhlar; asl sinf esa "bu bola nechanchi sinf o'quvchisi" degan
+  // savolga javob beradi. Ikkalasi FARQ QILISHI mumkin: bilimi yaxshi
+  // 5-sinf o'quvchisi 6-sinflar guruhida o'qiydi — modulning butun
+  // mohiyati aynan shu farqni saqlash.
+  //
+  // Oddiy son, chunki daraja na katalogga, na filialga bog'liq: saralash,
+  // guruhlash va "nechanchi sinfda nechta o'quvchi bor" hisobi son bo'yicha
+  // tabiiy chiqadi. Chegara va matn ko'rinishi (`5-sinf`) BITTA joyda —
+  // `helpers/grade.helpers.js`.
+  //
+  // ⚠️ A'ZOLIKKA ERGASHMAYDI: guruh ko'chirilsa tegilmaydi, aks holda
+  // "boshqa guruhga o'tqazildi" fakti darhol yo'qolardi.
+  actualGrade      Int?           @map("actual_grade")
   // Kim qo'shgan. ⚠️ Bu AUDIT maydoni emas, RUXSAT maydoni: o'qituvchi
   // faqat o'zi qo'shgan o'quvchini tahrirlay va o'chira oladi
   // (`assertCanManage`, user.service.js). Eski qatorlarda `null` —
@@ -535,6 +552,8 @@ model User {
   @@index([isArchived])
   @@index([premiumIsActive])
   @@index([createdBy])
+  // "Asl sinfi X bo'lganlar" filtri va daraja kesimidagi sanoq
+  @@index([actualGrade])
   @@map("users")
 }
 
@@ -690,6 +709,7 @@ model Class {
   weeklyStats     WeeklyStatsClass[]
   diagnosticTests DiagnosticTestClass[]
   tutorGroups     TutorGroup[]
+  leaders         ClassLeader[]
 
   @@map("classes")
 }
@@ -744,6 +764,42 @@ model TutorGroup {
   @@map("tutor_groups")
 }
 
+/// SINF RAHBARI — xodimga sinf biriktirish. Bitta vazifasi bor: shu sinfning
+/// KUNLIK davomatini belgilash huquqi (`classLeader.service.js`).
+///
+/// ⚠️ TUTORGROUP NING PULSIZ KO'ZGUSI, lekin NUSXASI EMAS. `TutorGroup` da
+/// stavkalar va DAVR bor, chunki u oylik dvigatelida ustama bo'lib
+/// majburiyatga muhrlanadi — o'tgan oylar eski summada qolishi kerak. Bu
+/// yerda pul yo'q, ya'ni muhrlanadigan fakt ham yo'q: davr ustunlari
+/// qo'shilsa, ular hech narsani himoya qilmasdi va "qaysi oydan" degan
+/// savol har ekranga bekordan-bekor chiqib turardi.
+///
+/// ⚠️ BIR SINFGA BITTA RAHBAR — `@@unique([classId])`. Tyutorda bu advisory
+/// lock ichida tekshiriladi (davr kesishuvi indeks bilan ifodalanmaydi), bu
+/// yerda esa indeksning O'ZI kafolat beradi: ikki parallel so'rov bitta
+/// sinfni ikki kishiga yoza OLMAYDI.
+model ClassLeader {
+  id String @id @db.Char(24)
+
+  // soft ref → User (sinf rahbari). FK yo'q: xodim arxivlansa ham qator
+  // qoladi va ro'yxatda "arxivlangan" bo'lib ko'rinadi (`TutorGroup` bilan AYNI).
+  leaderId String @map("leader_id") @db.Char(24)
+  classId  String @map("class_id") @db.Char(24)
+
+  note String @default("")
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Restrict: sinf o'chirilishidan oldin service tushunarli xato beradi
+  class Class @relation(fields: [classId], references: [id], onDelete: Restrict)
+
+  @@unique([classId])
+  @@index([leaderId])
+  @@map("class_leaders")
+}
+
 model Subject {
   id          String   @id @db.Char(24)
   name        String   @unique
@@ -768,7 +824,12 @@ model Topic {
   subjectId   String   @map("subject_id") @db.Char(24)
   order       Int
   name        String
+  // Fayldagi "Nimalar o'rgatiladi" (eski shablonda "Tavsif") — ixtiyoriy
   description String?
+  // Fayldagi "Daraja" va "Kitob" — IXTIYORIY: hamma fanning rejasida ham
+  // bo'lmaydi va bo'lmagani xato emas (`helpers/topicImport.helpers.js`)
+  level       String?
+  book        String?
   createdBy   String   @map("created_by") @db.Char(24)
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -1739,6 +1800,88 @@ model StudentAttendance {
   @@map("student_attendances")
 }
 
+// ─────────────────────────────────────────────
+// YOTOQXONA DAVOMATI (kechqurun yotoqxonada kim qoldi)
+// ─────────────────────────────────────────────
+//
+// ⚠️ `StudentAttendance` BILAN ARALASHMAYDI va unga QO'SHILMAYDI. U — DARS
+// kunining davomati: ertalab belgilanadi, baho jarimasining maxrajiga
+// kiradi (`education.md` §7), davomat foizi va kechki "kelmadi" job o'shanga
+// tayanadi. Bu esa butunlay boshqa savol: "bugun kechqurun yotoqxonada kim
+// qoldi". Bitta jadvalga (yoki bitta `@@unique([studentId, date])` qatoriga)
+// qo'shilsa, tarbiyachi belgilagan "kelmadi" bolaning DARS davomatini ham
+// o'zgartirib, jarima maxrajini va oylik hisobini jimgina qayta yozardi.
+//
+// ⚠️ YOTOQXONA HAR KUNI ISHLAYDI — yakshanba, bayram va ta'til oyida ham
+// (bola o'sha yerda yashaydi). Shuning uchun dars kunlari filtri
+// (`scheduleDayOf`, `buildHolidaySet`, `getVacationSet`) BU YERDA
+// QO'LLANMAYDI: ular dars bor-yo'qligini hal qiladi, yotoqxona esa dars
+// jadvaliga bog'liq emas.
+model DormAttendance {
+  id String @id @db.Char(24)
+
+  // soft ref → User. FK YO'Q — `StudentAttendance.studentId` bilan AYNI
+  // qaror: o'quvchi o'chirilsa ham kechagi fakt registrda qolishi kerak.
+  studentId String @map("student_id") @db.Char(24)
+
+  // Belgilash paytidagi sinf — "qaysi sinfdan nechta qoldi" kesimi shundan.
+  // ⚠️ NULL bo'lishi MUMKIN (sinfga biriktirilmagan o'quvchi): yotoqxonada
+  // yashash sinf a'zoligiga bog'liq emas, shuning uchun sinfsiz o'quvchi
+  // belgilanishi kerak. Hisobotda u "Sinfsiz" guruhida chiqadi.
+  classId String? @map("class_id") @db.Char(24)
+
+  // Toshkent kunining UTC yarim tuni (`education.md` §6, `getUTC*` bilan
+  // o'qiladi) — `StudentAttendance.date` bilan AYNI kelishuv.
+  date DateTime
+
+  status DormAttendanceStatus
+
+  // Ixtiyoriy izoh ("ota-onasi olib ketdi") — HAR QANDAY holatda yoziladi.
+  // Kelmaslik sabablari KATALOGI (`AbsenceReason`) bu yerda ATAYLAB yo'q:
+  // u dars davomatining oqimi va tarbiyachini majburiy tanlovga qadab
+  // qo'yardi (`AttendanceMarkTable` izohiga qarang).
+  note String?
+
+  markedAt       DateTime @map("marked_at")
+  createdBy      String?  @map("created_by") @db.Char(24)
+  lastModifiedBy String?  @map("last_modified_by") @db.Char(24)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Kunlik: bir o'quvchida bir kunda BITTA yozuv (dars davomati bilan AYNI
+  // shakl) — ikkinchi o'q qo'shilsa sanoqlar ikki manbadan o'qilardi.
+  @@unique([studentId, date])
+  @@index([date, status])
+  @@index([classId, date])
+  @@index([studentId, date(sort: Desc)])
+  @@map("dorm_attendances")
+}
+
+// `AttendanceStatus` dan ALOHIDA enum: u yerda `late` bor va yotoqxonada
+// uning ma'nosi yo'q (bola kechqurun keldi — keldi). Umumiy enum ishlatilsa
+// panelda ham, hisobotda ham hech qachon ishlatilmaydigan holat turardi.
+enum DormAttendanceStatus {
+  present // Keldi — yotoqxonada qoldi
+  absent // Kelmadi
+  excused // Sababli — ota-onasi olib ketgan / ruxsat bilan ketgan
+}
+
+model DormAttendanceSettings {
+  id String @id @default("singleton") @db.VarChar(24)
+
+  // Davomat shu vaqtdan boshlab belgilanadi (Toshkent devor-soati, "HH:mm").
+  // ⚠️ SOZLAMADA, kodda EMAS: 16:00 — maktabning hozirgi tartibi, qoida
+  // emas. Vaqtni kodga qotirsak, tartib o'zgarganda relizni kutish kerak
+  // bo'lardi.
+  startTime String @default("16:00") @map("start_time")
+
+  updatedBy String?  @map("updated_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("dorm_attendance_settings")
+}
+
 model ExcuseRequest {
   id              String            @id @db.Char(24)
   userId          String            @map("user_id") @db.Char(24)
@@ -1861,15 +2004,18 @@ model Grade {
   @@map("grades")
 }
 
+// ⚠️ FOIZ CHEGARASI YO'Q va uni QAYTA KIRITMANG (`missingThresholdPercent`,
+// migratsiya `20261022120000_drop_grade_penalty_threshold`). Jarima faqat
+// bitta ham baho qo'yilmagan darsga yoziladi — oylikdagi "dars o'tildimi" va
+// "Men ketdim" darvozasi bilan AYNI qoida (`gradePenalty.service.js`).
 model GradePenaltySettings {
-  id                      String   @id @default("singleton") @db.VarChar(24)
-  isEnabled               Boolean  @default(true) @map("is_enabled")
-  penaltyPoints           Int      @default(1) @map("penalty_points")
-  missingThresholdPercent Int      @default(40) @map("missing_threshold_percent")
-  exemptTeachers          String[] @map("exempt_teachers")
-  updatedBy               String?  @map("updated_by") @db.Char(24)
-  createdAt               DateTime @default(now()) @map("created_at")
-  updatedAt               DateTime @updatedAt @map("updated_at")
+  id             String   @id @default("singleton") @db.VarChar(24)
+  isEnabled      Boolean  @default(true) @map("is_enabled")
+  penaltyPoints  Int      @default(1) @map("penalty_points")
+  exemptTeachers String[] @map("exempt_teachers")
+  updatedBy      String?  @map("updated_by") @db.Char(24)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   @@map("grade_penalty_settings")
 }

@@ -27,6 +27,10 @@ const {
 // jadval esa Toshkent devor-soati bilan olinadi — `new Date()` berilsa
 // 00:00–05:00 orasida ikkalasi boshqa-boshqa hafta kunini ko'rsatardi.
 const { currentDayDate, parseRangeBound } = require("../helpers/month.helpers");
+// ⚠️ MAXRAJ — kechki jarima passi bilan AYNI manbadan
+// (`gradeExpectation.service.js`): ikki joyda ikki xil hisoblansa,
+// ekranda "hammasi baholangan" turib, jarima baribir yozilardi.
+const { loadExpectedStudents } = require("./gradeExpectation.service");
 const {
   getDayNameUz,
   getDateRangeForDay,
@@ -152,6 +156,10 @@ async function getMissingGradesToday() {
   const teacherMap = new Map(teachers.map((t) => [t.id, t]));
 
   // 6. O'qituvchilar bo'yicha guruhlash uchun map
+  // Baho kutilgan o'quvchilar — hamma sinf uchun BITTA so'rov (ilgari har
+  // sinfga alohida so'rov ketardi)
+  const expectedByClass = await loadExpectedStudents(scheduleClassIds, currentDayDate());
+
   const teacherDataMap = {};
 
   for (const schedule of todaySchedules) {
@@ -160,15 +168,9 @@ async function getMissingGradesToday() {
     // Faol bo'lmagan sinflarni o'tkazib yuborish
     if (!scheduleClass || !scheduleClass.isActive) continue;
 
-    // Sinfdagi barcha faol o'quvchilarni olish
-    const studentsInClass = await prisma.user.findMany({
-      where: {
-        role: "student",
-        classes: { some: { classId: schedule.classId } },
-        isActive: true,
-      },
-      select: { id: true, firstName: true, lastName: true },
-    });
+    // Shu darsda baho KUTILGAN o'quvchilar (ketganlar, arxivlanganlar va
+    // o'sha kuni kelmaganlar chiqarilgan)
+    const studentsInClass = expectedByClass.get(schedule.classId) ?? [];
 
     if (studentsInClass.length === 0) continue;
 
@@ -206,6 +208,18 @@ async function getMissingGradesToday() {
       // Baho olmagan o'quvchilar
       const missingStudents = studentsInClass.filter(
         (s) => !gradedStudentIds.has(s.id),
+      );
+
+      // ⚠️ JARIMA BELGISI — kechki pass bilan AYNI qoida
+      // (`gradePenalty.service.js`): jarima faqat dars egasi BITTA HAM baho
+      // qo'ymagan darsga. Ruxsat bilan qo'yilgan va ko'chgan baho hisob emas.
+      // Belgisiz ro'yxat "14/15 baholanmagan" darsni jarimali deb ko'rsatardi.
+      const ungraded = !todayGrades.some(
+        (g) =>
+          g.subjectId === lesson.subjectId &&
+          g.lessonOrder === lesson.order &&
+          !g.gradingGrantId &&
+          !g.transferredFromBranchId,
       );
 
       // Agar baho olmagan o'quvchilar bo'lsa
@@ -256,6 +270,7 @@ async function getMissingGradesToday() {
           startTime: lesson.startTime,
           endTime: lesson.endTime,
           totalStudents: studentsInClass.length,
+          ungraded,
           missingStudents: missingStudents.map((s) => ({
             id: s.id,
             firstName: s.firstName,

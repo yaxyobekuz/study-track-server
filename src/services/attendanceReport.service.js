@@ -1137,8 +1137,85 @@ async function getStaffReport(month, year) {
   };
 }
 
+// ── SO'NGGI KUNLAR TRENDI (bosh sahifadagi grafik) ───────────────────
+
+/** Grafik davri (kun): sukut va yuqori chegara. */
+const TREND_DEFAULT_DAYS = 30;
+const TREND_MAX_DAYS = 92;
+
+/**
+ * SO'NGGI N KUNDAGI O'QUVCHILAR DAVOMATI — kun bo'yicha.
+ *
+ * Oylik hisobot bilan AYNI dvigatel (`buildExpectedResolver` +
+ * `aggregateByDay`): foiz KUTILGAN o'quvchi-kunlarga nisbatan va
+ * belgilanmagan o'quvchi kelmagan hisoblanadi. Ikkinchi hisob yozilsa,
+ * bosh sahifadagi grafik "Hisobotlar" bo'limidagi raqamdan farq qilardi.
+ *
+ * ⚠️ O'QUV KUNI = maktab bo'ylab kamida bitta yozuvi bor kun. Yakshanba,
+ * bayram va ta'til kuni ro'yxatga KIRMAYDI: ular 0% bo'lib chizilsa,
+ * grafik har hafta yerga tushib, trend o'qilmas bo'lib qolardi.
+ *
+ * ⚠️ FOIZ QAYTARILMAYDI, faqat SANOQ. Umumiy ko'rinishda (barcha filiallar)
+ * foiz filiallar bo'yicha OG'IRLIKSIZ o'rtachalanadi
+ * (`aggregateMerge.helpers.js`), sanoqlar esa qo'shiladi — ya'ni
+ * `kelgan ÷ kutilgan` panelda hisoblansa, 40 o'quvchili filial 600
+ * o'quvchili filial bilan teng tortmaydi va natija ANIQ bo'ladi.
+ *
+ * @param {{days?: number|string}} [options] - `days` 1..92, sukut 30
+ * @returns {Promise<{byDay: Array<{date: string, expected: number,
+ *   came: number, absent: number, excused: number, unmarked: number}>,
+ *   summary: {expected: number, came: number}}>}
+ */
+async function getStudentTrend(options = {}) {
+  const requested = parseInt(options.days, 10);
+  const days =
+    Number.isInteger(requested) && requested > 0
+      ? Math.min(requested, TREND_MAX_DAYS)
+      : TREND_DEFAULT_DAYS;
+
+  // Oyna BUGUN bilan tugaydi (bugun ham kiradi): davomat kun davomida
+  // belgilanadi va bosh sahifa "hozir qanday" degan savolga javob beradi.
+  const end = getTodayNormalized();
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+
+  const [resolver, scope] = await Promise.all([
+    buildExpectedResolver(),
+    loadArchivedStudentScope(),
+  ]);
+
+  const records = await prisma.studentAttendance.findMany({
+    where: { date: { gte: start, lte: end }, ...scope },
+    select: { studentId: true, status: true, date: true },
+    orderBy: { date: "asc" },
+  });
+
+  const byDay = [...aggregateByDay(records, resolver).values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d) => ({
+      date: d.date,
+      expected: d.expected,
+      came: d.came,
+      absent: d.absent,
+      excused: d.excused,
+      unmarked: d.unmarked,
+    }));
+
+  const summary = byDay.reduce(
+    (acc, d) => {
+      acc.expected += d.expected;
+      acc.came += d.came;
+      return acc;
+    },
+    { expected: 0, came: 0 },
+  );
+
+  return { byDay, summary };
+}
+
 module.exports = {
   getStudentReport,
   getClassReport,
   getStaffReport,
+  getStudentTrend,
 };

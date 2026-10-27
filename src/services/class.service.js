@@ -1,5 +1,7 @@
 const prisma = require("../config/prisma");
 const { formatDateUz } = require("../helpers/date.helpers");
+// Asl sinf (daraja) matni — YAGONA manba
+const { formatGrade } = require("../helpers/grade.helpers");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { isValidId } = require("../utils/objectId");
 const classChanges = require("./studentClassChange.service");
@@ -34,6 +36,11 @@ async function getAllClasses() {
   });
   const countMap = new Map(counts.map((c) => [c.classId, c._count.userId]));
 
+  // ⚠️ ASL SINF (daraja) BU YERDA SANALMAYDI va u sinfga BOG'LANMAYDI:
+  // daraja 1 … 11 oralig'idagi son, sinflar katalogi esa "IT 1",
+  // "Bog'cha — katta guruh" kabi guruhlar. "Nechanchi sinfda nechta
+  // o'quvchi bor" degan savolning javobi ALOHIDA kesimda
+  // (`user.service.js` → `getActualGradeCounts`).
   const withCreators = await attachCreators(classes);
   return withCreators.map((item) => ({
     ...item,
@@ -360,6 +367,12 @@ async function moveStudentsToClass(
 
 /**
  * Sinf o'quvchilarini Excel eksport uchun olish.
+ *
+ * Ro'yxat — shu sinfda O'QIYOTGANLAR (`UserClass`), ekrandagi jadval bilan
+ * AYNI. Har qatorda o'quvchining ASL SINFI (darajasi) ham bor: u guruhdan
+ * farq qilishi mumkin va aynan shu farq ko'rinib turishi kerak.
+ *
+ * @param {string} classId
  */
 async function getClassStudentsForExport(classId) {
   const classData = await prisma.class.findUnique({ where: { id: classId } });
@@ -383,6 +396,9 @@ async function getClassStudentsForExport(classId) {
       student.classes && student.classes.length > 0
         ? student.classes.map((c) => c.class.name).join(", ")
         : "-",
+    // Sinf sahifasidagi ustun bilan AYNI ma'lumot (daraja matni bitta
+    // joydan — `grade.helpers.js`)
+    actualGrade: formatGrade(student.actualGrade) ?? "-",
   }));
 
   return { classData, data };
@@ -392,12 +408,14 @@ async function getClassStudentsForExport(classId) {
  * Barcha sinflarni Excel eksport uchun olish.
  */
 async function getAllClassesForExport() {
-  const classes = await prisma.class.findMany({ orderBy: { name: "asc" } });
-  const withCreators = await attachCreators(classes);
+  // Sanoqlar ro'yxat sahifasi bilan AYNI manbadan (`getAllClasses`):
+  // ikkinchi hisob yozilsa, ekranda bir raqam, faylda boshqasi turardi.
+  const classes = await getAllClasses();
 
-  return withCreators.map((classItem) => ({
+  return classes.map((classItem) => ({
     name: classItem.name,
     status: classItem.isActive ? "Faol" : "Faol emas",
+    studentCount: classItem.studentCount ?? 0,
     createdBy: classItem.createdBy
       ? `${classItem.createdBy.firstName} ${classItem.createdBy.lastName}`
       : "-",

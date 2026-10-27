@@ -1,7 +1,12 @@
 const asyncHandler = require("../middleware/async.middleware");
 const { hasRole } = require("../utils/permissions");
 const { ROLES, DAYS_UZ } = require("../utils/constants");
-const { BadRequestError, NotFoundError, ForbiddenError } = require("../utils/errors");
+const {
+  BadRequestError,
+  NotFoundError,
+  ForbiddenError,
+  ConflictError,
+} = require("../utils/errors");
 const logger = require("../utils/logger");
 
 // Prisma
@@ -21,6 +26,9 @@ const {
 } = require("../helpers/teacherAccess");
 const { findActiveUnlock } = require("../services/gradingUnlock.service");
 const { assertAtSchool } = require("../services/gradingPresence.service");
+// "Shu darsda baho kutilgan o'quvchilar" — kechki jarima maxraji bilan AYNI
+// manba: hammaga baho qo'yish ham, panel hisobi ham shundan o'qiydi
+const { loadExpectedStudents } = require("../services/gradeExpectation.service");
 // Baholar tahlili uchun dars mavzusi — xato tashlamaydi (servis izohiga qarang)
 const { resolveGradeTopics } = require("../services/gradeTopic.service");
 const lessonTopicService = require("../services/lessonTopic.service");
@@ -236,28 +244,36 @@ const getGradesByClassAndDate = asyncHandler(async (req, res) => {
   });
 });
 
-// Create grade (Teacher only)
-const createGrade = asyncHandler(async (req, res) => {
-  const { studentId, subjectId, classId, grade, comment, lessonOrder, date: dateInput } =
-    req.body;
-
-  // Validation
-  if (!studentId || !subjectId || !classId || !grade) {
-    throw new BadRequestError("Barcha majburiy maydonlarni to'ldiring");
-  }
-
+/**
+ * DARSGA BAHO QO'YISH DARVOZASI — bitta o'quvchiga ham, hammaga ham AYNI.
+ *
+ * ⚠️ YAGONA NUSXA. "Hammaga baho qo'yish" (`bulkCreateGrades`) ham shundan
+ * o'tadi: kun (bugun yoki ochilgan oyna), maktabda bo'lish, bayram, jadval,
+ * darsga huquq (o'z darsi / o'rinbosarlik / ruxsat) va vaqt oynasi. Ommaviy
+ * yo'lga alohida tekshiruv yozilsa, biriga qo'shilgan shart ikkinchisida
+ * tushib qolib, tugma orqali qoidani chetlab o'tish yo'li ochilardi.
+ *
+ * @param {object} user - req.user
+ * @param {{classId: string, subjectId: string, lessonOrder?: number|string,
+ *   date?: string}} input
+ * @returns {Promise<{day: object, dayText: string, classId: string,
+ *   subjectId: string, selected: object, teacherLessons: object[],
+ *   grantIdByOrder: Map<number, string|null>, range: {from: Date, to: Date},
+ *   at: Date}>}
+ */
+const resolveGradingLesson = async (user, { classId, subjectId, lessonOrder, date: dateInput }) => {
   // Only teacher can add grades (ko'p rollilik — `hasRole`)
-  if (!hasRole(req.user, ROLES.TEACHER)) {
+  if (!hasRole(user, ROLES.TEACHER)) {
     throw new ForbiddenError("Faqat o'qituvchilar baho qo'ya oladi");
   }
 
   // Bugun yoki ruxsat ochilgan o'tgan kun
-  const day = await resolveGradingDay(req.user, dateInput);
+  const day = await resolveGradingDay(user, dateInput);
   const dayText = day.isPast ? day.label : "Bugun";
 
   // Bugungi darsga — faqat MAKTABDA ("Siz maktabda emassiz"). Ochib
   // berilgan o'tgan kunga bu shart qo'yilmaydi (`gradingPresence.service.js`).
-  if (!day.isPast) await assertAtSchool(req.user);
+  if (!day.isPast) await assertAtSchool(user);
 
   // Holiday check — tanlangan kun bo'yicha (kun o'rtasi: server taymzonasidan qat'i nazar)
   const holidayCheck = await isHoliday(day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date());
@@ -265,23 +281,6 @@ const createGrade = asyncHandler(async (req, res) => {
     throw new ForbiddenError(
       `${dayText} dam olish kuni: ${holidayCheck.holiday.name}. Baho qo'yish mumkin emas.`,
     );
-  }
-
-  // Check grade (must be between 1-5)
-  if (grade < 1 || grade > 5) {
-    throw new BadRequestError("Baho 1 dan 5 gacha bo'lishi kerak");
-  }
-
-  // Validate student, subject and class exist
-  const student = await prisma.user.findFirst({
-    where: {
-      id: studentId,
-      role: "student",
-      classes: { some: { classId } },
-    },
-  });
-  if (!student) {
-    throw new NotFoundError("O'quvchi ushbu sinfda topilmadi");
   }
 
   const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
@@ -321,7 +320,7 @@ const createGrade = asyncHandler(async (req, res) => {
   // uchun huquqni oladi (u ko'rish rejimida qoladi). Ilgari bu yerda oddiy
   // `teacherId === req.user.id` filtri turardi — u o'rinbosarni bilmasdi.
   const access = await resolveLessonAccess({
-    actor: req.user,
+    actor: user,
     classId,
     subjectId,
     date: day.date,
@@ -401,85 +400,202 @@ const createGrade = asyncHandler(async (req, res) => {
     }
   }
 
-  // Kun oralig'i: bugun — avvalgidek; o'tgan kun — Toshkent kunining instantlari
-  let todayDate;
-  let tomorrow;
-  if (day.isPast) {
-    todayDate = new Date(day.date.getTime() - 5 * HOUR_MS);
-    tomorrow = new Date(todayDate.getTime() + 24 * HOUR_MS);
-  } else {
-    todayDate = new Date();
-    todayDate.setHours(0, 0, 0, 0);
-    tomorrow = new Date(todayDate);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-  }
+  // Kun oralig'i — TOSHKENT kunining instantlari (bugun ham, o'tgan kun ham).
+  // ⚠️ Ilgari bugungi kun server-lokal `setHours(0,0,0,0)` bilan olinardi:
+  // UTC hostda Toshkentning 00:00–05:00 dagi bahosi "kechagi" bo'lib, o'sha
+  // o'quvchiga ikkinchi baho yozib qo'yish mumkin edi.
+  const from = new Date(day.date.getTime() - 5 * HOUR_MS);
+  const to = new Date(from.getTime() + 24 * HOUR_MS);
 
-  // Find existing grades for this student/subject/class in teacher's all today lesson orders
-  const teacherLessonOrders = teacherLessons.map((l) => l.order);
-  const existingGrades = await prisma.grade.findMany({
-    where: {
-      studentId,
-      subjectId,
-      classId,
-      lessonOrder: { in: teacherLessonOrders },
-      date: { gte: todayDate, lt: tomorrow },
-    },
-    select: { id: true, lessonOrder: true },
-  });
-
-  const existingLessonOrders = new Set(
-    existingGrades.map((g) => g.lessonOrder),
-  );
-  const missingLessonOrders = teacherLessonOrders.filter(
-    (order) => !existingLessonOrders.has(order),
-  );
-
-  if (missingLessonOrders.length === 0) {
-    throw new BadRequestError(
-      "Bugun ushbu o'quvchiga bu fan bo'yicha barcha darslar uchun baho allaqachon qo'yilgan",
-    );
-  }
-
-  // Create grade records for all missing lesson orders of that day.
   // ⚠️ O'tgan kun bahosi o'sha KUNNING o'rtasiga (12:00 Toshkent) yoziladi:
   // `Grade.date` instant, soat hisobi esa uni Toshkent kuniga keltiradi —
   // "qo'yilgan payt" yozilsa, baho bugungi kunga tushib, o'tilmagan dars
   // o'tilgan bo'lmay qolardi.
-  const now = day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date();
+  const at = day.isPast ? new Date(day.date.getTime() + 7 * HOUR_MS) : new Date();
 
-  // DARS MAVZUSI (baholar tahlilining mavzu kesimi) — `lessonTopic.service.js`
-  // dagi AYNI hisob, jadvalda ko'rinadigan mavzu bilan bitta manba.
-  //
-  // ⚠️ O'TGAN KUNGA HAM YOZILADI. Ilgari yozilmasdi va buning sababi bor edi:
-  // eski hisoblagich faqat "hozirgi" mavzuni bilardi. Ankor + sanoq esa
-  // istalgan kunning mavzusini beradi, shuning uchun ochilgan kunga
-  // (`GradingUnlock`) qo'yilgan baho ham o'z mavzusini oladi.
-  //
-  // ⚠️ `resolveGradeTopics` xato TASHLAMAYDI — aniqlab bo'lmasa baho
-  // mavzusiz yoziladi, baho qo'yish hech qachon shu sababli yiqilmaydi.
-  const topicByOrder = await resolveGradeTopics({
+  return {
+    day,
+    dayText,
     classId,
     subjectId,
-    lessonOrders: missingLessonOrders,
-    actorId: req.user.id,
-    at: now,
+    selected: lessonExists,
+    teacherLessons,
+    grantIdByOrder,
+    range: { from, to },
+    at,
+  };
+};
+
+/**
+ * DARS MAVZUSI (baholar tahlilining mavzu kesimi) — `lessonTopic.service.js`
+ * dagi AYNI hisob, jadvalda ko'rinadigan mavzu bilan bitta manba.
+ *
+ * ⚠️ O'TGAN KUNGA HAM YOZILADI. Ilgari yozilmasdi va buning sababi bor edi:
+ * eski hisoblagich faqat "hozirgi" mavzuni bilardi. Ankor + sanoq esa
+ * istalgan kunning mavzusini beradi, shuning uchun ochilgan kunga
+ * (`GradingUnlock`) qo'yilgan baho ham o'z mavzusini oladi.
+ *
+ * ⚠️ `resolveGradeTopics` xato TASHLAMAYDI — aniqlab bo'lmasa baho
+ * mavzusiz yoziladi, baho qo'yish hech qachon shu sababli yiqilmaydi.
+ *
+ * @param {object} lesson - `resolveGradingLesson` natijasi
+ * @param {string} actorId
+ * @returns {Promise<Map<number, string|null>>}
+ */
+const resolveLessonTopics = (lesson, actorId) =>
+  resolveGradeTopics({
+    classId: lesson.classId,
+    subjectId: lesson.subjectId,
+    lessonOrders: lesson.teacherLessons.map((l) => l.order),
+    actorId,
+    at: lesson.at,
   });
 
-  const gradesToCreate = missingLessonOrders.map((order) => ({
-    studentId,
-    subjectId,
-    classId,
-    teacherId: req.user.id,
-    grade,
-    date: now,
-    lessonOrder: order,
-    comment,
-    topicId: topicByOrder.get(order) ?? null,
-    // Ruxsat bilan qo'yilgan baho — dars egasining oyligida hisoblanmaydi
-    gradingGrantId: grantIdByOrder.get(order) ?? null,
-  }));
+/**
+ * BAHOLARNI YOZADI — qulf ostida, takrorsiz.
+ *
+ * Baho o'qituvchining shu kungi shu fandagi HAMMA darsiga (tanlangan dars
+ * bilan bir xil yo'l bilan ochilganlariga) tarqaladi — o'quvchida baho
+ * YO'Q darslarga. Mavjud bahoga tegilmaydi (uni faqat tahrirlash o'zgartiradi).
+ *
+ * ⚠️ TEKSHIRUV VA YOZUV BITTA QULF ICHIDA (sinf + fan + kun). Ilgari "bor
+ * baholarni o'qi → yoz" qulfsiz edi: ikki marta bosish yoki parallel ikki
+ * so'rov bir o'quvchiga bitta darsda ikkita baho yozardi. Ommaviy yo'lda bu
+ * butun sinfni ikkilantirardi. Qulf bittalik va ommaviy yo'l uchun UMUMIY —
+ * ular bir-birining takrorini ham ko'radi.
+ *
+ * @param {object} lesson - `resolveGradingLesson` natijasi
+ * @param {{studentIds: string[], grade: number, comment?: string|null,
+ *   actorId: string, topicByOrder: Map<number, string|null>,
+ *   eligibleIds?: Set<string>|null, skipIfSelectedGraded?: boolean}} input
+ *   `eligibleIds` — faqat shu o'quvchilarga yoziladi (qolgani `away`);
+ *   `skipIfSelectedGraded` — tanlangan darsda bahosi borga umuman tegilmaydi
+ * @returns {Promise<{written: Map<string, number[]>, graded: string[], away: string[]}>}
+ *   `written` — o'quvchi → yozilgan dars tartiblari
+ */
+const writeLessonGrades = (
+  lesson,
+  { studentIds, grade, comment = null, actorId, topicByOrder, eligibleIds = null, skipIfSelectedGraded = false },
+) =>
+  prisma.$transaction(async (tx) => {
+    // ⚠️ `$executeRaw`: `pg_advisory_xact_lock` `void` qaytaradi
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`grades:${lesson.classId}:${lesson.subjectId}:${dayKey(lesson.day.date)}`}))`;
 
-  await prisma.grade.createMany({ data: gradesToCreate });
+    const orders = lesson.teacherLessons.map((l) => l.order);
+    const existing = await tx.grade.findMany({
+      where: {
+        studentId: { in: studentIds },
+        subjectId: lesson.subjectId,
+        classId: lesson.classId,
+        lessonOrder: { in: orders },
+        date: { gte: lesson.range.from, lt: lesson.range.to },
+      },
+      select: { studentId: true, lessonOrder: true },
+    });
+
+    const takenByStudent = new Map();
+    for (const row of existing) {
+      if (!takenByStudent.has(row.studentId)) takenByStudent.set(row.studentId, new Set());
+      takenByStudent.get(row.studentId).add(row.lessonOrder);
+    }
+
+    const written = new Map();
+    const graded = [];
+    const away = [];
+    const rows = [];
+
+    for (const studentId of studentIds) {
+      const taken = takenByStudent.get(studentId) ?? new Set();
+
+      // Tartib — panel hisobi bilan AYNI: avval "bahosi bor", keyin "darsda yo'q"
+      if (skipIfSelectedGraded && taken.has(lesson.selected.order)) {
+        graded.push(studentId);
+        continue;
+      }
+      if (eligibleIds && !eligibleIds.has(studentId)) {
+        away.push(studentId);
+        continue;
+      }
+
+      const missing = orders.filter((order) => !taken.has(order));
+      if (missing.length === 0) {
+        graded.push(studentId);
+        continue;
+      }
+
+      written.set(studentId, missing);
+      for (const order of missing) {
+        rows.push({
+          studentId,
+          subjectId: lesson.subjectId,
+          classId: lesson.classId,
+          teacherId: actorId,
+          grade,
+          date: lesson.at,
+          lessonOrder: order,
+          comment,
+          topicId: topicByOrder.get(order) ?? null,
+          // Ruxsat bilan qo'yilgan baho — dars egasining oyligida hisoblanmaydi
+          gradingGrantId: lesson.grantIdByOrder.get(order) ?? null,
+        });
+      }
+    }
+
+    if (rows.length > 0) await tx.grade.createMany({ data: rows });
+
+    return { written, graded, away };
+  });
+
+// Create grade (Teacher only)
+const createGrade = asyncHandler(async (req, res) => {
+  const { studentId, subjectId, classId, grade, comment, lessonOrder, date: dateInput } =
+    req.body;
+
+  // Validation
+  if (!studentId || !subjectId || !classId || !grade) {
+    throw new BadRequestError("Barcha majburiy maydonlarni to'ldiring");
+  }
+
+  // Check grade (must be between 1-5)
+  if (grade < 1 || grade > 5) {
+    throw new BadRequestError("Baho 1 dan 5 gacha bo'lishi kerak");
+  }
+
+  const lesson = await resolveGradingLesson(req.user, {
+    classId,
+    subjectId,
+    lessonOrder,
+    date: dateInput,
+  });
+
+  // Validate student exists in the class
+  const student = await prisma.user.findFirst({
+    where: {
+      id: studentId,
+      role: "student",
+      classes: { some: { classId } },
+    },
+  });
+  if (!student) {
+    throw new NotFoundError("O'quvchi ushbu sinfda topilmadi");
+  }
+
+  const topicByOrder = await resolveLessonTopics(lesson, req.user.id);
+
+  const { written } = await writeLessonGrades(lesson, {
+    studentIds: [studentId],
+    grade,
+    comment,
+    actorId: req.user.id,
+    topicByOrder,
+  });
+
+  const missingLessonOrders = written.get(studentId);
+  if (!missingLessonOrders) {
+    throw new BadRequestError(
+      "Bugun ushbu o'quvchiga bu fan bo'yicha barcha darslar uchun baho allaqachon qo'yilgan",
+    );
+  }
 
   // createMany id qaytarmaydi — yaratilgan baholarni qayta o'qib olamiz
   const createdGrades = await prisma.grade.findMany({
@@ -489,7 +605,7 @@ const createGrade = asyncHandler(async (req, res) => {
       classId,
       teacherId: req.user.id,
       lessonOrder: { in: missingLessonOrders },
-      date: { gte: todayDate, lt: tomorrow },
+      date: { gte: lesson.range.from, lt: lesson.range.to },
     },
   });
 
@@ -502,6 +618,109 @@ const createGrade = asyncHandler(async (req, res) => {
         ? `Baho muvaffaqiyatli qo'yildi va ${createdGrades.length} ta dars soatiga avtomatik qo'llandi`
         : "Baho muvaffaqiyatli qo'yildi",
     data: populatedGrade,
+  });
+});
+
+const BULK_GRANT_MESSAGE =
+  "Ruxsat bilan ochilgan darsda hammaga baho qo'yib bo'lmaydi — " +
+  "kerakli o'quvchilarga bittalab qo'ying";
+
+/**
+ * HAMMAGA BAHO QO'YISH — `POST /grades/bulk`
+ * `{ classId, subjectId, lessonOrder, grade, date? }`
+ *
+ * Tanlangan darsda bahosi YO'Q va shu kuni darsda BOR (o'qiydi, kelmagan
+ * deb belgilanmagan) har bir o'quvchiga bitta bahoni qo'yadi.
+ *
+ * ⚠️ MAVJUD BAHOGA TEGILMAYDI: o'qituvchi qo'lda qo'ygan "3" ni ommaviy "5"
+ * bosib ketmasin. Boshqa o'qituvchi qo'ygani ham shunday.
+ *
+ * ⚠️ KELMAGAN O'QUVCHIGA QO'YILMAYDI — ro'yxat kechki jarima maxraji bilan
+ * AYNI manbadan (`gradeExpectation.service.js`): maktabdan ketgan, o'sha kuni
+ * kelmagan ("kelmadi"/"sababli") o'quvchi chetda qoladi. Darsda bo'lmagan
+ * bolaga baho bir bosishda yozilib ketardi. Bittalab qo'yish bu cheklovsiz
+ * qoladi — u o'qituvchining ongli qarori.
+ *
+ * ⚠️ RUXSAT BILAN OCHILGAN DARSDA YOPIQ (`GradingGrant`): ruxsat — dars
+ * egasining jurnaliga QO'SHIMCHA huquq (odatda bitta-ikkita o'quvchi uchun).
+ * Hammaga yozilsa, dars egasi o'z sinfining hech biriga shu darsda baho
+ * qo'ya olmay qolardi ("allaqachon qo'yilgan").
+ *
+ * Tekshiruvlar bittalik yo'l bilan AYNI (`resolveGradingLesson`), yozuv
+ * ham (`writeLessonGrades`).
+ */
+const bulkCreateGrades = asyncHandler(async (req, res) => {
+  const { classId, subjectId, lessonOrder, grade, date: dateInput } = req.body;
+
+  if (!classId || !subjectId || !lessonOrder) {
+    throw new BadRequestError("Sinf, fan va dars tanlanishi shart");
+  }
+
+  const value = Number(grade);
+  if (!Number.isInteger(value) || value < 1 || value > 5) {
+    throw new BadRequestError("Baho 1 dan 5 gacha butun son bo'lishi kerak");
+  }
+
+  const lesson = await resolveGradingLesson(req.user, {
+    classId,
+    subjectId,
+    lessonOrder,
+    date: dateInput,
+  });
+
+  if (lesson.selected.access === "grant") {
+    throw new ForbiddenError(BULK_GRANT_MESSAGE);
+  }
+
+  // Sinf ro'yxati — baho qo'yish sahifasidagi bilan AYNI (`getStudentsWithGrades`)
+  const [classStudents, expectedByClass] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: ROLES.STUDENT, isArchived: false, classes: { some: { classId } } },
+      select: { id: true },
+    }),
+    loadExpectedStudents([classId], lesson.day.date),
+  ]);
+
+  const eligibleIds = new Set((expectedByClass.get(classId) ?? []).map((s) => s.id));
+  const topicByOrder = await resolveLessonTopics(lesson, req.user.id);
+
+  const { written, graded, away } = await writeLessonGrades(lesson, {
+    studentIds: classStudents.map((s) => s.id),
+    grade: value,
+    actorId: req.user.id,
+    topicByOrder,
+    eligibleIds,
+    skipIfSelectedGraded: true,
+  });
+
+  const skippedText = [
+    graded.length > 0 ? `${graded.length} tasida baho bor edi — tegilmadi` : null,
+    away.length > 0 ? `${away.length} tasi darsda yo'q — qo'yilmadi` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+
+  if (written.size === 0) {
+    throw new ConflictError(
+      `Baho qo'yiladigan o'quvchi qolmadi${skippedText ? `: ${skippedText}` : ""}. Ro'yxatni yangilang`,
+    );
+  }
+
+  const gradesCreated = [...written.values()].reduce((sum, orders) => sum + orders.length, 0);
+
+  res.status(201).json({
+    success: true,
+    message:
+      `${written.size} ta o'quvchiga ${value} baho qo'yildi` +
+      (gradesCreated > written.size ? ` (${gradesCreated} ta dars soatiga)` : "") +
+      (skippedText ? `. ${skippedText.charAt(0).toUpperCase()}${skippedText.slice(1)}` : ""),
+    data: {
+      grade: value,
+      studentsGraded: written.size,
+      gradesCreated,
+      alreadyGraded: graded.length,
+      away: away.length,
+    },
   });
 });
 
@@ -852,13 +1071,22 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
   }
 
   const finalLessonOrder = lessonOrder ? parseInt(lessonOrder) : null;
+  // Kun kaliti so'rovning o'zidan (`parseDayDate` → UTC yarim tun)
+  const day = parseDayDate(date, "Sana");
 
   // Get all students in the class
-  const students = await prisma.user.findMany({
-    where: { role: "student", isArchived: false, classes: { some: { classId } } },
-    select: { id: true, firstName: true, lastName: true },
-    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
-  });
+  const [students, expectedByClass] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: "student", isArchived: false, classes: { some: { classId } } },
+      select: { id: true, firstName: true, lastName: true },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    }),
+    // Shu kuni darsda BORMI (o'qiydi, kelmagan deb belgilanmagan) —
+    // "Hammaga baho qo'yish" aynan shularga yozadi (`bulkCreateGrades`).
+    // Panel sanog'i server yozadigani bilan bitta manbadan bo'lsin.
+    loadExpectedStudents([classId], day),
+  ]);
+  const expectedIds = new Set((expectedByClass.get(classId) ?? []).map((s) => s.id));
 
   // Parse date range
   const startDate = new Date(date);
@@ -900,7 +1128,7 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
   // Kun kaliti so'rovning o'zidan olinadi (`parseDayDate` → UTC yarim tun).
   const dayTopics = await lessonTopicService.getDayLessonTopics({
     classId,
-    day: dayKey(parseDayDate(date, "Sana")),
+    day: dayKey(day),
     actorId: req.user.id,
   });
 
@@ -913,6 +1141,9 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
       number: lessonEntry.topic.order,
       name: lessonEntry.topic.name,
       description: lessonEntry.topic.description || "",
+      // Ixtiyoriy — mavzular faylida bo'lmasa `null`
+      level: lessonEntry.topic.level ?? null,
+      book: lessonEntry.topic.book ?? null,
     };
   }
 
@@ -924,6 +1155,7 @@ const getStudentsWithGrades = asyncHandler(async (req, res) => {
       firstName: student.firstName,
       lastName: student.lastName,
       grade: grade || null,
+      expected: expectedIds.has(student.id),
     };
   });
 
@@ -1135,6 +1367,7 @@ module.exports = {
   getGrades,
   getMissingGradesToday,
   createGrade,
+  bulkCreateGrades,
   updateGrade,
   deleteGrade,
   getStudentGrades,

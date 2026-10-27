@@ -80,6 +80,23 @@ async function getAttendanceSettings() {
 }
 
 /**
+ * YOTOQXONA DAVOMATI — davomat qaysi vaqtdan boshlab belgilanadi.
+ *
+ * ⚠️ `getAttendanceSettings` DAN ALOHIDA: u dars davomatining qoidalari
+ * (ofis nuqtasi, kechikish imtiyozi, maktabda bo'lish sharti), bu esa
+ * butunlay boshqa oqim (`dormAttendance.service.js`). Bitta singletonga
+ * qo'shilsa, davomat sozlamalarini ko'rish huquqi yotoqxona tartibini ham
+ * o'zgartirishga aylanardi.
+ */
+async function getDormAttendanceSettings() {
+  return prisma.dormAttendanceSettings.upsert({
+    where: { id: SINGLETON },
+    create: { id: SINGLETON },
+    update: {},
+  });
+}
+
+/**
  * Ofis nuqtasi va radiusi — FAQAT O'QISH va FAQAT shu ikki maydon.
  *
  * `getAttendanceSettings` dan farqi: upsert EMAS (`/auth/me` har sahifa
@@ -280,6 +297,7 @@ module.exports = {
   getPlannerSettings,
   getAttendanceSettings,
   getOfficeGeofenceSettings,
+  getDormAttendanceSettings,
   getGradePenaltySettings,
   getTaskSettings,
   getTestSettings,

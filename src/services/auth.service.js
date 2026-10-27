@@ -35,6 +35,10 @@ const userDirectory = require("./userDirectory.service");
 const securityService = require("./security.service");
 const pushService = require("./push.service");
 const { loadTutorRoleValues, isTutorUser } = require("./tutorGroup.service");
+const {
+  loadClassLeaderRoleValues,
+  isClassLeaderUser,
+} = require("./classLeader.service");
 const { getOfficeGeofenceSettings } = require("./settings.service");
 const {
   parseOfficeLocation,
@@ -571,7 +575,12 @@ async function getMe(userId, activeBranch, { aggregate = false } = {}) {
   const homeBranch = entry ? await branchService.findById(entry.branchId) : null;
   const accessible = await aggregateScope.accessibleBranches(user);
   const available = accessible.map(publicBranch);
-  const tutorRoles = await loadTutorRoleValues();
+  // Ikki rol belgisi BIRGA o'qiladi: ikkalasi ham platformada va
+  // menyuni shu bayroqlar hal qiladi
+  const [tutorRoles, classLeaderRoles] = await Promise.all([
+    loadTutorRoleValues(),
+    loadClassLeaderRoleValues(),
+  ]);
   const office = await officeGeofenceFor(user);
 
   // UMUMIY KO'RINISH: huquq bormi (almashtirgichda ko'rsatish uchun) va
@@ -588,6 +597,11 @@ async function getMe(userId, activeBranch, { aggregate = false } = {}) {
     // Tyutor roli (rol belgisi bo'yicha) — panellar "Guruhlarim" bo'limini
     // shunga qarab ko'rsatadi
     isTutor: isTutorUser(user, tutorRoles),
+    // Sinf rahbari roli — panellar "Sinf davomati" bo'limini shunga qarab
+    // ko'rsatadi. ⚠️ BELGI, biriktirish EMAS: sinfi yo'q sinf rahbari ham
+    // bo'limni ko'radi va u yerda "sizga sinf biriktirilmagan" deb turadi —
+    // menyu har so'rovda biriktirishni o'qib yurmasligi uchun.
+    isClassLeader: isClassLeaderUser(user, classLeaderRoles),
     classes: user.classes.map((uc) => uc.class),
     profilePicture: user.profileImage || null,
     branch: aggregate

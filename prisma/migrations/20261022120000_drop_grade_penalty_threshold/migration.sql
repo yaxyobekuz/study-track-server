@@ -1,0 +1,11 @@
+-- "BAHO QO'YMASLIK" JARIMASINING FOIZ CHEGARASINI OLIB TASHLASH
+--
+-- Biznes qarori (2026-10-22): o'qituvchi darsda BITTA o'quvchiga ham baho
+-- qo'ygan bo'lsa, qolganlari baholanmagan bo'lsa ham jarima yozilmaydi.
+-- Jarima faqat bitta ham baho qo'yilmagan darsga — oylikdagi "dars
+-- o'tildimi" va "Men ketdim" darvozasi bilan AYNI qoida. Foiz chegarasi
+-- (sukut 40%) shu bilan ma'nosini yo'qotdi.
+--
+-- Allaqachon yozilgan jarimalarga tegilmaydi: ularni yangi qoida bo'yicha
+-- tozalash — alohida, ongli qadam (`npm run penalty:recheck`).
+ALTER TABLE "grade_penalty_settings" DROP COLUMN IF EXISTS "missing_threshold_percent";

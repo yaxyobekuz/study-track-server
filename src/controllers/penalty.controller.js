@@ -396,21 +396,16 @@ exports.getGradePenaltySettings = asyncHandler(async (req, res) => {
  * @access Private (owner)
  */
 exports.updateGradePenaltySettings = asyncHandler(async (req, res) => {
-  const { isEnabled, penaltyPoints, missingThresholdPercent, exemptTeachers } = req.body;
+  // Foiz chegarasi yo'q — jarima faqat bitta ham baho qo'yilmagan darsga
+  // (`gradePenalty.service.js`). Eski panel uni yuborsa ham o'qilmaydi.
+  const { isEnabled, penaltyPoints, exemptTeachers } = req.body;
 
   if (penaltyPoints !== undefined && penaltyPoints < 1) {
     throw new BadRequestError("Jarima bali kamida 1 bo'lishi kerak");
   }
 
-  if (
-    missingThresholdPercent !== undefined &&
-    (missingThresholdPercent < 0 || missingThresholdPercent > 100)
-  ) {
-    throw new BadRequestError("Foiz 0 dan 100 gacha bo'lishi kerak");
-  }
-
   const settings = await penaltyService.updateGradePenaltySettings(
-    { isEnabled, penaltyPoints, missingThresholdPercent, exemptTeachers },
+    { isEnabled, penaltyPoints, exemptTeachers },
     req.user.id,
   );
 

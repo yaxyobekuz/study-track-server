@@ -127,7 +127,14 @@ async function getAllRoles() {
  */
 async function getRoleOptions() {
   return platformPrisma.role.findMany({
-    select: { id: true, name: true, value: true, isSystem: true, isTutor: true },
+    select: {
+      id: true,
+      name: true,
+      value: true,
+      isSystem: true,
+      isTutor: true,
+      isClassLeader: true,
+    },
     orderBy: [{ isSystem: "desc" }, { name: "asc" }],
   });
 }
@@ -136,7 +143,7 @@ async function getRoleOptions() {
  * Yangi rol yaratish.
  */
 async function createRole(data, createdBy) {
-  const { name, value, permissions, isTutor } = data;
+  const { name, value, permissions, isTutor, isClassLeader } = data;
 
   if (!name || !value) {
     throw new BadRequestError("Rol nomi va qiymati majburiy");
@@ -149,6 +156,9 @@ async function createRole(data, createdBy) {
         value: value.toLowerCase().trim(),
         createdBy,
         ...(isTutor !== undefined && { isTutor: Boolean(isTutor) }),
+        ...(isClassLeader !== undefined && {
+          isClassLeader: Boolean(isClassLeader),
+        }),
         ...(permissions !== undefined && {
           permissions: validatePermissions(permissions),
         }),
@@ -172,6 +182,7 @@ async function updateRole(id, data) {
     workDays,
     weeklySchedule,
     isTutor,
+    isClassLeader,
   } = data;
 
   const role = await platformPrisma.role.findUnique({ where: { id } });
@@ -205,6 +216,10 @@ async function updateRole(id, data) {
   // egasiga sinf biriktiriladi" degan qaror. Belgi olinsa mavjud guruhlar
   // O'CHIRILMAYDI (oylik tarixi) — ular xodim kartasida ko'rinib turadi.
   if (isTutor !== undefined) update.isTutor = Boolean(isTutor);
+  // ⚠️ `isTutor` DAN ALOHIDA BELGI: tyutor biriktirishi PULGA olib keladi
+  // (qo'shimcha oylik ustamasi), sinf rahbarligi esa faqat davomat huquqini
+  // beradi. Bir odam ikkalasi ham bo'lishi mumkin.
+  if (isClassLeader !== undefined) update.isClassLeader = Boolean(isClassLeader);
 
   if (workStartTime !== undefined) update.workStartTime = workStartTime || null;
   if (workEndTime !== undefined) update.workEndTime = workEndTime || null;

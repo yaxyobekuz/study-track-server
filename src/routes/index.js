@@ -33,6 +33,7 @@ const socialNetworkRoutes = require("./socialNetwork.routes");
 const monitorRoutes = require("./monitor.routes");
 const attendanceRoutes = require("./attendance.routes");
 const studentAttendanceRoutes = require("./studentAttendance.routes");
+const dormAttendanceRoutes = require("./dormAttendance.routes");
 const absenceReasonRoutes = require("./absenceReason.routes");
 const issueRoutes = require("./issue.routes");
 const telegramGroupRoutes = require("./telegramGroup.routes");
@@ -68,6 +69,7 @@ const payrollRoutes = require("./payroll.routes");
 const lessonHoursRoutes = require("./lessonHours.routes");
 const payrollRequestRoutes = require("./payrollRequest.routes");
 const tutorGroupRoutes = require("./tutorGroup.routes");
+const classLeaderRoutes = require("./classLeader.routes");
 const expenseCategoryRoutes = require("./expenseCategory.routes");
 const expenseRoutes = require("./expense.routes");
 const studentFinanceStatusRoutes = require("./studentFinanceStatus.routes");
@@ -131,6 +133,8 @@ router.use("/social-networks", socialNetworkRoutes);
 router.use("/monitor", monitorRoutes);
 router.use("/attendance", attendanceRoutes);
 router.use("/student-attendance", studentAttendanceRoutes);
+// Yotoqxona davomati — kechqurun yotoqxonada kim qoldi (tarbiyachi belgilaydi)
+router.use("/dorm-attendance", dormAttendanceRoutes);
 router.use("/absence-reasons", absenceReasonRoutes);
 router.use("/issues", issueRoutes);
 // Bot guruhlari — "Muammolar → Bot sozlamalari" tabi. ALOHIDA prefiks:
@@ -176,6 +180,9 @@ router.use("/lesson-hours", lessonHoursRoutes);
 router.use("/payroll-requests", payrollRequestRoutes);
 // Tyutor guruhlari — sinf biriktirish va o'quvchilar soniga qarab qo'shimcha oylik
 router.use("/tutor-groups", tutorGroupRoutes);
+// Sinf rahbarlari — xodimga sinf biriktirish (PULSIZ): biriktirishdan
+// keladigan yagona huquq — shu sinfning kunlik davomatini belgilash
+router.use("/class-leaders", classLeaderRoutes);
 router.use("/expense-categories", expenseCategoryRoutes);
 router.use("/expenses", expenseRoutes);
 router.use("/student-finance-statuses", studentFinanceStatusRoutes);

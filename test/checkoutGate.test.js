@@ -27,7 +27,7 @@ const STUDENTS = Array.from({ length: 10 }, (_, i) => `st${String(i).padStart(22
 
 const db = {
   attendanceSettings: { checkoutRequireGrades: true, checkoutRequireTasks: true },
-  penaltySettings: { missingThresholdPercent: 40, exemptTeachers: [] },
+  penaltySettings: { exemptTeachers: [] },
   taskSettings: { allowLateSubmission: true },
   lessons: [],
   grades: [],
@@ -37,7 +37,7 @@ const db = {
 
 const reset = () => {
   db.attendanceSettings = { checkoutRequireGrades: true, checkoutRequireTasks: true };
-  db.penaltySettings = { missingThresholdPercent: 40, exemptTeachers: [] };
+  db.penaltySettings = { exemptTeachers: [] };
   db.taskSettings = { allowLateSubmission: true };
   db.lessons = [];
   db.grades = [];

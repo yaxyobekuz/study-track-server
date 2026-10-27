@@ -79,6 +79,9 @@ const TOPIC_MISS_REASONS = {
   beforeAnchor: "Mavzu biriktirilgan kundan oldin",
   exhausted: "Mavzular tugagan",
   outOfRange: "Mavzu biriktirilgan kun juda uzoqda",
+  // Sanoq raqamga yetdi, lekin shu raqamli mavzu yo'q: yuklangan faylda o'sha
+  // qatorda mavzu nomi bo'sh bo'lgan (`helpers/topicImport.helpers.js`)
+  missingTopic: "Bu raqamdagi mavzu yuklanmagan — faylda nomi bo'sh",
 };
 
 /**

@@ -7,6 +7,7 @@ const {
 const ExcelService = require("../services/excel.service");
 const userService = require("../services/user.service");
 const staffReportService = require("../services/staffReport.service");
+const aggregateScope = require("../services/aggregateScope.service");
 const invoiceGenerationService = require("../services/invoiceGeneration.service");
 const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
@@ -58,8 +59,51 @@ const generateFirstMonthInvoice = async (req, user, body = {}) => {
   }
 };
 
-// Get user statistics (Owner only)
+/**
+ * Sanoqchilar (faqat tizim egasi).
+ *
+ * ⚠️ UMUMIY KO'RINISHDA SANOQ QO'SHILMAYDI — ODAMLAR BIRLASHTIRILADI.
+ * Xodim bir nechta filialda ishlashi mumkin va har filialda AYNI `id`
+ * bilan turadi (`user.service.js` → `attachToBranch`). Dispatcher
+ * filiallarning sanoqlarini qo'shib yuborsa, ikki filialda ishlaydigan
+ * odam "ikki xodim" bo'lib ko'rinardi. Shu sababli bu yo'l registrda
+ * `anchor` deb belgilangan va sanoqni servisning O'ZI filiallar bo'ylab
+ * yig'adi (`getStatsAcrossBranches`).
+ *
+ * Javobdagi `meta.aggregate` — dispatcher birlashtirgan javoblar bilan
+ * AYNI shaklda (`helpers/aggregateMerge.helpers.js` → `byBranch`), ya'ni
+ * panel uchun bu yo'l hech narsa bilan farq qilmaydi.
+ */
 const getStats = asyncHandler(async (req, res) => {
+  const branches = req.aggregateScope?.branches ?? [];
+
+  if (branches.length > 1) {
+    const { totals, perBranch, shared } =
+      await userService.getStatsAcrossBranches(branches);
+
+    const labels = perBranch.map(({ branch }) =>
+      aggregateScope.publicBranch(branch),
+    );
+    const values = {};
+    for (const key of Object.keys(totals)) {
+      values[`data.${key}`] = perBranch.map((row) => row[key]);
+    }
+
+    return res.json({
+      success: true,
+      data: totals,
+      meta: {
+        aggregate: {
+          mode: "object",
+          branches: labels,
+          byBranch: { branches: labels, values },
+          // Kesim yig'indisi jamidan katta bo'lishi mumkin — farqi shu.
+          shared,
+        },
+      },
+    });
+  }
+
   const data = await userService.getStats();
 
   res.json({ success: true, data });
@@ -86,6 +130,14 @@ const getStaffReport = asyncHandler(async (req, res) => {
   const data = await staffReportService.getStaffReport(month, year, {
     withAttendance,
   });
+
+  res.json({ success: true, data });
+});
+
+// ASL SINFLAR KESIMI — har darajada nechta o'quvchi bor.
+// Sinflar sanog'idan alohida endpoint: ular ikki boshqa savol.
+const getActualGradeCounts = asyncHandler(async (req, res) => {
+  const data = await userService.getActualGradeCounts();
 
   res.json({ success: true, data });
 });
@@ -287,8 +339,18 @@ const ARCHIVE_SCOPES = ["all", "true", "false"];
 const exportUsersToExcel = asyncHandler(async (req, res) => {
   const { role } = req.query;
   const classId = req.query.classId ? String(req.query.classId) : null;
+  // ASL SINF (daraja) — sinf bilan MUSTAQIL o'lcham: ikkalasi berilsa
+  // shart kesishadi ("IT 1 da o'qiydigan 5-sinf o'quvchilari"). Qiymat
+  // `grade.helpers.js` da tekshiriladi (1 … 11 yoki "none").
+  const actualGrade =
+    req.query.actualGrade === undefined ? undefined : String(req.query.actualGrade);
   const archived =
     req.query.archived === undefined ? "all" : String(req.query.archived);
+
+  // Daraja kesimi ham faqat O'QUVCHILAR eksportida ma'noga ega
+  if (actualGrade !== undefined && actualGrade !== "" && role !== "student") {
+    throw new BadRequestError("Asl sinf bo'yicha faqat o'quvchilar yuklanadi");
+  }
 
   // Sinf kesimi faqat O'QUVCHILAR eksportida: xodim/umumiy eksportda uni
   // jim e'tiborsiz qoldirish "sinf tanladim, hamma chiqdi" holatini berardi.
@@ -316,6 +378,8 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // ⚠️ Arxivlangan o'quvchi arxivlashda BARCHA sinflardan chiqariladi
   // (`education.md` §5), ya'ni "sinf + faqat arxivlanganlar" har doim bo'sh
   // fayl bo'lardi — foydalanuvchi buni tizim nosozligi deb o'ylardi.
+  // ⚠️ Faqat SINF kesimiga tegishli: asl sinf (daraja) arxivlashda
+  // O'CHIRILMAYDI, ya'ni "arxiv + asl sinf" to'la ma'noli ro'yxat beradi.
   if (classId && archived === "true") {
     throw new BadRequestError(
       "Arxivlangan o'quvchilar sinflardan chiqarilgan — sinf bilan birga yuklanmaydi",
@@ -330,6 +394,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   if (role === "student") {
     const { all, debtors } = await userService.getStudentsFinanceExport({
       classId,
+      actualGrade,
       archived,
     });
 
@@ -345,6 +410,9 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Username", key: "username", width: 18 },
       { header: "Parol", key: "password", width: 16 },
       { header: "Sinf", key: "className", width: 14 },
+      // ASL SINF — daraja (1-sinf … 11-sinf), o'quvchi o'qiyotgan guruhdan
+      // farq qilishi mumkin. Ekrandagi ustun bilan AYNI.
+      { header: "Asl sinfi", key: "actualGrade", width: 12 },
       ...(mixedArchive
         ? [{ header: "Holat", key: "status", width: 14 }]
         : []),
@@ -372,6 +440,7 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       columns: [
         { header: "F.I.O", key: "fullName", width: 28 },
         { header: "Sinf", key: "className", width: 14 },
+        { header: "Asl sinfi", key: "actualGrade", width: 12 },
         ...(mixedArchive
           ? [{ header: "Holat", key: "status", width: 14 }]
           : []),
@@ -399,7 +468,8 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
   // "student"` bilan ishlaydi), jarima esa xodimda ham — shuning uchun
   // "Tangalar" ustuni faqat o'quvchi tushadigan eksportda chiziladi, aks
   // holda xodimlar faylida boshdan-oyoq nol turgan ustun paydo bo'lardi.
-  const withCoins = !role || role === "all" || role === "student";
+  // "Asl sinfi" ham faqat o'quvchida bo'ladi — AYNI shart bilan
+  const withStudentColumns = !role || role === "all" || role === "student";
 
   const workbook = ExcelService.createExcel({
     sheetName: "Foydalanuvchilar",
@@ -409,9 +479,12 @@ const exportUsersToExcel = asyncHandler(async (req, res) => {
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 40 },
+      ...(withStudentColumns
+        ? [{ header: "Asl sinfi", key: "actualGrade", width: 12 }]
+        : []),
       { header: "Telefon", key: "phone", width: 20 },
       { header: "Ota-ona telefoni", key: "parentPhone", width: 20 },
-      ...(withCoins
+      ...(withStudentColumns
         ? [{ header: "Tangalar", key: "coinBalance", width: 12 }]
         : []),
       { header: "Jarimalar", key: "penaltyPoints", width: 12 },
@@ -534,6 +607,7 @@ const detachUserFromBranch = asyncHandler(async (req, res) => {
 module.exports = {
   setUserRoles,
   getAllUsers,
+  getActualGradeCounts,
   getAllUsersShort,
   getUser,
   createUser,

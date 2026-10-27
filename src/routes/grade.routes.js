@@ -5,6 +5,7 @@ const {
   getMissingGradesToday,
   getGradesByClassAndDate,
   createGrade,
+  bulkCreateGrades,
   updateGrade,
   deleteGrade,
   getStudentGrades,
@@ -99,6 +100,9 @@ router.get(
 
 // Baho qo'yish/tahrirlash — o'qituvchi doim, xodim `grades.create/update` bilan
 router.post("/", authorizePermission(PERMISSIONS.GRADES_CREATE, ROLES.TEACHER), validateGrade(), createGrade);
+// Hammaga baho qo'yish — bittalik yo'l bilan AYNI darvoza va AYNI ruxsat
+// (`resolveGradingLesson`): tugma qoidani chetlab o'tish yo'li bo'lmasin
+router.post("/bulk", authorizePermission(PERMISSIONS.GRADES_CREATE, ROLES.TEACHER), validateGrade(), bulkCreateGrades);
 router.put("/:id", validateObjectId("id"), authorizePermission(PERMISSIONS.GRADES_UPDATE, ROLES.TEACHER), validateGrade(), updateGrade);
 
 // Teacher can delete own today's grades, Owner can delete any

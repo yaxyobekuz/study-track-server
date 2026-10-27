@@ -222,28 +222,22 @@ async function buildCalendar(fromIso, toIso) {
 /**
  * Fanlarning mavzulari — tartib bo'yicha xarita va oxirgi raqam.
  *
- * ⚠️ IZOH SUKUT BO'YICHA O'QILMAYDI. Sinfda o'nlab fan, har fanda yuzlab
- * mavzu bo'ladi: haftalik jadval uchun faqat raqam va nom kerak, izohlar esa
- * har so'rovda ortiqcha yuz kilobayt bo'lib ketardi. Izoh faqat jurnal
- * oynasiga kerak (`getDayLessonTopics`).
+ * ⚠️ FAQAT RAQAM VA NOM O'QILADI. Sinfda o'nlab fan, har fanda yuzlab
+ * (ingliz tilida 1000 dan ortiq) mavzu bo'ladi, sanoq uchun esa faqat
+ * raqam kerak. Daraja, kitob va "Nimalar o'rgatiladi" JAVOBGA TUSHADIGAN
+ * mavzular uchun alohida o'qiladi (`attachTopicDetails`) — hammasini bu
+ * yerda olish har so'rovda yuzlab kilobayt ortiqcha o'qish bo'lardi.
  *
  * @param {string[]} subjectIds
- * @param {{withDescription?: boolean}} [options]
  * @returns {Promise<Map<string, {byOrder: Map<number, object>, last: number}>>}
  */
-async function loadTopics(subjectIds, { withDescription = false } = {}) {
+async function loadTopics(subjectIds) {
   const result = new Map();
   if (subjectIds.length === 0) return result;
 
   const topics = await prisma.topic.findMany({
     where: { subjectId: { in: subjectIds } },
-    select: {
-      id: true,
-      subjectId: true,
-      order: true,
-      name: true,
-      ...(withDescription ? { description: true } : {}),
-    },
+    select: { id: true, subjectId: true, order: true, name: true },
     orderBy: { order: "asc" },
   });
 
@@ -257,6 +251,42 @@ async function loadTopics(subjectIds, { withDescription = false } = {}) {
   }
 
   return result;
+}
+
+/**
+ * HAL QILINGAN DARSLARNING MAVZUSIGA DARAJA, KITOB VA MAZMUNNI QO'SHADI.
+ *
+ * Faqat `byLesson` dagi (ya'ni javobga tushadigan) mavzular o'qiladi — haftada
+ * bir necha o'nta, fanning butun ro'yxati emas.
+ *
+ * ⚠️ Uchala maydon IXTIYORIY: faylda bo'lmasa `null` qaytadi va bu xato
+ * emas — ekran shunchaki ko'rsatmaydi.
+ *
+ * @param {Map<string, object>} byLesson - joyida yangilanadi
+ */
+async function attachTopicDetails(byLesson) {
+  const ids = new Set();
+  for (const entry of byLesson.values()) if (entry.topic?.id) ids.add(entry.topic.id);
+  if (ids.size === 0) return;
+
+  const rows = await prisma.topic.findMany({
+    where: { id: { in: [...ids] } },
+    select: { id: true, level: true, book: true, description: true },
+  });
+  const details = new Map(rows.map((row) => [row.id, row]));
+
+  for (const entry of byLesson.values()) {
+    if (!entry.topic) continue;
+    const row = details.get(entry.topic.id);
+    // ⚠️ YANGI obyekt: `topicsBySubject` dagi umumiy obyekt boshqa darslar
+    // bilan bo'lishiladi va uni joyida o'zgartirish kutilmagan ta'sir berardi.
+    entry.topic = {
+      ...entry.topic,
+      level: row?.level || null,
+      book: row?.book || null,
+      description: row?.description || null,
+    };
+  }
 }
 
 /* ───────────────────────── avtomatik ankor ───────────────────────── */
@@ -393,6 +423,7 @@ async function ensureAnchors({
  * @param {string[]} input.days - "YYYY-MM-DD"
  * @param {string} input.actorId
  * @param {boolean} [input.ensure] - ankorsiz fanlarga avtomatik ankor yozilsinmi
+ * @param {boolean} [input.withDetails] - mavzuga daraja, kitob va mazmun qo'shilsinmi
  * @returns {Promise<{
  *   template: object,
  *   topicsBySubject: Map<string, object>,
@@ -400,10 +431,10 @@ async function ensureAnchors({
  *   anchorsBySubject: Map<string, Array<object>>
  * }>}
  */
-async function resolveLessonTopics({ classId, days, actorId, ensure = true, withDescription = false }) {
+async function resolveLessonTopics({ classId, days, actorId, ensure = true, withDetails = false }) {
   const targets = [...new Set(days)].sort();
   const template = await loadClassTemplate(classId);
-  const topicsBySubject = await loadTopics(template.subjectIds, { withDescription });
+  const topicsBySubject = await loadTopics(template.subjectIds);
 
   const byLesson = new Map();
   const anchorsBySubject = new Map();
@@ -541,16 +572,26 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
         // kunlarni bo'sh qilib yuborardi.
         if (index > 0 && value.reason === TOPIC_MISS_REASONS.beforeAnchor) continue;
 
+        const topic =
+          value.topicOrder != null ? topics.byOrder.get(value.topicOrder) ?? null : null;
+
         byLesson.set(key, {
           subjectId,
           topicOrder: value.topicOrder,
-          topic: value.topicOrder != null ? topics.byOrder.get(value.topicOrder) ?? null : null,
-          reason: value.reason,
+          topic,
+          // Raqam bor-u, mavzu yo'q — ro'yxatda bo'shliq (faylda nomi bo'sh
+          // qator). Sababsiz qoldirilsa ekranda "Mavzu aniqlanmadi" turib,
+          // nimani tuzatish kerakligi noma'lum qolardi.
+          reason:
+            value.reason ??
+            (value.topicOrder != null && !topic ? TOPIC_MISS_REASONS.missingTopic : null),
           binding: row,
         });
       }
     });
   }
+
+  if (withDetails) await attachTopicDetails(byLesson);
 
   return {
     template,
@@ -625,7 +666,7 @@ async function getClassWeekTopics({ classId, week, actorId }) {
   const days = weekDays(start);
   const end = days[days.length - 1];
 
-  const resolved = await resolveLessonTopics({ classId, days, actorId });
+  const resolved = await resolveLessonTopics({ classId, days, actorId, withDetails: true });
   const { template, topicsBySubject, byLesson, anchorsBySubject, subjectNames, offReason } =
     resolved;
 
@@ -666,11 +707,15 @@ async function getClassWeekTopics({ classId, week, actorId }) {
               lastName: teacherMap.get(lesson.teacherId).lastName,
             }
           : null,
+        // Daraja, kitob va "Nimalar o'rgatiladi" — ixtiyoriy (`null` bo'lishi mumkin)
         topic: resolvedTopic?.topic
           ? {
               id: resolvedTopic.topic.id,
               order: resolvedTopic.topic.order,
               name: resolvedTopic.topic.name,
+              level: resolvedTopic.topic.level,
+              book: resolvedTopic.topic.book,
+              description: resolvedTopic.topic.description,
             }
           : null,
         // Dars o'tilmaydigan kunda mavzu sanalmaydi — sabab o'sha kunniki
@@ -913,8 +958,8 @@ async function getDayLessonTopics({ classId, day, actorId }) {
     classId,
     days: [day],
     actorId,
-    // Jurnal oynasi mavzu izohini ham ko'rsatadi
-    withDescription: true,
+    // Jurnal oynasi mavzuning darajasi, kitobi va mazmunini ham ko'rsatadi
+    withDetails: true,
   });
   const off = offReason(day);
 
@@ -1195,6 +1240,7 @@ module.exports = {
   loadClassTemplate,
   buildCalendar,
   loadTopics,
+  attachTopicDetails,
   findNextLessonSlot,
   ensureAnchors,
   resolveLessonTopics,

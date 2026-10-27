@@ -32,6 +32,17 @@ const getClassReport = asyncHandler(async (req, res) => {
   res.json({ success: true, ...report });
 });
 
+/**
+ * So'nggi N kundagi o'quvchilar davomati (bosh sahifadagi grafik).
+ * `?days=30` — tekshiruv va chegara service'da.
+ */
+const getStudentTrend = asyncHandler(async (req, res) => {
+  const trend = await attendanceReportService.getStudentTrend({
+    days: req.query.days,
+  });
+  res.json({ success: true, ...trend });
+});
+
 const getStaffReport = asyncHandler(async (req, res) => {
   const month = req.query.month || new Date().getMonth() + 1;
   const year = req.query.year || new Date().getFullYear();
@@ -41,6 +52,7 @@ const getStaffReport = asyncHandler(async (req, res) => {
 
 module.exports = {
   getStudentReport,
+  getStudentTrend,
   getClassReport,
   getStaffReport,
 };

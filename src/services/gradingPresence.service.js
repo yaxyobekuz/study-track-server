@@ -1,10 +1,17 @@
 /**
- * BAHO QO'YISH UCHUN MAKTABDA BO'LISH SHARTI.
+ * O'QITUVCHI MAKTABDAMI — BUGUNGI DARS ISHLARI UCHUN YAGONA SHART.
  *
  * Bugungi darsga baho faqat MAKTABDA turgan o'qituvchi qo'yadi: davomatda
  * bugun kelgani qayd etilgan ("keldi" yoki "kech keldi") va hali ketmagan.
  * Uyda turib baho qo'yish yopiladi — baho darsni o'tilgan qiladi va soati
  * oylikka yoziladi (`helpers/lessonHours.js` → `judgeLesson`).
+ *
+ * ⚠️ O'QUVCHILAR DAVOMATI HAM SHU DARVOZADAN O'TADI
+ * (`studentAttendanceTeacher.service.js`): davomat sinfda KO'RILGAN fakt,
+ * uydan turib yozilsa u faktga aylanmaydi. Shart va sozlama ataylab BITTA —
+ * "kelish" tugmasi ishlamagan kun uchun zaxira yo'l ikkiga bo'linmasin.
+ * Shu sabab xabarda amal nomi atalmaydi ("Baho qo'yish uchun avval ..."
+ * emas): bitta matn ikkala yo'lga ham to'g'ri keladi.
  *
  * ⚠️ GPS HAR BAHODA SO'RALMAYDI (biznes qarori): joylashuv "Men keldim"
  * bosilganda allaqachon tekshiriladi (`attendance.service.js` → `checkIn`).
@@ -45,7 +52,7 @@ function judgePresence(record) {
     return {
       atSchool: false,
       state: "notArrived",
-      message: `${NOT_AT_SCHOOL} — bugun kelganingiz qayd etilmagan. Baho qo'yish uchun avval "Men keldim" tugmasini bosing.`,
+      message: `${NOT_AT_SCHOOL} — bugun kelganingiz qayd etilmagan. Avval "Men keldim" tugmasini bosing.`,
     };
   }
 
@@ -77,7 +84,7 @@ function judgePresence(record) {
 }
 
 /**
- * O'qituvchi HOZIR baho qo'ya oladimi (maktabda bo'lish sharti bo'yicha).
+ * O'qituvchi HOZIR maktabdami (baho qo'yish va o'quvchilar davomati uchun).
  *
  * @param {{id: string, role: string}} user
  * @returns {Promise<{required: boolean, atSchool: boolean, state: string, message: string|null}>}

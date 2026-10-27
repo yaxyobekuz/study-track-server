@@ -98,6 +98,10 @@ const RULES = [
   { pattern: "* /parental/*", mode: "anchor" },
   // AI yordamchi: SSE oqimi (ikkilik emas, lekin oqim) va yozadigan amallar.
   { pattern: "* /ai-assistant/*", mode: "anchor" },
+  // O'qituvchining O'Z darsiga davomati: shaxsiy ekran, huquq shu filialning
+  // dars jadvalidan keladi. Yo'lda "my" bo'lagi yo'q, shuning uchun
+  // `isPersonalPath` uni ushlamaydi va qoida ATAYLAB yozilgan.
+  { pattern: "* /student-attendance/teacher/*", mode: "anchor" },
 
   /* ── FACE ID: kiosk yo'llari umumiy rejimga TUSHMAYDI ──────────────── */
   //
@@ -153,9 +157,19 @@ const RULES = [
   { pattern: "* /branch-transfers/*", mode: "anchor" },
   { pattern: "* /branch-transfers", mode: "anchor" },
 
-  /* ── Sanoqchilar: qo'shish TO'G'RI (tekshirilgan shakl) ─────────────── */
-  // `{telegramUsers, workers, students, premiumUsers}` — sof sanoqchilar.
-  { pattern: "GET /users/stats", mode: "object" },
+  /* ── Sanoqchilar ──────────────────────────────────────────────────── */
+  // ⚠️ `GET /users/stats` QO'SHILMAYDI — u o'zi filiallar bo'ylab yig'adi.
+  // Xodim bir nechta filialda ishlashi mumkin va har filialda AYNI `id`
+  // bilan turadi: sanoqlar qo'shilsa, o'sha odam "ikki xodim" bo'lib
+  // ko'rinardi. Shuning uchun yo'l langar filialda bajariladi, controller
+  // esa kimliklarni birlashtiradi va javobni AYNI `meta.aggregate` shakli
+  // bilan qaytaradi (`user.controller.js` → `getStats`).
+  { pattern: "GET /users/stats", mode: "anchor" },
+
+  // ASL SINFLAR KESIMI — `{grades: [{grade, label, studentCount}], unset, total}`.
+  // Qatorlar `grade` bo'yicha GURUHLANADI (filiallarning 5-sinflari bitta
+  // qatorga qo'shiladi), sanoqchilar esa qo'shiladi.
+  { pattern: "GET /users/actual-grades", mode: "object" },
 
   // ⚠️ Topshiriq sanoqchilari ichida "muddati yaqin" CHEGARASI (soatda)
   // ham keladi — u sozlama, sanoq emas. `SETTING_KEYS` da ham bor, bu
@@ -246,6 +260,7 @@ const RULES = [
   { pattern: "* /holidays/:id", locate: { model: "holiday", param: "id" } },
   { pattern: "* /vacation-months/:id", locate: { model: "vacationMonth", param: "id" } },
   { pattern: "* /tutor-groups/:id", locate: { model: "tutorGroup", param: "id" } },
+  { pattern: "* /class-leaders/:id", locate: { model: "classLeader", param: "id" } },
   { pattern: "* /grades/:id", locate: { model: "grade", param: "id" } },
   { pattern: "* /messages/:id", locate: { model: "message", param: "id" } },
   { pattern: "* /messages/:id/*", locate: { model: "message", param: "id" } },

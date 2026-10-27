@@ -20,6 +20,7 @@ const SECTIONS = {
   ENROLLMENT: "enrollment",
   STATISTICS: "statistics",
   ATTENDANCE: "attendance",
+  DORM_ATTENDANCE: "dormAttendance",
   GRADES: "grades",
   GRADE_GRANTS: "gradeGrants",
   LESSON_CREDITS: "lessonCredits",
@@ -32,6 +33,7 @@ const SECTIONS = {
   PLANNER: "planner",
   SUBSTITUTIONS: "substitutions",
   TUTORS: "tutors",
+  CLASS_LEADERS: "classLeaders",
   TOPICS: "topics",
   CERTIFICATES: "certificates",
   CLASSES: "classes",
@@ -176,6 +178,37 @@ const PERMISSION_SECTIONS = [
       { key: "review", label: "Sababnoma va ketish so'rovlarini ko'rib chiqish" },
       { key: "reasons", label: "Sabab turlarini boshqarish" },
       { key: "reports", label: "Hisobotlar" },
+      A.settings,
+    ],
+  },
+  {
+    // YOTOQXONA DAVOMATI — kechqurun yotoqxonada kim qoldi
+    // (`dormAttendance.service.js`). Belgilashni TARBIYACHI qiladi.
+    //
+    // ⚠️ ALOHIDA BO'LIM, `attendance` ichidagi amal EMAS. Ikki sabab:
+    //   · eski yozuvlardagi bare "attendance" kaliti bo'limning HAMMA
+    //     amalini beradi (`hasPermission`, `expandLegacyKeys`) — ya'ni
+    //     dars davomatiga umumiy huquqi bor har kim yotoqxona registrini
+    //     ham ochib olardi (`gradeGrants`, `scheduleSync` bilan AYNI sabab);
+    //   · teskarisi ham to'g'ri: tarbiyachiga `attendance.mark` berilsa, u
+    //     butun maktabning DARS davomatini belgilay olardi — holbuki uning
+    //     ishi faqat yotoqxona.
+    //
+    // Amallar ataylab mayda:
+    //   `mark`     — bugungi kunni belgilash (vaqt darvozasi ichida)
+    //   `update`   — O'TGAN kunni to'g'rilash va boshlanish vaqtidan OLDIN
+    //                belgilash. Bu ma'muriyat qarori: orqa sana bilan
+    //                yozish kechagi registrni qayta yozadi.
+    //   `export`   — Excel (ro'yxat tashqariga chiqadi)
+    //   `settings` — boshlanish vaqti (butun maktabning tartibi)
+    key: SECTIONS.DORM_ATTENDANCE,
+    label: "Yotoqxona davomati",
+    group: "Ta'lim",
+    actions: [
+      A.view,
+      { key: "mark", label: "Davomat belgilash" },
+      { key: "update", label: "O'tgan kunni to'g'rilash" },
+      A.export,
       A.settings,
     ],
   },
@@ -740,6 +773,26 @@ const PERMISSION_SECTIONS = [
     actions: [
       { key: "view", label: "Ko'rish (guruh, davomat, baho, qo'shimcha oylik)" },
       { key: "assign", label: "Guruh biriktirish va qo'shimcha oylik belgilash" },
+    ],
+  },
+  {
+    // SINF RAHBARI — xodimga sinf biriktirish. Biriktirishdan keladigan
+    // yagona huquq: shu sinfning KUNLIK davomatini belgilash.
+    //
+    // ⚠️ `tutors` DAN ALOHIDA BO'LIM va bu ataylab: tyutor biriktirishi
+    // PULNI belgilaydi (qo'shimcha oylik ustamasi), sinf rahbarligi esa
+    // faqat huquq beradi. Bitta bo'limga qo'shilsa, "davomat uchun sinf
+    // biriktirish" huquqi jimgina qo'shimcha oylik yozish huquqiga
+    // aylanardi (`gradeGrants` va `scheduleSync` bilan AYNI sabab).
+    //
+    // ⚠️ Xodimning O'Z sinflari (`/class-leaders/my`) va davomat belgilash
+    // yo'li KALITSIZ — huquq biriktirishdan keladi, ruxsat kalitidan emas.
+    key: SECTIONS.CLASS_LEADERS,
+    label: "Sinf rahbarlari",
+    group: "Ta'lim",
+    actions: [
+      { key: "view", label: "Ko'rish (kim qaysi sinfga rahbar)" },
+      { key: "assign", label: "Sinf biriktirish va olib tashlash" },
     ],
   },
   {

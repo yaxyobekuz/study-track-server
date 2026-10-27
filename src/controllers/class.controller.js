@@ -123,6 +123,8 @@ const exportClassStudents = asyncHandler(async (req, res) => {
       { header: "Parol", key: "password", width: 18 },
       { header: "Rol", key: "role", width: 15 },
       { header: "Sinflar", key: "classes", width: 25 },
+      // ASL SINF — daraja (1-sinf … 11-sinf), ekrandagi ustun bilan AYNI
+      { header: "Asl sinfi", key: "actualGrade", width: 12 },
     ],
     data,
   });
@@ -143,6 +145,7 @@ const exportClasses = asyncHandler(async (req, res) => {
     columns: [
       { header: "Sinf nomi", key: "name", width: 25 },
       { header: "Holati", key: "status", width: 12 },
+      { header: "O'quvchilar soni", key: "studentCount", width: 18 },
       { header: "Yaratuvchi", key: "createdBy", width: 20 },
       { header: "Yaratilgan sana", key: "createdAt", width: 15 },
     ],
