@@ -535,6 +535,12 @@ async function loadExportData({ classIds }) {
 
   return {
     rows,
+    // ⚠️ XOM A'ZOLIK HAM QAYTADI (`students`): sinf kesimini BOSHQA
+    // shaklda quradigan chaqiruvchi bor (`studentSystemReport.service.js`
+    // — hujjatga foiz va "ikkalasida ham yo'q" kerak), a'zolik esa
+    // qatorlarda faqat MATN bo'lib qoladi ("5-A, 9-B"). Busiz o'sha
+    // modul AYNI o'quvchilarni IKKINCHI marta so'rardi.
+    students,
     totals: countPresence(rows),
     classSummary: buildClassSummary(rows, students, { classes }),
     classes: classes ? sortClasses(classes) : null,
@@ -544,6 +550,7 @@ async function loadExportData({ classIds }) {
 module.exports = {
   SYSTEMS,
   SYSTEM_LABELS,
+  CURRENT_STUDENTS,
   PRESENCE,
   NO_CLASS,
   NO_CLASS_LABEL,

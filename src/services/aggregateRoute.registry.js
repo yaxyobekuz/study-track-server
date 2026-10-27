@@ -247,6 +247,20 @@ const RULES = [
     ],
   },
 
+  /* ── ERP va Kundalik.com hisoboti ────────────────────────────────── */
+  // ⚠️ HISOBOT — `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: filiallar
+  // bo'ylab aylanishni servisning O'ZI bajaradi
+  // (`studentSystemNetwork.service.js`). Sabab o'quvchilar harakati bilan
+  // AYNI — foiz og'irliksiz o'rtachalanardi va Word fayli
+  // birlashtirilmas edi.
+  //
+  // ⚠️ `summary` esa ATAYLAB `object`: u faqat SANOQCHI (foizsiz), ya'ni
+  // qo'shilishi to'g'ri natija beradi va bosh sahifadagi karta ostidagi
+  // filiallar kesimi (`BranchSplit`) o'z-o'zidan ishlaydi.
+  { pattern: "GET /student-systems/report/export", mode: "anchor" },
+  { pattern: "GET /student-systems/report", mode: "anchor" },
+  { pattern: "GET /student-systems/summary", mode: "object" },
+
   /* ── O'quvchilar harakati (keldi / ketdi) ─────────────────────────── */
   // ⚠️ O'QUVCHILAR HARAKATI — `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI.
   // Bu yo'llar FAQAT umumiy ko'rinishda ochiladi va filiallar bo'ylab
