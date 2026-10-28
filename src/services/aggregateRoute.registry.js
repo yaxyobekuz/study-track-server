@@ -275,6 +275,31 @@ const RULES = [
   { pattern: "GET /student-systems/report", mode: "anchor" },
   { pattern: "GET /student-systems/summary", mode: "object" },
 
+  /* ── Davomat statistikasi (bosh sahifa kartalari + hujjat) ───────── */
+  // ⚠️ `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: filiallar bo'ylab
+  // aylanishni servisning O'ZI bajaradi
+  // (`attendanceStatsNetwork.service.js`). Sabablar yuqoridagilar bilan
+  // AYNI va bu yerda uchtasi ham bor:
+  //
+  //  1. FOIZ. Davomat foizi og'irliksiz o'rtachalanardi: 12 o'quvchili
+  //     filial 344 o'quvchili filial bilan teng tortardi.
+  //  2. REYTING. "Eng past sinflar" va "eng ko'p qoldirganlar" ro'yxati
+  //     butun tarmoq bo'yicha QAYTA saralanishi kerak.
+  //  3. WORD FAYLI. Ikkilik hujjat birlashtirilmaydi.
+  //
+  // ⚠️ `pulse` ham shu yerda: u sanoqchidan tashqari FOIZ va oldingi davr
+  // bilan farqni ham qaytaradi, ya'ni `object` rejimi uni o'rtachalab
+  // yuborardi (ERP kartasidan farqi aynan shunda).
+  //
+  // ⚠️ Filialni tanlab turgan odam bu yo'llarga 403 oladi (darvoza
+  // `attendanceStats.controller.js` da) — registr buni ifodalamaydi.
+  { pattern: "GET /attendance-reports/students/report/export", mode: "anchor" },
+  { pattern: "GET /attendance-reports/students/report", mode: "anchor" },
+  { pattern: "GET /attendance-reports/students/pulse", mode: "anchor" },
+  { pattern: "GET /attendance-reports/teachers/report/export", mode: "anchor" },
+  { pattern: "GET /attendance-reports/teachers/report", mode: "anchor" },
+  { pattern: "GET /attendance-reports/teachers/pulse", mode: "anchor" },
+
   /* ── O'quvchilar harakati (keldi / ketdi) ─────────────────────────── */
   // ⚠️ O'QUVCHILAR HARAKATI — `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI.
   // Bu yo'llar FAQAT umumiy ko'rinishda ochiladi va filiallar bo'ylab

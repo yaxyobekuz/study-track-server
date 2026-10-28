@@ -1218,4 +1218,25 @@ module.exports = {
   getClassReport,
   getStaffReport,
   getStudentTrend,
+
+  /**
+   * ⚠️ DAVOMAT HISOBINING PRIMITIVLARI — ikkinchi dvigatel yozilmasin.
+   *
+   * Davr kesimidagi hisobot (`attendanceStats.service.js`, bosh sahifadagi
+   * kartalar va ularning hujjati) AYNI qoidalardan oziqlanadi: kutilgan =
+   * jadval bo'yicha kutilganlar ∪ o'sha kuni belgilanganlar, kelganlar =
+   * keldi + kech keldi, belgilanmagan = kelmagan. Nusxa ko'chirilsa, bitta
+   * ekranda 94%, ikkinchisida 96% turib qolardi.
+   */
+  attendancePercent,
+  emptyCounts,
+  finalizeCounts,
+  addCounts,
+  aggregateByDay,
+  indexDay,
+  classDayEntries,
+  tallyEntry,
+  pointDiff,
+  dayKey,
+  weekdayOf,
 };

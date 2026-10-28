@@ -30,15 +30,21 @@
 
 const prisma = require("../config/prisma");
 const { getTaskSettings } = require("./settings.service");
-const {
-  getTashkentDateUtc,
-  formatDateUz,
-  formatDateRangeUz,
-} = require("../helpers/date.helpers");
+const { getTashkentDateUtc } = require("../helpers/date.helpers");
 const { BadRequestError } = require("../utils/errors");
 const { applyScope } = require("./taskScope.service");
 const { normalizeKind } = require("../helpers/taskWindow.helpers");
-const { formatMonthKey } = require("../helpers/month.helpers");
+// ⚠️ DAVR TA'RIFI BITTA JOYDA (`helpers/statPeriod.helpers.js`): bosh
+// sahifadagi kartalar yonma-yon turadi va "oylik" ularning hammasida AYNI
+// oynani bildirishi shart.
+const {
+  isoDay: _isoDay,
+  bucketKey: _bucketKey,
+  bucketLabel: _bucketLabel,
+  buildBuckets: _buildBuckets,
+  periodLabel: _periodLabel,
+  resolvePresetRange: _resolvePreset,
+} = require("../helpers/statPeriod.helpers");
 
 const TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -61,105 +67,8 @@ const PEOPLE_LIMIT = 100;
 
 // ─── Sana yordamchilari ───────────────────────────────────────────
 
-const _isoDay = (date) => date.toISOString().slice(0, 10);
-
 /** Instant → Toshkent kunining kaliti ("2026-09-17"). */
 const _dayKey = (instant) => _isoDay(new Date(instant.getTime() + TZ_OFFSET_MS));
-
-/** Kun kaliti → o'sha haftaning dushanbasi. */
-const _weekKey = (dayKey) => {
-  const d = new Date(`${dayKey}T00:00:00Z`);
-  const shift = (d.getUTCDay() + 6) % 7; // dushanba = 0
-  return _isoDay(new Date(d.getTime() - shift * DAY_MS));
-};
-
-const _monthKey = (dayKey) => `${dayKey.slice(0, 7)}-01`;
-
-const _bucketKey = (dayKey, granularity) =>
-  granularity === "day" ? dayKey : granularity === "week" ? _weekKey(dayKey) : _monthKey(dayKey);
-
-/** Davrning barcha bo'laklari — bo'sh kunlar ham diagrammada nol bo'lib turishi uchun. */
-const _buildBuckets = (fromKey, toKey, granularity) => {
-  const keys = [];
-  const seen = new Set();
-  for (
-    let t = new Date(`${fromKey}T00:00:00Z`).getTime();
-    t <= new Date(`${toKey}T00:00:00Z`).getTime();
-    t += DAY_MS
-  ) {
-    const key = _bucketKey(_isoDay(new Date(t)), granularity);
-    if (!seen.has(key)) {
-      seen.add(key);
-      keys.push(key);
-    }
-  }
-  return keys;
-};
-
-/**
- * BO'LAK YORLIG'I — dinamika jadvalidagi qator nomi.
- *
- * ⚠️ MATN SERVERDA YIG'ILADI va bu ataylab: AYNI qator Word hujjatida ham,
- * ekrandagi hujjatda ham turadi (`.claude/rules/dates.md` — sana matni
- * bitta manbadan). Diagramma o'qi esa o'z qisqartmasini ishlatadi: u yerda
- * to'liq sana sig'maydi.
- *
- * @param {string} key - bo'lak kaliti ("2026-10-27")
- * @param {"day"|"week"|"month"} granularity
- */
-const _bucketLabel = (key, granularity) => {
-  if (granularity === "month") {
-    const monthKey = Number(`${key.slice(0, 4)}${key.slice(5, 7)}`);
-    return formatMonthKey(monthKey);
-  }
-
-  const day = formatDateUz(key, { utc: true });
-  return granularity === "week" ? `${day} dan boshlangan hafta` : day;
-};
-
-/**
- * DAVR MATNI — "27-oktabr, 2026" yoki "1-oktabr, 2026 — 27-oktabr, 2026".
- *
- * ⚠️ PRESET NOMI (oylik / yillik) O'RNIGA ANIQ ORALIQ yoziladi. "Oylik"
- * preseti oyning 1-kunidan BUGUNGACHA bo'lgan davr: hujjatni "Oktabr,
- * 2026" deb sarlavhalash uni TUGAGAN oy hisoboti qilib ko'rsatardi va
- * oy oxirida boshqa raqam chiqqanda hujjat "noto'g'ri" bo'lib qolardi.
- */
-const _periodLabel = (fromKey, toKey) =>
-  fromKey === toKey
-    ? formatDateUz(fromKey, { utc: true })
-    : formatDateRangeUz(fromKey, toKey, { utc: true });
-
-/**
- * DAVR PRESETLARI — dashboarddagi "Kunlik / Haftalik / Oylik / Yillik".
- *
- * ⚠️ SERVERDA hisoblanadi, panelda emas: kun chegarasi TOSHKENT vaqti
- * bo'yicha (`education.md` §9). Brauzer mintaqasi boshqa bo'lsa "bugun"
- * bir kunga siljib ketardi.
- *
- * @param {string} preset
- * @returns {{ from: string, to: string }|null}
- */
-const _resolvePreset = (preset) => {
-  const todayKey = _isoDay(getTashkentDateUtc(0));
-
-  switch (preset) {
-    case "day":
-      return { from: todayKey, to: todayKey };
-    case "week": {
-      // Hafta DUSHANBADAN boshlanadi (hisobotdagi `weekday` indeksi bilan AYNI)
-      const today = new Date(`${todayKey}T00:00:00Z`);
-      const shift = (today.getUTCDay() + 6) % 7;
-      return { from: _isoDay(new Date(today.getTime() - shift * DAY_MS)), to: todayKey };
-    }
-    case "month":
-      return { from: `${todayKey.slice(0, 7)}-01`, to: todayKey };
-    case "year":
-      return { from: `${todayKey.slice(0, 4)}-01-01`, to: todayKey };
-    default:
-      return null;
-  }
-};
 
 const _resolvePeriod = ({ from, to, period }) => {
   const todayKey = _isoDay(getTashkentDateUtc(0));
