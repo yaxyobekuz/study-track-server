@@ -6,6 +6,9 @@ const {
   getTaskStats,
   getTaskReport,
   getTaskDashboard,
+  getNetworkTaskPulse,
+  getNetworkTaskReport,
+  exportNetworkTaskReport,
   getTaskAssignees,
   getTaskSettings,
   updateTaskSettings,
@@ -87,6 +90,33 @@ router.get(
   getTaskAssignees,
 );
 router.get("/reports", authorizePermission(PERMISSIONS.TASKS_REPORTS), getTaskReport);
+
+// ─── XODIMLAR TOPSHIRIQLARI — TARMOQ HISOBOTI ────────────────────
+// Faqat "Umumiy — barcha filiallar" ko'rinishida ochiladi (darvoza
+// controller'da — `assertAggregateView`), ya'ni amalda faqat tizim egasida.
+//
+// ⚠️ `MANAGE(...)` ISHLATILMAYDI va bu ataylab: `tasks.team` — BO'LIM
+// rahbarining kaliti, bu yo'l esa butun tarmoqni ko'rsatadi va doirani
+// umuman qo'llamaydi (`taskNetwork.service.js`). Doira filialga bog'liq
+// (bo'lim a'zolari har filialda boshqa), shuning uchun u bu yerda
+// ifodalanmaydi — kalit esa to'liq ko'rish huquqi bo'lishi shart.
+//
+// ⚠️ Karta `tasks.view` bilan, HUJJAT esa `tasks.reports` bilan: hujjatda
+// xodimlar reytingi va "e'tibor talab qiladi" ro'yxati bor — ya'ni
+// ro'yxatni ko'rishdan KENGROQ kesim (`/reports` bilan AYNI qoida).
+//
+// ⚠️ `/network/*` — `/:id` DAN OLDIN (yuqoridagi AYNI tuzoq).
+router.get("/network/pulse", authorizePermission(PERMISSIONS.TASKS_VIEW), getNetworkTaskPulse);
+router.get(
+  "/network/report/export",
+  authorizePermission(PERMISSIONS.TASKS_REPORTS),
+  exportNetworkTaskReport,
+);
+router.get(
+  "/network/report",
+  authorizePermission(PERMISSIONS.TASKS_REPORTS),
+  getNetworkTaskReport,
+);
 // O'qish: yaratish formasi ham qoidalarni biladi (minimal uzunlik, jarima chegarasi)
 router.get(
   "/settings",

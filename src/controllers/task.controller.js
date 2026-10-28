@@ -1,8 +1,10 @@
 const asyncHandler = require("../middleware/async.middleware");
-const { BadRequestError } = require("../utils/errors");
+const { BadRequestError, ForbiddenError } = require("../utils/errors");
 const taskService = require("../services/task.service");
 const taskReportService = require("../services/taskReport.service");
 const taskScopeService = require("../services/taskScope.service");
+const taskNetworkService = require("../services/taskNetwork.service");
+const taskReportExport = require("../services/taskReportExport.service");
 const { PERMISSIONS, hasPermission, hasRole } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const { config } = require("../config/env.config");
@@ -236,6 +238,95 @@ const getTaskDashboard = asyncHandler(async (req, res) => {
 });
 
 /**
+ * XODIMLAR TOPSHIRIQLARI — FAQAT "UMUMIY — BARCHA FILIALLAR" KO'RINISHIDA
+ * (biznes qarori, 2026-10-27).
+ *
+ * Savol tarmoq darajasida beriladi: "bu oy butun tarmoqda nechta topshiriq
+ * berildi, qanchasi bajarildi, qaysi filialda ish qolib ketyapti". Bitta
+ * filial ichida bu savolga Lavozimlar markazi allaqachon javob beradi —
+ * bir xil nomdagi ikki ekran ikki xil raqam ko'rsatmasligi kerak.
+ *
+ * ⚠️ DARVOZA SERVERDA, panelda EMAS. Panel kartani va hujjatni umumiy
+ * ko'rinishdan tashqarida ko'rsatmaydi, lekin saqlangan havola yoki
+ * to'g'ridan-to'g'ri so'rov shu yerda to'siladi: aks holda "faqat umumiy
+ * ko'rinishda" degan qoida faqat ekranga tegishli bo'lib qolardi
+ * (`studentEnrollment.controller.js` bilan AYNI naqsh).
+ *
+ * ⚠️ 403 — ruxsat kaliti YETARLI, lekin REJIM noto'g'ri. Shuning uchun
+ * xabar "ruxsatingiz yo'q" emas: odam qaysi tugmani bosishi kerakligini
+ * bilib tursin.
+ *
+ * @returns {object[]} umumiy rejimdagi filiallar ro'yxati
+ */
+const assertAggregateView = (req) => {
+  const branches = req.aggregateScope?.branches;
+
+  if (!branches?.length) {
+    throw new ForbiddenError(
+      "Bu hisobot faqat \"Umumiy — barcha filiallar\" ko'rinishida ochiladi",
+    );
+  }
+
+  return branches;
+};
+
+/**
+ * BOSH SAHIFADAGI KARTA — tanlangan davr bo'yicha beshta raqam va
+ * filiallar kesimi.
+ *
+ * ⚠️ To'liq hisobotdan YENGIL (`getTaskPulse`): karta har ochilishda, har
+ * filialda bajariladi. Raqamlar esa AYNI ta'riflardan chiqadi.
+ *
+ * GET /tasks/network/pulse?period=day|week|month|year
+ */
+const getNetworkTaskPulse = asyncHandler(async (req, res) => {
+  const branches = assertAggregateView(req);
+
+  const data = await taskNetworkService.getNetworkTaskPulse(
+    { period: req.query.period || "month", from: req.query.from, to: req.query.to },
+    branches,
+  );
+
+  return res.json({ success: true, data });
+});
+
+/**
+ * HUJJAT KO'RINISHIDAGI HISOBOT — butun tarmoq bo'yicha.
+ *
+ * GET /tasks/network/report?period=day|week|month|year
+ */
+const getNetworkTaskReport = asyncHandler(async (req, res) => {
+  const branches = assertAggregateView(req);
+
+  const data = await taskNetworkService.getNetworkTaskReport(
+    { period: req.query.period || "month", from: req.query.from, to: req.query.to },
+    branches,
+  );
+
+  return res.json({ success: true, data });
+});
+
+/**
+ * AYNI hisobot — Word (.docx) fayli.
+ *
+ * ⚠️ Fayl EKRANDAGI AYNI OBYEKTDAN quriladi: hisobot bir marta hisoblanib,
+ * `taskReportExport` ga BERILADI (u qayta hisoblamaydi). Ikkinchi hisob
+ * bo'lsa, ekrandagi foiz bilan fayldagi foiz asta-sekin uzoqlashardi.
+ *
+ * GET /tasks/network/report/export?period=...
+ */
+const exportNetworkTaskReport = asyncHandler(async (req, res) => {
+  const branches = assertAggregateView(req);
+
+  const report = await taskNetworkService.getNetworkTaskReport(
+    { period: req.query.period || "month", from: req.query.from, to: req.query.to },
+    branches,
+  );
+
+  await taskReportExport.sendTaskReportDocx(res, report);
+});
+
+/**
  * Topshiriq qoidalari
  * GET /tasks/settings
  */
@@ -387,6 +478,9 @@ module.exports = {
   getTaskStats,
   getTaskReport,
   getTaskDashboard,
+  getNetworkTaskPulse,
+  getNetworkTaskReport,
+  exportNetworkTaskReport,
   getTaskAssignees,
   getTaskSettings,
   updateTaskSettings,

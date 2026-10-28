@@ -178,6 +178,20 @@ const RULES = [
   { pattern: "GET /tasks/reports", mode: "object", keep: ["dueSoonHours"] },
   { pattern: "GET /tasks/dashboard", mode: "object", keep: ["dueSoonHours"] },
 
+  // XODIMLAR TOPSHIRIQLARI — TARMOQ HISOBOTI (`taskNetwork.service.js`).
+  //
+  // ⚠️ `anchor`: yo'l filiallar bo'ylab O'ZI aylanadi. Umumiy
+  // birlashtiruvchi yaramaydi — u foizni og'irliksiz o'rtachalaydi
+  // (400 topshiriqli filial 3 topshiriqli filial bilan teng vazn
+  // olardi), reytinglarni esa qayta saralamaydi: har filialning
+  // birinchi beshtasini ulab qo'yish tarmoq beshtaligini bermaydi.
+  // Word fayli ham birlashtirilmaydi (`unsupported` bo'lsa tugma
+  // o'chiq qolardi) — `studentMovementNetwork.service.js` bilan AYNI
+  // uch sabab.
+  { pattern: "GET /tasks/network/report/export", mode: "anchor" },
+  { pattern: "GET /tasks/network/report", mode: "anchor" },
+  { pattern: "GET /tasks/network/pulse", mode: "anchor" },
+
   /* ── Yirik ro'yxatlar: tartib ATAYLAB e'lon qilinadi ───────────────── */
   // Sahifalashning to'g'riligi shunga bog'liq: bu yerdagi tartib filialning
   // O'Z tartibi bilan mos bo'lishi kerak (`aggregateMerge.helpers.js`).

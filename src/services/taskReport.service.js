@@ -30,10 +30,15 @@
 
 const prisma = require("../config/prisma");
 const { getTaskSettings } = require("./settings.service");
-const { getTashkentDateUtc } = require("../helpers/date.helpers");
+const {
+  getTashkentDateUtc,
+  formatDateUz,
+  formatDateRangeUz,
+} = require("../helpers/date.helpers");
 const { BadRequestError } = require("../utils/errors");
 const { applyScope } = require("./taskScope.service");
 const { normalizeKind } = require("../helpers/taskWindow.helpers");
+const { formatMonthKey } = require("../helpers/month.helpers");
 
 const TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -43,6 +48,16 @@ const WORKING_STATUSES = ["pending", "extended", "pending_rejected"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_RANGE_DAYS = 366;
 const LIVE_LIMIT = 8;
+/** Reyting ro'yxatlarining uzunligi — ekranda ham, hujjatda ham AYNI. */
+const TOP_LEADERS = 5;
+const TOP_ATTENTION = 6;
+const TOP_CREATORS = 6;
+/**
+ * Ijrochilar jadvalining chegarasi. ⚠️ Umumiy ko'rinishda u HAR FILIALGA
+ * alohida qo'llanadi (`taskNetwork.service.js`), chunki hisobot har
+ * filialda alohida quriladi.
+ */
+const PEOPLE_LIMIT = 100;
 
 // ─── Sana yordamchilari ───────────────────────────────────────────
 
@@ -80,6 +95,40 @@ const _buildBuckets = (fromKey, toKey, granularity) => {
   }
   return keys;
 };
+
+/**
+ * BO'LAK YORLIG'I — dinamika jadvalidagi qator nomi.
+ *
+ * ⚠️ MATN SERVERDA YIG'ILADI va bu ataylab: AYNI qator Word hujjatida ham,
+ * ekrandagi hujjatda ham turadi (`.claude/rules/dates.md` — sana matni
+ * bitta manbadan). Diagramma o'qi esa o'z qisqartmasini ishlatadi: u yerda
+ * to'liq sana sig'maydi.
+ *
+ * @param {string} key - bo'lak kaliti ("2026-10-27")
+ * @param {"day"|"week"|"month"} granularity
+ */
+const _bucketLabel = (key, granularity) => {
+  if (granularity === "month") {
+    const monthKey = Number(`${key.slice(0, 4)}${key.slice(5, 7)}`);
+    return formatMonthKey(monthKey);
+  }
+
+  const day = formatDateUz(key, { utc: true });
+  return granularity === "week" ? `${day} dan boshlangan hafta` : day;
+};
+
+/**
+ * DAVR MATNI — "27-oktabr, 2026" yoki "1-oktabr, 2026 — 27-oktabr, 2026".
+ *
+ * ⚠️ PRESET NOMI (oylik / yillik) O'RNIGA ANIQ ORALIQ yoziladi. "Oylik"
+ * preseti oyning 1-kunidan BUGUNGACHA bo'lgan davr: hujjatni "Oktabr,
+ * 2026" deb sarlavhalash uni TUGAGAN oy hisoboti qilib ko'rsatardi va
+ * oy oxirida boshqa raqam chiqqanda hujjat "noto'g'ri" bo'lib qolardi.
+ */
+const _periodLabel = (fromKey, toKey) =>
+  fromKey === toKey
+    ? formatDateUz(fromKey, { utc: true })
+    : formatDateRangeUz(fromKey, toKey, { utc: true });
 
 /**
  * DAVR PRESETLARI — dashboarddagi "Kunlik / Haftalik / Oylik / Yillik".
@@ -143,6 +192,7 @@ const _resolvePeriod = ({ from, to, period }) => {
     days,
     granularity,
     preset: preset ? period : null,
+    label: _periodLabel(fromKey, toKey),
     start: new Date(`${fromKey}T00:00:00+05:00`),
     end: new Date(`${toKey}T23:59:59.999+05:00`),
   };
@@ -226,6 +276,74 @@ const _finalizePerson = (row, user) => {
     avgCompletionMinutes: _avg(completionMinutes),
   };
 };
+
+/**
+ * REYTINGLAR VA KESIMLAR — TAYYOR ijrochi qatorlaridan.
+ *
+ * ⚠️ FUNKSIYA SIFATIDA AJRATILGAN va bu ataylab: AYNI qoidalarni tarmoq
+ * hisoboti ham chaqiradi (`taskNetwork.service.js`). Ikkinchi nusxa
+ * bo'lsa, bitta filial hisobotidagi "yetakchi" bilan umumiy ko'rinishdagi
+ * "yetakchi" boshqa-boshqa qoidadan chiqib ketardi — holbuki ekranda
+ * ular bitta nomdagi ustun.
+ *
+ * Kirish — `_finalizePerson` dan o'tgan qatorlar (`rate`, `onTimeRate`
+ * allaqachon hisoblangan), shuning uchun qayta hisob YO'Q.
+ */
+const pickLeaders = (rows) =>
+  rows
+    .filter((p) => p.completed > 0)
+    .sort(
+      (a, b) =>
+        (b.rate ?? 0) - (a.rate ?? 0) ||
+        (b.onTimeRate ?? 0) - (a.onTimeRate ?? 0) ||
+        b.completed - a.completed,
+    )
+    .slice(0, TOP_LEADERS);
+
+/** Muddati o'tgani bor YOKI bajarilishi 50% dan past (kamida 2 ta ish). */
+const pickAttention = (rows) =>
+  rows
+    .filter((p) => p.overdue > 0 || (p.assigned - p.stopped >= 2 && (p.rate ?? 100) < 50))
+    .sort((a, b) => b.overdue - a.overdue || (a.rate ?? 0) - (b.rate ?? 0))
+    .slice(0, TOP_ATTENTION);
+
+/**
+ * ROLLAR KESIMI.
+ *
+ * ⚠️ Rol — GURUH KALITI, odam emas: bir xil rolli qatorlar (umumiy
+ * ko'rinishda — har filialdagi qatorlar ham) QO'SHILADI. `people` esa
+ * odam soni, ya'ni ikki filialda ishlaydigan xodim u yerda ikki marta
+ * sanaladi va buning sababi hisobotda ochiq yoziladi.
+ */
+const groupByRole = (rows) => {
+  const roles = new Map();
+
+  for (const p of rows) {
+    const key = p.role || "unknown";
+    const row = roles.get(key) || {
+      role: key,
+      assigned: 0,
+      completed: 0,
+      overdue: 0,
+      stopped: 0,
+      people: 0,
+    };
+    row.assigned += p.assigned;
+    row.completed += p.completed;
+    row.overdue += p.overdue;
+    row.stopped += p.stopped;
+    row.people += 1;
+    roles.set(key, row);
+  }
+
+  return [...roles.values()]
+    .map((r) => ({ ...r, rate: _rate(r.completed, r.assigned - r.stopped) }))
+    .sort((a, b) => b.assigned - a.assigned);
+};
+
+/** Topshiriq beruvchilar — bergan ishi bo'yicha kamayish tartibida. */
+const pickCreators = (rows) =>
+  [...rows].sort((a, b) => b.created - a.created).slice(0, TOP_CREATORS);
 
 // ─── Jonli ro'yxatlar ─────────────────────────────────────────────
 
@@ -406,7 +524,12 @@ const getTaskReport = async (query = {}) => {
   const reviewMinutes = [];
 
   const buckets = _buildBuckets(fromKey, toKey, granularity);
-  const trendMap = new Map(buckets.map((key) => [key, { key, created: 0, completed: 0 }]));
+  const trendMap = new Map(
+    buckets.map((key) => [
+      key,
+      { key, label: _bucketLabel(key, granularity), created: 0, completed: 0 },
+    ]),
+  );
   const weekday = Array.from({ length: 7 }, (_, index) => ({ index, created: 0, completed: 0 }));
 
   const people = new Map();
@@ -504,45 +627,17 @@ const getTaskReport = async (query = {}) => {
     .map((row) => _finalizePerson(row, userMap.get(row.userId)))
     .sort((a, b) => b.assigned - a.assigned || (b.rate ?? -1) - (a.rate ?? -1));
 
-  const leaders = peopleRows
-    .filter((p) => p.completed > 0)
-    .sort(
-      (a, b) =>
-        (b.rate ?? 0) - (a.rate ?? 0) ||
-        (b.onTimeRate ?? 0) - (a.onTimeRate ?? 0) ||
-        b.completed - a.completed,
-    )
-    .slice(0, 5);
+  const leaders = pickLeaders(peopleRows);
+  const attention = pickAttention(peopleRows);
+  const byRole = groupByRole(peopleRows);
 
-  const attention = peopleRows
-    .filter((p) => p.overdue > 0 || (p.assigned - p.stopped >= 2 && (p.rate ?? 100) < 50))
-    .sort((a, b) => b.overdue - a.overdue || (a.rate ?? 0) - (b.rate ?? 0))
-    .slice(0, 6);
-
-  // Rollar kesimi
-  const roles = new Map();
-  for (const p of peopleRows) {
-    const key = p.role || "unknown";
-    const row = roles.get(key) || { role: key, assigned: 0, completed: 0, overdue: 0, stopped: 0, people: 0 };
-    row.assigned += p.assigned;
-    row.completed += p.completed;
-    row.overdue += p.overdue;
-    row.stopped += p.stopped;
-    row.people += 1;
-    roles.set(key, row);
-  }
-  const byRole = [...roles.values()]
-    .map((r) => ({ ...r, rate: _rate(r.completed, r.assigned - r.stopped) }))
-    .sort((a, b) => b.assigned - a.assigned);
-
-  const creatorRows = [...creators.values()]
-    .map((c) => ({
+  const creatorRows = pickCreators(
+    [...creators.values()].map((c) => ({
       ...c,
       name: _fullName(userMap.get(c.userId)),
       rate: _rate(c.completed, c.created - c.stopped),
-    }))
-    .sort((a, b) => b.created - a.created)
-    .slice(0, 6);
+    })),
+  );
 
   const withAssignee = (t) => {
     const u = userMap.get(t.assignee);
@@ -563,6 +658,7 @@ const getTaskReport = async (query = {}) => {
       days: period.days,
       granularity,
       preset: period.preset,
+      label: period.label,
     },
     kpis: {
       ...kpis,
@@ -571,10 +667,21 @@ const getTaskReport = async (query = {}) => {
       onTimeRate: _rate(timing.early + timing.lastDay, timing.early + timing.lastDay + timing.late),
       avgCompletionMinutes: _avg(completionMinutes),
       avgReviewMinutes: _avg(reviewMinutes),
+      // ⚠️ O'RTACHANING MAXRAJI. Umumiy ko'rinishda o'rtachalar
+      // OG'IRLIK bilan qo'shiladi (`taskNetwork.service.js`): usiz
+      // 2 ta topshirig'i bor filial 200 ta topshirig'i bor filial bilan
+      // teng hissa qo'shib, "tarmoq o'rtachasi" ma'nosiz raqam bo'lardi.
+      completionSamples: completionMinutes.length,
+      reviewSamples: reviewMinutes.length,
     },
     previous: {
       total: prevTotal,
       completed: prevCompleted,
+      // ⚠️ Maxrajda ham kerak: umumiy ko'rinishda oldingi davr foizi
+      // filiallar yig'indisidan QAYTA hisoblanadi (`taskNetwork.service.js`),
+      // ya'ni to'xtatilganlar soni o'sha yerda ham chiqarib tashlanishi
+      // kerak — aks holda ikki ekranda ikki xil o'zgarish ko'rinardi.
+      stopped: prevCount("stopped"),
       completionRate: _rate(prevCompleted, prevTotal - prevCount("stopped")),
     },
     breakdown: [
@@ -591,7 +698,7 @@ const getTaskReport = async (query = {}) => {
     })),
     trend: [...trendMap.values()],
     weekday,
-    people: peopleRows.slice(0, 100),
+    people: peopleRows.slice(0, PEOPLE_LIMIT),
     leaders: full ? leaders : [],
     attention: full ? attention : [],
     byRole: full ? byRole : [],
@@ -606,4 +713,92 @@ const getTaskReport = async (query = {}) => {
   };
 };
 
-module.exports = { getTaskReport };
+/**
+ * BOSH SAHIFA KARTASI — davr bo'yicha BEShTA raqam.
+ *
+ * ⚠️ NIMA UCHUN TO'LIQ HISOBOT EMAS. `getTaskReport` har topshiriqning
+ * HOLATLAR TARIXINI ham o'qiydi (o'z vaqtida topshirildimi, necha marta
+ * rad etilgan) va ustiga oltita jonli ro'yxat so'rovini qo'shadi. Bosh
+ * sahifadagi kartaga bularning birortasi kerak emas, lekin karta HAR
+ * ochilishda, HAR FILIALDA bajariladi — ya'ni narxi filiallar soniga
+ * ko'payadi.
+ *
+ * ⚠️ IKKINCHI HISOB EMAS: davr chegarasi (`_resolvePeriod`), holat
+ * ta'riflari (`WORKING_STATUSES`, "muddati o'tgan" = ishlanayotgan va
+ * muddati o'tgan) va foiz formulasi (`_rate`) AYNI — hammasi shu
+ * fayldagi BITTA manbadan. Shuning uchun kartadagi raqam hujjatdagi
+ * raqam bilan har doim mos tushadi.
+ *
+ * @param {{period?: string, from?: string, to?: string, scope?: object,
+ *          selfAssigned?: boolean}} query
+ * @returns {Promise<object>}
+ */
+const getTaskPulse = async (query = {}) => {
+  const period = _resolvePeriod(query);
+  const { start, end, fromKey, toKey } = period;
+  const now = new Date();
+  const scope = query.scope;
+  const selfAssigned = query.selfAssigned === true;
+
+  // ⚠️ DAVR SHARTI BIRINCHI yoziladi, qolgani USTIGA qo'shiladi: teskari
+  // bo'lsa chaqiruvchidan kelgan `createdAt` uni jimgina bosib ketardi.
+  const scoped = (where = {}) =>
+    applyScope(
+      { createdAt: { gte: start, lte: end }, ...where, selfAssigned },
+      scope,
+    );
+
+  const [groups, overdue] = await Promise.all([
+    prisma.task.groupBy({
+      by: ["status"],
+      where: scoped(),
+      _count: { _all: true },
+    }),
+    prisma.task.count({
+      where: scoped({ status: { in: WORKING_STATUSES }, dueDate: { lt: now } }),
+    }),
+  ]);
+
+  const count = (status) =>
+    groups.find((g) => g.status === status)?._count._all || 0;
+
+  const total = groups.reduce((acc, g) => acc + g._count._all, 0);
+  const completed = count("completed");
+  const stopped = count("stopped");
+  const review = count("pending_review");
+  const working = WORKING_STATUSES.reduce((acc, status) => acc + count(status), 0);
+
+  return {
+    period: {
+      from: fromKey,
+      to: toKey,
+      days: period.days,
+      preset: period.preset,
+      label: period.label,
+    },
+    total,
+    completed,
+    review,
+    // "Jarayonda" — ishlanayotgan, lekin muddati HALI o'tmagan
+    inProgress: Math.max(0, working - overdue),
+    overdue,
+    stopped,
+    // ⚠️ To'xtatilgani maxrajdan chiqariladi (`getTaskReport` bilan AYNI):
+    // bekor qilingan ish bajarilmagan deb sanalsa, rahbarning "to'xtatish"
+    // qarori xodimning foizini tushirib yuborardi.
+    completionRate: _rate(completed, total - stopped),
+  };
+};
+
+module.exports = {
+  getTaskReport,
+  getTaskPulse,
+  // Tarmoq hisoboti (`taskNetwork.service.js`) AYNI qoidalarni chaqiradi —
+  // ikkinchi nusxa yozilmaydi.
+  rate: _rate,
+  pickLeaders,
+  pickAttention,
+  groupByRole,
+  pickCreators,
+  LIVE_LIMIT,
+};
