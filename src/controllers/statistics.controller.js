@@ -14,6 +14,17 @@ const { STATISTICS_PERIODS } = require("../helpers/statistics.helpers");
  */
 const periodOf = (req) => String(req.query.period || "week");
 
+/**
+ * So'rovdagi ankor kun ("YYYY-MM-DD") — qaysi kun / hafta / oy.
+ *
+ * ⚠️ XATO FORMAT RAD ETILMAYDI, BUGUNGA tushadi (`period` bilan AYNI
+ * qoida): ko'rsatish filtri uchun 400 qaytarish ekranni butunlay
+ * bo'shatib qo'yardi. Tekshiruv va kelajak sanasini bugunga tushirish —
+ * `getStatisticsPeriodRange` da, bitta joyda.
+ */
+const dateOf = (req) =>
+  req.query.date ? String(req.query.date) : undefined;
+
 /** Davrning o'zbekcha nomi ("Kunlik" / "Haftalik" / "Oylik"). */
 const periodTitle = (key) =>
   (STATISTICS_PERIODS[key] || STATISTICS_PERIODS.week).title;
@@ -42,6 +53,7 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
   const data = await statisticsService.getStudentWeekly(
     studentId,
     periodOf(req),
+    dateOf(req),
   );
   return res.json({ success: true, data });
 });
@@ -57,7 +69,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
 
   const { data, pagination } = await statisticsService.getClassRankings(
     classId,
-    { page, limit, period: periodOf(req) },
+    { page, limit, period: periodOf(req), date: dateOf(req) },
   );
   return res.json({ success: true, data, pagination });
 });
@@ -74,6 +86,7 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
     page,
     limit,
     period: periodOf(req),
+    date: dateOf(req),
   });
   return res.json({ success: true, data, pagination });
 });
@@ -104,6 +117,7 @@ exports.getAllStudentWeeklyStats = asyncHandler(async (req, res) => {
 exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
   const { type = "school", classId } = req.query;
   const period = periodOf(req);
+  const date = dateOf(req);
   // Fayl nomidagi davr: "kunlik_reyting_maktab_2026-10-29.xlsx"
   const periodSlug = periodTitle(period).toLowerCase();
 
@@ -111,12 +125,14 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
   let sheetName = sheetTitle(`${periodTitle(period)} reyting`);
   let baseFileName = `${periodSlug}_reyting_maktab`;
   let columns;
+  // Qaysi davr yuklangani fayl nomida turadi: o'tgan hafta yuklab olinsa
+  // ham nomida BUGUNGI sana bo'lsa, ikki fayl bir xil nom bilan tushardi.
+  let rangeUsed = null;
 
   if (type === "class" && classId) {
-    const { classDoc, rows } = await statisticsService.getClassRankingRows(
-      classId,
-      period,
-    );
+    const { classDoc, range, rows } =
+      await statisticsService.getClassRankingRows(classId, period, date);
+    rangeUsed = range;
 
     data = rows.map((r) => ({
       rank: r.rank,
@@ -134,7 +150,11 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
       { header: "Baholar soni", key: "totalGrades", width: 15 },
     ];
   } else {
-    const { rows } = await statisticsService.getSchoolRankingRows(period);
+    const { range, rows } = await statisticsService.getSchoolRankingRows(
+      period,
+      date,
+    );
+    rangeUsed = range;
 
     data = rows.map((r) => ({
       rank: r.rank,
@@ -165,6 +185,11 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
     },
   });
 
-  const filename = ExcelService.generateFileName(baseFileName);
+  // ⚠️ `generateFileName` nomga BUGUNGI sanani qo'shadi — o'tgan hafta
+  // yuklab olinganda fayl nomi qaysi davr ekanini aytmasdi. Ankor kun
+  // (joriy davrda u baribir bugun) aniqroq.
+  const filename = rangeUsed
+    ? `${baseFileName}_${rangeUsed.date}.xlsx`
+    : ExcelService.generateFileName(baseFileName);
   await ExcelService.sendWorkbook(res, workbook, filename);
 });

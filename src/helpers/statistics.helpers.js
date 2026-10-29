@@ -96,45 +96,126 @@ const STATISTICS_PERIODS = Object.freeze({
 
 const STATISTICS_PERIOD_KEYS = Object.freeze(Object.keys(STATISTICS_PERIODS));
 
+/** Kunning boshi / oxiri (Toshkent devor-soati bo'yicha). */
+const startOfDay = (date) => {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const endOfDay = (date) => {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
+
+/**
+ * "YYYY-MM-DD" → kalendar kuni. Yaroqsiz bo'lsa `null`.
+ *
+ * ⚠️ `new Date("2026-10-19")` ISHLATILMAYDI: u qiymatni UTC yarim tuni deb
+ * o'qiydi va keyingi `getDate()` lokal kunni qaytarib, sanani bir kunga
+ * siljitardi (`dates.md` §4). Kun bo'laklardan quriladi.
+ *
+ * ⚠️ Mavjud bo'lmagan sana ("2026-02-31") rad etiladi: JS uni jimgina
+ * 3-martga aylantirardi va foydalanuvchi so'ramagan davr ochilardi.
+ */
+const parseDayKey = (value) => {
+  if (typeof value !== "string") return null;
+
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+
+  const valid =
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day;
+
+  return valid ? date : null;
+};
+
+/** Kalendar kunini "YYYY-MM-DD" ga aylantiradi (API qiymati, format emas). */
+const toDayKey = (date) => {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
+/** Berilgan sana tegishli haftaning dushanbasi. */
+const mondayOf = (date) => {
+  const day = date.getDay(); // 0 = yakshanba
+  const back = day === 0 ? 6 : day - 1;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() - back);
+  return startOfDay(monday);
+};
+
 /**
  * Tanlangan davrning chegaralari.
  *
- * ⚠️ NOMA'LUM KALIT → HAFTALIK: davr — ko'rsatish filtri, ma'lumot emas.
- * Eski mijoz (`period` yubormaydigan student paneli, bot, monitor) va
- * noto'g'ri yozilgan qiymat AVVALGIDEK haftalik reytingni oladi.
+ * ⚠️ DAVR ISTALGAN KUNGA OCHILADI (`dateKey` — "YYYY-MM-DD"): o'tgan
+ * hafta, o'tgan oy yoki aniq bir kun. Berilmasa — bugungi davr.
+ *
+ * ⚠️ OXIRI HECH QACHON BUGUNDAN OSHMAYDI: joriy hafta/oy tanlanganda
+ * oraliq bugun bilan tugaydi (avvalgi xatti-harakat AYNAN shu), o'tgan
+ * davrlarda esa to'liq hafta (dushanba–yakshanba) yoki to'liq oy olinadi.
+ * Kelajakdagi sana so'ralsa, u bugunga tushiriladi — "hali bo'lmagan
+ * hafta" degan bo'sh ro'yxat ochilmaydi.
+ *
+ * ⚠️ NOMA'LUM DAVR KALITI → HAFTALIK: davr — ko'rsatish filtri, ma'lumot
+ * emas. Eski mijoz (`period` yubormaydigan student paneli, bot, monitor)
+ * va noto'g'ri yozilgan qiymat AVVALGIDEK haftalik reytingni oladi.
  *
  * ⚠️ `weekStart`/`weekEnd`/`weekNumber`/`year` javobda QOLADI: ular
  * mijozlar bilan tuzilgan shartnoma. Yangi kodda `start`/`end` ishlatiladi.
  *
  * @param {string} [periodKey] - "day" | "week" | "month"
- * @returns {{period: string, title: string, start: Date, end: Date, weekStart: Date, weekEnd: Date, weekNumber: number, year: number}}
+ * @param {string} [dateKey] - "YYYY-MM-DD"; bo'sh bo'lsa bugun
+ * @returns {{period: string, title: string, date: string, isCurrent: boolean, start: Date, end: Date, weekStart: Date, weekEnd: Date, weekNumber: number, year: number}}
  */
-const getStatisticsPeriodRange = (periodKey) => {
+const getStatisticsPeriodRange = (periodKey, dateKey) => {
   const period = STATISTICS_PERIODS[periodKey] || STATISTICS_PERIODS.week;
 
-  if (period.key === "week") {
-    const week = getCurrentWeekRange();
-    return {
-      ...week,
-      period: period.key,
-      title: period.title,
-      start: week.weekStart,
-      end: week.weekEnd,
-    };
+  const today = getNowInUzbekistan();
+  const todayStart = startOfDay(today);
+  const todayEnd = endOfDay(today);
+
+  const requested = parseDayKey(dateKey);
+  const anchor =
+    requested && startOfDay(requested) <= todayStart ? requested : today;
+
+  let start;
+  let end;
+
+  if (period.key === "day") {
+    start = startOfDay(anchor);
+    end = endOfDay(anchor);
+  } else if (period.key === "week") {
+    start = mondayOf(anchor);
+    const sunday = new Date(start);
+    sunday.setDate(start.getDate() + 6);
+    end = endOfDay(sunday);
+  } else {
+    start = startOfDay(
+      new Date(anchor.getFullYear(), anchor.getMonth(), 1),
+    );
+    end = endOfDay(
+      new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0),
+    );
   }
 
-  const today = getNowInUzbekistan();
-
-  const start = new Date(today);
-  if (period.key === "month") start.setDate(1);
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(today);
-  end.setHours(23, 59, 59, 999);
+  if (end > todayEnd) end = todayEnd;
 
   return {
     period: period.key,
     title: period.title,
+    date: toDayKey(anchor),
+    // Davr bugunni qamraydimi — panel "keyingi" tugmasini shunga qarab yopadi
+    isCurrent: end.getTime() === todayEnd.getTime(),
     start,
     end,
     weekStart: start,
