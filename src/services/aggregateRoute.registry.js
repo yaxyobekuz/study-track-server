@@ -275,6 +275,18 @@ const RULES = [
   { pattern: "GET /student-systems/report", mode: "anchor" },
   { pattern: "GET /student-systems/summary", mode: "object" },
 
+  /* ── Bot foydalanuvchilari hisoboti ──────────────────────────────── */
+  // ⚠️ `anchor`: filiallar bo'ylab aylanishni servisning O'ZI bajaradi
+  // (`botReportNetwork.service.js`). Sabab davomat hisoboti bilan AYNI —
+  // qamrov foizi og'irliksiz o'rtachalanardi, sinflar reytingi esa
+  // ulanib qolardi; Word fayli ham birlashtirilmaydi.
+  //
+  // ⚠️ `GET /activity/overview` esa AVVALGICHA umumiy birlashtiruvchidan
+  // o'tadi: u karta uchun sanoqchi beradi va `BranchSplit` o'sha yerdan
+  // oziqlanadi.
+  { pattern: "GET /activity/bot-report/export", mode: "anchor" },
+  { pattern: "GET /activity/bot-report", mode: "anchor" },
+
   /* ── Davomat statistikasi (bosh sahifa kartalari + hujjat) ───────── */
   // ⚠️ `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: filiallar bo'ylab
   // aylanishni servisning O'ZI bajaradi

@@ -26,6 +26,8 @@ const {
   getSubject,
   getClass,
   exportClass,
+  getBotReport,
+  exportBotReport,
 } = require("../controllers/activity.controller");
 const { validateObjectId } = require("../middleware/validate.middleware");
 
@@ -35,6 +37,21 @@ router.use(authorizeSection(SECTIONS.ACTIVITY));
 // Butun manzara. Foydalanmayotganlarning ISM-RO'YXATI faqat
 // `activity.roster` bilan qo'shiladi — qaror controller'da.
 router.get("/overview", authorizePermission(PERMISSIONS.ACTIVITY_VIEW), getOverview);
+
+/**
+ * BOT FOYDALANUVCHILARI — hujjat ko'rinishidagi hisobot va uning Word
+ * nusxasi. Bosh sahifadagi "Bot foydalanuvchilar" kartasidagi belgi aynan
+ * shu yo'lga olib keladi.
+ *
+ * ⚠️ `:classId` li yo'llardan OLDIN turadi va `/bot-report` bo'lagi bilan
+ * boshlanadi — aniq yo'l har doim parametrli yo'ldan yuqorida.
+ *
+ * ⚠️ RUXSAT — `activity.view`: hisobotning o'zi umumiy foizlar. Ism
+ * ro'yxatlari (ulanmaganlar, jim turganlar) faqat `activity.roster`
+ * bo'lsa qo'shiladi, qarorni controller qabul qiladi.
+ */
+router.get("/bot-report/export", authorizePermission(PERMISSIONS.ACTIVITY_VIEW), exportBotReport);
+router.get("/bot-report", authorizePermission(PERMISSIONS.ACTIVITY_VIEW), getBotReport);
 
 // Bitta odamning faollik tarixi (xodim kartasi / ota-ona kartasi)
 router.get("/subject", authorizePermission(PERMISSIONS.ACTIVITY_SESSIONS), getSubject);
