@@ -3,6 +3,7 @@ const { ForbiddenError } = require("../utils/errors");
 
 const ExcelService = require("../services/excel.service");
 const statisticsService = require("../services/statistics.service");
+const networkService = require("../services/statisticsNetwork.service");
 const { STATISTICS_PERIODS } = require("../helpers/statistics.helpers");
 
 /**
@@ -24,6 +25,19 @@ const periodOf = (req) => String(req.query.period || "week");
  */
 const dateOf = (req) =>
   req.query.date ? String(req.query.date) : undefined;
+
+/**
+ * "Umumiy — barcha filiallar" ko'rinishidagi filiallar ro'yxati yoki `null`.
+ *
+ * ⚠️ 403 EMAS: reyting bitta filialda ham, umumiy ko'rinishda ham
+ * ochiladi (davomat hisobotidan farqi shunda). Farq faqat qaysi servis
+ * chaqirilishida — tarmoqda o'rinlar QAYTA hisoblanadi
+ * (`statisticsNetwork.service.js`).
+ */
+const networkBranches = (req) => {
+  const branches = req.aggregateScope?.branches;
+  return branches?.length ? branches : null;
+};
 
 /** Davrning o'zbekcha nomi ("Kunlik" / "Haftalik" / "Oylik"). */
 const periodTitle = (key) =>
@@ -81,13 +95,18 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
  */
 exports.getSchoolRankings = asyncHandler(async (req, res) => {
   const { page = 1, limit = 20 } = req.query;
-
-  const { data, pagination } = await statisticsService.getSchoolRankings({
+  const params = {
     page,
     limit,
     period: periodOf(req),
     date: dateOf(req),
-  });
+  };
+
+  const branches = networkBranches(req);
+  const { data, pagination } = branches
+    ? await networkService.getNetworkSchoolRankings(params, branches)
+    : await statisticsService.getSchoolRankings(params);
+
   return res.json({ success: true, data, pagination });
 });
 
@@ -150,15 +169,21 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
       { header: "Baholar soni", key: "totalGrades", width: 15 },
     ];
   } else {
-    const { range, rows } = await statisticsService.getSchoolRankingRows(
-      period,
-      date,
-    );
+    // Umumiy ko'rinishda fayl ham TARMOQ reytingi bo'ladi: har filialning
+    // alohida fayli emas (ikkilik faylni birlashtirib bo'lmaydi) va
+    // langar filialning yolg'iz ro'yxati ham emas — odam uni "butun
+    // tarmoq" deb o'qib, qaroriga asos qilardi.
+    const branches = networkBranches(req);
+    const { range, rows } = branches
+      ? await networkService.getNetworkSchoolRankingRows(period, date, branches)
+      : await statisticsService.getSchoolRankingRows(period, date);
     rangeUsed = range;
+    const isNetwork = Boolean(branches);
 
     data = rows.map((r) => ({
       rank: r.rank,
       fullName: r.student.fullName,
+      branch: r._branch?.name || "",
       classes:
         r.classes && r.classes.length > 0
           ? r.classes.map((c) => c.name).join(", ")
@@ -170,6 +195,9 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
     columns = [
       { header: "O'rin", key: "rank", width: 8 },
       { header: "O'quvchi", key: "fullName", width: 30 },
+      // "Filial" ustuni faqat umumiy ko'rinishda — bitta filialda u har
+      // qatorda takrorlanadigan ma'nosiz ustun bo'lardi
+      ...(isNetwork ? [{ header: "Filial", key: "branch", width: 22 }] : []),
       { header: "Sinflar", key: "classes", width: 20 },
       { header: "Umumiy ball", key: "totalSum", width: 15 },
       { header: "Baholar soni", key: "totalGrades", width: 15 },

@@ -445,6 +445,14 @@ module.exports = {
   getStudentAllWeeks,
   getSchoolRankingRows,
   getClassRankingRows,
-  // pastki funksiyalar (test/qayta ishlatish uchun)
+  // pastki funksiyalar (test/qayta ishlatish uchun). ⚠️ Tarmoq reytingi
+  // (`statisticsNetwork.service.js`) shu yerdan oziqlanadi — u ikkinchi
+  // quruvchi YOZMAYDI, faqat filiallar qatorini birlashtirib QAYTA
+  // saralaydi.
+  buildRankingRows,
+  byScoreThenName,
+  assignRanks,
+  paginate,
+  periodFields,
   aggregateGradesByStudent,
 };

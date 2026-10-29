@@ -287,6 +287,26 @@ const RULES = [
   { pattern: "GET /activity/bot-report/export", mode: "anchor" },
   { pattern: "GET /activity/bot-report", mode: "anchor" },
 
+  /* ── Baho reytingi (Statistika) ───────────────────────────────────── */
+  // ⚠️ REYTING `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: o'rinlar butun
+  // tarmoq bo'yicha QAYTA hisoblanadi (`statisticsNetwork.service.js`).
+  //
+  // Sabab: har filial O'Z ro'yxatini o'z 1-o'rni bilan qaytaradi.
+  // Qatorlar shunchaki ulanganda ekranda "...49, 49, 1, 1, 3..." degan
+  // ketma-ketlik chiqardi — o'rin qatorning KIMLIGI emas, ro'yxatdagi
+  // O'RNI, ya'ni u faqat yakuniy ro'yxat yig'ilgandan keyin beriladi.
+  // Sahifalash ham shu sababdan: filiallar o'z ellik qatorini alohida
+  // kessa, 2-sahifada boshqa filialning eng yaxshilari turardi.
+  //
+  // ⚠️ Eksport ham shu yerda — ikkilik fayl birlashtirilmaydi; umumiy
+  // ko'rinishda u "Filial" ustuni bilan BITTA tarmoq faylini beradi.
+  //
+  // ⚠️ SINF reytingi (`/class/:id/rankings`) BU YERDA EMAS: sinf bitta
+  // filialniki, ya'ni javob ham o'sha filialdan keladi (yo'ldagi id
+  // bo'yicha topiladi) va qayta saralash kerak emas.
+  { pattern: "GET /statistics/weekly/school/rankings", mode: "anchor" },
+  { pattern: "GET /statistics/weekly/export", mode: "anchor" },
+
   /* ── Davomat statistikasi (bosh sahifa kartalari + hujjat) ───────── */
   // ⚠️ `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: filiallar bo'ylab
   // aylanishni servisning O'ZI bajaradi
