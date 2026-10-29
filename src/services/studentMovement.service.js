@@ -208,17 +208,39 @@ const loadEnrollments = (toMonth) =>
     orderBy: [{ startDate: "asc" }, { createdAt: "asc" }],
   });
 
+/**
+ * ⚠️ TELEFON RAQAMI HAM O'QILADI (biznes qarori, 2026-10-29). Hisobotdagi
+ * ro'yxat ("kim keldi", "kim ketdi") O'QILIB QO'YILADIGAN narsa emas — u
+ * bo'yicha QO'NG'IROQ QILINADI: ketgan bolaning sababini aniqlash yoki
+ * yangi kelganini kutib olish. Raqam yozilmasa, har ism uchun o'quvchilar
+ * bo'limidan qidirib topish kerak bo'lardi.
+ *
+ * Ikkalasi ham olinadi: kichik sinf o'quvchisida odatda faqat ota-onasining
+ * raqami bo'ladi, kattasida esa o'ziniki ham.
+ */
 const STUDENT_SELECT = {
   id: true,
   firstName: true,
   lastName: true,
   username: true,
+  phone: true,
+  parentPhone: true,
   isArchived: true,
   classes: {
     select: { class: { select: { id: true, name: true } } },
     orderBy: { class: { name: "asc" } },
   },
 };
+
+/**
+ * Qatorga qo'shiladigan aloqa maydonlari — XOM holda (formatlash hujjat
+ * tomonida, `phone.helpers.js` → `phonePairText`). Uch serializer ham
+ * shuni chaqiradi: biri unutilsa, o'sha ro'yxat jimgina raqamsiz qolardi.
+ */
+const contactOf = (student) => ({
+  phone: student?.phone ?? null,
+  parentPhone: student?.parentPhone ?? null,
+});
 
 const loadStudents = async (studentIds) => {
   if (studentIds.length === 0) return new Map();
@@ -633,6 +655,7 @@ const serializeJoined = (row, { studentById, firstStart, todayMs }) => {
     studentId: row.studentId,
     name: nameOf(student),
     username: student?.username ?? null,
+    ...contactOf(student),
     className: classNameOf(student),
     date: iso(row.startDate),
     month: monthKeyOfDate(row.startDate),
@@ -660,6 +683,7 @@ const serializeLeft = (row, { studentById, classByKey, todayMs, laterStarts }) =
     studentId: row.studentId,
     name: nameOf(student),
     username: student?.username ?? null,
+    ...contactOf(student),
     className: snapshotClass ?? classNameOf(student),
     classSource: snapshotClass ? "snapshot" : classNameOf(student) ? "current" : null,
     startDate: iso(row.startDate),
@@ -707,6 +731,7 @@ const serializeMoved = (entry, direction, { studentById, classByKey }) => {
     studentId: row.studentId,
     name: nameOf(student),
     username: student?.username ?? null,
+    ...contactOf(student),
     className: snapshotClass ?? classNameOf(student),
     direction,
     directionLabel: direction === "in" ? "Ko'chib keldi" : "Ko'chib ketdi",

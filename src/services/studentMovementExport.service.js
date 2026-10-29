@@ -17,6 +17,7 @@
 
 const { buildDocx, sendDocx } = require("./word.service");
 const { formatDateUz, formatDateTimeUz } = require("../helpers/date.helpers");
+const { phonePairText, PHONE_PAIR_LABEL } = require("../helpers/phone.helpers");
 
 /** Hujjat ranglari — ekrandagi bilan AYNI ma'noda (o'sish yashil, tushish qizil). */
 const COLOR = {
@@ -65,6 +66,18 @@ const text = (value) => {
   const trimmed = String(value ?? "").trim();
   return trimmed || "—";
 };
+
+/**
+ * TELEFON USTUNI — uchala ro'yxatda AYNI (kelganlar, ketganlar, ko'chganlar).
+ *
+ * ⚠️ Ustun ham, katak ham BITTA joyda: ro'yxatlar bir-biriga o'xshash va
+ * biriga qo'lda yozilgan ustun ikkinchisida boshqacha kenglik yoki boshqa
+ * sarlavha bilan qolib ketardi. Raqamni ikki qator qilib chizish sababi
+ * `phone.helpers.js` da yozilgan.
+ */
+const PHONE_COLUMN = { label: PHONE_PAIR_LABEL, width: 5 };
+
+const phoneCell = (item) => ({ text: phonePairText(item) });
 
 // ─────────────────────────────────────────────
 // Bo'limlar
@@ -416,6 +429,7 @@ const joinedBlocks = (report, index) => {
   const rows = items.map((item, i) => [
     { text: String(i + 1), align: "center" },
     { text: item.name, bold: true },
+    phoneCell(item),
     ...(net ? [{ text: text(item.branchName) }] : []),
     { text: text(item.className) },
     { text: day(item.date), align: "center" },
@@ -435,7 +449,8 @@ const joinedBlocks = (report, index) => {
       type: "table",
       columns: [
         { label: "№", width: 1, align: "center" },
-        { label: "F.I.Sh.", width: net ? 6 : 7 },
+        { label: "F.I.Sh.", width: net ? 5 : 6 },
+        PHONE_COLUMN,
         ...(net ? [{ label: "Filial", width: 3 }] : []),
         { label: "Sinf", width: net ? 3 : 4 },
         { label: "Kelgan sana", width: 3, align: "center" },
@@ -473,6 +488,7 @@ const leftBlocks = (report, index) => {
   const rows = items.map((item, i) => [
     { text: String(i + 1), align: "center" },
     { text: item.name, bold: true },
+    phoneCell(item),
     ...(net ? [{ text: text(item.branchName) }] : []),
     { text: text(item.className) },
     { text: day(item.date), align: "center" },
@@ -491,6 +507,7 @@ const leftBlocks = (report, index) => {
       columns: [
         { label: "№", width: 1, align: "center" },
         { label: "F.I.Sh.", width: 5 },
+        PHONE_COLUMN,
         ...(net ? [{ label: "Filial", width: 3 }] : []),
         { label: "Sinf", width: 3 },
         { label: "Ketgan sana", width: 3, align: "center" },
@@ -516,6 +533,7 @@ const movedBlocks = (report, index) => {
   const rows = items.map((item, i) => [
     { text: String(i + 1), align: "center" },
     { text: item.name, bold: true },
+    phoneCell(item),
     { text: text(item.className) },
     { text: text(item.fromBranch), align: "center" },
     { text: text(item.toBranch), align: "center", color: COLOR.up },
@@ -532,7 +550,8 @@ const movedBlocks = (report, index) => {
       type: "table",
       columns: [
         { label: "№", width: 1, align: "center" },
-        { label: "F.I.Sh.", width: 6 },
+        { label: "F.I.Sh.", width: 5 },
+        PHONE_COLUMN,
         { label: "Sinf", width: 3 },
         { label: "Qaysi filialdan", width: 4, align: "center" },
         { label: "Qaysi filialga", width: 4, align: "center" },

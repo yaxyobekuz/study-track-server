@@ -300,10 +300,18 @@ const attachStudents = async (rows) => {
 
   const students = await prisma.user.findMany({
     where: { id: { in: rows.map((row) => row.studentId) } },
+    // ⚠️ TELEFON RAQAMI HAM (biznes qarori, 2026-10-29): "eng ko'p
+    // qoldirganlar" ro'yxati o'qish uchun emas — u bo'yicha ota-onaga
+    // QO'NG'IROQ QILINADI. Raqamsiz ro'yxat har ism uchun o'quvchilar
+    // bo'limidan qidirishni talab qilardi.
+    // ⚠️ Faqat RO'YXATGA TUSHGANLARNIKI o'qiladi (`TOP_STUDENTS` dan
+    // keyin chaqiriladi), ya'ni butun maktabning raqami tortilmaydi.
     select: {
       id: true,
       firstName: true,
       lastName: true,
+      phone: true,
+      parentPhone: true,
       classes: { select: { class: { select: { name: true } } } },
     },
   });
@@ -314,6 +322,9 @@ const attachStudents = async (rows) => {
     return {
       ...row,
       name: fullName(student),
+      // Xom holda: formatlash hujjat tomonida (`phone.helpers.js`).
+      phone: student?.phone ?? null,
+      parentPhone: student?.parentPhone ?? null,
       className:
         student?.classes?.map((item) => item.class?.name).filter(Boolean).join(", ") || "—",
     };

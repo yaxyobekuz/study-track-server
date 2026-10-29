@@ -17,6 +17,7 @@
 
 const { buildDocx, sendDocx } = require("./word.service");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
+const { phonePairText, PHONE_PAIR_LABEL } = require("../helpers/phone.helpers");
 
 /** Hujjat ranglari — ekrandagi bilan AYNI ma'noda. */
 const COLOR = {
@@ -452,6 +453,10 @@ const studentListBlocks = (report, index, net) => [
     columns: [
       { label: "№", width: 1, align: "center" },
       { label: "O'quvchi", width: 4 },
+      // ⚠️ RO'YXAT QO'NG'IROQ UCHUN: raqamsiz u faqat "xabar" bo'lib
+      // qolardi. Ikki raqam bitta ustunda, ikki qator — sababi
+      // `phone.helpers.js` dagi izohda.
+      { label: PHONE_PAIR_LABEL, width: 5 },
       ...(net ? [{ label: "Filial", width: 2 }] : []),
       { label: "Sinf", width: 2 },
       { label: "Kutilgan", width: 2, align: "right" },
@@ -462,6 +467,7 @@ const studentListBlocks = (report, index, net) => [
     rows: report.students.map((row, i) => [
       { text: String(i + 1), align: "center", color: COLOR.muted },
       { text: text(row.name), bold: true },
+      { text: phonePairText(row) },
       ...(net ? [text(row.branchName)] : []),
       text(row.className),
       num(row.expected),

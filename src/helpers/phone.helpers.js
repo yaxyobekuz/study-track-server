@@ -57,4 +57,39 @@ function formatPhoneUz(value) {
   return String(value);
 }
 
-module.exports = { normalizePhone, formatPhoneUz };
+/**
+ * IKKI RAQAM BITTA KATAKDA — o'quvchining O'ZINIKI va OTA-ONASINIKI.
+ *
+ * ⚠️ IKKITA USTUN EMAS, BITTA USTUN IKKI QATOR. Hisobotlar A4 varaqqa
+ * chiqadi va `+998 90 123 45 67` bitta qatorga sig'ishi uchun ustun
+ * kamida ~1,2 dyuym bo'lishi kerak: ikkita shunday ustun qo'yilsa,
+ * ism va izoh ustunlari qisilib, raqamning o'zi ham bo'shliqlardan
+ * bo'linib ("+998 90 123" / "45 67") o'qilmas bo'lib qolardi.
+ *
+ * ⚠️ QATOR TARTIBI MA'NO TASHIYDI: birinchi qator — o'quvchi, ikkinchisi
+ * — ota-ona (ustun sarlavhasi ham shuni aytadi). Shuning uchun raqami
+ * yo'q tomon `—` bilan O'Z O'RNIDA qoladi: tashlab ketilsa, yolg'iz
+ * raqam kimniki ekani noma'lum bo'lardi. Ikkalasi ham yo'q bo'lsa —
+ * bitta `—`.
+ *
+ * `\n` Word'da `<w:br/>` ga aylanadi (`word.service.js`), panelda esa
+ * hujjat komponenti AYNI ikki qatorni chizadi.
+ *
+ * @param {{phone?: string|null, parentPhone?: string|null}|null} contact
+ * @returns {string}
+ */
+function phonePairText(contact) {
+  const own = formatPhoneUz(contact?.phone);
+  const parent = formatPhoneUz(contact?.parentPhone);
+
+  if (own === "\u2014" && parent === "\u2014") return "\u2014";
+  return `${own}\n${parent}`;
+}
+
+/**
+ * Shu ustunning sarlavhasi — hujjatlarda BIR XIL yozilsin
+ * (ekrandagi nusxa ham shuni oladi).
+ */
+const PHONE_PAIR_LABEL = "Telefon (o'quvchi / ota-ona)";
+
+module.exports = { normalizePhone, formatPhoneUz, phonePairText, PHONE_PAIR_LABEL };
