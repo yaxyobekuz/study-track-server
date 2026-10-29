@@ -220,6 +220,11 @@ const buildClassBreakdown = (rows, students) => {
 const studentLine = (row) => ({
   id: row.id,
   name: row.name,
+  // ⚠️ Ro'yxat bo'yicha QO'NG'IROQ QILINADI, shuning uchun raqam qator
+  // bilan birga yuradi (`studentMovement` va `attendanceStats` bilan
+  // AYNI qaror).
+  phone: row.phone ?? null,
+  parentPhone: row.parentPhone ?? null,
   className: row.classNames,
   ...Object.fromEntries(SYSTEMS.map((system) => [system, row[system]])),
 });

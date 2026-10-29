@@ -410,6 +410,9 @@ function buildExportRows(students, { classIds = null } = {}) {
     return {
       id: student.id,
       name: fullName(student) || "—",
+      // Xom holda: formatlash hujjat tomonida (`phone.helpers.js`).
+      phone: student.phone ?? null,
+      parentPhone: student.parentPhone ?? null,
       classNames: classes.length > 0 ? classes.map((cls) => cls.name).join(", ") : NO_CLASS_LABEL,
       groupClass,
       ...Object.fromEntries(SYSTEMS.map((system) => [system, marks.has(system)])),
@@ -502,10 +505,16 @@ async function loadExportData({ classIds }) {
         CURRENT_STUDENTS,
         classIds ? { classes: { some: { classId: { in: classIds } } } } : null,
       ),
+      // ⚠️ TELEFON RAQAMI HAM (biznes qarori, 2026-10-29): hujjatdagi
+      // "kiritilmaganlar" ro'yxati bo'yicha ota-onaga qo'ng'iroq
+      // qilinadi (raqamni so'rash, hujjat yetishmasligi). Excel
+      // ustunlari o'zgarmaydi — u ustunlarni KALIT bo'yicha yozadi.
       select: {
         id: true,
         firstName: true,
         lastName: true,
+        phone: true,
+        parentPhone: true,
         classes: { select: { class: { select: { id: true, name: true } } } },
         systemMarks: { select: { system: true } },
       },
@@ -527,6 +536,8 @@ async function loadExportData({ classIds }) {
     id: user.id,
     firstName: user.firstName,
     lastName: user.lastName,
+    phone: user.phone,
+    parentPhone: user.parentPhone,
     classes: user.classes.map((uc) => uc.class),
     systems: user.systemMarks.map((mark) => mark.system),
   }));

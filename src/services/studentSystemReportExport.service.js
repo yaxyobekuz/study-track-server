@@ -17,6 +17,7 @@
 
 const { buildDocx, sendDocx } = require("./word.service");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
+const { phonePairText, PHONE_PAIR_LABEL } = require("../helpers/phone.helpers");
 const { SYSTEMS, SYSTEM_LABELS } = require("./studentSystem.service");
 
 /** Hujjat ranglari — ekrandagi bilan AYNI ma'noda (bor — yashil, yo'q — qizil). */
@@ -324,6 +325,7 @@ const missingBlocks = (report, system, index) => {
   const rows = items.map((item, i) => [
     { text: String(i + 1), align: "center" },
     { text: item.name, bold: true },
+    { text: phonePairText(item) },
     ...(net ? [{ text: text(item.branchName) }] : []),
     { text: text(item.className) },
     ...others.map((key) => mark(item[key])),
@@ -342,9 +344,14 @@ const missingBlocks = (report, system, index) => {
       type: "table",
       columns: [
         { label: "№", width: 1, align: "center" },
-        { label: "F.I.Sh.", width: net ? 6 : 7 },
+        { label: "F.I.Sh.", width: net ? 5 : 6 },
+        // ⚠️ RO'YXAT ISH RO'YXATI: mas'ul xodim shu qatorlar bo'yicha
+        // tizimga kiritadi va yetishmagan ma'lumot uchun ota-onaga
+        // qo'ng'iroq qiladi. Ikki raqam bitta ustunda, ikki qator —
+        // sababi `phone.helpers.js` dagi izohda.
+        { label: PHONE_PAIR_LABEL, width: 5 },
         ...(net ? [{ label: "Filial", width: 3 }] : []),
-        { label: "Sinf", width: net ? 3 : 4 },
+        { label: "Sinf", width: 3 },
         ...others.map((key) => ({
           label: SYSTEM_LABELS[key],
           width: 2,
