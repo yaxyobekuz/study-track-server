@@ -73,6 +73,77 @@ const getWeekRangeForDate = (date) => {
   };
 };
 
+/* ─────────────────────────── REYTING DAVRLARI ─────────────────────────── */
+
+/**
+ * Reyting davrlari — "kunlik / haftalik / oylik".
+ *
+ * ⚠️ KALENDAR DAVR, "oxirgi N kun" EMAS (`helpers/gradeAnalysis.js` dagi
+ * `GRADE_ANALYSIS_PERIODS` dan farqi aynan shu). Reyting "BU hafta kim
+ * oldinda" degan savolga javob beradi: dushanba kuni u noldan boshlanishi
+ * kerak, oyning 1-kuni ham shunday. "Oxirgi 7 kun" bo'lsa, dushanba kuni
+ * ro'yxatda o'tgan haftaning ballari turardi va "yangi hafta" degan
+ * tushuncha yo'qolardi.
+ *
+ * ⚠️ UCHALASI HAM BUGUN BILAN TUGAYDI (`getCurrentWeekRange` bilan AYNI
+ * qoida): kelasi kunlar hali fakt emas.
+ */
+const STATISTICS_PERIODS = Object.freeze({
+  day: Object.freeze({ key: "day", title: "Kunlik", label: "Bugun" }),
+  week: Object.freeze({ key: "week", title: "Haftalik", label: "Bu hafta" }),
+  month: Object.freeze({ key: "month", title: "Oylik", label: "Bu oy" }),
+});
+
+const STATISTICS_PERIOD_KEYS = Object.freeze(Object.keys(STATISTICS_PERIODS));
+
+/**
+ * Tanlangan davrning chegaralari.
+ *
+ * ⚠️ NOMA'LUM KALIT → HAFTALIK: davr — ko'rsatish filtri, ma'lumot emas.
+ * Eski mijoz (`period` yubormaydigan student paneli, bot, monitor) va
+ * noto'g'ri yozilgan qiymat AVVALGIDEK haftalik reytingni oladi.
+ *
+ * ⚠️ `weekStart`/`weekEnd`/`weekNumber`/`year` javobda QOLADI: ular
+ * mijozlar bilan tuzilgan shartnoma. Yangi kodda `start`/`end` ishlatiladi.
+ *
+ * @param {string} [periodKey] - "day" | "week" | "month"
+ * @returns {{period: string, title: string, start: Date, end: Date, weekStart: Date, weekEnd: Date, weekNumber: number, year: number}}
+ */
+const getStatisticsPeriodRange = (periodKey) => {
+  const period = STATISTICS_PERIODS[periodKey] || STATISTICS_PERIODS.week;
+
+  if (period.key === "week") {
+    const week = getCurrentWeekRange();
+    return {
+      ...week,
+      period: period.key,
+      title: period.title,
+      start: week.weekStart,
+      end: week.weekEnd,
+    };
+  }
+
+  const today = getNowInUzbekistan();
+
+  const start = new Date(today);
+  if (period.key === "month") start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+
+  const end = new Date(today);
+  end.setHours(23, 59, 59, 999);
+
+  return {
+    period: period.key,
+    title: period.title,
+    start,
+    end,
+    weekStart: start,
+    weekEnd: end,
+    weekNumber: getWeekNumber(start),
+    year: start.getFullYear(),
+  };
+};
+
 /**
  * Baholar yig'indisini hisoblaydi
  * @param {Array} grades - Baholar array (har bir grade da .grade field bor)
@@ -87,5 +158,8 @@ module.exports = {
   getWeekNumber,
   getCurrentWeekRange,
   getWeekRangeForDate,
+  getStatisticsPeriodRange,
+  STATISTICS_PERIODS,
+  STATISTICS_PERIOD_KEYS,
   calculateTotalSum,
 };

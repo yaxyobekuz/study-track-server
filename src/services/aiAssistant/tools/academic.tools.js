@@ -489,43 +489,56 @@ const gradesStudent = defineTool({
 const gradesRankings = defineTool({
   name: "grades_rankings",
   toolset: TOOLSET,
-  label: "Haftalik baho reytingi o'qilmoqda",
+  label: "Baho reytingi o'qilmoqda",
   description:
-    "Current-week student ranking by SUM of grades (not average) for the whole school or one class. Returns rank, student, classes, " +
-    "totalSum and totalGrades. Current week only (Monday–today, Asia/Tashkent).",
+    "Student ranking by SUM of grades (not average) for the whole school or one class. Returns rank, student, classes, " +
+    "totalSum and totalGrades. Calendar period ending today (Asia/Tashkent): day = today, week = Monday–today, " +
+    "month = 1st–today. Defaults to week.",
   parameters: {
     type: "object",
     additionalProperties: false,
     properties: {
       classId: idSchema("Class id to rank inside one class. Omit for the whole school."),
+      period: {
+        type: "string",
+        enum: ["day", "week", "month"],
+        description: "Calendar period ending today. Default: week.",
+      },
       limit: limitSchema(100, "How many top positions to return."),
     },
   },
   async handler(args) {
     const limit = args.limit ?? 20;
+    const period = args.period ?? "week";
     const result = args.classId
-      ? await statisticsService.getClassRankings(requireId(args.classId, "classId"), { page: 1, limit })
-      : await statisticsService.getSchoolRankings({ page: 1, limit });
+      ? await statisticsService.getClassRankings(requireId(args.classId, "classId"), { page: 1, limit, period })
+      : await statisticsService.getSchoolRankings({ page: 1, limit, period });
 
     const { data } = result;
     const scope = data.class ? `Sinf: ${data.class.name}` : "Butun maktab";
-    const weekLabel = `${wallDayLabel(data.weekStart)} — ${wallDayLabel(data.weekEnd)}`;
+    // Davr yorlig'i ("26-oktabr — 29-oktabr"): modelga qaysi kunlar
+    // hisoblangani AYNIQ aytiladi, aks holda u "hafta" deb taxmin qilardi.
+    const weekLabel = `${wallDayLabel(data.periodStart)} — ${wallDayLabel(data.periodEnd)}`;
 
     // Servis baho olmagan o'quvchilarni ham 0 ball bilan "1-o'rin" deb
     // qaytaradi — bunday ro'yxat reyting emas, modelni chalg'itadi.
     if (data.rankings.every((row) => row.totalGrades === 0)) {
       return {
         scope,
+        period: data.period,
+        periodTitle: data.periodTitle,
         weekLabel,
         weekNumber: data.weekNumber,
         totalStudents: data.totalStudents,
         empty: true,
-        reason: "Bu hafta hali baho qo'yilmagan — reyting yo'q",
+        reason: `${data.periodTitle} davrda hali baho qo'yilmagan — reyting yo'q`,
       };
     }
 
     return {
       scope,
+      period: data.period,
+      periodTitle: data.periodTitle,
       weekLabel,
       weekNumber: data.weekNumber,
       totalStudents: data.totalStudents,

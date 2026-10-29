@@ -1,8 +1,8 @@
 const prisma = require("../config/prisma");
 const { NotFoundError } = require("../utils/errors");
 const {
-  getCurrentWeekRange,
   getWeekRangeForDate,
+  getStatisticsPeriodRange,
 } = require("../helpers/statistics.helpers");
 
 /**
@@ -12,6 +12,12 @@ const {
  * tayanmaydi: u faqat baho olgan/generatsiya qilingan o'quvchilar uchun qator
  * saqlagani sabab reytinglarda hamma o'quvchi ko'rinmasdi. Endi barcha faol
  * o'quvchidan boshlanadi (baho yo'q bo'lsa 0) va har doim aniq bo'ladi.
+ *
+ * ⚠️ DAVR — BITTA JOYDA (`getStatisticsPeriodRange`): "kunlik / haftalik /
+ * oylik" ning farqi faqat SANA ORALIG'IDA, qolgan hamma narsa (saralash,
+ * teng ballga teng o'rin, sahifalash, fan kesimi) AYNI. Ikkinchi hisob
+ * yozilsa, jadvaldagi ball bilan oynadagi ball bir-biriga mos kelmay
+ * qolardi.
  */
 
 // Reytinglarda ko'rsatiladigan o'quvchi maydonlari (ikkala panel ham shularni kutadi)
@@ -112,16 +118,16 @@ function paginate(rows, pageNum, limitNum) {
 // REYTING QATORLARINI QURISH (to'liq, saralangan, reyting berilgan)
 // ─────────────────────────────────────────────
 
-async function buildRankingRows(studentWhere) {
-  const week = getCurrentWeekRange();
+async function buildRankingRows(studentWhere, periodKey) {
+  const range = getStatisticsPeriodRange(periodKey);
   const students = await prisma.user.findMany({
     where: { role: "student", isActive: true, isArchived: false, ...studentWhere },
     select: STUDENT_SELECT,
   });
 
   const sums = await aggregateGradesByStudent(
-    week.weekStart,
-    week.weekEnd,
+    range.start,
+    range.end,
     students.map((s) => s.id),
   );
 
@@ -136,26 +142,43 @@ async function buildRankingRows(studentWhere) {
   });
 
   rows.sort(byScoreThenName);
-  return { week, rows: assignRanks(rows) };
+  return { range, rows: assignRanks(rows) };
+}
+
+/**
+ * Javobga tushadigan davr maydonlari.
+ *
+ * ⚠️ `weekStart`/`weekEnd`/`weekNumber`/`year` SAQLANADI — student paneli,
+ * bot va monitor shu nomlarni o'qiydi. Yangi `period*` maydonlari ularning
+ * ustiga qo'shiladi, o'rniga EMAS.
+ */
+function periodFields(range) {
+  return {
+    period: range.period,
+    periodTitle: range.title,
+    periodStart: range.start,
+    periodEnd: range.end,
+    weekStart: range.weekStart,
+    weekEnd: range.weekEnd,
+    weekNumber: range.weekNumber,
+    year: range.year,
+  };
 }
 
 // ─────────────────────────────────────────────
 // MAKTAB REYTINGI
 // ─────────────────────────────────────────────
 
-async function getSchoolRankings({ page = 1, limit = 20 } = {}) {
+async function getSchoolRankings({ page = 1, limit = 20, period } = {}) {
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = parseInt(limit, 10) || 20;
 
-  const { week, rows } = await buildRankingRows({});
+  const { range, rows } = await buildRankingRows({}, period);
   const { items, pagination } = paginate(rows, pageNum, limitNum);
 
   return {
     data: {
-      weekStart: week.weekStart,
-      weekEnd: week.weekEnd,
-      weekNumber: week.weekNumber,
-      year: week.year,
+      ...periodFields(range),
       totalStudents: rows.length,
       rankings: items.map((r) => ({
         rank: r.rank,
@@ -173,25 +196,23 @@ async function getSchoolRankings({ page = 1, limit = 20 } = {}) {
 // SINF REYTINGI
 // ─────────────────────────────────────────────
 
-async function getClassRankings(classId, { page = 1, limit = 20 } = {}) {
+async function getClassRankings(classId, { page = 1, limit = 20, period } = {}) {
   const pageNum = parseInt(page, 10) || 1;
   const limitNum = parseInt(limit, 10) || 20;
 
   const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
-  const { week, rows } = await buildRankingRows({
-    classes: { some: { classId } },
-  });
+  const { range, rows } = await buildRankingRows(
+    { classes: { some: { classId } } },
+    period,
+  );
   const { items, pagination } = paginate(rows, pageNum, limitNum);
 
   return {
     data: {
       class: classDoc,
-      weekStart: week.weekStart,
-      weekEnd: week.weekEnd,
-      weekNumber: week.weekNumber,
-      year: week.year,
+      ...periodFields(range),
       totalStudents: rows.length,
       rankings: items.map((r) => ({
         rank: r.rank,
@@ -274,8 +295,8 @@ async function loadGradeRefMaps(grades) {
   };
 }
 
-// Bitta o'quvchi + hafta oralig'i bo'yicha reytingni (>ball) hisoblaydi
-async function computeRankAmong(studentWhere, studentSum, weekStart, weekEnd) {
+// Bitta o'quvchi + davr oralig'i bo'yicha reytingni (>ball) hisoblaydi
+async function computeRankAmong(studentWhere, studentSum, rangeStart, rangeEnd) {
   const ids = (
     await prisma.user.findMany({
       where: { role: "student", isActive: true, isArchived: false, ...studentWhere },
@@ -283,7 +304,7 @@ async function computeRankAmong(studentWhere, studentSum, weekStart, weekEnd) {
     })
   ).map((s) => s.id);
 
-  const sums = await aggregateGradesByStudent(weekStart, weekEnd, ids);
+  const sums = await aggregateGradesByStudent(rangeStart, rangeEnd, ids);
   let greater = 0;
   for (const { totalSum } of sums.values()) {
     if (totalSum > studentSum) greater++;
@@ -295,8 +316,8 @@ async function computeRankAmong(studentWhere, studentSum, weekStart, weekEnd) {
 // O'QUVCHINING JORIY HAFTA STATISTIKASI
 // ─────────────────────────────────────────────
 
-async function getStudentWeekly(studentId) {
-  const { weekStart, weekEnd, weekNumber, year } = getCurrentWeekRange();
+async function getStudentWeekly(studentId, periodKey) {
+  const range = getStatisticsPeriodRange(periodKey);
 
   const student = await prisma.user.findUnique({
     where: { id: studentId },
@@ -309,7 +330,7 @@ async function getStudentWeekly(studentId) {
   const classes = (student.classes || []).map((uc) => uc.class);
 
   const grades = await prisma.grade.findMany({
-    where: { studentId, date: { gte: weekStart, lte: weekEnd } },
+    where: { studentId, date: { gte: range.start, lte: range.end } },
     select: { grade: true, subjectId: true, teacherId: true },
   });
   const { subjectById, teacherById } = await loadGradeRefMaps(grades);
@@ -318,8 +339,8 @@ async function getStudentWeekly(studentId) {
   const schoolRanking = await computeRankAmong(
     {},
     simpleStats.totalSum,
-    weekStart,
-    weekEnd,
+    range.start,
+    range.end,
   );
 
   const classRanks = [];
@@ -327,8 +348,8 @@ async function getStudentWeekly(studentId) {
     const cr = await computeRankAmong(
       { classes: { some: { classId: cls.id } } },
       simpleStats.totalSum,
-      weekStart,
-      weekEnd,
+      range.start,
+      range.end,
     );
     classRanks.push({
       class: cls,
@@ -341,10 +362,7 @@ async function getStudentWeekly(studentId) {
     student: projectStudent(student),
     class: classes[0] || null,
     classes,
-    weekStart,
-    weekEnd,
-    weekNumber,
-    year,
+    ...periodFields(range),
     simpleStats,
     rankings: {
       schoolRank: schoolRanking.rank,
@@ -396,16 +414,19 @@ async function getStudentAllWeeks(studentId) {
 // EXPORT UCHUN (barcha qatorlar, sahifalanmagan)
 // ─────────────────────────────────────────────
 
-async function getSchoolRankingRows() {
-  const { rows } = await buildRankingRows({});
-  return rows;
+async function getSchoolRankingRows(periodKey) {
+  const { range, rows } = await buildRankingRows({}, periodKey);
+  return { range, rows };
 }
 
-async function getClassRankingRows(classId) {
+async function getClassRankingRows(classId, periodKey) {
   const classDoc = await prisma.class.findUnique({ where: { id: classId } });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
-  const { rows } = await buildRankingRows({ classes: { some: { classId } } });
-  return { classDoc, rows };
+  const { range, rows } = await buildRankingRows(
+    { classes: { some: { classId } } },
+    periodKey,
+  );
+  return { classDoc, range, rows };
 }
 
 module.exports = {

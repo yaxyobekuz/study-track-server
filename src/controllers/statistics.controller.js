@@ -3,6 +3,27 @@ const { ForbiddenError } = require("../utils/errors");
 
 const ExcelService = require("../services/excel.service");
 const statisticsService = require("../services/statistics.service");
+const { STATISTICS_PERIODS } = require("../helpers/statistics.helpers");
+
+/**
+ * So'rovdagi davr: "day" | "week" | "month".
+ *
+ * ⚠️ NOMA'LUM QIYMAT RAD ETILMAYDI, HAFTALIKKA tushadi: davr — ko'rsatish
+ * filtri, ma'lumot emas. `period` umuman yubormaydigan eski mijoz (student
+ * paneli, bot, monitor) ham avvalgi javobni oladi.
+ */
+const periodOf = (req) => String(req.query.period || "week");
+
+/** Davrning o'zbekcha nomi ("Kunlik" / "Haftalik" / "Oylik"). */
+const periodTitle = (key) =>
+  (STATISTICS_PERIODS[key] || STATISTICS_PERIODS.week).title;
+
+/**
+ * Excel varag'ining nomi — 31 belgidan uzun bo'lsa ExcelJS rad etadi
+ * (uzun sinf nomi bilan eksport jimgina yiqilardi).
+ */
+const sheetTitle = (text) =>
+  text.length <= 31 ? text : `${text.slice(0, 30)}…`;
 
 /**
  * Bitta o'quvchining joriy hafta statistikasi (grade jadvalidan hisoblanadi)
@@ -18,7 +39,10 @@ exports.getStudentWeeklyStatistics = asyncHandler(async (req, res) => {
     );
   }
 
-  const data = await statisticsService.getStudentWeekly(studentId);
+  const data = await statisticsService.getStudentWeekly(
+    studentId,
+    periodOf(req),
+  );
   return res.json({ success: true, data });
 });
 
@@ -33,7 +57,7 @@ exports.getClassRankings = asyncHandler(async (req, res) => {
 
   const { data, pagination } = await statisticsService.getClassRankings(
     classId,
-    { page, limit },
+    { page, limit, period: periodOf(req) },
   );
   return res.json({ success: true, data, pagination });
 });
@@ -49,6 +73,7 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
   const { data, pagination } = await statisticsService.getSchoolRankings({
     page,
     limit,
+    period: periodOf(req),
   });
   return res.json({ success: true, data, pagination });
 });
@@ -78,15 +103,20 @@ exports.getAllStudentWeeklyStats = asyncHandler(async (req, res) => {
  */
 exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
   const { type = "school", classId } = req.query;
+  const period = periodOf(req);
+  // Fayl nomidagi davr: "kunlik_reyting_maktab_2026-10-29.xlsx"
+  const periodSlug = periodTitle(period).toLowerCase();
 
   let data = [];
-  let sheetName = "Maktab reytingi";
-  let baseFileName = "haftalik_reyting_maktab";
+  let sheetName = sheetTitle(`${periodTitle(period)} reyting`);
+  let baseFileName = `${periodSlug}_reyting_maktab`;
   let columns;
 
   if (type === "class" && classId) {
-    const { classDoc, rows } =
-      await statisticsService.getClassRankingRows(classId);
+    const { classDoc, rows } = await statisticsService.getClassRankingRows(
+      classId,
+      period,
+    );
 
     data = rows.map((r) => ({
       rank: r.rank,
@@ -95,8 +125,8 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
       totalGrades: r.totalGrades,
     }));
 
-    sheetName = `${classDoc.name} reytingi`;
-    baseFileName = `haftalik_reyting_${classDoc.name}`;
+    sheetName = sheetTitle(`${periodTitle(period)} — ${classDoc.name}`);
+    baseFileName = `${periodSlug}_reyting_${classDoc.name}`;
     columns = [
       { header: "O'rin", key: "rank", width: 8 },
       { header: "O'quvchi", key: "fullName", width: 30 },
@@ -104,7 +134,7 @@ exports.exportWeeklyStatistics = asyncHandler(async (req, res) => {
       { header: "Baholar soni", key: "totalGrades", width: 15 },
     ];
   } else {
-    const rows = await statisticsService.getSchoolRankingRows();
+    const { rows } = await statisticsService.getSchoolRankingRows(period);
 
     data = rows.map((r) => ({
       rank: r.rank,
