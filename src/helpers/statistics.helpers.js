@@ -222,6 +222,14 @@ const getStatisticsPeriodRange = (periodKey, dateKey) => {
     period: period.key,
     title: period.title,
     date: toDayKey(anchor),
+    // ⚠️ ORALIQNING KUN KALITLARI — EKRANDAGI YORLIQ UCHUN.
+    // `start`/`end` — INSTANT va ular serverning "Toshkent devor-soati"
+    // ramkasida quriladi: oxiri 23:59:59 bo'lgani uchun brauzerda +5
+    // soat surilib, yorliqda KEYINGI kun chiqardi ("26-oktabr —
+    // 30-oktabr", holbuki hafta 29-da tugaydi). Kun kaliti esa soatsiz,
+    // ya'ni hech qayerga surilmaydi (`dates.md` §4).
+    startDay: toDayKey(start),
+    endDay: toDayKey(end),
     // Davr bugunni qamraydimi — panel "keyingi" tugmasini shunga qarab yopadi
     isCurrent: end.getTime() === todayEnd.getTime(),
     start,

@@ -195,3 +195,38 @@ test("chegara so'rovdan kelsa ham CHEKLANADI", () => {
   assert.equal(resolveTopLimit("-1"), TOP_LIMIT, "ma'nosiz qiymat — sukut");
   assert.equal(resolveTopLimit("abc"), TOP_LIMIT);
 });
+
+/* ────────────────── ORALIQNING KUN KALITLARI ────────────────── */
+
+test("yorliq uchun KUN KALITI qaytadi — oxiri KEYINGI kunga surilmaydi", () => {
+  // ⚠️ `end` — INSTANT va u 23:59:59 da turadi: brauzer uni +5 soatga
+  // surib, yorliqda KEYINGI kunni ko'rsatardi ("26-oktabr — 30-oktabr",
+  // holbuki hafta 29-da tugaydi). Kun kaliti soatsiz, ya'ni surilmaydi.
+  const range = getStatisticsPeriodRange("week", "2026-10-28");
+
+  assert.match(range.startDay, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(range.endDay, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(range.startDay, "2026-10-26", "dushanba");
+
+  // Kun kaliti oraliqning O'Z kunini bildiradi, soat bilan emas
+  assert.equal(range.endDay.slice(0, 10), range.endDay);
+  assert.equal(range.end.getHours(), 23, "instant avvalgidek 23:59 da qoladi");
+});
+
+test("o'tgan hafta — to'liq dushanba–yakshanba", () => {
+  const range = getStatisticsPeriodRange("week", "2026-10-21");
+
+  assert.equal(range.startDay, "2026-10-19");
+  assert.equal(range.endDay, "2026-10-25");
+  assert.equal(range.isCurrent, false);
+});
+
+test("oylik va yillik davrda ham kun kalitlari to'g'ri", () => {
+  const month = getStatisticsPeriodRange("month", "2026-02-10");
+  assert.equal(month.startDay, "2026-02-01");
+  assert.equal(month.endDay, "2026-02-28", "kabisa bo'lmagan yil");
+
+  const year = getStatisticsPeriodRange("year", "2025-07-07");
+  assert.equal(year.startDay, "2025-01-01");
+  assert.equal(year.endDay, "2025-12-31");
+});

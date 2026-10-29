@@ -162,6 +162,9 @@ function periodFields(range) {
     isCurrentPeriod: range.isCurrent,
     periodStart: range.start,
     periodEnd: range.end,
+    // Ekrandagi yorliq SHULARDAN quriladi — izohi `statistics.helpers.js` da
+    periodStartDay: range.startDay,
+    periodEndDay: range.endDay,
     weekStart: range.weekStart,
     weekEnd: range.weekEnd,
     weekNumber: range.weekNumber,
