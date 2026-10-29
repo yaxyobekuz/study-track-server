@@ -197,6 +197,97 @@ async function getSchoolRankings({ page = 1, limit = 20, period, date } = {}) {
 }
 
 // ─────────────────────────────────────────────
+// ENG YUQORI / ENG PAST (bosh sahifadagi karta)
+// ─────────────────────────────────────────────
+
+/** Har ro'yxatda nechta qator (biznes qarori: 5 ta). */
+const TOP_LIMIT = 5;
+
+/**
+ * ⚠️ CHEGARA SO'ROVDAN KELADI, LEKIN CHEKLANADI: `?limit=100000` butun
+ * maktabni kartaning javobiga tiqib qo'yardi. Ro'yxatning o'zi uchun
+ * Statistika bo'limi bor.
+ */
+const MAX_TOP_LIMIT = 20;
+
+const resolveTopLimit = (value) => {
+  const size = parseInt(value, 10);
+  if (!Number.isFinite(size) || size < 1) return TOP_LIMIT;
+  return Math.min(size, MAX_TOP_LIMIT);
+};
+
+/**
+ * BITTA SARALANGAN RO'YXATDAN IKKI UCHI.
+ *
+ * ⚠️ IKKINCHI REYTING QURILMAYDI: qatorlar `buildRankingRows` dan
+ * saralangan va O'RIN berilgan holda keladi, bu yerda faqat KESIB
+ * olinadi. Aks holda bosh sahifada bir o'quvchi, Statistika bo'limida
+ * boshqasi birinchi turardi.
+ *
+ * ⚠️ ENG PAST — FAQAT BALL TO'PLAGANLAR ORASIDAN (biznes qarori,
+ * 2026-10-29). Ro'yxatning aynan oxirida davr ichida UMUMAN baho
+ * olmaganlar (0 ball) turadi va ular teng bo'lgani uchun tartib alifboga
+ * tushadi: "eng past 5 ta" degan yozuv ostida tasodifiy beshta ism
+ * chiqardi. Ball to'plamaganlar soni (`unscored`) YO'QOLMAYDI — u
+ * javobda alohida qaytadi va kartada aytiladi.
+ *
+ * ⚠️ IKKI RO'YXAT KESISHMAYDI (`buildRankings` bilan AYNI qoida): ballga
+ * ega o'quvchi kam bo'lsa ro'yxatlar yarmidan bo'linadi (5 ta → 3 + 2),
+ * aks holda bitta bola ham "eng yuqori", ham "eng past" bo'lib turardi.
+ *
+ * @param {Array} rows - `buildRankingRows` qatorlari (saralangan, `rank` bilan)
+ * @param {number} [limit]
+ */
+function splitTopAndBottom(rows, limit = TOP_LIMIT) {
+  const scored = rows.filter((row) => row.totalSum > 0);
+
+  const bestCount = Math.min(limit, Math.ceil(scored.length / 2));
+  const worstCount = Math.min(limit, Math.floor(scored.length / 2));
+
+  const project = (row, place) => ({
+    place,
+    rank: row.rank,
+    student: row.student,
+    classes: row.classes,
+    totalSum: row.totalSum,
+    totalGrades: row.totalGrades,
+    ...(row._branch ? { _branch: row._branch } : {}),
+  });
+
+  return {
+    totalStudents: rows.length,
+    scored: scored.length,
+    // "Bu davrda baho olmaganlar" — kartadagi izoh shundan
+    unscored: rows.length - scored.length,
+    // Eng yuqorida `place` — HAQIQIY o'rin (teng ball → teng o'rin)
+    best: scored.slice(0, bestCount).map((row) => project(row, row.rank)),
+    // Eng pastda esa 1 = eng past (kartadagi yorliq ham shunday aytadi)
+    worst: scored
+      .slice(scored.length - worstCount)
+      .reverse()
+      .map((row, index) => project(row, index + 1)),
+  };
+}
+
+/**
+ * Bosh sahifadagi "O'quvchilar natijalari" kartasi.
+ *
+ * ⚠️ Statistika bo'limi bilan AYNI DVIGATEL (`buildRankingRows`) va AYNI
+ * davr kalitlari: karta "haftalik" deganda bo'lim ham aynan o'sha
+ * haftani ko'rsatadi, "Batafsil" esa o'sha davr bilan ochiladi.
+ */
+async function getSchoolTop({ period, date, limit } = {}) {
+  const { range, rows } = await buildRankingRows({}, period, date);
+
+  return {
+    ...periodFields(range),
+    isNetwork: false,
+    partial: [],
+    ...splitTopAndBottom(rows, resolveTopLimit(limit)),
+  };
+}
+
+// ─────────────────────────────────────────────
 // SINF REYTINGI
 // ─────────────────────────────────────────────
 
@@ -440,6 +531,7 @@ async function getClassRankingRows(classId, periodKey, dateKey) {
 
 module.exports = {
   getSchoolRankings,
+  getSchoolTop,
   getClassRankings,
   getStudentWeekly,
   getStudentAllWeeks,
@@ -455,4 +547,8 @@ module.exports = {
   paginate,
   periodFields,
   aggregateGradesByStudent,
+  splitTopAndBottom,
+  resolveTopLimit,
+  TOP_LIMIT,
+  MAX_TOP_LIMIT,
 };

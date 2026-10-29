@@ -4,6 +4,7 @@ const {
   getStudentWeeklyStatistics,
   getClassRankings,
   getSchoolRankings,
+  getSchoolTop,
   exportWeeklyStatistics,
   getAllStudentWeeklyStats,
 } = require("../controllers/statistics.controller");
@@ -36,6 +37,16 @@ router.get(
   "/weekly/school/rankings",
   authorizePermission(PERMISSIONS.STATISTICS_VIEW, ROLES.STUDENT),
   getSchoolRankings
+);
+
+// Bosh sahifadagi karta — eng yuqori va eng past beshtalik.
+// ⚠️ `/school/rankings` dan OLDIN emas, keyin turishi muhim emas (yo'l
+// aniq, parametr yo'q), lekin ruxsat AYNI: ro'yxatning o'zi shu kalit
+// bilan ochiladi, beshtaligi uchun alohida huquq ochib berilmaydi.
+router.get(
+  "/weekly/school/top",
+  authorizePermission(PERMISSIONS.STATISTICS_VIEW),
+  getSchoolTop
 );
 
 // Haftalik statistikani export qilish (faqat owner)

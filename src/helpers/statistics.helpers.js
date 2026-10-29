@@ -92,6 +92,11 @@ const STATISTICS_PERIODS = Object.freeze({
   day: Object.freeze({ key: "day", title: "Kunlik", label: "Bugun" }),
   week: Object.freeze({ key: "week", title: "Haftalik", label: "Bu hafta" }),
   month: Object.freeze({ key: "month", title: "Oylik", label: "Bu oy" }),
+  // ⚠️ KALENDAR YILI (1-yanvardan), "oxirgi 365 kun" EMAS — qolgan uchtasi
+  // bilan AYNI qoida. O'QUV YILI EMAS: bu domenda o'quv yili tushunchasi
+  // yo'q (`education.md` §1) va uni reyting orqali qaytarib kiritish
+  // "sentabrdan boshlanadigan davr" degan ikkinchi taqvim yaratardi.
+  year: Object.freeze({ key: "year", title: "Yillik", label: "Bu yil" }),
 });
 
 const STATISTICS_PERIOD_KEYS = Object.freeze(Object.keys(STATISTICS_PERIODS));
@@ -199,13 +204,16 @@ const getStatisticsPeriodRange = (periodKey, dateKey) => {
     const sunday = new Date(start);
     sunday.setDate(start.getDate() + 6);
     end = endOfDay(sunday);
-  } else {
+  } else if (period.key === "month") {
     start = startOfDay(
       new Date(anchor.getFullYear(), anchor.getMonth(), 1),
     );
     end = endOfDay(
       new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0),
     );
+  } else {
+    start = startOfDay(new Date(anchor.getFullYear(), 0, 1));
+    end = endOfDay(new Date(anchor.getFullYear(), 11, 31));
   }
 
   if (end > todayEnd) end = todayEnd;

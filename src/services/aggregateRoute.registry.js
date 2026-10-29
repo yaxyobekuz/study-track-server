@@ -306,6 +306,10 @@ const RULES = [
   // bo'yicha topiladi) va qayta saralash kerak emas.
   { pattern: "GET /statistics/weekly/school/rankings", mode: "anchor" },
   { pattern: "GET /statistics/weekly/export", mode: "anchor" },
+  // Bosh sahifadagi karta — AYNI sabab: beshtalik butun tarmoq ro'yxati
+  // yig'ilgandan KEYIN kesiladi, aks holda u langar filialning beshtaligi
+  // bo'lib qolardi.
+  { pattern: "GET /statistics/weekly/school/top", mode: "anchor" },
 
   /* ── Davomat statistikasi (bosh sahifa kartalari + hujjat) ───────── */
   // ⚠️ `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: filiallar bo'ylab

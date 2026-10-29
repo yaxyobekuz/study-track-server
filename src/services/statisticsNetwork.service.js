@@ -31,6 +31,8 @@ const {
   periodFields,
   byScoreThenName,
   buildRankingRows,
+  splitTopAndBottom,
+  resolveTopLimit,
 } = require("./statistics.service");
 
 /**
@@ -107,6 +109,29 @@ async function getNetworkSchoolRankings(
   };
 }
 
+/**
+ * Bosh sahifadagi "O'quvchilar natijalari" kartasi — butun tarmoq bo'yicha.
+ *
+ * ⚠️ KESISH TARMOQ RO'YXATIDAN (`splitTopAndBottom`, bittalik yo'l bilan
+ * AYNI funksiya): har filial o'z beshtaligini yuborib, panel ularni
+ * qo'shsa, "tarmoqning eng yaxshisi" aslida langar filialning beshtaligi
+ * bo'lib chiqardi (sahifalash bu yerda turishining sababi bilan AYNI).
+ *
+ * @param {{period?: string, date?: string, limit?: number|string}} params
+ * @param {object[]} branches - `req.aggregateScope.branches`
+ */
+async function getNetworkSchoolTop({ period, date, limit } = {}, branches) {
+  const { range, rows, partial } = await collectRows(branches, period, date);
+
+  return {
+    ...periodFields(range),
+    isNetwork: true,
+    // Qaysi filial javob bermagani JIM qolmaydi
+    partial,
+    ...splitTopAndBottom(rows, resolveTopLimit(limit)),
+  };
+}
+
 /** Eksport uchun — barcha qatorlar, sahifalanmagan. */
 async function getNetworkSchoolRankingRows(period, date, branches) {
   const { range, rows } = await collectRows(branches, period, date);
@@ -115,5 +140,6 @@ async function getNetworkSchoolRankingRows(period, date, branches) {
 
 module.exports = {
   getNetworkSchoolRankings,
+  getNetworkSchoolTop,
   getNetworkSchoolRankingRows,
 };

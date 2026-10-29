@@ -39,7 +39,7 @@ const networkBranches = (req) => {
   return branches?.length ? branches : null;
 };
 
-/** Davrning o'zbekcha nomi ("Kunlik" / "Haftalik" / "Oylik"). */
+/** Davrning o'zbekcha nomi ("Kunlik" / "Haftalik" / "Oylik" / "Yillik"). */
 const periodTitle = (key) =>
   (STATISTICS_PERIODS[key] || STATISTICS_PERIODS.week).title;
 
@@ -108,6 +108,30 @@ exports.getSchoolRankings = asyncHandler(async (req, res) => {
     : await statisticsService.getSchoolRankings(params);
 
   return res.json({ success: true, data, pagination });
+});
+
+/**
+ * ENG YUQORI VA ENG PAST BESHTALIK — bosh sahifadagi karta.
+ * GET /api/statistics/weekly/school/top
+ *
+ * ⚠️ REYTING BILAN AYNI YO'L: bo'limdagi jadval ham, kartadagi beshtalik
+ * ham `buildRankingRows` dan o'qiydi va AYNI davr kalitlarini tushunadi
+ * ("day" | "week" | "month" | "year"). Ikkinchi hisob yozilsa, bosh
+ * sahifa bir o'quvchini, bo'lim boshqasini birinchi o'ringa qo'yardi.
+ */
+exports.getSchoolTop = asyncHandler(async (req, res) => {
+  const params = {
+    period: periodOf(req),
+    date: dateOf(req),
+    limit: req.query.limit,
+  };
+
+  const branches = networkBranches(req);
+  const data = branches
+    ? await networkService.getNetworkSchoolTop(params, branches)
+    : await statisticsService.getSchoolTop(params);
+
+  return res.json({ success: true, data });
 });
 
 /**
