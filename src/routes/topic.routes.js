@@ -6,6 +6,7 @@ const router = express.Router();
 const {
   uploadTopics,
   getTopicsBySubject,
+  exportTopics,
   deleteTopicsBySubject,
 } = require("../controllers/topic.controller");
 
@@ -24,6 +25,16 @@ router.post(
   handleFileUploadError,
   uploadTopics
 );
+
+// ⚠️ EKSPORT — `/subject/:id` dan OLDIN: `subjectId` yo'lda emas,
+// so'rov parametrida keladi (import bilan AYNI shakl) va ikki rejimni
+// bitta yo'lda beradi — bitta fan yoki mavzusi bor hamma fan.
+//
+// ⚠️ Ruxsat — `topics.view`, alohida "export" kaliti EMAS: fayl ekranda
+// ko'rinib turgan AYNI ma'lumot va u hech narsa yozmaydi. Alohida kalit
+// bu yerda faqat yolg'on himoya bo'lardi (`studentSystems.export` dan
+// farqi: u shaxsiy ma'lumot).
+router.get("/export", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), exportTopics);
 
 router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 

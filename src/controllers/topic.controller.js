@@ -1,5 +1,6 @@
 const asyncHandler = require("../middleware/async.middleware");
 const topicService = require("../services/topic.service");
+const topicExportService = require("../services/topicExport.service");
 
 /**
  * Upload Excel file with topics
@@ -32,6 +33,20 @@ const getTopicsBySubject = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Mavzular rejasini Excel'ga yuklab olish.
+ *
+ * ⚠️ Fayl — QAYTA YUKLASH SHABLONI: `subjectId` berilsa bitta fan, aks
+ * holda mavzusi bor hamma fan (har biri alohida varaqda). Import bilan
+ * AYNI ikki rejim.
+ *
+ * @route GET /api/topics/export
+ * @access `topics.view`
+ */
+const exportTopics = asyncHandler(async (req, res) => {
+  await topicExportService.exportTopics(res, req.query.subjectId || null);
+});
+
+/**
  * Delete all topics for a subject
  * @route DELETE /api/topics/subject/:id
  * @access Owner only
@@ -49,5 +64,6 @@ const deleteTopicsBySubject = asyncHandler(async (req, res) => {
 module.exports = {
   uploadTopics,
   getTopicsBySubject,
+  exportTopics,
   deleteTopicsBySubject,
 };
