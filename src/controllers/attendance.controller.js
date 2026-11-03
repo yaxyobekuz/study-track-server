@@ -1,6 +1,7 @@
 const prisma = require("../config/prisma");
 const asyncHandler = require("../middleware/async.middleware");
 const attendanceService = require("../services/attendance.service");
+const attendanceCancelService = require("../services/attendanceCancel.service");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 
 const getToday = asyncHandler(async (req, res) => {
@@ -58,6 +59,20 @@ const updateTimes = asyncHandler(async (req, res) => {
     req.user.id,
   );
   res.json({ success: true, data: record });
+});
+
+// XODIM DAVOMATINI BEKOR QILISH — kun "belgilanmagan" holatiga qaytadi
+// (qator o'chadi, fakti sababi bilan jurnalda qoladi). Sabab MAJBURIY.
+const cancelAttendance = asyncHandler(async (req, res) => {
+  const result = await attendanceCancelService.cancelAttendance(
+    {
+      userId: req.params.userId,
+      date: req.body.date,
+      reason: req.body.reason,
+    },
+    req.user.id,
+  );
+  res.json({ success: true, data: result });
 });
 
 const getMySchedule = asyncHandler(async (req, res) => {
@@ -261,6 +276,7 @@ module.exports = {
   checkIn,
   checkOut,
   updateTimes,
+  cancelAttendance,
   getMySchedule,
   getUserSchedule,
   getMyHistory,

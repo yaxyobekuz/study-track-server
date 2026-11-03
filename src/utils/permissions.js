@@ -171,9 +171,16 @@ const PERMISSION_SECTIONS = [
     key: SECTIONS.ATTENDANCE,
     label: "Davomat",
     group: "Ta'lim",
+    // ⚠️ `cancel` — `mark` DAN ALOHIDA. Belgilash bitta kunning holatini
+    // yozadi, bekor qilish esa KUNNI O'CHIRADI: ish vaqti yo'qoladi,
+    // kelmagan kun ayirmasi qaytadi va o'sha kungi davomat jarimasi ham
+    // bekor bo'ladi. Bir kalitga qo'shilsa, davomat belgilash huquqi
+    // jimgina jarimani o'chirish huquqiga aylanardi (`payroll.deduct`
+    // `assign` dan ajratilgani bilan AYNI sabab).
     actions: [
       A.view,
       { key: "mark", label: "Davomat belgilash" },
+      { key: "cancel", label: "Davomatni bekor qilish" },
       A.update,
       { key: "review", label: "Sababnoma va ketish so'rovlarini ko'rib chiqish" },
       { key: "reasons", label: "Sabab turlarini boshqarish" },

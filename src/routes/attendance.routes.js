@@ -9,6 +9,7 @@ const {
   checkIn,
   checkOut,
   updateTimes,
+  cancelAttendance,
   getMySchedule,
   getUserSchedule,
   getMyHistory,
@@ -38,6 +39,15 @@ router.get("/today/all", protect, authorizePermission(PERMISSIONS.ATTENDANCE_VIE
 router.post("/mark", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), markStaff);
 // Kelish/ketish vaqtini qo'lda tahrirlash (ketishni o'chirsa baho ochiladi)
 router.patch("/user/:userId/times", protect, authorizePermission(PERMISSIONS.ATTENDANCE_MARK), updateTimes);
+// Davomatni BEKOR QILISH — kun "belgilanmagan" bo'lib qoladi (ish vaqti,
+// kelmagan kun ayirmasi va o'sha kungi jarima ham yo'qoladi). Shuning uchun
+// ruxsat `mark` dan ALOHIDA.
+router.post(
+  "/user/:userId/cancel",
+  protect,
+  authorizePermission(PERMISSIONS.ATTENDANCE_CANCEL),
+  cancelAttendance,
+);
 router.get("/my", protect, getMyHistory);
 router.get("/my-schedule", protect, getMySchedule);
 router.post("/check-in", protect, checkIn);

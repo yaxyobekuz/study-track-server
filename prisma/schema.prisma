@@ -1729,6 +1729,51 @@ model Attendance {
   @@map("attendances")
 }
 
+/// XODIM DAVOMATINI BEKOR QILISH JURNALI (append-only).
+///
+/// ⚠️ `attendances` QATORI O'CHIRILADI, bekor qilingan holat USTUNGA
+/// yozilmaydi. Sabab: "bekor qilindi" degan yangi holat qo'shilsa, uni
+/// davomat foizi, kelmagan kun ayirmasi, kechki "kelmadi" passi, baho
+/// darvozasi, hisobotlar va eksportlar — hammasi alohida o'rganishi kerak
+/// bo'lardi va bittasi uni "kelmadi" deb o'qib qolardi. Qator o'chirilsa,
+/// kun HAQIQATAN belgilanmagan bo'ladi va mavjud o'quvchilar o'zgarishsiz
+/// to'g'ri ishlaydi.
+///
+/// Fakt esa yo'qolmaydi: o'chirilgan qatorning to'liq nusxasi, sababi va
+/// aktyori shu yerda qoladi (loyihaning "o'chirilmaydi — bekor qilinadi"
+/// doktrinasi aynan shunday bajariladi).
+///
+/// ⚠️ Bu qator KECHKI PASS UCHUN QALQON ham: `attendanceAbsent.job.js`
+/// shu kuni bekor qilingan xodimni "kelmadi" deb QAYTA yozmaydi — aks
+/// holda kunduzi bekor qilingan davomat 23:45 da jarimasi bilan birga
+/// qaytib kelardi. Qo'lda belgilash va "Men keldim" esa avvalgidek
+/// ishlaydi: ular ongli qaror.
+model AttendanceCancellation {
+  id            String           @id @db.Char(24)
+  // soft ref → users (FK yo'q, davomat jadvali bilan AYNI qoida)
+  userId        String           @map("user_id") @db.Char(24)
+  // Toshkent kunining UTC yarim tuni (`Attendance.date` bilan AYNI)
+  date          DateTime
+  // Bekor qilingan kundagi holat va vaqtlar — registrda qidirish uchun
+  status        AttendanceStatus
+  checkIn       DateTime?        @map("check_in")
+  checkOut      DateTime?        @map("check_out")
+  // O'chirilgan qatorning TO'LIQ nusxasi: keyin "nima o'chdi" degan
+  // savolga javob ustunlar ro'yxatiga bog'lanib qolmasin
+  snapshot      Json
+  reason        String
+  // Bekor qilish bilan birga qaytarilgan davomat jarimasi (bo'lsa)
+  penaltyRef    String?          @map("penalty_ref") @db.Char(24)
+  penaltyPoints Int              @default(0) @map("penalty_points")
+  cancelledBy   String           @map("cancelled_by") @db.Char(24)
+  createdAt     DateTime         @default(now()) @map("created_at")
+
+  @@index([userId, date])
+  @@index([date])
+  @@index([createdAt(sort: Desc)])
+  @@map("attendance_cancellations")
+}
+
 model AttendanceSettings {
   id                          String   @id @default("singleton") @db.VarChar(24)
   // { lat, lng }

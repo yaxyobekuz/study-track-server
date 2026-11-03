@@ -13,6 +13,9 @@ const {
 } = require("../services/attendance.service");
 const { getAttendanceSettings } = require("../services/settings.service");
 const { resyncAfterAttendanceChange } = require("../services/payrollAbsence.service");
+const {
+  loadDayCancellations,
+} = require("../helpers/attendanceCancellation.helpers");
 
 /**
  * Kun oxirida davomatsiz qolgan xodimlarni "absent" deb belgilaydi va jarima yozadi.
@@ -60,6 +63,17 @@ async function runAbsentMarking(ownerUser) {
   // Sikl ichida yakka chaqiruv har xodimga bitta so'rov qo'shardi.
   const ctx = await buildScheduleContext(users, today);
 
+  // ⚠️ BUGUN DAVOMATI BEKOR QILINGAN XODIMGA "KELMADI" YOZILMAYDI
+  // (`attendanceCancel.service.js`). Busiz kunduzi bekor qilingan kun
+  // 23:45 da jarimasi bilan birga qaytib kelardi va bekor qilish
+  // "ishlamayapti" bo'lib ko'rinardi. Qo'lda belgilash va "Men keldim"
+  // esa avvalgidek ishlaydi — ular ongli qaror.
+  const cancelled = await loadDayCancellations(
+    today,
+    users.map((u) => u.id),
+  );
+  let cancelledSkipped = 0;
+
   for (const user of users) {
     try {
       const schedule = await getEffectiveSchedule(user, today, ctx);
@@ -93,6 +107,13 @@ async function runAbsentMarking(ownerUser) {
         where: { userId: user.id, date: today },
       });
       if (existingRecord) {
+        skipped++;
+        continue;
+      }
+
+      // Bugungi davomati ongli ravishda bekor qilingan — qaytarmaymiz
+      if (cancelled.has(user.id)) {
+        cancelledSkipped++;
         skipped++;
         continue;
       }
@@ -151,7 +172,8 @@ async function runAbsentMarking(ownerUser) {
 
   logger.info(
     `[AttendanceCron] Tugadi: ${markedAbsent} absent, ${markedExcused} excused, ${skipped} o'tkazib yuborildi` +
-      `${scheduleMissing ? ` (shundan ${scheduleMissing} tasida dars jadvali yo'q)` : ""}, ${errors} xato`
+      `${scheduleMissing ? ` (shundan ${scheduleMissing} tasida dars jadvali yo'q)` : ""}` +
+      `${cancelledSkipped ? ` (shundan ${cancelledSkipped} tasining davomati bekor qilingan)` : ""}, ${errors} xato`
   );
 }
 

@@ -31,8 +31,15 @@ const {
 } = require("./scheduleWorkTime.service");
 const { resolveCheckout } = require("./checkoutGate.service");
 const { resyncAfterAttendanceChange } = require("./payrollAbsence.service");
-const { formatDateUz, formatTimeUz } = require("../helpers/date.helpers");
+const {
+  formatDateUz,
+  formatDateTimeUz,
+  formatTimeUz,
+} = require("../helpers/date.helpers");
 const { dayKey } = require("../helpers/lessonHours");
+const {
+  loadDayCancellations,
+} = require("../helpers/attendanceCancellation.helpers");
 
 /**
  * DAVOMAT QAYDINING MANBAI — kim/nima tetiklagan.
@@ -847,6 +854,25 @@ async function getUserMonthRecords(userId, month, year) {
   return { user, records, summary };
 }
 
+/**
+ * Bekor qilingan davomatning EKRANGA chiqadigan qismi.
+ *
+ * ⚠️ Faqat sabab va kimligi: o'chirilgan qatorning to'liq nusxasi
+ * jurnalda qoladi, kunlik ro'yxatga esa chiqmaydi — bu ro'yxat "hozir kim
+ * qayerda" degan savol uchun.
+ */
+function cancellationOf(row) {
+  if (!row) return null;
+  return {
+    reason: row.reason,
+    // Bekor qilingan kundagi holat — "keldi edi" va "kelmadi edi" bir xil
+    // ko'rinmasin
+    previousStatus: row.status,
+    cancelledAt: row.createdAt,
+    cancelledAtLabel: formatDateTimeUz(row.createdAt),
+  };
+}
+
 async function getTodayAllRecords(roleFilter, dateInput) {
   // Sana berilsa o'sha kun, aks holda bugun (default)
   const day = dateInput ? normalizeDateTashkent(dateInput) : getTodayNormalized();
@@ -870,9 +896,15 @@ async function getTodayAllRecords(roleFilter, dateInput) {
   });
   const userIds = allUsers.map((u) => u.id);
 
-  const records = await prisma.attendance.findMany({
-    where: { userId: { in: userIds }, date: day },
-  });
+  const [records, cancellations] = await Promise.all([
+    prisma.attendance.findMany({
+      where: { userId: { in: userIds }, date: day },
+    }),
+    // ⚠️ Bekor qilingan kun ekranda "Belgilanmagan" bo'lib turardi va admin
+    // "tugma ishladimi?" degan savol bilan qolardi. Qator bo'sh — lekin
+    // SABABI bilan bo'sh (`attendanceCancel.service.js`).
+    loadDayCancellations(day, userIds),
+  ]);
 
   const recordByUser = {};
   records.forEach((r) => {
@@ -919,6 +951,12 @@ async function getTodayAllRecords(roleFilter, dateInput) {
         firstLessonTime: schedule.firstLessonTime ?? null,
         scheduleSource: schedule.source,
         isWorkDay: schedule.isWorkDay,
+        // Davomat bekor qilingan bo'lsa — nega bo'shligi. Yig'indiga
+        // TA'SIR QILMAYDI: kun haqiqatan belgilanmagan.
+        // ⚠️ Faqat qator YO'Q bo'lsa: bekor qilingandan keyin xodim qayta
+        // "Men keldim" bossa, ekranda eski bekor qilish emas, YANGI qayd
+        // turishi kerak.
+        cancellation: rec ? null : cancellationOf(cancellations.get(u.id)),
       };
     }),
   );
