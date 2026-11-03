@@ -102,6 +102,10 @@ const DAYS = {
 const WORK_TIME_SOURCE = {
   MANUAL: "manual",
   SCHEDULE: "schedule",
+  // ISH VAQTI YO'Q — davomat umuman talab qilinmaydi. ⚠️ `MANUAL` + bo'sh
+  // ish kunlari buni bermaydi: bo'sh ro'yxat "belgilanmagan" deb o'qilib
+  // Du–Ju ga qaytariladi (roldan meros shu bilan ishlaydi).
+  NONE: "none",
 };
 
 // DARS JADVALIDAN ishlaydigan o'qituvchi ishga o'sha kuni o'tadigan BIRINCHI

@@ -327,12 +327,31 @@ async function getUserById(id) {
   return { ...user, branchPresence: await describeBranchPresence(user) };
 }
 
+/**
+ * "Ish vaqti yo'q" xodimning jadvali — bo'sh, lekin SABABI bilan bo'sh.
+ *
+ * ⚠️ `source` ataylab `none`: ekranlar "jadval belgilanmagan" bilan
+ * "ish vaqti kerak emas" ni ajrata olishi kerak, aks holda admin uni
+ * to'ldirilmagan ma'lumot deb o'ylab qayta kiritib qo'yardi.
+ */
+const EMPTY_SCHEDULE = Object.freeze({
+  workStartTime: null,
+  workEndTime: null,
+  workDays: [],
+  source: WORK_TIME_SOURCE.NONE,
+});
+
 async function loadUserWithSchedule(id) {
   const user = await loadUser(id);
   if (!user) return user;
 
   if (user.role === ROLES.STUDENT || user.role === ROLES.OWNER) {
     return { ...user, effectiveSchedule: null };
+  }
+
+  // ISH VAQTI YO'Q — roldan meros OLINMAYDI (bu qaror, bo'shliq emas)
+  if (user.workTimeSource === WORK_TIME_SOURCE.NONE) {
+    return { ...user, effectiveSchedule: EMPTY_SCHEDULE };
   }
 
   if (user.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
@@ -830,6 +849,12 @@ async function getAllUsers(query, actor = null) {
     const obj = flattenRelations(u);
     if (u.role === "student" || u.role === "owner") {
       obj.effectiveSchedule = null;
+      return obj;
+    }
+
+    // ── Ish vaqti yo'q ──
+    if (u.workTimeSource === WORK_TIME_SOURCE.NONE) {
+      obj.effectiveSchedule = EMPTY_SCHEDULE;
       return obj;
     }
 
@@ -2105,12 +2130,16 @@ async function getUserBranches(userId) {
                 ...summarizeWeek(scheduleWindow),
                 source: WORK_TIME_SOURCE.SCHEDULE,
               }
-            : {
-                workStartTime: profile.workStartTime,
-                workEndTime: profile.workEndTime,
-                workDays: profile.workDays,
-                source: WORK_TIME_SOURCE.MANUAL,
-              }
+            : // "Ish vaqti yo'q" o'sha filialda qo'lda kiritilgan vaqt
+              // bilan bir xil ko'rinmasin
+              profile.workTimeSource === WORK_TIME_SOURCE.NONE
+              ? EMPTY_SCHEDULE
+              : {
+                  workStartTime: profile.workStartTime,
+                  workEndTime: profile.workEndTime,
+                  workDays: profile.workDays,
+                  source: WORK_TIME_SOURCE.MANUAL,
+                }
           : null,
         profileMissing: !profile,
       };

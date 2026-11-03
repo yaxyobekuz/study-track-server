@@ -243,6 +243,16 @@ enum ScheduleDay {
 //              sanaladi), OXIRGI darsning tugashi ish tugashi bo'ladi.
 //              O'rinbosarlik, bayram va ta'til oyi hisobga olinadi; darsi yo'q
 //              kun ish kuni sanalmaydi (`scheduleWorkTime.service.js`).
+// `none`     — ISH VAQTI YO'Q: xodimdan davomat umuman talab qilinmaydi.
+//              Kechki pass unga "kelmadi" yozmaydi, kechikish va erta ketish
+//              jarimasi hisoblanmaydi, oylikdagi kelmagan kun ayirmasi ham
+//              chiqmaydi (`getEffectiveSchedule` → `isWorkDay: false`).
+//              ⚠️ `manual` + bo'sh ish kunlari BUNI BERMAYDI: hal qiluvchi
+//              bo'sh ro'yxatni "belgilanmagan" deb o'qib Du–Ju ga qaytaradi
+//              (roldan meros olish shu bilan ishlaydi). "Ish vaqti yo'q"
+//              esa QAROR, bo'shliq emas — shuning uchun alohida qiymat.
+//              Qo'lda belgilash va "Men keldim" ochiq qoladi: ular ongli
+//              harakat va o'qituvchiga baho qo'yish uchun ham kerak.
 //
 // ⚠️ Bu FILIALGA XOS (`permissions` bilan bir xil qoida): odam Chilonzorda
 // o'qituvchi bo'lib dars jadvali bo'yicha, Yunusobodda esa ma'muriyat bo'lib
@@ -251,6 +261,7 @@ enum ScheduleDay {
 enum WorkTimeSource {
   manual
   schedule
+  none
 }
 
 // Moliyaviy holat — StudentFinanceStatus DAVR jadvalining qiymati.

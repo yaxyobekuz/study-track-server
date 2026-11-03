@@ -172,6 +172,25 @@ async function buildScheduleContext(users, forDate) {
 async function getEffectiveSchedule(user, forDate, ctx = null) {
   const dayOfWeek = getDayOfWeekTashkent(forDate);
 
+  // ── 0. ISH VAQTI YO'Q ───────────────────────
+  // Xodimdan davomat umuman talab qilinmaydi: kechki pass "kelmadi"
+  // yozmaydi, kechikish va erta ketish jarimasi hisoblanmaydi, oylikdagi
+  // kelmagan kun ayirmasi ham chiqmaydi.
+  //
+  // ⚠️ ENG BIRINCHI tekshiriladi — roldan ham, qo'lda kiritilgan vaqtdan
+  // ham OLDIN. Bu "vaqt kiritilmagan" emas, "vaqt KERAK EMAS" degan qaror:
+  // pastdagi ikki shoxning ikkalasi ham bo'sh qiymatni meros bilan
+  // to'ldiradi va qaror jimgina yo'qolardi.
+  if (user.workTimeSource === WORK_TIME_SOURCE.NONE) {
+    return {
+      workStartTime: null,
+      workEndTime: null,
+      workDays: [],
+      isWorkDay: false,
+      source: WORK_TIME_SOURCE.NONE,
+    };
+  }
+
   // ── 1. DARS JADVALIDAN ──────────────────────
   if (user.workTimeSource === WORK_TIME_SOURCE.SCHEDULE) {
     const userId = String(user.id);
