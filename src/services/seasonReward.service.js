@@ -2,6 +2,9 @@ const prisma = require("../config/prisma");
 const { ROLES } = require("../utils/constants");
 const logger = require("../utils/logger");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
+// TANGA CHEKLOVI — qarzdor o'quvchiga mavsum mukofoti ham yozilmaydi
+// (darvoza bitta joyda: `coinBlock.service.js`).
+const { getBlockedStudentIds } = require("./coinBlock.service");
 
 /**
  * Mavsumdagi o'quvchilar statistikasini hisoblaydi.
@@ -356,12 +359,26 @@ async function previewDistribution(seasonId) {
     entry.awards.push(a);
   }
 
+  // TANGA CHEKLOVI oldindan ko'rinadi: admin "tarqatish" tugmasini
+  // bosishdan OLDIN kimga tushmasligini biladi (tarqatishda ham AYNI
+  // darvoza ishlaydi — bu ogohlantirish, ikkinchi qoida emas).
+  const blockedIds = await getBlockedStudentIds([...byStudent.keys()]);
+  const rows = [...byStudent.values()].map((entry) => ({
+    ...entry,
+    isCoinBlocked: blockedIds.has(entry.student.id.toString()),
+  }));
+
   return {
     seasonId: season.id,
     totalCoins: awards.reduce((s, a) => s + a.amount, 0),
     totalAwards: awards.length,
     studentCount: byStudent.size,
-    students: [...byStudent.values()].sort((a, b) => b.totalAmount - a.totalAmount),
+    // Cheklangan o'quvchilarga TUSHMAYDIGAN summa — jami bilan chalkashmasin
+    blockedCount: rows.filter((r) => r.isCoinBlocked).length,
+    blockedCoins: rows
+      .filter((r) => r.isCoinBlocked)
+      .reduce((sum, r) => sum + r.totalAmount, 0),
+    students: rows.sort((a, b) => b.totalAmount - a.totalAmount),
     distributedAt: season.distributedAt,
     distributedBy: season.distributedBy,
   };
@@ -388,9 +405,21 @@ async function distributeCoins(seasonId, distributorId, { force = false } = {}) 
 
   let distributed = 0;
   let skipped = 0;
+  let blocked = 0;
+
+  // TANGA CHEKLOVI — bir marta o'qiladi (mavsumda yuzlab mukofot bo'lishi
+  // mumkin). ⚠️ Cheklangan o'quvchi mukofot ro'yxatida QOLADI (o'rni
+  // natijalardan chiqadi, qarzdan emas) — unga faqat tanga yozilmaydi.
+  const blockedIds = await getBlockedStudentIds(awards.map((a) => a.student.id));
 
   for (const award of awards) {
     const sid = award.student.id;
+
+    if (blockedIds.has(sid)) {
+      blocked++;
+      skipped++;
+      continue;
+    }
 
     // Idempotentlik: shu mavsum + shu turdagi + (agar mavjud bo'lsa) classId/position bo'yicha mavjudligini tekshirish.
     // meta — JSONB; har bir kalit alohida path filter (eski "meta.x" query'lari o'rnini bosadi).
@@ -460,10 +489,11 @@ async function distributeCoins(seasonId, distributorId, { force = false } = {}) 
   });
 
   logger.info(
-    `[SeasonReward] Season ${seasonId} distribution: ${distributed} awards, ${skipped} skipped`,
+    `[SeasonReward] Season ${seasonId} distribution: ${distributed} awards, ` +
+      `${skipped} skipped (${blocked} tanga cheklovi)`,
   );
 
-  return { distributed, skipped, totalAwards: awards.length };
+  return { distributed, skipped, blocked, totalAwards: awards.length };
 }
 
 module.exports = {

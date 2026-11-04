@@ -1,4 +1,6 @@
 const coinService = require("../services/coin.service");
+// TANGA CHEKLOVI yadrosi — darvoza ham, registr ham shu yerda
+const coinBlockService = require("../services/coinBlock.service");
 const asyncHandler = require("../middleware/async.middleware");
 const { BadRequestError } = require("../utils/errors");
 const { getPaginationParams, formatPaginationResponse } = require("../utils/pagination");
@@ -130,10 +132,18 @@ exports.distributeCoins = asyncHandler(async (req, res) => {
     givenBy: req.user.id,
   });
 
-  const message =
+  // ⚠️ TANGA CHEKLOVI ALOHIDA AYTILADI: "0 ta foydalanuvchiga berildi"
+  // degan jim javob admin uchun nosozlikka o'xshardi — aslida bu qoida
+  // (`coinBlock.service.js`). Bitta o'quvchi tanlangan holda servis
+  // umuman 409 bilan rad etadi.
+  const base =
     action === "give"
       ? `${result.successCount} ta foydalanuvchiga tanga berildi`
       : `${result.successCount} ta foydalanuvchidan tanga olindi`;
+
+  const message = result.blockedCount
+    ? `${base}. ${result.blockedCount} tasiga tanga berish taqiqlangan (qarzdorlik) — ularga yozilmadi`
+    : base;
 
   return res.json({ success: true, message, data: result });
 });
@@ -157,4 +167,98 @@ exports.getCoinLeaderboard = asyncHandler(async (req, res) => {
   const { page, limit } = getPaginationParams(req, 50);
   const result = await coinService.getCoinLeaderboard(page, limit);
   return res.json(formatPaginationResponse(result.rankings, result.pagination.total, page, limit));
+});
+
+// ─────────────────────────────────────────────
+// TANGA CHEKLOVI (qarzdor o'quvchiga tanga berilmaydi)
+// ─────────────────────────────────────────────
+// Yadro — `coinBlock.service.js`: darvoza ham, registr ham shu yerda.
+// Controller faqat so'rovni o'qiydi; tekshiruvlar servisda (ommaviy yo'l
+// bittalik yo'ldan yumshoqroq shart olmasligi uchun).
+
+/**
+ * GET /api/coins/blocks
+ * Cheklovlar registri: `status=active` (sukut) yoki `status=revoked` (tarix).
+ * @access Private (`coins.block`)
+ */
+exports.getCoinBlocks = asyncHandler(async (req, res) => {
+  const result = await coinBlockService.listBlocks(req);
+  return res.json(result);
+});
+
+/**
+ * GET /api/coins/blocks/summary
+ * Kartalar: nechta cheklangan, jami joriy qarz, qarzi yopilganlar soni.
+ * @access Private (`coins.block`)
+ */
+exports.getCoinBlockSummary = asyncHandler(async (req, res) => {
+  const data = await coinBlockService.getBlockSummary();
+  return res.json({ success: true, data });
+});
+
+/**
+ * GET /api/coins/blocks/candidates
+ * Cheklash uchun tanlov ro'yxati — sukut bo'yicha QARZDORLAR
+ * (`debtorsOnly=false` — barcha o'quvchilar).
+ * @access Private (`coins.block`)
+ */
+exports.getCoinBlockCandidates = asyncHandler(async (req, res) => {
+  const result = await coinBlockService.getBlockCandidates(req);
+  return res.json(result);
+});
+
+/**
+ * POST /api/coins/blocks
+ * BIR NECHTA O'QUVCHINI BIR AMALDA cheklash: { studentIds[], reason, note }.
+ * @access Private (`coins.block`)
+ */
+exports.blockCoins = asyncHandler(async (req, res) => {
+  const { studentIds, reason, note } = req.body;
+
+  const result = await coinBlockService.blockStudents({
+    studentIds,
+    reason,
+    note,
+    createdBy: req.user.id,
+  });
+
+  const parts = [`${result.blockedCount} ta o'quvchiga tanga berish taqiqlandi`];
+  if (result.skippedCount) parts.push(`${result.skippedCount} tasi allaqachon cheklangan`);
+  if (result.failedCount) parts.push(`${result.failedCount} tasida xato`);
+
+  return res.json({ success: true, message: parts.join(", "), data: result });
+});
+
+/**
+ * POST /api/coins/blocks/unblock
+ * Cheklovni olib tashlash: { studentIds[] } yoki { blockIds[] } + reason.
+ * @access Private (`coins.block`)
+ */
+exports.unblockCoins = asyncHandler(async (req, res) => {
+  const { studentIds, blockIds, reason } = req.body;
+
+  const result = await coinBlockService.unblockStudents({
+    studentIds,
+    blockIds,
+    reason,
+    revokedBy: req.user.id,
+  });
+
+  const parts = [`${result.unblockedCount} ta o'quvchiga tanga berish ochildi`];
+  if (result.failedCount) parts.push(`${result.failedCount} tasida xato`);
+
+  return res.json({ success: true, message: parts.join(", "), data: result });
+});
+
+/**
+ * GET /api/coins/blocks/my
+ * O'quvchi O'ZI ko'radi: cheklanganmi, nima uchun, qachondan.
+ * ⚠️ Ruxsat kaliti YO'Q — id tokendan (`/payroll/deductions/my` bilan AYNI
+ * qoida). Cheklov yashirin emas: tangasi to'xtagan o'quvchi sababini
+ * ekranda ko'rishi kerak.
+ * @access Private (student)
+ */
+exports.getMyCoinBlock = asyncHandler(async (req, res) => {
+  const data = await coinBlockService.getMyBlock(req.user.id);
+  return res.json({ success: true, data });
 });

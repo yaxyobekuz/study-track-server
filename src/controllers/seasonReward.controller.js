@@ -94,7 +94,11 @@ const distributeCoins = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: result,
-    message: `Tarqatildi: ${result.distributed}, o'tkazildi: ${result.skipped}`,
+    // Tanga cheklovi alohida aytiladi: "o'tkazildi" ichida yo'qolsa, admin
+    // mukofot tushmaganini nosozlik deb o'ylardi (`coinBlock.service.js`).
+    message:
+      `Tarqatildi: ${result.distributed}, o'tkazildi: ${result.skipped}` +
+      (result.blocked ? ` (shundan ${result.blocked} ta — tanga cheklovi)` : ""),
   });
 });
 

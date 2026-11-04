@@ -2489,6 +2489,71 @@ model DailyCoinStat {
   @@map("daily_coin_stats")
 }
 
+// TANGA CHEKLOVI — qarzdor o'quvchiga tanga BERILMAYDI (`coinBlock.service.js`).
+//
+// Biznes qarori (2026-11-04): oylik to'lovini to'lamagan o'quvchi tanga
+// olmaydi. Cheklov QO'LDA qo'yiladi va QO'LDA olinadi (`coins.block`):
+// qarzdorlar registri faqat tanlov ro'yxatini beradi, qarorni odam qabul
+// qiladi. Avtomat qo'yilsa, bir kunlik kechikish ham bolani tangadan
+// mahrum qilardi; avtomat olinsa, "qarzini to'ladi, lekin hali tushuntirish
+// kerak" degan holatni boshqarib bo'lmasdi.
+//
+// ⚠️ BU "KECHIKTIRISH" EMAS: cheklov davridagi tangalar keyin ham
+// berilmaydi. Kunlik pass har kun uchun bir marta ishlaydi va o'tkazib
+// yuborilgan kun qaytarilmaydi — aks holda cheklov jazo emas, shunchaki
+// to'lovni kechiktirish bo'lib qolardi.
+//
+// ⚠️ BIR O'QUVCHIDA BITTA FAOL CHEKLOV — `active_key` unique indeksi
+// kafolatlaydi (`class_leaders` doktrinasi): ikki parallel so'rov bitta
+// o'quvchiga ikki qator yoza OLMAYDI. Bekor qilinganda kalit NULL ga
+// tushadi, qator esa tarix bo'lib qoladi.
+model StudentCoinBlock {
+  id String @id @db.Char(24)
+
+  // soft ref → User (FK yo'q): o'quvchi arxivlansa ham cheklov tarixi
+  // o'qilishi kerak (`lesson_credits` bilan AYNI sabab)
+  studentId String @map("student_id") @db.Char(24)
+
+  // Bir amalda cheklanganlar guruhi — ommaviy tanlov bitta qarordir
+  batchId String @map("batch_id") @db.Char(24)
+
+  // Faol bo'lsa `studentId`, bekor qilinsa NULL — "bitta faol cheklov"
+  // kafolati shu indeksda
+  activeKey String? @unique @map("active_key")
+
+  reason String
+  note   String @default("")
+
+  // CHEKLASH PAYTIDAGI QARZ — muhrlanadi: qarz keyin to'langanda ham
+  // "nega cheklangan edi" degan savolga javob qoladi. Bu TUSHUNTIRISH,
+  // ikkinchi haqiqat manbai EMAS — joriy qarz har safar
+  // `monthly_invoices` dan o'qiladi.
+  debtSnapshot    Decimal @default(0) @map("debt_snapshot") @db.Decimal(14, 2)
+  debtMonthCount  Int     @default(0) @map("debt_month_count")
+  oldestDebtMonth Int?    @map("oldest_debt_month")
+
+  // { fullName, username, className } — o'quvchi qayta nomlansa yoki
+  // sinfdan chiqarilsa ham registr o'qiladi (`GradingGrant.snapshot`)
+  snapshot Json
+
+  createdBy String   @map("created_by") @db.Char(24)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // O'CHIRILMAYDI — BEKOR QILINADI (sabab + aktyor)
+  revokedAt    DateTime? @map("revoked_at")
+  revokedBy    String?   @map("revoked_by") @db.Char(24)
+  revokeReason String    @default("") @map("revoke_reason")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Darvoza: "shu o'quvchilar o'sha paytda cheklangan edimi"
+  @@index([studentId, createdAt])
+  @@index([revokedAt])
+  @@index([batchId])
+  @@index([createdAt(sort: Desc)])
+  @@map("student_coin_blocks")
+}
+
 model MarketProduct {
   id          String    @id @db.Char(24)
   name        String

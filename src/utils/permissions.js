@@ -610,6 +610,19 @@ const PERMISSION_SECTIONS = [
     actions: [
       A.view,
       { key: "distribute", label: "Tanga taqsimlash" },
+      // TANGA CHEKLOVI — qarzdor o'quvchiga tanga berishni to'xtatish va
+      // qaytarib ochish (`coinBlock.service.js`).
+      //
+      // ⚠️ `distribute` DAN ALOHIDA va bu ataylab: tanga taqsimlash —
+      // rag'batlantirish ishi, cheklov esa MOLIYAVIY qaror (ro'yxat
+      // "kim qarzdor" degan ma'lumotni ham ochib beradi). Bitta kalitga
+      // qo'shilsa, tanga beradigan har kim bolani tangadan mahrum qila
+      // olardi (`payroll.assign` / `payroll.deduct` bilan AYNI sabab).
+      //
+      // ⚠️ Cheklash ham, OCHISH ham shu kalit bilan: ikkalasi ham ayni
+      // qarorni qabul qilish va orqaga qaytarish (`devices.unlock` va
+      // `lessonCredits.manage` bilan AYNI mulohaza).
+      { key: "block", label: "Tanga cheklovi" },
       A.settings,
     ],
   },

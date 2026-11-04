@@ -304,6 +304,15 @@ const planStudents = async (db, ctx, studentIds, options) => {
      GROUP BY student`,
     ids,
   );
+  // TANGA CHEKLOVI — qarz bilan BIRGA ko'chadi (`coinBlock.service.js`).
+  // Qarz yangi filialga o'tadi (`debt_moves`), demak cheklovning sababi ham
+  // o'sha yerda bo'ladi: ko'chmasa, cheklangan o'quvchi yangi filialda
+  // jimgina yana tanga olib ketardi.
+  const coinBlocks = await q(
+    `SELECT id, student_id AS "studentId", reason FROM ${src("student_coin_blocks")}
+     WHERE student_id = ANY($1::text[]) AND revoked_at IS NULL`,
+    ids,
+  );
   const [targetSettings] = await q(
     `SELECT default_tariff_id AS "defaultTariffId" FROM ${tgt("finance_settings")} LIMIT 1`,
   );
@@ -347,6 +356,7 @@ const planStudents = async (db, ctx, studentIds, options) => {
   const devicesOf = count(devices);
   const telegramOf = count(telegram);
   const premiumOf = count(premiums);
+  const coinBlockOf = count(coinBlocks);
   const parentalSet = new Set(parental.map((r) => String(r.studentId)));
 
   const defaultTariffId = targetSettings?.defaultTariffId ?? null;
@@ -563,6 +573,12 @@ const planStudents = async (db, ctx, studentIds, options) => {
       }
     }
     if (premiumOf.get(id)?.n) notes.push("Faol premium ko'chadi");
+    const coinBlock = coinBlockOf.get(id) ?? null;
+    if (coinBlock) {
+      notes.push(
+        `Tanga cheklovi ko'chadi ("${coinBlock.reason}") — yangi filialda ham tanga berilmaydi`,
+      );
+    }
     const deviceCount = devicesOf.get(id)?.n ?? 0;
     if (deviceCount > 0) {
       warnings.push(
@@ -640,6 +656,7 @@ const planStudents = async (db, ctx, studentIds, options) => {
         profilePicture: user.profilePicture ?? null,
         returning: targetRowOf.has(id),
         deviceCount,
+        coinBlockId: coinBlock?.id ?? null,
       },
     });
   }
@@ -742,6 +759,17 @@ const planStudents = async (db, ctx, studentIds, options) => {
       message:
         "O'quvchi bu filialda o'qimaydigan oylarning hisob-fakturasi bekor qilinadi — " +
         "o'sha oy yangi filialda hisoblanadi.",
+    });
+  }
+  const coinBlocked = ready.filter((item) => item.plan.coinBlockId);
+  if (coinBlocked.length) {
+    acknowledgements.push({
+      code: "coin_block_moves",
+      title: "Tanga cheklovi yangi filialga o'tadi",
+      message:
+        `${coinBlocked.length} ta o'quvchiga tanga berish taqiqlangan va bu cheklov yangi ` +
+        "filialda ham amal qiladi: qarz ham o'sha yerga o'tadi, demak sabab ham u yerda " +
+        "qoladi. Cheklov yangi filialning \"Tanga cheklovi\" ro'yxatidan olib tashlanadi.",
     });
   }
   if (ready.some((item) => item.plan.deviceCount > 0)) {
@@ -996,6 +1024,58 @@ const writeStudents = async (db, ctx, items, historyCatalog = null) => {
   const financeMoved = await writeStudentFinance(db, ctx, items);
   for (const [studentId, info] of financeMoved) {
     if (moved.has(studentId)) moved.get(studentId).finance = info;
+  }
+
+  // 5c ── TANGA CHEKLOVI: qarz bilan BIRGA ko'chadi (`coinBlock.service.js`).
+  //
+  // Qarz yangi filialga o'tadi (`debt_moves`), demak cheklovning sababi ham
+  // o'sha yerda bo'ladi — ko'chmasa, cheklangan o'quvchi yangi filialda
+  // jimgina yana tanga olib ketardi.
+  //
+  // ⚠️ MAQSADDAGI FAOL QATOR AVVAL YOPILADI: A → B → A da o'quvchining A
+  // dagi eski faol cheklovi qolib ketishi mumkin, `active_key` esa
+  // o'quvchi bo'yicha YAGONA — nusxa o'sha indeksga urилib, BUTUN
+  // tranzaksiyani yiqitardi.
+  //
+  // ⚠️ `created_at` NUSXADA O'ZGARMAYDI: cheklov haqiqatan o'sha kundan
+  // amalda va darvoza aynan shu sanaga qarab hal qiladi (`at`). Qayta
+  // yozilsa, yangi filialda cheklov "bugundan" bo'lib ko'rinardi.
+  const blockedItems = items.filter((item) => item.plan.coinBlockId);
+  if (blockedItems.length) {
+    const blockedIds = blockedItems.map((item) => item.id);
+    const rowIds = blockedItems.map((item) => item.plan.coinBlockId);
+
+    await exec(
+      `UPDATE ${tgt("student_coin_blocks")}
+          SET active_key = NULL, revoked_at = NOW(), revoked_by = $2,
+              revoke_reason = $3, updated_at = NOW()
+        WHERE student_id = ANY($1::text[]) AND revoked_at IS NULL`,
+      blockedIds,
+      ctx.actor.id,
+      `"${ctx.source.name}" filialidan qayta ko'chirishda almashtirildi`,
+    );
+
+    await copyRowsWithNewIds(db, ctx.cache, {
+      from,
+      to,
+      table: "student_coin_blocks",
+      pairs: rowIds.map((rowId) => [generateId(), rowId]),
+      override: { updated_at: "NOW()" },
+    });
+
+    await exec(
+      `UPDATE ${src("student_coin_blocks")}
+          SET active_key = NULL, revoked_at = NOW(), revoked_by = $2,
+              revoke_reason = $3, updated_at = NOW()
+        WHERE id = ANY($1::text[]) AND revoked_at IS NULL`,
+      rowIds,
+      ctx.actor.id,
+      `"${ctx.target.name}" filialiga ko'chirildi — cheklov o'sha filialda davom etadi`,
+    );
+
+    for (const item of blockedItems) {
+      if (moved.has(item.id)) moved.get(item.id).coinBlockMoved = true;
+    }
   }
 
   // 5c ── TA'LIM TARIXI: baho, davomat, yutuq, jarima

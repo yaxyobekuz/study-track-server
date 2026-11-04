@@ -3,6 +3,9 @@ const { getCoinSettings } = require("../services/settings.service");
 const { getCurrentWeekRange } = require("../helpers/statistics.helpers");
 const { getNowInUzbekistan } = require("../helpers/date.helpers");
 const { COIN_PERIOD_TYPES, earnedDelta } = require("../helpers/coin.helpers");
+// TANGA CHEKLOVI — qarzdor o'quvchiga tanga BERILMAYDI. Darvoza bitta
+// joyda: tanga yozadigan har bir yo'l shundan o'tadi (`coinBlock.service.js`).
+const { getBlockedStudentIds, assertCoinsAllowed } = require("./coinBlock.service");
 const logger = require("../utils/logger");
 
 // ─────────────────────────────────────────────
@@ -58,6 +61,15 @@ async function distributeDailyCoins(targetDate) {
 
   const studentIds = students.map((s) => s.id);
 
+  // 1b. TANGA CHEKLOVI — cheklangan o'quvchiga kunlik tanga yozilmaydi
+  // (ya'ni o'qituvchi baho qo'ysa ham tanga tushmaydi).
+  //
+  // ⚠️ Cheklov O'SHA KUN holati bo'yicha tekshiriladi, bugungi holat
+  // bo'yicha emas: pass o'tgan kun uchun ham ishlaydi (`coinDaily.job.js`
+  // dagi startup recovery — kechagi kun). Busiz bugun olib tashlangan
+  // cheklov server qayta ishga tushganda kechagi tangani qaytarib berardi.
+  const blockedStudentIds = await getBlockedStudentIds(studentIds, { at: endOfDay });
+
   // 2. Batch: find students who already received daily coins today
   const alreadyRows = await prisma.coinTransaction.findMany({
     where: {
@@ -97,10 +109,18 @@ async function distributeDailyCoins(targetDate) {
   let skippedCount = 0;
   let totalCoins = 0;
 
+  let blockedCount = 0;
+
   for (const student of students) {
     const sid = student.id;
 
     if (alreadySet.has(sid)) {
+      skippedCount++;
+      continue;
+    }
+
+    if (blockedStudentIds.has(sid)) {
+      blockedCount++;
       skippedCount++;
       continue;
     }
@@ -163,9 +183,10 @@ async function distributeDailyCoins(targetDate) {
   }
 
   logger.info(
-    `[CoinService] Daily distribution: ${successCount} success, ${skippedCount} skipped, ${errorCount} errors`,
+    `[CoinService] Daily distribution: ${successCount} success, ${skippedCount} skipped ` +
+      `(${blockedCount} tanga cheklovi), ${errorCount} errors`,
   );
-  return { successCount, skippedCount, errorCount };
+  return { successCount, skippedCount, errorCount, blockedCount };
 }
 
 // ─────────────────────────────────────────────
@@ -206,6 +227,20 @@ async function distributeWeeklyBonusCoins(range) {
   });
   const sumById = new Map(sumRows.map((r) => [r.studentId, r._sum.grade || 0]));
 
+  // TANGA CHEKLOVI — cheklangan o'quvchiga bonus YOZILMAYDI.
+  //
+  // ⚠️ REYTING O'ZGARMAYDI: cheklangan o'quvchi baribir 1-o'rinda qoladi va
+  // bonus 2-o'ringa O'TMAYDI. Reyting baholardan chiqadi, qarzdan emas —
+  // o'rinni surib yuborsak, leaderboard bir narsani, bonus boshqa narsani
+  // ko'rsatardi. Cheklov tangani BERMAYDI, boshqaga qayta taqsimlamaydi.
+  //
+  // ⚠️ Hafta OXIRI holati bo'yicha (kunlik pass bilan AYNI qoida): o'tgan
+  // hafta uchun qayta ishlash cheklov davridagi bonusni qaytarib bermaydi.
+  const blockedStudentIds = await getBlockedStudentIds(
+    students.map((s) => s.id),
+    { at: weekEnd },
+  );
+
   const withSums = students.map((s) => ({
     studentId: s.id,
     classIds: (s.classes || []).map((c) => c.classId),
@@ -229,6 +264,7 @@ async function distributeWeeklyBonusCoins(range) {
       description: "Haftalik maktab reytingida 1-o'rin bonusi",
       weekNumber,
       year,
+      blocked: blockedStudentIds,
     });
   }
 
@@ -262,6 +298,7 @@ async function distributeWeeklyBonusCoins(range) {
         year,
         classId,
         className,
+        blocked: blockedStudentIds,
       });
     }
   }
@@ -280,7 +317,23 @@ async function _awardBonus({
   year,
   classId,
   className,
+  blocked,
 }) {
+  // TANGA CHEKLOVI DARVOZASI — bonus yozadigan yagona funksiya shu, demak
+  // tekshiruv ham shu yerda. Chaqiruvchi to'plamni oldindan hisoblab bersa
+  // (haftalik pass) shundan o'qiladi, aks holda o'zi so'raydi: yangi
+  // chaqiruvchi cheklovni chetlab o'tolmasin.
+  const isBlocked = blocked
+    ? blocked.has(studentId)
+    : (await getBlockedStudentIds([studentId])).has(studentId);
+
+  if (isBlocked) {
+    logger.info(
+      `[CoinService] Bonus skipped — tanga cheklovi: ${type} for student ${studentId}, week ${weekNumber}`,
+    );
+    return;
+  }
+
   const metaFilters = [
     { meta: { path: ["weekNumber"], equals: weekNumber } },
     { meta: { path: ["year"], equals: year } },
@@ -705,6 +758,13 @@ async function distributeManualCoins({
   filterValue,
   givenBy,
 }) {
+  // TANGA CHEKLOVI — ANIQ NISHONLI amalda OCHIQ xato: bitta o'quvchi
+  // tanlangan bo'lsa, admin "0 ta foydalanuvchiga berildi" degan jim javob
+  // emas, sababini ko'rishi kerak (`assertCoinsAllowed` → 409).
+  if (action === "give" && filterType === "individual") {
+    await assertCoinsAllowed(filterValue);
+  }
+
   const where = _buildFilterQuery(filterType, filterValue);
   const users = await prisma.user.findMany({
     where,
@@ -716,17 +776,31 @@ async function distributeManualCoins({
   const now = new Date();
 
   if (totalFound === 0) {
-    return { successCount: 0, skippedCount: 0, errorCount: 0, totalFound: 0 };
+    return { successCount: 0, skippedCount: 0, errorCount: 0, blockedCount: 0, totalFound: 0 };
   }
+
+  // ⚠️ FAQAT BERISHDA: cheklov "yangi tanga yozilmaydi" degani, tangani
+  // muzlatish emas — olish (`take`) va qaytarimlar avvalgidek ishlaydi.
+  const blockedIds =
+    action === "give"
+      ? await getBlockedStudentIds(users.map((u) => u.id))
+      : new Set();
 
   let balanceUpdates = [];
   let transactions = [];
   let skippedCount = 0;
+  let blockedCount = 0;
 
   for (const user of users) {
     const currentBalance = user.coinBalance || 0;
 
     if (action === "take" && currentBalance < amount) {
+      skippedCount++;
+      continue;
+    }
+
+    if (blockedIds.has(user.id)) {
+      blockedCount++;
       skippedCount++;
       continue;
     }
@@ -793,10 +867,11 @@ async function distributeManualCoins({
   }
 
   logger.info(
-    `[CoinService] Manual ${action}: ${successCount} success, ${skippedCount} skipped, ${errorCount} errors (total: ${totalFound})`,
+    `[CoinService] Manual ${action}: ${successCount} success, ${skippedCount} skipped ` +
+      `(${blockedCount} tanga cheklovi), ${errorCount} errors (total: ${totalFound})`,
   );
 
-  return { successCount, skippedCount, errorCount, totalFound };
+  return { successCount, skippedCount, errorCount, blockedCount, totalFound };
 }
 
 async function getCoinLeaderboard(page = 1, limit = 50) {

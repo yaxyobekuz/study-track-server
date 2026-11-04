@@ -61,6 +61,9 @@ const paymentAccountService = require("../../paymentAccount.service");
 const penaltyService = require("../../penalty.service");
 const premiumService = require("../../premium.service");
 const coinService = require("../../coin.service");
+// TANGA CHEKLOVI darvozasi — oldindan ko'rish uchun (yozuvda ham AYNI
+// darvoza servisning ichida ishlaydi)
+const coinBlockService = require("../../coinBlock.service");
 const { getPremiumSettings, getFinanceSettings } = require("../../settings.service");
 
 const TOOLSET = "payroll";
@@ -2190,6 +2193,23 @@ const distributeCoins = defineAction({
     }
 
     const warnings = [];
+    // TANGA CHEKLOVI (`coinBlock.service.js`): cheklangan o'quvchiga tanga
+    // yozilmaydi. Oldindan ko'rishda aytiladi — tasdiqlagan odam "berdim"
+    // deb o'ylab qolmasin. Bitta o'quvchi tanlangan bo'lsa servis amalni
+    // umuman rad etadi (409), shuning uchun bu ogohlantirish ommaviy
+    // filtrlar uchun.
+    let blockedInSample = 0;
+    if (action === "give") {
+      const blockedIds = await coinBlockService.getBlockedStudentIds(
+        preview.users.map((u) => u.id),
+      );
+      blockedInSample = preview.users.filter((u) => blockedIds.has(u.id)).length;
+      if (blockedInSample > 0) {
+        warnings.push(
+          `${blockedInSample}${sampleIsComplete ? "" : "+"} ta o'quvchiga tanga berish taqiqlangan (qarzdorlik) — ularga yozilmaydi.`,
+        );
+      }
+    }
     if (action === "take" && insufficient > 0) {
       warnings.push(
         sampleIsComplete
@@ -2220,6 +2240,9 @@ const distributeCoins = defineAction({
         totalCount: preview.totalCount,
         insufficient,
         nonStudents,
+        // Cheklov oraliqda qo'yilsa/olinsa tasdiq eskiradi va qayta
+        // ko'rib chiqiladi: odam ko'rgani bilan yozilgani bir xil bo'lsin.
+        blockedInSample,
       },
     };
   },
@@ -2250,6 +2273,12 @@ const distributeCoins = defineAction({
         { label: "Topildi", value: String(result.totalFound) },
         { label: "Bajarildi", value: String(result.successCount) },
         { label: "O'tkazib yuborildi", value: String(result.skippedCount) },
+        // TANGA CHEKLOVI (`coinBlock.service.js`): qarzdor o'quvchiga tanga
+        // yozilmaydi. Alohida qator — "o'tkazib yuborildi" ichida yo'qolsa,
+        // AI "bajarildi" deb aytib, sababini aytmagan bo'lardi.
+        ...(result.blockedCount
+          ? [{ label: "Tanga cheklovi", value: String(result.blockedCount) }]
+          : []),
       ],
       data: result,
     };

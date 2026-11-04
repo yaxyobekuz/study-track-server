@@ -33,6 +33,8 @@ const {
   parseOptionalMonthKey,
 } = require("../helpers/month.helpers");
 const { parseAmount } = require("../helpers/money.helpers");
+// Sana MATNI yagona manbadan (`dates.md`)
+const { formatDateUz } = require("../helpers/date.helpers");
 // ASL SINF — daraja (1-sinf … 11-sinf). Chegara, matn ko'rinishi va sinf
 // nomidan chiqarish BITTA joyda.
 const {
@@ -322,9 +324,42 @@ async function loadUser(id, { withPassword = false, withPlain = false } = {}) {
 async function getUserById(id) {
   const user = await loadUserWithSchedule(id);
   if (!user) return user;
+
+  // TANGA CHEKLOVI — o'quvchi profilida ochiq ko'rinadi (`finance.md` §13).
+  // Usiz admin "nega bu bolaning tangasi o'smayapti" degan savol bilan
+  // profilda turib, javobni boshqa bo'limda qidirishi kerak bo'lardi.
+  const coinBlock =
+    user.role === ROLES.STUDENT ? await getStudentCoinBlock(user.id) : null;
+
   // Qoldiq profilmi (boshqa filialga ko'chirilgan / filialdan chiqarilgan) —
   // profil sahifasi buni ochiq aytadi va tahrir tugmalarini yopadi
-  return { ...user, branchPresence: await describeBranchPresence(user) };
+  return { ...user, coinBlock, branchPresence: await describeBranchPresence(user) };
+}
+
+/**
+ * O'quvchining faol tanga cheklovi (bo'lmasa `null`).
+ *
+ * ⚠️ Darvoza yadrosidan o'qiladi (`coinBlock.service.js`) — ikkinchi
+ * so'rov yozilsa, profil bir narsani, registr boshqasini ko'rsatardi.
+ * Cheklov bo'lmasligi ODATIY hol, shuning uchun xato profilni yiqitmaydi.
+ */
+async function getStudentCoinBlock(studentId) {
+  try {
+    const { getActiveBlock } = require("./coinBlock.service");
+    const block = await getActiveBlock(studentId);
+    if (!block) return null;
+
+    return {
+      id: block.id,
+      reason: block.reason,
+      note: block.note,
+      since: block.createdAt,
+      sinceLabel: formatDateUz(block.createdAt),
+    };
+  } catch (error) {
+    logger.error(`[UserService] tanga cheklovi o'qilmadi (${studentId}): ${error.message}`);
+    return null;
+  }
 }
 
 /**
