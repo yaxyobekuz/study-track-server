@@ -119,6 +119,11 @@ enum MarketOrderStatus {
   cancelled
 }
 
+// QABUL ZINAPOYASI — tartib shu enumda EMAS, `helpers/leadStage.helpers.js`
+// dagi `LEAD_STAGES` da (6 pog'ona). Enum faqat "qaysi holat bor" degan
+// savolga javob beradi: yangi qiymatlar OXIRIGA qo'shiladi, chunki
+// PostgreSQL enum tartibi domen tartibi emas va o'rtaga qo'shish eski
+// ma'lumotga tegib ketardi.
 enum LeadStatus {
   new
   contacted
@@ -130,6 +135,10 @@ enum LeadStatus {
   rejected
   lost
   postponed
+  // 4-pog'ona: sinov darsiga KIRDI (keldi — 3-pog'ona, kirdi — 4)
+  attended
+  // 5-pog'ona: dars YOQDI (to'lovdan oldingi oxirgi pog'ona)
+  liked
 }
 
 enum LeadActivityType {
@@ -2635,6 +2644,19 @@ model Lead {
   lastName           String     @map("last_name")
   phone              String
   additionalPhone    String?    @map("additional_phone")
+  // KELGAN MAKTABI — erkin matn, katalog EMAS: bola istalgan maktabdan
+  // keladi va ro'yxatga olayotgan odam nomni eshitganicha yozadi. Katalog
+  // qilinsa, qabulxona har yangi maktab uchun avval katalogga kirishi kerak
+  // bo'lardi va amalda maydon bo'sh qolib ketardi.
+  previousSchool     String?    @map("previous_school")
+  // KIM OLIB KELDI (soft ref → User) — `createdBy` bilan CHALKASHMASIN:
+  // `createdBy` tizimga KIM KIRITGANI (qabulxona), bu esa bolani kim olib
+  // kelgani. Ikkalasi odatda boshqa odam va tahlil aynan shu maydon
+  // bo'yicha qilinadi ("men 10 ta olib keldim").
+  broughtBy          String?    @map("brought_by") @db.Char(24)
+  // MAS'UL XODIM (soft ref → User) — sinov darsini kim o'tadi / kim ishlaydi.
+  // "10 tadan 8 tasini ushlab qololmading" degan savol shu kesimda javob topadi.
+  assignedTo         String?    @map("assigned_to") @db.Char(24)
   // Mongoose'da required edi, lekin eski data'da ba'zan bo'sh — nullable (data yo'qotmaslik uchun)
   source             String?    @db.Char(24)
   direction          String?    @db.Char(24)
@@ -2651,14 +2673,62 @@ model Lead {
   createdAt          DateTime   @default(now()) @map("created_at")
   updatedAt          DateTime   @updatedAt @map("updated_at")
 
-  activities LeadActivity[]
+  activities  LeadActivity[]
+  stageEvents LeadStageEvent[]
 
   @@index([status, source, createdAt(sort: Desc)])
   @@index([phone])
   @@index([createdBy])
   @@index([direction])
   @@index([category])
+  @@index([broughtBy])
+  @@index([assignedTo])
   @@map("leads")
+}
+
+// QABUL ZINAPOYASI TARIXI — "shu lead qaysi pog'onagacha YETGAN".
+//
+// ⚠️ FUNNEL JORIY HOLATDAN HISOBLANMAYDI. Lead `enrolled` bo'lsa, u
+// `interested` da turmaydi — ya'ni holat bo'yicha sanalgan "funnel" da
+// har pog'ona faqat o'sha yerda QOTIB QOLGANLARNI ko'rsatadi va
+// "10 tadan 2 tasi qoldi" degan savolga javob bermaydi. Shuning uchun
+// har pog'onaga YETISH fakti alohida qator bo'lib yoziladi.
+//
+// ⚠️ ORTGA QAYTISH QATORNI O'CHIRMAYDI: "yetgan" — o'tgan fakt. Bola
+// darsga kirib keyin kelmay qo'ysa, u 4-pog'onaga yetgan bo'lib qoladi
+// va chiqib ketgani HOLAT bilan (`lost` / `rejected` / `postponed`)
+// qayd etiladi. Aks holda yo'qotish qaysi pog'onada bo'lgani izsiz
+// yo'qolardi — modulning butun mohiyati esa shu.
+//
+// ⚠️ ZINAPOYA MONOTON: 6-pog'onaga yetgan lead 1..5 ga ham yetgan
+// hisoblanadi (shu qatorlar ham yoziladi). Busiz "yetganlar soni"
+// pastga tushib, grafik teskari ko'rinardi.
+model LeadStageEvent {
+  id     String @id @db.Char(24)
+  leadId String @map("lead_id") @db.Char(24)
+
+  // Pog'ona raqami 1..6 — KALIT SHU, holat nomi emas: nom o'zgarsa ham
+  // tarix va grafik joyida qoladi (`helpers/leadStage.helpers.js`).
+  stage  Int
+  status LeadStatus
+
+  reachedAt DateTime @map("reached_at")
+  createdBy String?  @map("created_by") @db.Char(24)
+  note      String   @default("")
+
+  // Eski ma'lumotdan to'ldirilgan qator: VAQTI taxminiy (holat tarixidan
+  // tiklangan), SONI esa aniq. Grafikda sana bo'yicha filtr lead'ning
+  // `createdAt` iga tayanadi, shuning uchun bu bayroq hisobni buzmaydi.
+  backfilled Boolean @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  // Bir pog'onaga bir marta yetiladi — takror yozuv STRUKTURAVIY imkonsiz
+  @@unique([leadId, stage])
+  @@index([stage, reachedAt])
+  @@map("lead_stage_events")
 }
 
 model LeadActivity {

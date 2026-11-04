@@ -12,6 +12,8 @@ const {
   getAnalyticsOverview,
   getSourceAnalytics,
   getConversionFunnel,
+  getStaffConversion,
+  getLeadStages,
   getTrendAnalytics,
   getDirectionAnalytics,
   getCategoryAnalytics,
@@ -82,9 +84,17 @@ router
 router.get("/analytics/overview", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getAnalyticsOverview);
 router.get("/analytics/sources", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getSourceAnalytics);
 router.get("/analytics/conversion", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getConversionFunnel);
+// XODIMLAR KESIMI — "kim nechta olib keldi, nechtasi qoldi". Tahlil
+// ruxsati bilan: bu baho beradigan hisobot, oddiy ro'yxat emas.
+router.get("/analytics/staff", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getStaffConversion);
 router.get("/analytics/trends", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getTrendAnalytics);
 router.get("/analytics/directions", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getDirectionAnalytics);
 router.get("/analytics/categories", authorizePermission(PERMISSIONS.LEADS_ANALYTICS), getCategoryAnalytics);
+
+// --- QABUL ZINAPOYASI (6 pog'ona) ---
+// ⚠️ `/:id` dan OLDIN: aks holda "stages" lead identifikatori deb
+// o'qilardi (`payroll.routes.js` dagi AYNI tuzoq).
+router.get("/stages", authorizePermission(PERMISSIONS.LEADS_VIEW, ROLES.RECEPTION), getLeadStages);
 
 // --- Leads CRUD (Owner + Reception) ---
 router

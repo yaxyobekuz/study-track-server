@@ -1,6 +1,14 @@
 const asyncHandler = require("../middleware/async.middleware");
 const leadService = require("../services/lead.service");
 const leadActivityService = require("../services/leadActivity.service");
+// QABUL ZINAPOYASI — yagona manba (panel ham shundan o'qiydi)
+const {
+  LEAD_STAGES,
+  FINAL_STAGE,
+  EXIT_STATUSES,
+  EXIT_LABELS,
+  STATUS_LABELS,
+} = require("../helpers/leadStage.helpers");
 
 // Get all leads (paginated, filtered)
 const getAllLeads = asyncHandler(async (req, res) => {
@@ -112,6 +120,29 @@ const getConversionFunnel = asyncHandler(async (req, res) => {
   res.json({ success: true, data });
 });
 
+// XODIMLAR KESIMIDA KONVERSIYA — "kim nechta olib keldi va nechtasi qoldi".
+// Ikki ro'yxat qaytadi: olib kelganlar va mas'ullar (`brought` / `assigned`).
+const getStaffConversion = asyncHandler(async (req, res) => {
+  const data = await leadService.getStaffConversion(req.query);
+
+  res.json({ success: true, data });
+});
+
+// QABUL ZINAPOYASI — 6 pog'ona va chiqish holatlari.
+// ⚠️ Panel yorliqlarni SHU yerdan oladi: zinapoya serverda yagona joyda
+// (`helpers/leadStage.helpers.js`), ikkinchi nusxa yozilmasin.
+const getLeadStages = asyncHandler(async (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      stages: LEAD_STAGES,
+      finalStage: FINAL_STAGE,
+      exits: EXIT_STATUSES.map((status) => ({ status, label: EXIT_LABELS[status] })),
+      statusLabels: STATUS_LABELS,
+    },
+  });
+});
+
 // Get trend analytics
 const getTrendAnalytics = asyncHandler(async (req, res) => {
   const data = await leadService.getTrendAnalytics(req.query);
@@ -145,6 +176,8 @@ module.exports = {
   getAnalyticsOverview,
   getSourceAnalytics,
   getConversionFunnel,
+  getStaffConversion,
+  getLeadStages,
   getTrendAnalytics,
   getDirectionAnalytics,
   getCategoryAnalytics,
