@@ -31,6 +31,11 @@ const getByStudent = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await analyticsService.getByStudent(req.query) });
 });
 
+// O'qituvchilar kesimi — joriy va o'tgan davr farqi bilan.
+const getByTeacher = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await analyticsService.getByTeacher(req.query) });
+});
+
 // Qamrov + diagnostika topshirmaganlar ro'yxati
 const getParticipation = asyncHandler(async (req, res) => {
   res.json({
@@ -199,6 +204,7 @@ module.exports = {
   getByClass,
   getClassDetail,
   getByStudent,
+  getByTeacher,
   getParticipation,
   getClassParticipation,
   getToday,

@@ -18,7 +18,20 @@ const {
   ForbiddenError,
 } = require("../utils/errors");
 const { LEVELS, LEVEL_LABELS } = require("../helpers/diagnostic.helpers");
+const {
+  LEVEL_KEYS,
+  LEVEL_POOLS,
+  LEVEL_KEY_LABELS,
+  SOURCE_LABELS,
+  TOPIC_MODE_LABELS,
+  parseBlueprint,
+  rowTotal,
+  levelCounts,
+} = require("../helpers/diagnosticBlueprint.helpers");
 const { getDiagnosticSettings } = require("./settings.service");
+const topicScopeService = require("./diagnosticTopicScope.service");
+const aiQuestionService = require("./diagnosticAiQuestion.service");
+const questionService = require("./diagnosticQuestion.service");
 
 const MODES = ["adaptive", "practice", "timed", "section"];
 const STATUSES = ["draft", "scheduled", "active", "archived"];
@@ -251,7 +264,41 @@ async function listTests(query = {}, pagination) {
   ]);
 
   const subjects = await _attachSubjects(rows);
-  return { total, rows: subjects.map(_shape) };
+  const pending = await _attachPendingApproval(rows);
+
+  return {
+    total,
+    rows: subjects.map((row) => ({
+      ..._shape(row),
+      pendingApproval: pending.get(row.id) ?? 0,
+    })),
+  };
+}
+
+/**
+ * Testlardagi TASDIQLANMAGAN savollar soni.
+ *
+ * ⚠️ RO'YXATDA KO'RINISHI SHART. AI yozgan savol bankka `review`
+ * holatida tushadi va test qoralama bo'lib qoladi — admin "nega test
+ * ochilmayapti" degan savolga javobni ro'yxatning o'zidan olishi kerak,
+ * nashr tugmasini bosib xato olgandan keyin emas.
+ *
+ * ⚠️ BITTA SO'ROV, har test uchun alohida emas (N+1).
+ */
+async function _attachPendingApproval(rows) {
+  const ids = rows.map((row) => row.id);
+  const map = new Map(ids.map((id) => [id, 0]));
+  if (!ids.length) return map;
+
+  const pending = await prisma.diagnosticTestQuestion.findMany({
+    where: { testId: { in: ids }, question: { status: { not: "approved" } } },
+    select: { testId: true },
+  });
+
+  for (const row of pending) {
+    map.set(row.testId, (map.get(row.testId) ?? 0) + 1);
+  }
+  return map;
 }
 
 /** `subjectId` — ixtiyoriy FK, `include` bilan olinmaydi (nullable relation yo'q). */
@@ -287,6 +334,7 @@ async function _attachSubjects(rows) {
     subject: map.get(r.subjectId) || null,
     blueprintLabels: (Array.isArray(r.blueprint) ? r.blueprint : []).map((b) => {
       const name = map.get(b?.subjectId)?.name || "Fan";
+      const hasRange = b?.topicFrom != null && b?.topicTo != null;
       return {
         subjectId: b?.subjectId || null,
         name,
@@ -297,6 +345,22 @@ async function _attachSubjects(rows) {
         easy: b?.easy ?? 0,
         medium: b?.medium ?? 0,
         hard: b?.hard ?? 0,
+        /**
+         * ⚠️ MAVZU ORALIG'I MUHRLANGAN HOLDA KO'RSATILADI.
+         * `currentTopicAtCreate` — test yaratilgan paytdagi joriy
+         * mavzu. Sinf oldinga ketgani bilan bu raqam o'zgarmaydi:
+         * "test qaysi chegara bilan tuzilgan" degan savolga javob
+         * keyin ham kerak bo'ladi.
+         */
+        source: b?.source || "bank",
+        sourceLabel: SOURCE_LABELS[b?.source || "bank"],
+        topicMode: b?.topicMode ?? null,
+        topicModeLabel: b?.topicMode ? TOPIC_MODE_LABELS[b.topicMode] : null,
+        topicFrom: b?.topicFrom ?? null,
+        topicTo: b?.topicTo ?? null,
+        currentTopicAtCreate: b?.currentTopicAtCreate ?? null,
+        selected: b?.selected ?? null,
+        topicLabel: hasRange ? `${b.topicFrom}–${b.topicTo}-mavzu` : null,
       };
     }),
   }));
@@ -334,6 +398,9 @@ async function getTestById(id) {
     ...tq.question,
     position: tq.position,
   }));
+  shaped.pendingApproval = shaped.questions.filter(
+    (question) => question.status !== "approved",
+  ).length;
   return shaped;
 }
 
@@ -345,15 +412,39 @@ async function getTestById(id) {
  * olardi — ya'ni muammo eng noqulay joyda, o'quvchining oldida chiqardi.
  */
 async function checkAvailability(test) {
-  const pinned = await prisma.diagnosticTestQuestion.count({
+  const pinnedRows = await prisma.diagnosticTestQuestion.findMany({
     where: { testId: test.id },
+    select: { question: { select: { id: true, code: true, status: true } } },
   });
-  if (pinned > 0) {
+
+  if (pinnedRows.length > 0) {
+    /**
+     * ⚠️ TASDIQLANMAGAN SAVOL NASHRNI TO'SADI.
+     *
+     * AI yozgan savol bankka `review` holatida tushadi va testga
+     * biriktiriladi — ya'ni test QORALAMA bo'lib tayyor turadi, lekin
+     * o'quvchiga ochilmaydi. Bank doktrinasi shu bilan buzilmaydi:
+     * "testga faqat `approved` savol tushadi" qoidasi nashr nuqtasida
+     * tekshiriladi va tasdiqlash alohida ruxsat ortida qoladi
+     * (`diagnostics.moderate`).
+     *
+     * ⚠️ MAVJUD TESTLARGA TA'SIR QILMAYDI: qo'lda biriktirish
+     * (`_resolveQuestionIds`) allaqachon faqat `approved` savolni
+     * qabul qiladi, ya'ni ularda `pendingApproval` har doim 0.
+     */
+    const pending = pinnedRows
+      .map((row) => row.question)
+      .filter((question) => question && question.status !== "approved");
+
     return {
       required: test.questionCount,
-      available: pinned,
+      available: pinnedRows.length,
+      approved: pinnedRows.length - pending.length,
+      pendingApproval: pending.length,
+      pendingQuestionIds: pending.map((q) => q.id),
+      pendingQuestionCodes: pending.map((q) => q.code),
       pinned: true,
-      enough: pinned >= 1,
+      enough: pinnedRows.length >= 1 && pending.length === 0,
     };
   }
 
@@ -411,11 +502,7 @@ function _bankFilter(test, { levels = null } = {}) {
  * fizika savoli qo'shilsa, test o'z ma'nosini yo'qotardi. To'ldirib
  * bo'lmagan qator OGOHLANTIRISH bo'lib qaytadi.
  */
-const BLUEPRINT_LEVELS = [
-  ["easy", ["easy"]],
-  ["medium", ["medium"]],
-  ["hard", ["hard", "expert"]],
-];
+const BLUEPRINT_LEVELS = LEVEL_KEYS.map((key) => [key, LEVEL_POOLS[key]]);
 
 function _normalizeText(value) {
   return String(value || "")
@@ -424,11 +511,64 @@ function _normalizeText(value) {
     .trim();
 }
 
-async function selectByBlueprint(blueprint, { language = null } = {}) {
+/**
+ * Bankdan tanlash sharti — qator + MAVZU QAMROVI.
+ *
+ * ⚠️ MAVZU FILTRI `topicId` BO'YICHA. Mavzusi belgilanmagan savol
+ * qamrovga TUSHMAYDI va bu ataylab: uning qaysi mavzuga tegishliligi
+ * noma'lum, ya'ni "kelgan mavzudan o'tib ketmaslik" qoidasini u haqda
+ * tasdiqlab bo'lmaydi (`diagnosticTopicScope.service.js`). Yetmay
+ * qolgani ogohlantirishda ko'rinadi.
+ */
+function _rowFilter(row, scope, language) {
+  return {
+    status: "approved",
+    // Insho avtomat baholanmaydi — biriktirilgan testga tasodifan
+    // tushib qolsa, ball maxrajini jimgina kichraytirardi.
+    type: { not: "essay" },
+    subjectId: row.subjectId,
+    ...(row.grade ? { grade: row.grade } : {}),
+    ...(language ? { language } : {}),
+    ...(scope?.topicIds ? { topicId: { in: scope.topicIds } } : {}),
+  };
+}
+
+/**
+ * Qator bo'yicha bankda nechta savol borligi — daraja kesimida.
+ *
+ * ⚠️ JAMI ALOHIDA SANALADI, darajalar yig'indisi EMAS: yetmaganini
+ * to'ldirish qatorning ISTALGAN darajasidan boradi (pastdagi `filler`),
+ * ya'ni amalda yetkazib berilishi mumkin bo'lgan son — o'sha jami.
+ */
+async function countBankForRow(row, scope, { language = null } = {}) {
+  const base = _rowFilter(row, scope, language);
+  const levels = {};
+
+  for (const [key, difficulties] of BLUEPRINT_LEVELS) {
+    const available = await prisma.diagnosticQuestion.count({
+      where: { ...base, difficulty: { in: difficulties } },
+    });
+    levels[key] = { want: Number(row[key]) || 0, available };
+  }
+
+  const availableTotal = await prisma.diagnosticQuestion.count({ where: base });
+  const want = rowTotal(row);
+
+  return {
+    levels,
+    want,
+    availableTotal,
+    shortfall: Math.max(0, want - availableTotal),
+  };
+}
+
+async function selectByBlueprint(blueprint, { language = null, scopes = null } = {}) {
   const selected = [];
   const warnings = [];
   const seenText = new Set();
   const seenId = new Set();
+  /** Qator → tanlangan savol id'lari (test qurilishida tartib uchun). */
+  const byRow = new Map();
 
   const take = (pool, want) => {
     let taken = 0;
@@ -445,21 +585,15 @@ async function selectByBlueprint(blueprint, { language = null } = {}) {
     return taken;
   };
 
-  for (const row of blueprint) {
-    const base = {
-      status: "approved",
-      // Insho avtomat baholanmaydi — biriktirilgan testga tasodifan
-      // tushib qolsa, ball maxrajini jimgina kichraytirardi.
-      type: { not: "essay" },
-      subjectId: row.subjectId,
-      ...(row.grade ? { grade: row.grade } : {}),
-      ...(language ? { language } : {}),
-    };
+  for (let index = 0; index < blueprint.length; index += 1) {
+    const row = blueprint[index];
+    const scope = scopes ? scopes[index] : null;
+    const base = _rowFilter(row, scope, language);
 
-    const want =
-      (Number(row.easy) || 0) + (Number(row.medium) || 0) + (Number(row.hard) || 0);
+    const want = rowTotal(row);
     if (want <= 0) continue;
 
+    const before = selected.length;
     let picked = 0;
     for (const [key, difficulties] of BLUEPRINT_LEVELS) {
       const need = Number(row[key]) || 0;
@@ -485,40 +619,41 @@ async function selectByBlueprint(blueprint, { language = null } = {}) {
       picked += take(filler, want - picked);
     }
 
+    byRow.set(index, selected.slice(before));
+
     if (picked < want) {
-      const subject = await prisma.subject.findUnique({
-        where: { id: row.subjectId },
-        select: { name: true },
-      });
+      const subjectName =
+        scope?.subjectName ||
+        (
+          await prisma.subject.findUnique({
+            where: { id: row.subjectId },
+            select: { name: true },
+          })
+        )?.name ||
+        "Fan";
+      const scopeText =
+        scope?.topicFrom != null && scope?.topicTo != null
+          ? ` ${scope.topicFrom}–${scope.topicTo}-mavzu oralig'ida`
+          : "";
       warnings.push(
-        `${subject?.name || "Fan"}${row.grade ? ` (${row.grade}-sinf)` : ""}: ` +
-          `${want} ta so'raldi, bankda ${picked} ta topildi`,
+        `${subjectName}${row.grade ? ` (${row.grade}-sinf)` : ""}:` +
+          `${scopeText} ${want} ta so'raldi, bankda ${picked} ta topildi`,
       );
     }
   }
 
-  return { questionIds: selected, warnings };
+  return { questionIds: selected, warnings, byRow };
 }
 
 /**
- * Taqsimotni tozalaydi: yaroqsiz qatorlar tushib qoladi, sonlar
- * chegaraga solinadi.
+ * ⚠️ TAQSIMOT SHAKLI `helpers/diagnosticBlueprint.helpers.js` DA.
+ * Ilgari u shu yerda lokal `_parseBlueprint` edi va mavzu qamrovi
+ * qo'shilganda ikkinchi nusxa paydo bo'lardi: oldindan ko'rish bir
+ * qoidani, yozuv boshqasini tekshirardi. `legacy: true` eski yo'lning
+ * xatti-harakatini (yaroqsiz qator tashlanadi, qamrov talab
+ * qilinmaydi) AYNAN saqlaydi.
  */
-function _parseBlueprint(raw) {
-  if (!Array.isArray(raw)) return null;
-
-  const rows = raw
-    .map((row) => ({
-      subjectId: row?.subjectId || null,
-      grade: row?.grade ? parseInt(row.grade, 10) || null : null,
-      easy: Math.max(0, Math.min(100, parseInt(row?.easy, 10) || 0)),
-      medium: Math.max(0, Math.min(100, parseInt(row?.medium, 10) || 0)),
-      hard: Math.max(0, Math.min(100, parseInt(row?.hard, 10) || 0)),
-    }))
-    .filter((row) => row.subjectId && row.easy + row.medium + row.hard > 0);
-
-  return rows.length ? rows : null;
-}
+const _parseBlueprint = (raw) => parseBlueprint(raw, { legacy: true });
 
 async function createTest(data, createdBy) {
   const parsed = await _parsePayload(data);
@@ -566,6 +701,340 @@ async function createTest(data, createdBy) {
 
   const [withSubject] = await _attachSubjects([test]);
   return { ...(_shape(withSubject) || {}), warnings };
+}
+
+// ─────────────────────────────────────────────
+// MAVZU QAMROVI BILAN TEST YIG'ISH (AI + BANK)
+// ─────────────────────────────────────────────
+//
+// ⚠️ IKKI QADAM: `planTest` (oldindan ko'rish, HECH NARSA YOZMAYDI) va
+// `buildTest` (yozadi). Loyihadagi `preview` → `confirm` naqshi
+// (filiallararo ko'chirish, sertifikat importi) bilan AYNI mulohaza:
+// odam avval NIMA BO'LISHINI ko'rishi kerak, chunki qaror qaytarib
+// bo'lmaydigan narsaga tegadi — bu yerda pullik model chaqiruviga va
+// bankka yoziladigan savollarga.
+//
+// ⚠️ QAMROV BUZILSA HECH NARSA YOZILMAYDI. Mavzu chegarasi to'g'ri
+// kelmagan qator bo'lsa, `buildTest` BUTUNLAY to'xtaydi — "4 fandan
+// 3 tasi tushdi" degan yarim test qo'lda qidirib topiladigan xato
+// bo'lardi va o'quvchi o'tilmagan mavzudan savol olardi.
+
+/**
+ * OLDINDAN KO'RISH: qamrov, bankdagi savollar va AI yozishi kerak soni.
+ *
+ * @param {object} params
+ * @param {string} params.classId
+ * @param {Array} params.blueprint
+ * @param {string} params.actorId
+ * @returns {Promise<object>}
+ */
+async function planTest({ classId, blueprint, actorId }) {
+  if (!classId) throw new BadRequestError("Sinf tanlanishi shart");
+
+  const rows = parseBlueprint(blueprint);
+  if (!rows) throw new BadRequestError("Kamida bitta fan qatori kiritilsin");
+
+  const { scopes, errors, class: klass } = await topicScopeService.resolveScopes({
+    classId,
+    blueprint: rows,
+    actorId,
+  });
+
+  const aiEnabled = await aiQuestionService.isEnabled();
+  const warnings = [];
+
+  const plan = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const scope = scopes[index];
+    const counts = levelCounts(row);
+    const want = rowTotal(row);
+
+    const entry = {
+      index,
+      subjectId: row.subjectId,
+      subjectName: scope.subjectName,
+      grade: row.grade,
+      source: row.source,
+      sourceLabel: SOURCE_LABELS[row.source],
+      topicMode: row.topicMode,
+      topicModeLabel: row.topicMode ? TOPIC_MODE_LABELS[row.topicMode] : null,
+      topicFrom: scope.topicFrom,
+      topicTo: scope.topicTo,
+      currentTopicNumber: scope.currentTopicNumber,
+      currentTopicName: scope.currentTopicName,
+      totalTopics: scope.totalTopics,
+      topicCount: scope.topics.length,
+      label: topicScopeService.scopeLabel(scope),
+      counts,
+      want,
+      reason: scope.reason,
+      ready: !scope.reason,
+      bank: null,
+      needsAi: 0,
+    };
+
+    if (!scope.reason) {
+      if (row.source === "ai") {
+        entry.needsAi = want;
+        if (!aiEnabled) {
+          entry.ready = false;
+          entry.reason = "AI o'chirilgan — savollarni bankdan oling";
+        }
+      } else {
+        entry.bank = await countBankForRow(row, scope);
+        if (entry.bank.shortfall > 0) {
+          warnings.push(
+            `${entry.label}: ${want} ta so'raldi, bankda ${entry.bank.availableTotal} ta mos savol bor`,
+          );
+        }
+      }
+    }
+
+    plan.push(entry);
+  }
+
+  const totals = plan.reduce(
+    (acc, entry) => {
+      acc.requested += entry.want;
+      acc.fromBank += entry.bank ? Math.min(entry.want, entry.bank.availableTotal) : 0;
+      acc.needsAi += entry.needsAi;
+      acc.shortfall += entry.bank?.shortfall ?? 0;
+      return acc;
+    },
+    { requested: 0, fromBank: 0, needsAi: 0, shortfall: 0 },
+  );
+
+  return {
+    class: klass,
+    rows: plan,
+    totals,
+    errors,
+    aiEnabled,
+    warnings,
+    /** Panelda "Testni yaratish" tugmasi shu bayroqqa qarab yoqiladi. */
+    canBuild: errors.length === 0 && plan.every((entry) => entry.ready),
+  };
+}
+
+/**
+ * TESTNI YIG'ADI: bank qatorlaridan tanlaydi, AI qatorlari uchun savol
+ * yozdiradi va hammasini testga MUHRLAB biriktiradi.
+ *
+ * @param {object} data - test maydonlari + `classIds` + `blueprint`
+ * @param {string} actorId
+ * @param {{canUseAi?: boolean}} options
+ */
+async function buildTest(data, actorId, { canUseAi = false } = {}) {
+  const rows = parseBlueprint(data.blueprint);
+  if (!rows) throw new BadRequestError("Kamida bitta fan qatori kiritilsin");
+
+  const classIds = await _resolveClassIds(data.classIds);
+  /**
+   * ⚠️ AYNAN BITTA SINF. Mavzu qamrovi SINFGA bog'liq ("shu sinf
+   * qaysi mavzuga kelgan"): ikki sinf tanlansa, ularning joriy
+   * mavzusi har xil bo'lib, biriga o'tilmagan mavzudan savol
+   * tushardi — modulning asosiy qoidasi aynan shu yerda buzilardi.
+   */
+  if (classIds.length !== 1) {
+    throw new BadRequestError(
+      "Mavzu qamrovi bilan test aynan bitta sinf uchun yaratiladi: har sinfning joriy mavzusi boshqa.",
+    );
+  }
+  const classId = classIds[0];
+
+  const { scopes, errors } = await topicScopeService.resolveScopes({
+    classId,
+    blueprint: rows,
+    actorId,
+  });
+  if (errors.length) {
+    throw new BadRequestError(
+      `Mavzu qamrovi to'g'ri kelmadi:\n${errors.map((e) => `• ${e.message}`).join("\n")}`,
+      { errors },
+    );
+  }
+
+  const aiRows = rows.filter((row) => row.source === "ai");
+  if (aiRows.length) {
+    /**
+     * ⚠️ AI ALOHIDA RUXSAT (`diagnostics.ai`): har chaqiruv pullik model
+     * so'rovi va natijasi BANKKA yoziladi. Test yaratish huquqi
+     * (`diagnostics.create`) o'z-o'zidan bank to'ldirish huquqiga
+     * aylanmasligi kerak.
+     */
+    if (!canUseAi) {
+      throw new ForbiddenError(
+        "AI bilan savol yozish uchun ruxsat yo'q (Diagnostika → AI tahlilini ishga tushirish)",
+      );
+    }
+    await aiQuestionService.assertEnabled();
+  }
+
+  const parsed = await _parsePayload(data);
+  const warnings = [];
+
+  // ── 1. AI QATORLARI ──────────────────────
+  const generated = { requested: 0, written: 0, duplicates: 0, failed: 0, requests: 0 };
+  const idsByRow = new Map();
+  const budget = { value: aiQuestionService.MAX_REQUESTS_PER_BUILD };
+  // Butun test bo'ylab takrorni ushlaydi: model bir xil savolni turli
+  // paketlarda qaytarishi odatiy hol.
+  const seenText = new Set();
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (row.source !== "ai") continue;
+
+    const scope = scopes[index];
+    generated.requested += rowTotal(row);
+
+    const result = await aiQuestionService.generateForRow({
+      subject: { id: scope.subjectId, name: scope.subjectName },
+      grade: row.grade,
+      topics: scope.topics,
+      counts: levelCounts(row),
+      seenText,
+      budget,
+    });
+    generated.requests += result.requests;
+    warnings.push(...result.warnings);
+
+    const saved = await questionService.createGeneratedQuestions(result.items, {
+      authorId: actorId,
+    });
+    generated.written += saved.created.length;
+    generated.duplicates += saved.duplicates;
+    generated.failed += saved.failed;
+    warnings.push(...saved.errors);
+    if (saved.duplicates > 0) {
+      warnings.push(
+        `${scope.subjectName}: ${saved.duplicates} ta savol bankda allaqachon bor edi — qayta yozilmadi`,
+      );
+    }
+
+    idsByRow.set(index, saved.created.map((q) => q.id));
+  }
+
+  // ── 2. BANK QATORLARI ────────────────────
+  const bankIndexes = rows
+    .map((row, index) => (row.source === "bank" ? index : null))
+    .filter((index) => index !== null);
+
+  if (bankIndexes.length) {
+    const bankRows = bankIndexes.map((index) => rows[index]);
+    const bankScopes = bankIndexes.map((index) => scopes[index]);
+    const result = await selectByBlueprint(bankRows, { scopes: bankScopes });
+    warnings.push(...result.warnings);
+    bankIndexes.forEach((index, position) => {
+      idsByRow.set(index, result.byRow.get(position) || []);
+    });
+  }
+
+  // ── 3. BIRIKTIRISH ───────────────────────
+  const questionIds = [];
+  const seenId = new Set();
+  for (let index = 0; index < rows.length; index += 1) {
+    for (const id of idsByRow.get(index) || []) {
+      if (seenId.has(id)) continue;
+      seenId.add(id);
+      questionIds.push(id);
+    }
+  }
+
+  if (!questionIds.length) {
+    throw new BadRequestError(
+      "Birorta savol topilmadi ham, yozilmadi ham. Mavzu oralig'ini kengaytiring yoki savollar sonini kamaytiring.",
+      { warnings },
+    );
+  }
+
+  /**
+   * ⚠️ TAQSIMOT HAL QILINGAN CHEGARA BILAN SAQLANADI. `blueprint` —
+   * "nima so'ralgani" yozuvi (sxemadagi izoh), lekin "hozirgi
+   * mavzugacha" so'rovi o'z-o'zicha hech narsa demaydi: sinf ertaga
+   * oldinga ketadi. Shuning uchun hal qilingan oraliq va o'sha
+   * paytdagi joriy mavzu MUHRLANADI.
+   */
+  const storedBlueprint = rows.map((row, index) => ({
+    subjectId: row.subjectId,
+    grade: row.grade,
+    source: row.source,
+    topicMode: row.topicMode,
+    topicFrom: scopes[index].topicFrom,
+    topicTo: scopes[index].topicTo,
+    currentTopicAtCreate: scopes[index].currentTopicNumber,
+    easy: row.easy,
+    medium: row.medium,
+    hard: row.hard,
+    selected: (idsByRow.get(index) || []).length,
+  }));
+
+  const test = await prisma.diagnosticTest.create({
+    data: {
+      ...parsed,
+      blueprint: storedBlueprint,
+      // Savollar soni TANLANGANIGA tenglashadi: rejada 40 ta so'ralib
+      // 34 tasi topilsa, o'quvchiga 40 ta savol va'da qilib bo'lmaydi.
+      questionCount: questionIds.length,
+      status: "draft",
+      createdBy: actorId,
+      classes: { create: [{ classId }] },
+      questions: {
+        create: questionIds.map((questionId, position) => ({ questionId, position })),
+      },
+    },
+    include: TEST_INCLUDE,
+  });
+
+  const availability = await checkAvailability(test);
+  const [withSubject] = await _attachSubjects([test]);
+
+  return {
+    ...(_shape(withSubject) || {}),
+    warnings,
+    generated,
+    availability,
+    /** Nashrdan oldin tasdiqlash kerak savollar (AI yozganlari). */
+    pendingApproval: availability.pendingApproval ?? 0,
+    pendingQuestionIds: availability.pendingQuestionIds ?? [],
+  };
+}
+
+/**
+ * TESTGA BIRIKTIRILGAN TASDIQLANMAGAN SAVOLLARNI TASDIQLAYDI.
+ *
+ * ⚠️ RO'YXAT SERVERDA QAYTA OLINADI, mijozdan kelmaydi: eskirgan ekran
+ * boshqa testning savolini tasdiqlab yubormasligi kerak (`LessonCredit`
+ * dagi "server kunning o'tilmagan darslarini O'ZI qayta oladi" bilan
+ * AYNI mulohaza).
+ */
+async function approveTestQuestions(testId) {
+  const test = await prisma.diagnosticTest.findUnique({
+    where: { id: testId },
+    select: { id: true },
+  });
+  if (!test) throw new NotFoundError("Test topilmadi");
+
+  const rows = await prisma.diagnosticTestQuestion.findMany({
+    where: { testId, question: { status: { not: "approved" } } },
+    select: { questionId: true },
+  });
+
+  if (!rows.length) {
+    return { approved: 0, skipped: [], message: "Tasdiqlanmagan savol yo'q" };
+  }
+
+  const result = await questionService.approveQuestions(
+    rows.map((row) => row.questionId),
+  );
+
+  return {
+    ...result,
+    message: result.skipped.length
+      ? `${result.approved} ta savol tasdiqlandi, ${result.skipped.length} tasi tasdiqlanmadi`
+      : `${result.approved} ta savol tasdiqlandi`,
+  };
 }
 
 /**
@@ -700,6 +1169,17 @@ async function updateTestStatus(id, status) {
 
   if (status === "active" || status === "scheduled") {
     const availability = await checkAvailability(test);
+    // ⚠️ TASDIQLANMAGAN SAVOL — ALOHIDA XABAR. Umumiy "bankda yetarli
+    // savol yo'q" matni bu holatda yolg'on bo'lardi: savollar BOR,
+    // lekin ular hali ko'rikdan o'tmagan va qilinishi kerak ish ham
+    // boshqa (savol qo'shish emas, tasdiqlash).
+    if (availability.pinned && availability.pendingApproval > 0) {
+      throw new BadRequestError(
+        `Testdagi ${availability.pendingApproval} ta savol hali tasdiqlanmagan. ` +
+          `Nashr qilishdan oldin ularni ko'rib chiqib tasdiqlang.`,
+        availability,
+      );
+    }
     if (!availability.enough) {
       throw new BadRequestError(
         `Bankda yetarli savol yo'q: ${availability.available} ta bor, ${availability.required} ta kerak. Savol qo'shing yoki savollar sonini kamaytiring.`,
@@ -925,6 +1405,11 @@ module.exports = {
   MODE_LABELS,
   STATUSES,
   STATUS_TRANSITIONS,
+  planTest,
+  buildTest,
+  approveTestQuestions,
+  countBankForRow,
+  selectByBlueprint,
   listTests,
   getTestById,
   createTest,

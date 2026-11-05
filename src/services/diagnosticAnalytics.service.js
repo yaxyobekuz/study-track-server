@@ -478,6 +478,9 @@ async function _expandBySubject(attemptRows) {
     const entry = acc.get(key) || {
       attemptId: answer.attemptId,
       studentId: attempt.studentId,
+      // ⚠️ SINF NOMI SURATDAN (`education.md` §5) — o'qituvchi kesimi
+      // (sinf + fan → o'qituvchi) aynan shu nom bo'yicha bog'lanadi.
+      className: attempt.studentSnapshot?.className || null,
       subjectId,
       subjectName: question.subjectName || null,
       correct: 0,
@@ -497,6 +500,7 @@ async function _expandBySubject(attemptRows) {
     .map((e) => ({
       id: e.attemptId,
       studentId: e.studentId,
+      className: e.className,
       subjectId: e.subjectId,
       subjectName: e.subjectName,
       // ⚠️ DARAJA (`grade`) ATAYLAB YO'Q: muhrlangan daraja BUTUN
@@ -1150,6 +1154,212 @@ async function getByStudent(query = {}) {
   };
 }
 
+/**
+ * O'QITUVCHILAR KESIMI — "kimning sinflari ko'tarildi, kimning tushdi".
+ *
+ * Sinf va o'quvchi kesimlari "qayerda muammo bor" deb aytadi, bu kesim
+ * esa "kim bilan gaplashish kerak" deb aytadi. Shu sababli har qatorda
+ * joriy davr, o'tgan davr va ULAR ORASIDAGI FARQ (punktda) turadi.
+ *
+ * ⚠️ BOG'LANISH JADVAL ORQALI: urinish → (SINF, FAN) → o'qituvchi.
+ * Urinishning o'zida o'qituvchi yo'q va bo'lishi ham kerak emas —
+ * diagnostika dars emas, o'quvchi uni istalgan vaqtda topshiradi.
+ * Sinf urinishning SURATIDAN (`studentSnapshot.className`,
+ * `education.md` §5), fan esa MUHRLANGAN SAVOLDAN
+ * (`DiagnosticAttemptQuestion.subjectId`) olinadi — ya'ni aralash test
+ * ham to'g'ri bo'linadi (`_expandBySubject` dagi izoh).
+ *
+ * ⚠️ JADVAL — HAFTALIK SHABLON (sanasiz, `education.md` §8). Kesim
+ * BUGUNGI jadval bo'yicha quriladi: o'tgan davrda fanni boshqa odam
+ * o'tgan bo'lsa, natija hozirgi o'qituvchiga yoziladi. Buni to'g'rilash
+ * uchun jadval tarixini saqlash kerak bo'lardi — u domenda yo'q va bu
+ * cheklov `penalty:recheck` dagi AYNI cheklov (§7).
+ *
+ * ⚠️ O'RINBOSARLIK HISOBGA OLINMAYDI (§8 dan farqi): o'rinbosarlik
+ * aniq KUNNING aniq DARSIGA beriladi, diagnostika urinishi esa darsga
+ * bog'lanmagan — unga mos keladigan "dars" umuman yo'q.
+ *
+ * ⚠️ BIR SINFGA BIR FANDAN IKKI O'QITUVCHI DARS BERSA, NATIJA IKKALASIDA
+ * HAM SANALADI va shu sababli qatorlar yig'indisi "Jami" dan KATTA
+ * bo'lishi mumkin (sertifikat hisobotidagi "ikki sinfdagi o'quvchi"
+ * qoidasi bilan AYNI). Birini "asosiy" deb tanlash — taxmin bo'lardi:
+ * ikkalasi ham o'sha sinfda o'sha fanni o'tadi, ya'ni ikkalasi ham
+ * javobgar.
+ */
+async function getByTeacher(query = {}) {
+  const { settings, range, rows, prevRows } = await _loadPair(query);
+
+  const [current, previous] = await Promise.all([
+    _expandBySubject(rows),
+    _expandBySubject(prevRows),
+  ]);
+
+  /**
+   * ⚠️ SINF NOMI BO'YICHA BOG'LANADI, id bo'yicha emas: suratda faqat
+   * nom saqlanadi. Nom `Class.name` da noyob, ya'ni bog'lanish bir
+   * qiymatli (`getByClass` dagi AYNI izoh).
+   */
+  const [classes, lessons] = await Promise.all([
+    prisma.class.findMany({ select: { id: true, name: true } }),
+    prisma.scheduleLesson.findMany({
+      select: {
+        subjectId: true,
+        teacherId: true,
+        schedule: { select: { classId: true } },
+      },
+    }),
+  ]);
+
+  const classById = new Map(classes.map((c) => [c.id, c]));
+  const classIdByName = new Map(classes.map((c) => [c.name, c.id]));
+
+  /** `<classId>::<subjectId>` → o'qituvchilar. */
+  const teachersByPair = new Map();
+  /** o'qituvchi → qaysi sinf va fanlarni o'tadi (kesim konteksti). */
+  const coverage = new Map();
+
+  for (const lesson of lessons) {
+    const classId = lesson.schedule?.classId;
+    if (!classId || !lesson.subjectId || !lesson.teacherId) continue;
+
+    const pair = `${classId}::${lesson.subjectId}`;
+    if (!teachersByPair.has(pair)) teachersByPair.set(pair, new Set());
+    teachersByPair.get(pair).add(lesson.teacherId);
+
+    if (!coverage.has(lesson.teacherId)) {
+      coverage.set(lesson.teacherId, { classIds: new Set(), subjectIds: new Set() });
+    }
+    coverage.get(lesson.teacherId).classIds.add(classId);
+    coverage.get(lesson.teacherId).subjectIds.add(lesson.subjectId);
+  }
+
+  /** (urinish × fan) qatorini (urinish × fan × o'qituvchi) ga yoyadi. */
+  const expand = (list) => {
+    const out = [];
+    const orphanAttempts = new Set();
+
+    for (const row of list) {
+      const classId = row.className ? classIdByName.get(row.className) : null;
+      const teachers =
+        classId && row.subjectId
+          ? teachersByPair.get(`${classId}::${row.subjectId}`)
+          : null;
+
+      if (!teachers || teachers.size === 0) {
+        orphanAttempts.add(row.id);
+        continue;
+      }
+      for (const teacherId of teachers) out.push({ ...row, teacherId });
+    }
+
+    return { out, orphanAttempts };
+  };
+
+  const currentExpanded = expand(current);
+  const previousExpanded = expand(previous);
+
+  const measured = _cut(
+    currentExpanded.out,
+    previousExpanded.out,
+    (row) => ({ key: row.teacherId, label: row.teacherId }),
+    settings,
+  );
+  const byId = new Map(measured.map((entry) => [entry.key, entry]));
+
+  /**
+   * ⚠️ URINISHI YO'Q O'QITUVCHI HAM RO'YXATDA (`getByClass` bilan AYNI
+   * qoida): "bu o'qituvchining sinflari umuman diagnostika ishlamagan"
+   * degan ma'lumot aynan e'tibor talab qiladi va ro'yxatdan tushib
+   * qolsa, ko'rinmay qolardi.
+   */
+  const teacherIds = [...coverage.keys()];
+  const [staff, subjects] = await Promise.all([
+    teacherIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: teacherIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            isArchived: true,
+          },
+        })
+      : [],
+    prisma.subject.findMany({ select: { id: true, name: true } }),
+  ]);
+  const subjectById = new Map(subjects.map((item) => [item.id, item]));
+  const staffById = new Map(staff.map((item) => [item.id, item]));
+
+  const data = teacherIds
+    .map((teacherId) => {
+      const person = staffById.get(teacherId);
+      const entry = byId.get(teacherId);
+      const cover = coverage.get(teacherId);
+
+      const classNames = [...cover.classIds]
+        .map((id) => classById.get(id)?.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      const subjectNames = [...cover.subjectIds]
+        .map((id) => subjectById.get(id)?.name)
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+
+      const label = person
+        ? `${person.lastName || ""} ${person.firstName || ""}`.trim() ||
+          person.username
+        : // Jadvalda bor-u, foydalanuvchisi topilmagan holat: nom o'rniga
+          // "—" yozish qatorni ma'nosiz qilardi.
+          "Noma'lum xodim";
+
+      return {
+        key: teacherId,
+        teacherId,
+        label,
+        username: person?.username ?? null,
+        isArchived: Boolean(person?.isArchived),
+        classes: classNames,
+        subjects: subjectNames,
+        classCount: classNames.length,
+        attempts: entry?.attempts ?? 0,
+        students: entry?.students ?? 0,
+        averageScore: entry?.averageScore ?? null,
+        previousScore: entry?.previousScore ?? null,
+        growth: entry?.growth ?? null,
+        good: entry?.good ?? { count: 0, percent: 0 },
+        medium: entry?.medium ?? { count: 0, percent: 0 },
+        bad: entry?.bad ?? { count: 0, percent: 0 },
+        tone: entry?.tone ?? "untested",
+      };
+    })
+    .sort((a, b) => {
+      // Natijasi borlar oldinda, keyin ball bo'yicha.
+      if ((b.attempts > 0) !== (a.attempts > 0)) return b.attempts - a.attempts;
+      return (b.averageScore ?? -1) - (a.averageScore ?? -1);
+    });
+
+  return {
+    range,
+    data,
+    totals: _totals(rows, settings),
+    thresholds: { good: settings.goodScore, medium: settings.mediumScore },
+    /**
+     * ⚠️ BOG'LANMAGAN URINISHLAR JIM QOLMAYDI. Sinfi suratda yo'q,
+     * jadvalda o'sha fandan dars yo'q yoki o'quvchi sinfsiz bo'lsa,
+     * urinish hech bir o'qituvchiga yozilmaydi. Soni ko'rsatilmasa,
+     * "jami 120, o'qituvchilar bo'yicha 84" degan farq tushunarsiz
+     * bo'lib qolardi.
+     */
+    unassigned: {
+      attempts: currentExpanded.orphanAttempts.size,
+      hint: "Sinfi yoki jadvalda shu fandan darsi topilmagan urinishlar",
+    },
+    /** Qatorlar yig'indisi "Jami" dan katta bo'lishi mumkin (izoh yuqorida). */
+    overlaps: true,
+  };
+}
+
 function _totals(rows, settings) {
   const distribution = _bucketGrades(rows, settings);
   return {
@@ -1669,6 +1879,7 @@ module.exports = {
   getByClass,
   getClassDetail,
   getByStudent,
+  getByTeacher,
   getParticipation,
   getClassParticipation,
   getToday,

@@ -33,6 +33,23 @@ const {
 const QUESTION_TYPES = [...AUTO_GRADED_TYPES, "essay"];
 const STATUSES = ["draft", "review", "approved", "archived"];
 
+/**
+ * SAVOL QAYERDAN KELGANI.
+ *
+ * ⚠️ PROVENIYANS, SIFAT BAHOSI EMAS: testga baribir faqat `approved`
+ * savol tushadi va tasdiqlash alohida ruxsat ortida
+ * (`diagnostics.moderate`). Bu ro'yxat moderatsiya navbatida AI
+ * yozganlarini ajratish uchun — usiz admin yuzlab qoralama orasidan
+ * modelning savollarini topa olmasdi.
+ */
+const SOURCES = ["manual", "import", "ai"];
+
+const SOURCE_LABELS = {
+  manual: "Qo'lda yozilgan",
+  import: "Fayldan yuklangan",
+  ai: "AI yozgan",
+};
+
 /** Foydalanuvchi ko'radigan tur nomlari (xato xabarlari va eksport uchun). */
 const TYPE_LABELS = {
   single: "Bitta to'g'ri javob",
@@ -366,6 +383,7 @@ async function listQuestions(query = {}, pagination) {
     if (!Number.isNaN(grade)) where.grade = grade;
   }
   if (query.authorId) where.authorId = query.authorId;
+  if (query.source && SOURCES.includes(query.source)) where.source = query.source;
 
   const search = String(query.search || "").trim();
   if (search) {
@@ -997,6 +1015,7 @@ async function importQuestions(file, { subjectId, authorId, language = "uz" }) {
             code: `D-${String(counter).padStart(6, "0")}`,
             authorId,
             status: "draft",
+            source: "import",
             options: { create: item.options },
           },
         });
@@ -1208,14 +1227,160 @@ async function getQuestionsForExport(query = {}) {
     usageCount: q.usageCount,
     accuracy: q.usageCount > 0 ? `${Math.round(q.accuracy)}%` : "—",
     author: q.author ? `${q.author.lastName} ${q.author.firstName}` : "—",
+    source: SOURCE_LABELS[q.source] || q.source || "—",
   }));
+}
+
+/**
+ * AI YOZGAN SAVOLLARNI BANKKA YOZADI.
+ *
+ * ⚠️ HOLAT `review`, `approved` EMAS. AI savol yozadi, lekin uni O'ZI
+ * TASDIQLAMAYDI: testga faqat `approved` savol tushadi va tasdiqlash
+ * alohida ruxsat ortida (`diagnostics.moderate`). Bank sifati aynan shu
+ * ikki qadamning ajratilganidan kelib chiqadi — model savollarini
+ * `approved` qilib yozish o'sha qadamni bitta bosishda yo'q qilardi.
+ * `draft` EMAS, chunki savol ko'rib chiqilishini KUTIB turadi: qoralama
+ * esa "yozib bo'lmagan savol" degani.
+ *
+ * ⚠️ HAR QATOR ALOHIDA YOZILADI (`importQuestions` bilan AYNI qoida):
+ * bitta buzuq savol qolgan 19 tasini yo'qotmasligi kerak. Kodlar
+ * ketma-ket beriladi, to'qnashuvda sanoqchi qayta o'qiladi.
+ *
+ * ⚠️ TAKRORIY SAVOL YOZILMAYDI — na paket ichida, na bankda bori.
+ * Model bir xil savolni turli paketlarda qaytarishi odatiy hol;
+ * tekshiruvsiz bitta testga bir xil savol ikki marta tushardi.
+ * Solishtirish FAN ichida va `normalizeText` bilan (registr, apostrof,
+ * ortiqcha bo'shliq farqi hisobga olinmaydi).
+ *
+ * @param {Array} items - `diagnosticAiQuestion.service.js` natijasi
+ * @param {{authorId: string}} options
+ * @returns {Promise<{created: Array, duplicates: number, failed: number, errors: string[]}>}
+ */
+async function createGeneratedQuestions(items, { authorId }) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return { created: [], duplicates: 0, failed: 0, errors: [] };
+
+  const subjectIds = [...new Set(list.map((item) => item.subjectId).filter(Boolean))];
+  const existing = await prisma.diagnosticQuestion.findMany({
+    where: { subjectId: { in: subjectIds } },
+    select: { subjectId: true, text: true },
+  });
+  const seen = new Set(
+    existing.map((q) => `${q.subjectId}::${normalizeText(q.text)}`),
+  );
+
+  const created = [];
+  const errors = [];
+  let duplicates = 0;
+  let counter = await _nextCodeCounter();
+
+  for (const item of list) {
+    const key = `${item.subjectId}::${normalizeText(item.text)}`;
+    if (seen.has(key)) {
+      duplicates += 1;
+      continue;
+    }
+    seen.add(key);
+
+    let saved = false;
+    for (let attempt = 0; attempt < 3 && !saved; attempt += 1) {
+      counter += 1;
+      try {
+        const row = await prisma.diagnosticQuestion.create({
+          data: {
+            code: `D-${String(counter).padStart(6, "0")}`,
+            subjectId: item.subjectId,
+            topicId: item.topicId || null,
+            grade: item.grade ?? null,
+            text: item.text,
+            type: item.type || "single",
+            difficulty: item.difficulty || "medium",
+            explanation: item.explanation || null,
+            language: item.language || "uz",
+            acceptedAnswers: [],
+            status: "review",
+            source: "ai",
+            authorId,
+            options: {
+              create: (item.options || []).map((opt, index) => ({
+                text: opt.text,
+                isCorrect: Boolean(opt.isCorrect),
+                position: opt.position ?? index,
+              })),
+            },
+          },
+          select: { id: true, code: true, subjectId: true, topicId: true, difficulty: true },
+        });
+        created.push(row);
+        saved = true;
+      } catch (error) {
+        if (error?.code === "P2002" && attempt < 2) {
+          counter = Math.max(counter, await _nextCodeCounter());
+          continue;
+        }
+        errors.push(
+          `"${_shortText(item.text)}" saqlanmadi: ${_saveErrorMessage(error)}`,
+        );
+        saved = true;
+      }
+    }
+  }
+
+  return { created, duplicates, failed: errors.length, errors };
+}
+
+/**
+ * TESTGA BIRIKTIRILGAN, HALI TASDIQLANMAGAN SAVOLLARNI TASDIQLAYDI.
+ *
+ * ⚠️ BITTALIK YO'L BILAN AYNI TEKSHIRUVDAN O'TADI (`_assertApprovable`):
+ * ommaviy yo'lga yumshoqroq shart qo'yilsa, tugma orqali moderatsiyani
+ * chetlab o'tish mumkin bo'lardi (`finance.md` §5 dagi "ommaviy amallar"
+ * doktrinasi bilan AYNI mulohaza).
+ *
+ * @param {string[]} ids
+ * @returns {Promise<{approved: number, skipped: Array<{code: string, reason: string}>}>}
+ */
+async function approveQuestions(ids) {
+  const list = [...new Set((ids || []).filter(Boolean))];
+  if (!list.length) return { approved: 0, skipped: [] };
+
+  const questions = await prisma.diagnosticQuestion.findMany({
+    where: { id: { in: list } },
+    include: QUESTION_INCLUDE,
+  });
+
+  const approved = [];
+  const skipped = [];
+
+  for (const question of questions) {
+    if (question.status === "approved") continue;
+    try {
+      _assertApprovable(question);
+      approved.push(question.id);
+    } catch (error) {
+      skipped.push({ code: question.code, reason: error.message });
+    }
+  }
+
+  if (approved.length) {
+    await prisma.diagnosticQuestion.updateMany({
+      where: { id: { in: approved } },
+      data: { status: "approved" },
+    });
+  }
+
+  return { approved: approved.length, skipped };
 }
 
 module.exports = {
   QUESTION_TYPES,
   TYPE_LABELS,
   STATUSES,
+  SOURCES,
+  SOURCE_LABELS,
   STATUS_TRANSITIONS,
+  createGeneratedQuestions,
+  approveQuestions,
   listQuestions,
   getQuestionById,
   getBankStats,

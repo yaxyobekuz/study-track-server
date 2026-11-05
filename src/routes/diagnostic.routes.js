@@ -19,6 +19,7 @@ const {
   getByClass,
   getClassDetail,
   getByStudent,
+  getByTeacher,
   getParticipation,
   getClassParticipation,
   getToday,
@@ -86,6 +87,13 @@ router.get(
 );
 router.get("/analytics/classes", getByClass);
 router.get("/analytics/students", getByStudent);
+/**
+ * ⚠️ O'QITUVCHILAR KESIMI `diagnostics.analytics` OSTIDA (yuqoridagi
+ * `router.use`) va alohida kalit talab qilmaydi: u sinflar kesimining
+ * boshqa o'qi — AYNI ma'lumot, boshqa guruhlash. Alohida kalit
+ * qo'yilsa, "tahlil" huquqi bor odam manzaraning yarmini ko'rardi.
+ */
+router.get("/analytics/teachers", getByTeacher);
 router.get(
   "/analytics/classes/:classId",
   validateObjectId("classId"),

@@ -6592,6 +6592,17 @@ model DiagnosticQuestion {
   status   DiagnosticQuestionStatus @default(draft)
   language String                   @default("uz") @db.VarChar(4)
 
+  // Savol QAYERDAN kelgani: `manual` (qo'lda yozilgan), `import` (fayldan)
+  // yoki `ai` (model yozgan).
+  //
+  // ⚠️ BU PROVENIYANS, SIFAT BAHOSI EMAS. Testga baribir faqat `approved`
+  // savol tushadi (`status`), ya'ni ustun hech qanday darvozani ochmaydi.
+  // Kerakligi boshqa: "tekshirilmagan savol qayerdan kelgan" degan savolga
+  // javob bo'lishi va moderatsiya navbatida AI yozganlari ALOHIDA
+  // ko'rinishi. Usiz admin yuzlab qoralama orasidan model yozganlarini
+  // ajrata olmasdi.
+  source String @default("manual") @db.VarChar(16)
+
   // ── STATISTIKA ─────────────────────────────
   // Bank sifatining o'lchovi: ko'p ishlatilgan-u hech kim to'g'ri javob
   // bermaydigan savol — savolning o'zida muammo borligini bildiradi.
@@ -6613,6 +6624,8 @@ model DiagnosticQuestion {
   @@index([subjectId, difficulty, status])
   @@index([grade, subjectId, status])
   @@index([status, usageCount])
+  // Moderatsiya navbati: "AI yozgan, hali tasdiqlanmagan savollar".
+  @@index([source, status])
   @@map("diagnostic_questions")
 }
 
