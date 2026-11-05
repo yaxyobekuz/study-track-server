@@ -4,6 +4,7 @@ const scheduleService = require("../services/schedule.service");
 const scheduleDraftService = require("../services/scheduleDraft.service");
 const lessonTopicService = require("../services/lessonTopic.service");
 const teacherWorkloadService = require("../services/teacherWorkload.service");
+const teacherLoadExportService = require("../services/teacherLoadExport.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ForbiddenError } = require("../utils/errors");
@@ -80,6 +81,16 @@ const exportScheduleByClass = asyncHandler(async (req, res) => {
 
   const filename = ExcelService.generateFileName(`dars_jadvali_${classDoc.name}`);
   await ExcelService.sendWorkbook(res, workbook, filename);
+});
+
+// O'QITUVCHILAR YUKLAMASI → EXCEL: kim qaysi fandan qaysi sinflarga kiradi.
+//
+// Qamrov — BUTUN MAKTAB (sinf tanlanmaydi): "bu o'qituvchi yana qaysi
+// sinflarga kiradi" degan savolga bitta sinfning jadvalidan javob
+// chiqmaydi. Fayl to'rt varaqdan iborat (o'qituvchilar, sinflar kesimi,
+// sinflar bo'yicha, jadvalda darsi yo'qlar).
+const exportTeacherLoad = asyncHandler(async (req, res) => {
+  await teacherLoadExportService.exportTeacherLoad(res);
 });
 
 // Get all schedules for today (Owner only)
@@ -295,6 +306,7 @@ module.exports = {
   unbindLessonTopic,
   listLessonTopicBindings,
   exportScheduleByClass,
+  exportTeacherLoad,
   getClassesBySubject,
   getTeacherWorkload,
   getMyWorkload,

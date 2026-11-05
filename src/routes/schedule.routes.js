@@ -14,6 +14,7 @@ const {
   unbindLessonTopic,
   listLessonTopicBindings,
   exportScheduleByClass,
+  exportTeacherLoad,
   getClassesBySubject,
   getTeacherWorkload,
   getMyWorkload,
@@ -102,6 +103,22 @@ router.delete(
 // `users.view` talab qilinmaydi — javobda faqat ism va fan id'lari bor,
 // dars jadvalining o'zi esa allaqachon xodimlarning ismini ko'rsatadi.
 router.get("/teachers", authorizePermission(PERMISSIONS.SCHEDULES_VIEW), getTeacherOptions);
+
+// O'QITUVCHILAR YUKLAMASI (Excel): kim qaysi fandan qaysi sinflarga kiradi.
+//
+// ⚠️ Yo'l `/teacher/:teacherId` dan OLDIN turishi shart emas (segment
+// boshqa), lekin `/teachers` bilan yonma-yon saqlanadi — ikkalasi bir
+// ma'lumotning ikki ko'rinishi.
+//
+// Ruxsat — `schedules.export`, bittalik jadval eksporti bilan AYNI amal.
+// ⚠️ O'qituvchi roli bu yerda YETMAYDI (sinf eksportidan farqi): fayl
+// butun maktabning yuklamasini ochadi, o'z jadvalini ko'rish esa unga
+// huquq bermaydi.
+router.get(
+  "/teachers/export",
+  authorizePermission(PERMISSIONS.SCHEDULES_EXPORT),
+  exportTeacherLoad,
+);
 
 // O'qituvchining haftalik yuklamasi (profil sahifasi):
 // necha soat, qaysi sinflarda, qaysi kunlari.
