@@ -6,6 +6,7 @@ const router = express.Router();
 const {
   uploadTopics,
   getTopicsBySubject,
+  getSubjectTopicStatus,
   exportTopics,
   deleteTopicsBySubject,
 } = require("../controllers/topic.controller");
@@ -35,6 +36,15 @@ router.post(
 // bu yerda faqat yolg'on himoya bo'lardi (`studentSystems.export` dan
 // farqi: u shaxsiy ma'lumot).
 router.get("/export", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), exportTopics);
+
+// FANLAR BO'YICHA HOLAT — "qaysi fanga mavzu yuklangan, qaysiga yo'q".
+//
+// ⚠️ Ro'yxat FANLAR katalogidan quriladi, mavzulardan EMAS — aks holda
+// aynan javob kerak bo'lgan fan (mavzusi yo'q) ro'yxatda ko'rinmasdi.
+//
+// ⚠️ Ruxsat — `topics.view` (eksport bilan AYNI mulohaza): javob hech
+// narsa yozmaydi va ekranda ko'rinib turgan ma'lumotning o'zi.
+router.get("/subjects", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), getSubjectTopicStatus);
 
 router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 

@@ -47,6 +47,18 @@ const exportTopics = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Fanlar bo'yicha mavzu holati: qaysi fanga yuklangan, qaysiga yo'q.
+ *
+ * @route GET /api/topics/subjects
+ * @access `topics.view`
+ */
+const getSubjectTopicStatus = asyncHandler(async (req, res) => {
+  const data = await topicService.getSubjectTopicStatus();
+
+  res.json({ success: true, data });
+});
+
+/**
  * Delete all topics for a subject
  * @route DELETE /api/topics/subject/:id
  * @access Owner only
@@ -64,6 +76,7 @@ const deleteTopicsBySubject = asyncHandler(async (req, res) => {
 module.exports = {
   uploadTopics,
   getTopicsBySubject,
+  getSubjectTopicStatus,
   exportTopics,
   deleteTopicsBySubject,
 };

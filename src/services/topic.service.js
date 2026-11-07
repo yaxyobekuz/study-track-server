@@ -261,6 +261,66 @@ async function getTopicsBySubject(subjectId) {
 }
 
 /**
+ * FANLAR BO'YICHA MAVZU HOLATI — "qaysi fanga yuklangan, qaysiga yo'q".
+ *
+ * ⚠️ Ro'yxat FANLAR KATALOGIDAN quriladi, mavzulardan EMAS: mavzudan
+ * yig'ilsa mavzusi yo'q fan ro'yxatda umuman ko'rinmasdi — holbuki ekran
+ * aynan o'sha savol uchun ochiladi (`education.md` §14 dagi "jadval
+ * katalogdan quriladi" qoidasi bilan AYNI).
+ *
+ * `lastUploadedAt` — fanning eng kech yozilgan mavzu qatori: yuklash
+ * ro'yxatni ALMASHTIRADI (`replaceSubjectTopics`), ya'ni bu aynan "qachon
+ * yuklangan" degani. Sana MATNI emas, instant qaytadi — formatlashni
+ * panel qiladi (`dates.md` §5).
+ *
+ * @returns {Promise<{items: Array, totals: object}>}
+ */
+async function getSubjectTopicStatus() {
+  const [subjects, grouped] = await Promise.all([
+    prisma.subject.findMany({
+      select: { id: true, name: true, isActive: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.topic.groupBy({
+      by: ["subjectId"],
+      _count: { _all: true },
+      _max: { createdAt: true },
+    }),
+  ]);
+
+  const stats = new Map(
+    grouped.map((row) => [
+      row.subjectId,
+      { topicCount: row._count._all, lastUploadedAt: row._max.createdAt },
+    ]),
+  );
+
+  const items = subjects.map((subject) => {
+    const stat = stats.get(subject.id);
+    return {
+      id: subject.id,
+      name: subject.name,
+      isActive: subject.isActive,
+      topicCount: stat?.topicCount ?? 0,
+      lastUploadedAt: stat?.lastUploadedAt ?? null,
+      hasTopics: Boolean(stat?.topicCount),
+    };
+  });
+
+  const withTopics = items.filter((item) => item.hasTopics).length;
+
+  return {
+    items,
+    totals: {
+      subjects: items.length,
+      withTopics,
+      withoutTopics: items.length - withTopics,
+      topics: items.reduce((sum, item) => sum + item.topicCount, 0),
+    },
+  };
+}
+
+/**
  * Berilgan fan uchun barcha mavzularni o'chirish.
  * @param {string} subjectId - fan ID
  * @returns {Promise<{deletedCount: number}>}
@@ -278,5 +338,6 @@ async function deleteTopicsBySubject(subjectId) {
 module.exports = {
   uploadTopics,
   getTopicsBySubject,
+  getSubjectTopicStatus,
   deleteTopicsBySubject,
 };
