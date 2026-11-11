@@ -11,6 +11,7 @@ const { PERMISSIONS } = require("../utils/permissions");
 const { ROLES } = require("../utils/constants");
 const {
   getMode,
+  getMyPending,
   getStatus,
   updateConfig,
   inspectSheet,
@@ -40,6 +41,16 @@ router.get(
   "/mode",
   authorizeAnyPermission([PERMISSIONS.SCHEDULES_VIEW, ...ANY], ROLES.TEACHER),
   getMode,
+);
+
+// Tasdiqlanmagan sheet tahririda o'qituvchining o'z darslari — /mode bilan
+// AYNI darvoza: ilovadagi ogohlantirish rejimga emas, FARQGA bog'liq bo'lsin.
+// Boshqa o'qituvchining jadvali so'ralmaydi (id tokendan), shuning uchun
+// alohida ruxsat kaliti kerak emas.
+router.get(
+  "/pending/my",
+  authorizeAnyPermission([PERMISSIONS.SCHEDULES_VIEW, ...ANY], ROLES.TEACHER),
+  getMyPending,
 );
 
 router.get("/status", authorizeAnyPermission(ANY), getStatus);

@@ -37,11 +37,17 @@ const { getPaginationParams, formatPaginationResponse } = require("../utils/pagi
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS } = require("../utils/permissions");
 const telegramService = require("./telegram.service");
+const pushService = require("./push.service");
 const { escapeHtml } = require("../helpers/changelogMessage.helpers");
 const { decodeEntities } = require("../helpers/changelogMarkdown.helpers");
 const { formatDateTimeUz } = require("../helpers/date.helpers");
 const { currentMonthKey } = require("../helpers/month.helpers");
 const sheet = require("../helpers/scheduleSheet.helpers");
+const {
+  affectedTeacherIds,
+  lessonCountByTeacher,
+} = require("../helpers/schedulePending.helpers");
+const { buildSheetPendingPush } = require("../helpers/schedulePush.helpers");
 const { hashState, countLessons } = require("../helpers/scheduleState.helpers");
 const { getScheduleSyncSettings } = require("./settings.service");
 const { getMonthCalendar } = require("./lessonHours.service");
@@ -1365,6 +1371,11 @@ async function notifyNewRevision(revisionId) {
     return;
   }
 
+  // Push BIRINCHI: Telegram tsikli har chat orasida kutadi (rate limit) va
+  // u yiqilsa `notifiedAt` egallangan bo'lib qoladi — ya'ni o'qituvchi
+  // xabarini undan KEYIN yuborsak, u butunlay ketmay qolishi mumkin edi.
+  notifyAffectedTeachers(revisionId, result.diff);
+
   const when = escapeHtml(formatDateTimeUz(new Date()));
   let text;
   if (result.errors.length) {
@@ -1385,6 +1396,45 @@ async function notifyNewRevision(revisionId) {
     ].join("\n");
   }
   await sendToUsers([...OWNER_FILTER, { permissions: { has: PERMISSIONS.SCHEDULESYNC_REVIEW } }], text);
+}
+
+/**
+ * O'QITUVCHIGA PUSH — "jadvalingiz sheetda o'zgardi, hali tasdiqlanmagan".
+ *
+ * Darsi OLINADIGANI ham, YANGI dars beriladigani ham oladi
+ * (`schedulePending.helpers.js`). Tahrir uchun BIR MARTA: chaqiruvchi
+ * `notifiedAt` ni egallab olgan (klaster rejimida ham bitta jarayon
+ * o'tadi), ya'ni alohida sanoqchi kerak emas.
+ *
+ * ⚠️ KUTILMAYDI va XATO TASHLAMAYDI (`push.service.js` doktrinasi):
+ * Firebase ishlamay qolgani sheet tekshiruvini yiqitmasligi kerak.
+ * Push — qulaylik; haqiqat manbai `GET /schedule-sync/pending/my`.
+ *
+ * @param {string} revisionId
+ * @param {object|null} diff - `reviewRevision` natijasidagi farq (xato
+ *   bo'lsa `null` — kimga tegishini bilib bo'lmaydi, push ketmaydi)
+ */
+function notifyAffectedTeachers(revisionId, diff) {
+  const teacherIds = affectedTeacherIds(diff);
+  if (!teacherIds.length) return;
+
+  const branchId = getBranch()?.id;
+  // Matndagi raqam har kimda O'ZINIKI ("3 ta darsga ta'sir qiladi"), lekin
+  // har o'qituvchiga alohida so'rov yubormaslik uchun bir xil raqamlilar
+  // guruhlanadi (odatda 1–3 ta guruh).
+  const counts = lessonCountByTeacher(diff);
+  const groups = new Map();
+  for (const id of teacherIds) {
+    const count = counts.get(id) || 0;
+    if (!groups.has(count)) groups.set(count, []);
+    groups.get(count).push(id);
+  }
+
+  for (const [lessonCount, ids] of groups) {
+    void pushService
+      .sendToUsers(ids, buildSheetPendingPush({ revisionId, branchId, lessonCount }))
+      .catch((error) => logger.warn(`[ScheduleSync] Push yuborilmadi: ${error.message}`));
+  }
 }
 
 async function notifyFailure(message, failures) {

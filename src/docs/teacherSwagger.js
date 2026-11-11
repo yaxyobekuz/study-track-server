@@ -614,6 +614,92 @@ const schemas = {
       expiresAt: { type: "string", format: "date-time" },
     },
   },
+
+  // Tasdiqlanmagan sheet tahriri (dars jadvali)
+  SchedulePendingCell: {
+    type: "object",
+    nullable: true,
+    description: "Katakdagi dars. `added` da `before`, `removed` da `after` — null.",
+    properties: {
+      subjectId: { type: "string", example: "665f1c2e8a1b2c3d4e5f6789" },
+      subject: { type: "string", example: "Fizika" },
+      teacherId: { type: "string", example: "665f1c2e8a1b2c3d4e5f6780" },
+      teacher: { type: "string", example: "Aliyev A." },
+      startTime: { type: "string", nullable: true, example: "10:20" },
+      endTime: { type: "string", nullable: true, example: "11:05" },
+    },
+  },
+  SchedulePendingLesson: {
+    type: "object",
+    properties: {
+      classId: { type: "string", example: "665f1c2e8a1b2c3d4e5f6781" },
+      className: { type: "string", example: "7-A" },
+      day: {
+        type: "string",
+        enum: ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"],
+        example: "seshanba",
+      },
+      dayLabel: { type: "string", example: "Seshanba" },
+      order: { type: "integer", example: 3 },
+      type: {
+        type: "string",
+        enum: ["added", "removed", "changed"],
+        description: "Katak qo'shiladi / olib tashlanadi / o'zgaradi",
+      },
+      field: {
+        type: "string",
+        nullable: true,
+        enum: ["teacher", "subject", "time", null],
+        description: "`changed` da FAQAT shu maydon o'zgarsa to'ldiriladi",
+      },
+      mine: {
+        type: "string",
+        enum: ["before", "after", "both"],
+        description:
+          "`before` — dars mendan olinadi, `after` — menga beriladi, `both` — menda qoladi (fan/vaqt o'zgaradi)",
+      },
+      before: { $ref: "#/components/schemas/SchedulePendingCell" },
+      after: { $ref: "#/components/schemas/SchedulePendingCell" },
+    },
+  },
+  SchedulePending: {
+    type: "object",
+    properties: {
+      mode: {
+        type: "string",
+        enum: ["platform", "sheet"],
+        description: "`platform` bo'lsa tasdiqlash oqimi umuman yo'q",
+      },
+      hasPending: {
+        type: "boolean",
+        description:
+          "SO'ROV DOIRASIDA: shu o'qituvchining (va `date` berilsa — shu kunning) tasdiqlanmagan o'zgarishi bormi. Ilovadagi ogohlantirish SHUNGA qarab chiqadi",
+        example: true,
+      },
+      schoolPending: {
+        type: "boolean",
+        description: "Butun maktab bo'yicha tasdiqlanmagan tahrir bormi",
+        example: true,
+      },
+      diffAvailable: {
+        type: "boolean",
+        description:
+          "`false` — sheet'dagi xato (masalan moslanmagan nom) tufayli farq hisoblanmadi: tahrir bor, lekin qaysi dars o'zgarishini aytib bo'lmaydi (`lessons` bo'sh, `hasPending` true)",
+        example: true,
+      },
+      revisionId: { type: "string", nullable: true, example: "665f1c2e8a1b2c3d4e5f6782" },
+      detectedAt: { type: "string", format: "date-time", nullable: true },
+      detectedAtLabel: {
+        type: "string",
+        nullable: true,
+        description: "Tayyor matn (`dates.md` formati)",
+        example: "11-noyabr, 2026 12:40",
+      },
+      date: { type: "string", nullable: true, example: "2026-11-11" },
+      day: { type: "string", nullable: true, example: "seshanba" },
+      lessons: { type: "array", items: { $ref: "#/components/schemas/SchedulePendingLesson" } },
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -851,6 +937,72 @@ const paths = {
       description: "Ruxsat: owner, teacher.",
       parameters: [idParam("classId", "Class ObjectId")],
       responses: { 200: xlsxResponse, 403: responses.Forbidden },
+    },
+  },
+  "/schedule-sync/mode": {
+    get: {
+      tags: ["Dars jadvali"],
+      summary: "Jadval manbai (platforma yoki Google Sheets)",
+      description:
+        "Ruxsat: teacher (yoki `schedules.view` / `scheduleSync.*`).\n\n" +
+        "⚠️ Rejimning o'zi \"jadval eskirgan\" degani EMAS: tasdiqlanmagan " +
+        "o'zgarish bor-yo'qligini `GET /schedule-sync/pending/my` aytadi.",
+      responses: {
+        200: {
+          description: "Muvaffaqiyatli",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  success: { type: "boolean", example: true },
+                  data: {
+                    type: "object",
+                    properties: {
+                      mode: { type: "string", enum: ["platform", "sheet"], example: "sheet" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        401: responses.Unauthorized,
+      },
+    },
+  },
+  "/schedule-sync/pending/my": {
+    get: {
+      tags: ["Dars jadvali"],
+      summary: "Tasdiqlanmagan sheet o'zgarishlari (mening darslarim)",
+      description: [
+        "Ruxsat: teacher (yoki `schedules.view` / `scheduleSync.*`). O'qituvchi id si",
+        "TOKENDAN olinadi — boshqa o'qituvchining jadvalini so'rab bo'lmaydi.",
+        "",
+        "Sheet rejimida (`education.md` §10) amaldagi jadval mas'ul odam \"Qo'llash\" ni",
+        "bosmaguncha o'zgarmaydi. Bu endpoint shu oraliqda \"sening jadvalingda nima",
+        "o'zgaradi\" degan savolga javob beradi: darsi OLINADIGANI ham, unga YANGI dars",
+        "beriladigani ham `lessons` ga kiradi (`mine` maydoni qaysisi ekanini aytadi).",
+        "",
+        "Sheet O'QILMAYDI — hammasi bazadan (oxirgi `pending` tahrir + amaldagi jadval),",
+        "natija keshlanadi. Tahrir qo'llansa / rad etilsa / eskirsa yoki amaldagi jadval",
+        "sheet bilan tenglashsa — darhol `hasPending: false`.",
+      ].join("\n"),
+      parameters: [
+        {
+          name: "date",
+          in: "query",
+          required: false,
+          schema: { type: "string", example: "2026-11-11" },
+          description:
+            "YYYY-MM-DD. Berilsa faqat o'sha HAFTA KUNI, berilmasa butun hafta (haftalik widget uchun)",
+        },
+      ],
+      responses: {
+        200: okData("#/components/schemas/SchedulePending"),
+        400: responses.BadRequest,
+        403: responses.Forbidden,
+      },
     },
   },
 

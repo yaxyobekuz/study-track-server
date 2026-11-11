@@ -1,4 +1,5 @@
 const scheduleSyncService = require("../services/scheduleSheetSync.service");
+const pendingService = require("../services/scheduleSheetPending.service");
 const asyncHandler = require("../middleware/async.middleware");
 
 /**
@@ -8,6 +9,19 @@ const asyncHandler = require("../middleware/async.middleware");
  */
 exports.getMode = asyncHandler(async (req, res) => {
   const data = await scheduleSyncService.getMode();
+  return res.json({ success: true, data });
+});
+
+/**
+ * GET /api/schedule-sync/pending/my?date=YYYY-MM-DD
+ * Tasdiqlanmagan sheet tahririda SHU o'qituvchining darslari.
+ *
+ * ⚠️ Kalit tokendan olinadi, so'rovdan EMAS (`/payroll/deductions/my`
+ * bilan AYNI qoida) — boshqa o'qituvchining jadvalini so'rab bo'lmaydi.
+ * @access Private (schedules.view, scheduleSync.*, teacher)
+ */
+exports.getMyPending = asyncHandler(async (req, res) => {
+  const data = await pendingService.getPendingForTeacher(req.user.id, { date: req.query.date });
   return res.json({ success: true, data });
 });
 
