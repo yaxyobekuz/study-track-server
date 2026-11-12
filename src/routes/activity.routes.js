@@ -23,6 +23,7 @@ const { PERMISSIONS, SECTIONS } = require("../utils/permissions");
 
 const {
   getOverview,
+  getStudents,
   getSubject,
   getClass,
   exportClass,
@@ -37,6 +38,20 @@ router.use(authorizeSection(SECTIONS.ACTIVITY));
 // Butun manzara. Foydalanmayotganlarning ISM-RO'YXATI faqat
 // `activity.roster` bilan qo'shiladi — qaror controller'da.
 router.get("/overview", authorizePermission(PERMISSIONS.ACTIVITY_VIEW), getOverview);
+
+/**
+ * TIZIMDAN FOYDALANAYOTGAN O'QUVCHILAR — bosh sahifadagi karta.
+ *
+ * ⚠️ `/overview` DAN ALOHIDA YO'L va bu ataylab: bosh sahifa bu raqamni
+ * HAR KO'RINISHDA (filial ichida ham) ko'rsatadi, `/overview` esa butun
+ * manzarani — o'nlab yig'ma bilan — quradi. Karta uchun uni chaqirish
+ * bosh sahifani o'sha og'irlikka bog'lab qo'yardi.
+ *
+ * ⚠️ `:classId` li yo'llardan OLDIN turadi (aniq yo'l har doim
+ * parametrlidan yuqorida), `students` esa id emas — `validateObjectId`
+ * uni rad etardi.
+ */
+router.get("/students", authorizePermission(PERMISSIONS.ACTIVITY_VIEW), getStudents);
 
 /**
  * BOT FOYDALANUVCHILARI — hujjat ko'rinishidagi hisobot va uning Word

@@ -50,7 +50,7 @@
 const prisma = require("../config/prisma");
 const logger = require("../utils/logger");
 const { generateId } = require("../utils/idGenerator");
-const { DAYS_UZ } = require("../utils/constants");
+const { DAYS_UZ, ROLES } = require("../utils/constants");
 const { BadRequestError, NotFoundError, ConflictError } = require("../utils/errors");
 const {
   currentDayDate,
@@ -1069,6 +1069,215 @@ async function getDayLessonTopics({ classId, day, actorId }) {
   return result;
 }
 
+/* ──────────── O'QUVCHINING SHAXSIY O'RNI — YAGONA HISOB ──────────── */
+
+/**
+ * SHU DARSGA TA'SIR QILADIGAN ANKOR — segmentlar qoidasi.
+ *
+ * ⚠️ Kelajakdagi ankor HOZIRGI darsga ta'sir qilmaydi (`education.md`
+ * §13: "oxirgi ankor undan KEYINGI darslarni qayta yozadi"), shuning
+ * uchun kuni dars kunidan KEYIN bo'lgan qatorlar tashlanadi.
+ *
+ * @param {Array<object>} rows - `date` bo'yicha o'sish tartibida
+ * @param {string} slotDay - "YYYY-MM-DD"
+ * @returns {object|null} - amaldagi ankor yoki `null` (meros)
+ */
+function pickPlanForSlot(rows, slotDay) {
+  if (!rows?.length || !slotDay) return null;
+  const usable = rows.filter((row) => dayKey(row.date) <= slotDay);
+  return usable[usable.length - 1] ?? null;
+}
+
+/**
+ * ANKORDAN BITTA DARSNING MAVZUSINI HISOBLAYDI.
+ *
+ * ⚠️ BITTA JOY, IKKI CHAQIRUVCHI: o'quvchilar ekrani
+ * (`studentTopicPlan.service.js` → `resolveStudentTopics`) ham, sinf
+ * kartasidagi "eng orqada / eng oldinda" kesimi ham shu funksiyadan
+ * o'tadi. Ikkita nusxa bo'lsa, biriga qo'shilgan shart (qadam, mavzular
+ * tugashi, bayram kunlari) ikkinchisida tushib qolardi va bitta bola
+ * ikki ekranda ikki xil mavzuda ko'rinardi.
+ *
+ * @param {object} params
+ * @param {object} params.plan - `StudentTopicPlan` qatori
+ * @param {{day: string, lessonOrder: number}} params.slot
+ * @param {Map<number, number[]>} params.ordersByDayNumber
+ * @param {(day: string) => boolean} params.isTeachingDay
+ * @param {number} params.lastTopicOrder
+ * @returns {{topicOrder: number|null, topicOrderTo: number|null, reason: string|null}|null}
+ */
+function resolvePlanOrder({ plan, slot, ordersByDayNumber, isTeachingDay, lastTopicOrder }) {
+  if (!plan || !slot) return null;
+
+  const resolved = topicOrdersForDays({
+    anchor: {
+      day: dayKey(plan.date),
+      lessonOrder: plan.lessonOrder,
+      topicOrder: plan.topicOrder,
+    },
+    ordersByDayNumber,
+    targetDays: [slot.day],
+    isTeachingDay,
+    lastTopicOrder,
+    step: plan.step,
+  });
+
+  return resolved.get(lessonKey(slot.day, slot.lessonOrder)) ?? null;
+}
+
+/**
+ * SINF KARTASIGA "ENG ORQADA / ENG OLDINDA" KESIMINI QO'SHADI.
+ *
+ * Kartadagi katta raqam — SINFNING o'rni, ya'ni guruh bilan birga
+ * ketayotgan bolaning mavzusi. Shaxsiy reja (`StudentTopicPlan`,
+ * `education.md` §13) bor bolalar undan oldinda yoki orqada bo'ladi va
+ * kartada aynan shu TARQOQLIK ko'rinadi: "bu guruhda eng orqadagi bola
+ * 12-mavzuda, eng oldindagisi 47-mavzuda".
+ *
+ * ⚠️ RAQAM "JORIY MAVZU" BO'YICHA (blokning BOSHI), `coveredThrough`
+ * bo'yicha EMAS: kartaning katta raqami ham aynan shu, ya'ni uchala son
+ * bitta o'lchovda turadi. Aks holda qadam 3 bo'lgan o'quvchining
+ * "oldinda"si kartadagi raqam bilan taqqoslab bo'lmas edi.
+ *
+ * ⚠️ SHAXSIY REJASI YO'Q O'QUVCHI SINFNING O'RNIDA turadi (meros,
+ * `resolveStudentTopics` bilan AYNI qoida), shuning uchun u ham
+ * kesimga kiradi — aks holda bitta bolaga reja yozilishi butun
+ * guruhni "eng orqada" qilib qo'yardi.
+ *
+ * ⚠️ O'QUVCHILAR RO'YXATI FAQAT KERAK BO'LGAN SINFLAR UCHUN o'qiladi
+ * (shaxsiy rejasi borlari). Rejasi yo'q sinfda hamma meros oladi —
+ * ya'ni javob sinfning o'z raqami va buning uchun so'rov shart emas.
+ *
+ * @param {object} params
+ * @param {Array<object>} params.rows - sinf qatorlari (JOYIDA yangilanadi)
+ * @param {Array<object>} params.plans - `StudentTopicPlan` qatorlari
+ * @param {Map<string, object|null>} params.slotByClass
+ * @param {Map<string, Map<number, object[]>>} params.slotsByClass
+ * @param {(classId: string) => {byOrder: Map<number, object>, last: number}} params.topicsOf
+ * @param {(day: string) => boolean} params.isTeachingDay
+ */
+async function attachStudentSpread({
+  rows,
+  plans,
+  slotByClass,
+  slotsByClass,
+  topicsOf,
+  isTeachingDay,
+}) {
+  for (const row of rows) row.studentSpread = null;
+
+  const rowByClass = new Map(rows.map((row) => [row.class?.id, row]));
+
+  const plansByClass = new Map();
+  for (const plan of plans) {
+    if (!rowByClass.has(plan.classId)) continue;
+    if (!plansByClass.has(plan.classId)) plansByClass.set(plan.classId, []);
+    plansByClass.get(plan.classId).push(plan);
+  }
+
+  // ── Sinf a'zolari — faqat shaxsiy rejasi bor sinflar uchun ──
+  //
+  // ⚠️ `isArchived` FILTRLANADI, `isActive` esa YO'Q — `education.md` §4
+  // va `loadClassStudents` bilan AYNI qoida: arxivlangan bola joriy
+  // ro'yxatlarda ko'rinmaydi, o'chirilgan login esa o'qishni
+  // to'xtatmaydi.
+  const affected = [...plansByClass.keys()];
+  const membersByClass = new Map();
+
+  if (affected.length > 0) {
+    const links = await prisma.userClass.findMany({
+      where: { classId: { in: affected } },
+      select: { classId: true, userId: true },
+    });
+    const ids = [...new Set(links.map((link) => link.userId))];
+    const alive = ids.length
+      ? await prisma.user.findMany({
+          where: { id: { in: ids }, role: ROLES.STUDENT, isArchived: false },
+          select: { id: true },
+        })
+      : [];
+    const aliveSet = new Set(alive.map((user) => user.id));
+
+    for (const link of links) {
+      if (!aliveSet.has(link.userId)) continue;
+      if (!membersByClass.has(link.classId)) membersByClass.set(link.classId, new Set());
+      membersByClass.get(link.classId).add(link.userId);
+    }
+  }
+
+  for (const row of rows) {
+    const classId = row.class?.id;
+    const slot = classId ? slotByClass.get(classId) : null;
+    // Mavzular yuklanmagan yoki yaqin kunlarda dars yo'q — kartada
+    // allaqachon SABAB turibdi, kesim esa qo'shimcha shovqin bo'lardi.
+    if (!slot || !(row.totalTopics >= 1)) continue;
+
+    const topics = topicsOf(classId);
+    const members = membersByClass.get(classId) ?? null;
+
+    const byStudent = new Map();
+    for (const plan of plansByClass.get(classId) ?? []) {
+      // Sinfdan chiqib ketgan (yoki arxivlangan) bolaning rejasi
+      // kesimga kirmaydi — u bu guruhning manzarasi emas.
+      if (members && !members.has(plan.studentId)) continue;
+      if (!byStudent.has(plan.studentId)) byStudent.set(plan.studentId, []);
+      byStudent.get(plan.studentId).push(plan);
+    }
+
+    const ordersByDayNumber = new Map(
+      [...(slotsByClass.get(classId) ?? new Map())].map(([dayNumber, list]) => [
+        dayNumber,
+        [...new Set(list.map((item) => item.order))].sort((a, b) => a - b),
+      ]),
+    );
+
+    const values = [];
+    let withPlan = 0;
+
+    for (const list of byStudent.values()) {
+      // Kelajakdagi ankor hali kuchga kirmagan — bunday bola MEROS oladi
+      const plan = pickPlanForSlot(list, slot.day);
+      if (!plan) continue;
+
+      const entry = resolvePlanOrder({
+        plan,
+        slot,
+        ordersByDayNumber,
+        isTeachingDay,
+        lastTopicOrder: topics.last,
+      });
+      if (entry?.topicOrder == null) continue;
+
+      values.push(entry.topicOrder);
+      withPlan += 1;
+    }
+
+    const students = members ? members.size : null;
+    const inherited = students == null ? null : students - withPlan;
+
+    // Meros oluvchi bola (yoki umuman reja yo'q sinf) — sinfning o'rnida
+    if ((inherited == null || inherited > 0) && row.currentTopicNumber != null) {
+      values.push(row.currentTopicNumber);
+    }
+
+    if (values.length === 0) continue;
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+
+    row.studentSpread = {
+      behind: { order: min, name: topics.byOrder.get(min)?.name ?? null },
+      ahead: { order: max, name: topics.byOrder.get(max)?.name ?? null },
+      // ⚠️ "Hammasi bir xil" HOLATI ALOHIDA BELGILANADI: ekran ikkita
+      // bir xil qatorni ko'rsatib, "nega ikki marta yozilgan" degan
+      // savol tug'dirmasligi kerak.
+      uniform: min === max,
+      withPlan,
+      students,
+    };
+  }
+}
+
 /**
  * FAN → SINFLAR EKRANI: har bir sinfning KEYINGI darsidagi mavzu.
  *
@@ -1089,8 +1298,22 @@ async function getDayLessonTopics({ classId, day, actorId }) {
  *   sertifikat progressini ko'rganda ta'lim domeniga qator yozilmasligi
  *   kerak (`createdBy` o'quvchi bo'lib qolardi). Admin yo'lida `true`
  *   qoladi — jadval ekranidagi bilan AYNI qoida.
+ * @param {boolean} [params.withStudentSpread=false] - sinf kartasiga
+ *   "eng orqada / eng oldinda" kesimi qo'shilsinmi.
+ *
+ *   ⚠️ SUKUT BO'YICHA O'CHIQ va bu ataylab: bu funksiyani sertifikat
+ *   progressi (`certificateProgress`), test qamrovi
+ *   (`diagnosticTopicScope`) va o'quvchilar ekranining o'zi ham
+ *   chaqiradi. Ularga kesim KERAK EMAS, lekin u qo'shimcha so'rov
+ *   qiladi — har chaqiruvga yoqib qo'yilsa, bitta ekranga kerak bo'lgan
+ *   raqam butun domenni sekinlashtirardi.
  */
-async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
+async function getSubjectClassTopics({
+  subjectId,
+  actorId,
+  ensure = true,
+  withStudentSpread = false,
+}) {
   const subject = await prisma.subject.findUnique({
     where: { id: subjectId },
     select: { id: true, name: true },
@@ -1139,7 +1362,7 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
     };
   }
 
-  let [classes, topicsByLanguage, bindings] = await Promise.all([
+  let [classes, topicsByLanguage, bindings, studentPlans] = await Promise.all([
     prisma.class.findMany({
       where: { id: { in: classIds } },
       select: { id: true, name: true, language: true },
@@ -1152,6 +1375,16 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
       where: { classId: { in: classIds }, subjectId, revokedAt: null },
       orderBy: [{ date: "asc" }, { lessonOrder: "asc" }],
     }),
+    // ⚠️ SHAXSIY REJALAR HAM BITTA SO'ROVDA (sinflar bo'yicha
+    // aylanmaydi) va faqat kesim so'ralganda. Jadval odatda bo'sh
+    // bo'ladi: unda qator faqat guruhdan boshqa tezlikda ketadigan
+    // o'quvchilarga yoziladi.
+    withStudentSpread
+      ? prisma.studentTopicPlan.findMany({
+          where: { classId: { in: classIds }, subjectId, revokedAt: null },
+          orderBy: [{ date: "asc" }, { lessonOrder: "asc" }],
+        })
+      : Promise.resolve([]),
   ]);
 
   const EMPTY_TOPICS = { byOrder: new Map(), last: 0 };
@@ -1160,7 +1393,16 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
   const topicsOf = (classId) => topicsByLanguage.get(languageOf(classId)) ?? EMPTY_TOPICS;
 
   const today = todayIsoTashkent();
-  const oldestAnchor = bindings.length > 0 ? dayKey(bindings[0].date) : today;
+  // ⚠️ KALENDAR OYNASI SHAXSIY ANKORLARNI HAM QAMRAYDI. O'quvchining
+  // ankori sinfnikidan eski bo'lishi mumkin; oyna faqat sinf ankoridan
+  // boshlansa, undan oldingi kunlarda bayram va ta'til ma'lum bo'lmay,
+  // o'sha kunlar ham dars kuni deb sanalardi — ya'ni bitta bola bir
+  // necha mavzu oldinda ko'rinardi.
+  const oldestAnchor = [
+    bindings.length > 0 ? dayKey(bindings[0].date) : today,
+    studentPlans.length > 0 ? dayKey(studentPlans[0].date) : today,
+    today,
+  ].sort()[0];
   const rangeFrom = [oldestAnchor, today].sort()[0];
   const rangeTo = shiftIsoDays(today, ANCHOR_HORIZON_DAYS);
   const { isTeachingDay } = await buildCalendar(rangeFrom, rangeTo);
@@ -1332,6 +1574,20 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
     };
   });
 
+  // ⚠️ KESIM QATORLAR QURILGANDAN KEYIN: unga sinfning O'Z raqami
+  // (`currentTopicNumber`) kerak — meros oluvchi o'quvchilar aynan o'sha
+  // o'rinda turadi.
+  if (withStudentSpread) {
+    await attachStudentSpread({
+      rows,
+      plans: studentPlans,
+      slotByClass,
+      slotsByClass,
+      topicsOf,
+      isTeachingDay,
+    });
+  }
+
   rows.sort((a, b) => (a.class?.name || "").localeCompare(b.class?.name || ""));
 
   // ⚠️ `totalTopics` — EKRANNING MAXRAJI, ya'ni eng uzun ro'yxat: fan
@@ -1416,4 +1672,6 @@ module.exports = {
   getDayLessonTopics,
   getSubjectClassTopics,
   setClassCurrentTopic,
+  pickPlanForSlot,
+  resolvePlanOrder,
 };

@@ -287,6 +287,18 @@ const RULES = [
   { pattern: "GET /activity/bot-report/export", mode: "anchor" },
   { pattern: "GET /activity/bot-report", mode: "anchor" },
 
+  /* ── Tizimdan foydalanayotgan o'quvchilar (bosh sahifa kartasi) ───── */
+  // ⚠️ `object`: javobda FAQAT sanoqchilar bor (foiz YO'Q — uni panel
+  // jami va maxrajdan o'zi chiqaradi). O'quvchi bitta filialda o'qiydi,
+  // ya'ni `COUNT(DISTINCT)` larni qo'shish to'g'ri javob beradi va
+  // karta ostidagi filiallar kesimi (`BranchSplit`) o'z-o'zidan ishlaydi.
+  //
+  // ⚠️ Davr uzunligi `weekDays` / `monthDays` deb ataladi: ular
+  // birlashtiruvchining "davr qiymati" ro'yxatiga tushadi va
+  // QO'SHILMAYDI (`aggregateMerge.helpers.js` → `KEEP_SEGMENTS`),
+  // aks holda ikki filialda "7 kun" "14 kun" bo'lib qolardi.
+  { pattern: "GET /activity/students", mode: "object" },
+
   /* ── Baho reytingi (Statistika) ───────────────────────────────────── */
   // ⚠️ REYTING `anchor`, ya'ni BIRLASHTIRUVCHI TEGMAYDI: o'rinlar butun
   // tarmoq bo'yicha QAYTA hisoblanadi (`statisticsNetwork.service.js`).

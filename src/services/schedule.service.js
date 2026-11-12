@@ -911,7 +911,15 @@ async function getMyTodaySchedule(teacherId) {
  * @returns {Promise<{classes: Array, subject: object}>}
  */
 async function getClassesBySubject(subjectId, actorId) {
-  return lessonTopicService.getSubjectClassTopics({ subjectId, actorId });
+  // ⚠️ `withStudentSpread` FAQAT SHU EKRANDA: karta "eng orqada / eng
+  // oldinda ketayotgan o'quvchi qaysi mavzuda" degan savolga javob
+  // beradi. Boshqa chaqiruvchilarga (sertifikat progressi, test qamrovi)
+  // kesim kerak emas va u qo'shimcha so'rov qilardi.
+  return lessonTopicService.getSubjectClassTopics({
+    subjectId,
+    actorId,
+    withStudentSpread: true,
+  });
 }
 
 /**

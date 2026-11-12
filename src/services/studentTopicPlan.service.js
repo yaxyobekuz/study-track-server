@@ -53,9 +53,7 @@ const { dayKey } = require("../helpers/lessonHours");
 const {
   TOPIC_MISS_REASONS,
   noTopicsForLanguage,
-  lessonKey,
   parseDayKey,
-  topicOrdersForDays,
 } = require("../helpers/lessonTopic");
 const {
   DEFAULT_TEACHING_LANGUAGE,
@@ -254,9 +252,10 @@ async function resolveStudentTopics({
 
   for (const student of students) {
     const rows = plansByStudent.get(student.id) ?? [];
-    // Segmentlar: joriy darsga TA'SIR QILADIGAN oxirgi ankor
-    const usable = slot ? rows.filter((row) => dayKey(row.date) <= slot.day) : [];
-    const plan = usable[usable.length - 1] ?? null;
+    // Segmentlar: joriy darsga TA'SIR QILADIGAN oxirgi ankor.
+    // ⚠️ Tanlov `lessonTopic.service.js` dagi YAGONA funksiyadan — sinf
+    // kartasidagi "eng orqada / eng oldinda" kesimi ham shundan o'tadi.
+    const plan = slot ? lessonTopicService.pickPlanForSlot(rows, slot.day) : null;
 
     const entry = {
       studentId: student.id,
@@ -289,19 +288,16 @@ async function resolveStudentTopics({
       entry.coveredThrough = classCurrent;
       entry.reason = classRow?.reason ?? null;
     } else {
-      const resolved = topicOrdersForDays({
-        anchor: {
-          day: dayKey(plan.date),
-          lessonOrder: plan.lessonOrder,
-          topicOrder: plan.topicOrder,
-        },
+      // ⚠️ IKKINCHI HISOB YOZILMAYDI: sinf kartasidagi kesim ham AYNI
+      // funksiyani chaqiradi (`lessonTopic.service.js`), ya'ni bitta bola
+      // ikki ekranda ikki xil mavzuda ko'rinishi strukturaviy imkonsiz.
+      const value = lessonTopicService.resolvePlanOrder({
+        plan,
+        slot,
         ordersByDayNumber,
-        targetDays: [slot.day],
         isTeachingDay,
         lastTopicOrder: topics.last,
-        step: plan.step,
       });
-      const value = resolved.get(lessonKey(slot.day, slot.lessonOrder));
       entry.currentTopicNumber = value?.topicOrder ?? null;
       entry.coveredThrough = value?.topicOrderTo ?? value?.topicOrder ?? null;
       entry.reason = value?.reason ?? null;

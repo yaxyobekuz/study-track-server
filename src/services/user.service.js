@@ -51,6 +51,11 @@ const {
   summarizeWeek,
 } = require("./scheduleWorkTime.service");
 const classChanges = require("./studentClassChange.service");
+// BOT SANOG'I — "o'qiyotgan o'quvchiga bog'langan hisob" qoidasi FAQAT
+// faollik servisida yashaydi (`linkedTelegramIds`), bu yerda chaqiriladi.
+// ⚠️ Teskari bog'liqlik YO'Q: `activityDashboard` bu faylga murojaat
+// qilmaydi, ya'ni aylana import hosil bo'lmaydi.
+const activityDashboard = require("./activityDashboard.service");
 // O'quvchilar ro'yxatidagi tanga ustuni davr kesimida ham ko'rsatiladi —
 // hisob YAGONA nuqtada (`coin.service.js`), bu yerda faqat biriktiriladi.
 const {
@@ -422,17 +427,28 @@ async function loadUserWithSchedule(id) {
 }
 
 async function getStats() {
-  const [telegramUsers, workers, students, premiumUsers] = await Promise.all([
-    // ⚠️ `linkKind` FILTRI SHART: botga endi xodim ham kiradi
-    // (`tg_users.link_kind = 'staff'`), bu ko'rsatkich esa "nechta
-    // OTA-ONA botga bog'langan" degani va shunday nom bilan ko'rsatiladi.
-    prisma.tgUser.count({ where: { linkKind: "student" } }),
+  const [telegramIds, workers, students, premiumUsers] = await Promise.all([
+    // ⚠️ SANOQ `linkedTelegramIds()` DAN, oddiy `tg_users` sanog'idan
+    // EMAS (`activityDashboard.service.js`). Ikki filtr shu yerda:
+    //
+    //   `linkKind = 'student'` — botga endi xodim ham kiradi
+    //       (`link_kind = 'staff'`), bu ko'rsatkich esa "nechta OTA-ONA
+    //       botga bog'langan" degani va shunday nom bilan ko'rsatiladi.
+    //   O'QIYOTGAN o'quvchi — ketgan bolaning ota-onasi hisobni o'chirib
+    //       yurmaydi va u sanoqda abadiy qolardi.
+    //
+    // ⚠️ Ikkinchisi KARTANING ICHKI ZIDDIYATINI yopadi: o'sha kartada
+    // "Bugun faol 12 / 276" yozuvi turadi va uning maxraji FAQAT
+    // o'qiyotganlarning hisoblari (`activityDashboard` → `getOverview`).
+    // Katta raqam boshqa aholidan olinsa, bitta kartada ikki xil jami
+    // ko'rinardi.
+    activityDashboard.linkedTelegramIds(),
     prisma.user.count({ where: { role: { notIn: ["owner", "student"] } } }),
     prisma.user.count({ where: { role: "student", isArchived: false } }),
     prisma.premium.count({ where: { status: "active" } }),
   ]);
 
-  return { telegramUsers, workers, students, premiumUsers };
+  return { telegramUsers: telegramIds.length, workers, students, premiumUsers };
 }
 
 /**
@@ -472,10 +488,10 @@ async function getStatsAcrossBranches(branches) {
             where: { role: { notIn: ["owner", "student"] } },
             select: { id: true },
           }),
-          prisma.tgUser.findMany({
-            where: { linkKind: "student" },
-            select: { telegramId: true },
-          }),
+          // ⚠️ BITTALIK YO'L BILAN AYNI FILTR (`getStats` izohiga qarang):
+          // umumiy ko'rinishda boshqa qoida ishlasa, "Umumiy" va filial
+          // ko'rinishlari bitta kartada ikki xil raqam ko'rsatardi.
+          activityDashboard.linkedTelegramIds(),
           prisma.user.count({ where: { role: "student", isArchived: false } }),
           prisma.premium.count({ where: { status: "active" } }),
         ]);
@@ -483,7 +499,7 @@ async function getStatsAcrossBranches(branches) {
         return {
           branch,
           staffIds: staff.map((row) => row.id),
-          telegramIds: telegram.map((row) => row.telegramId),
+          telegramIds: telegram,
           students,
           premiumUsers,
         };

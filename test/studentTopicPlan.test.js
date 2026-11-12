@@ -161,7 +161,18 @@ fakeModule("../src/config/prisma", {
   $transaction: async (fn) => fn(require("../src/config/prisma")),
 });
 
+/**
+ * ⚠️ IKKI FUNKSIYA HAQIQIYSIDAN OLINADI va soxta modulga QAYTARIB
+ * QO'YILADI: "shu darsga ta'sir qiladigan ankor" va "ankordan mavzuni
+ * hisoblash" — sinf kartasidagi kesim bilan BITTA kod
+ * (`lessonTopic.service.js`). Soxta nusxa yozilsa, test ikkita hisob
+ * borligini jimgina ma'qullab qo'yardi.
+ */
+const { pickPlanForSlot, resolvePlanOrder } = require("../src/services/lessonTopic.service");
+
 fakeModule("../src/services/lessonTopic.service", {
+  pickPlanForSlot,
+  resolvePlanOrder,
   ANCHOR_HORIZON_DAYS: 60,
   getSubjectClassTopics: async () => CLASS_VIEW,
   loadClassTemplate: async () => ({

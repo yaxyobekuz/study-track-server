@@ -305,6 +305,42 @@ async function studyingStudentIds() {
 }
 
 /**
+ * BOTGA BOG'LANGAN HISOBLAR — faqat O'QIYOTGAN o'quvchilarniki.
+ *
+ * ⚠️ FILTR MAJBURIY va u bosh sahifadagi "Bot foydalanuvchilar"
+ * kartasining raqamini ham shu yerdan oladi (`user.service.js` →
+ * `getStats`). Ilgari u karta oddiy `tg_users` sanog'i edi va ketgan
+ * bolaning ota-onasi ham unga kirardi: kartaning KATTA raqami (hamma
+ * qator) bilan O'SHA KARTADAGI "Bugun faol 12 / 276" yozuvining maxraji
+ * (faqat o'qiyotganlar) boshqa-boshqa aholidan olinardi — bitta kartada
+ * ikki xil jami turardi. Arxivlangan o'quvchi joriy ro'yxatlarda
+ * ko'rinmasligi kerakligi `education.md` §4 da ham yozilgan.
+ *
+ * ⚠️ "O'qiyaptimi" degan savolga javob BITTA joyda — `studyingStudentIds()`
+ * (o'qish davri bo'yicha, `education.md` §3). Bu yerda u QAYTA
+ * YOZILMAYDI, chaqiriladi.
+ *
+ * @returns {Promise<string[]>} Telegram id lari
+ */
+async function linkedTelegramIds() {
+  const [studentIds, rows] = await Promise.all([
+    studyingStudentIds(),
+    prisma.tgUser.findMany({
+      // ⚠️ `linkKind: "student"` — botga xodim ham kiradi
+      // (`link_kind = 'staff'`), lekin bu sanoq OTA-ONA qamrovi haqida.
+      where: { linkKind: "student" },
+      select: { telegramId: true, student: true },
+    }),
+  ]);
+
+  const allowed = new Set(studentIds);
+
+  return rows
+    .filter((row) => row.student && allowed.has(row.student))
+    .map((row) => row.telegramId);
+}
+
+/**
  * Har o'quvchi uchun BITTA sinf — kalit bo'yicha eng kichigi.
  *
  * ⚠️ `UserClass` sanasiz M2M va o'quvchi bir nechta sinfda bo'lishi
@@ -1412,6 +1448,161 @@ async function getClass(classId, { days } = {}) {
   };
 }
 
+/* ═══════════ TIZIMDAN FOYDALANAYOTGAN O'QUVCHILAR ═══════════ */
+
+/**
+ * KARTA DAVRLARI — bosh sahifadagi "Tizimdan foydalanayotgan o'quvchilar".
+ *
+ * ⚠️ UCHALA DAVR BITTA SO'ROVDAN chiqadi (eng uzuni bo'yicha bitta skan +
+ * `FILTER`): uchta alohida so'rov ayni jadvalni uch marta o'qirdi va bosh
+ * sahifa shuning uchun sekinlashardi.
+ */
+const USAGE_WEEK_DAYS = 7;
+const USAGE_MONTH_DAYS = 30;
+
+/**
+ * TIZIMDAN FOYDALANAYOTGAN O'QUVCHILAR — "nechta bola tizimga kiryapti?".
+ *
+ * Bosh sahifadagi "Tizimga kirgan o'quvchilar" kartasi shu funksiyadan
+ * o'qiydi.
+ *
+ * ── KIM SANALADI ────────────────────────────────────────────────────
+ *
+ * O'quvchi tizimga IKKI yo'ldan "kiradi" va ikkalasi ham hisob:
+ *
+ *   VEB / ILOVA — o'quvchining O'Z hisobi bilan qilingan harakat
+ *                 (`activity_events.user_id`). Ota-ona mobil ilovasi ham
+ *                 shu hisob bilan kiradi (`parental.md` §1), ya'ni u ham
+ *                 shu yerga tushadi.
+ *   BOT         — o'quvchiga BOG'LANGAN Telegram hisobi
+ *                 (`activity_events.student_id`).
+ *
+ * ⚠️ KANAL (`channel`) AKTYORNI ANIQLASH UCHUN ISHLATILMAYDI va bu
+ * ataylab. Kanalni MIJOZ yozadi (`X-Client` sarlavhasi,
+ * `request.helpers.js`) va u yuborilmasa `admin` bo'lib qoladi — ya'ni
+ * kanalga tayansak, bitta unutilgan sarlavha butun bir panelning
+ * o'quvchilarini sanoqdan chiqarib yuborardi. Kanal FAQAT "veb yoki
+ * bot" degan kesim uchun o'qiladi, kimligi esa ro'yxatdan tekshiriladi.
+ *
+ * ⚠️ CHIQUVCHI (`bot.out.*`) VA XODIM (`bot.staff.*`) HODISALARI
+ * CHIQARIB TASHLANADI — `activeByChannel` bilan AYNI filtr. Birinchisi
+ * BIZ yuborgan xabar (foydalanuvchining harakati emas) va u sanoqqa
+ * kirsa, kechki hisobot yuborilgan har bir o'quvchi "faol" bo'lib
+ * chiqardi; ikkinchisi esa xodimning botdagi ishi.
+ *
+ * ── MAXRAJ ──────────────────────────────────────────────────────────
+ *
+ * ⚠️ SURAT HAM, MAXRAJ HAM `studyingStudentIds()` DAN — bo'limning
+ * qolgan hamma foizi bilan AYNI aholi. Baza so'rovi aktyorni EMAS,
+ * uning OXIRGI KUNINI qaytaradi; kim sanalishi esa shu yerda, bitta
+ * ro'yxat bo'yicha hal qilinadi. Ikkinchi "o'qiyaptimi" qoidasi SQL
+ * ichida yozilsa, davr qoidasi (`education.md` §3) ikki joyda turardi
+ * va biri jimgina eskirardi.
+ *
+ * ── NIMA UCHUN "OXIRGI KUN" ─────────────────────────────────────────
+ *
+ * ⚠️ So'rov har o'quvchiga BITTA qator qaytaradi (veb bo'yicha oxirgi
+ * kun va bot bo'yicha oxirgi kun), uchala davr esa shundan chiqadi:
+ * "davr ichida faol" ⟺ "oxirgi kuni davr boshidan keyin". Shu tufayli
+ * uchta davr uchun uchta `COUNT(DISTINCT)` kerak emas va javob hajmi
+ * hodisalar soniga emas, O'QUVCHILAR soniga bog'liq bo'ladi.
+ *
+ * @returns {Promise<object>}
+ */
+async function getStudentUsage() {
+  const today = currentDayDate();
+  const weekFrom = shiftDay(today, -(USAGE_WEEK_DAYS - 1));
+  const monthFrom = shiftDay(today, -(USAGE_MONTH_DAYS - 1));
+
+  const todayKey = dayKey(today);
+  const weekFromKey = dayKey(weekFrom);
+  const monthFromKey = dayKey(monthFrom);
+
+  const [rows, studentIds, firstEvent] = await Promise.all([
+    // ⚠️ Sana MATN bo'lib qaytadi (`to_char`), `Date` EMAS: taqqoslash
+    // "YYYY-MM-DD" satrlari ustida ketadi va u taymzonaga umuman
+    // bog'liq emas (`dayKey` izohidagi tuzoqning ikkinchi tomoni).
+    //
+    // ⚠️ `COALESCE(student_id, user_id)`: bot qatorida aktyor — ota-ona
+    // (`telegram_id`), bizga esa uning BOLASI kerak; panel qatorida
+    // aktyorning o'zi o'quvchi. Xodimlar ham shu yerga tushadi, lekin
+    // ular pastda ro'yxat bo'yicha chiqarib tashlanadi — guruhlangandan
+    // keyin bu bir necha o'nta ortiqcha qator, ya'ni tekin.
+    prisma.$queryRaw`
+      SELECT COALESCE(ae.student_id, ae.user_id) AS sid,
+             to_char(MAX(ae.day) FILTER (WHERE ae.channel <> 'bot'), 'YYYY-MM-DD') AS last_web,
+             to_char(MAX(ae.day) FILTER (WHERE ae.channel =  'bot'), 'YYYY-MM-DD') AS last_bot
+        FROM activity_events ae
+       WHERE ae.day BETWEEN ${monthFromKey}::date AND ${todayKey}::date
+         AND ae.action NOT LIKE ${`${OUTBOUND_PREFIX}%`}
+         AND ae.action NOT LIKE ${`${STAFF_PREFIX}%`}
+         AND COALESCE(ae.student_id, ae.user_id) IS NOT NULL
+       GROUP BY 1
+    `,
+    studyingStudentIds(),
+    prisma.activityEvent.findFirst({
+      orderBy: { occurredAt: "asc" },
+      select: { occurredAt: true },
+    }),
+  ]);
+
+  const studying = new Set(studentIds);
+
+  const windows = [
+    ["today", todayKey],
+    ["week", weekFromKey],
+    ["month", monthFromKey],
+  ];
+  const counters = {
+    today: { active: 0, web: 0, bot: 0 },
+    week: { active: 0, web: 0, bot: 0 },
+    month: { active: 0, web: 0, bot: 0 },
+  };
+
+  for (const row of rows) {
+    if (!studying.has(row.sid)) continue;
+
+    for (const [name, from] of windows) {
+      const web = row.last_web != null && row.last_web >= from;
+      const bot = row.last_bot != null && row.last_bot >= from;
+
+      if (web) counters[name].web += 1;
+      if (bot) counters[name].bot += 1;
+      // ⚠️ `web + bot` EMAS: bitta bola o'sha davrda ham o'z hisobidan,
+      // ham ota-onasining boti orqali ko'rinishi mumkin va u BIR MARTA
+      // sanalishi kerak.
+      if (web || bot) counters[name].active += 1;
+    }
+  }
+
+  return {
+    total: studying.size,
+
+    // ⚠️ DAVR UZUNLIGI AYNAN SHU NOMLAR BILAN: umumiy ko'rinishda sonlar
+    // QO'SHILADI, lekin `week*` / `month*` kalitlari birlashtiruvchining
+    // "davr qiymati" ro'yxatida (`aggregateMerge.helpers.js` →
+    // `KEEP_SEGMENTS`) va qo'shilmaydi — ikki filialda "7 kun" "14 kun"
+    // bo'lib qolmaydi.
+    weekDays: USAGE_WEEK_DAYS,
+    monthDays: USAGE_MONTH_DAYS,
+
+    today: counters.today,
+    week: counters.week,
+    month: counters.month,
+
+    date: todayKey,
+    dateLabel: formatDateUz(today, { utc: true }),
+
+    // ⚠️ TARIX YIG'ILMAGAN BO'LSA EKRAN BUNI AYTADI (`getOverview` bilan
+    // AYNI qoida): hodisa yozuvi yaqinda yoqilgan bo'lsa 30 kunlik raqam
+    // past chiqadi va uni "foydalanish tushib ketdi" deb o'qish mumkin
+    // edi.
+    collecting: !firstEvent || firstEvent.occurredAt > monthFrom,
+    since: firstEvent?.occurredAt ?? null,
+    sinceLabel: firstEvent ? formatDateUz(firstEvent.occurredAt) : null,
+  };
+}
+
 /** Davrning mijozga chiqadigan shakli — uch joyda takrorlanmasligi uchun. */
 const publicPeriod = (period) => ({
   granularity: period.grain,
@@ -1430,7 +1621,12 @@ module.exports = {
   PERIODS,
   GRANULARITY,
   ACTION_LABELS,
+  studyingStudentIds,
+  linkedTelegramIds,
+  USAGE_WEEK_DAYS,
+  USAGE_MONTH_DAYS,
   getOverview,
+  getStudentUsage,
   getSubject,
   getClass,
 };

@@ -39,6 +39,24 @@ const getOverview = asyncHandler(async (req, res) => {
 });
 
 /**
+ * TIZIMDAN FOYDALANAYOTGAN O'QUVCHILAR — bosh sahifadagi karta.
+ *
+ * ⚠️ PARAMETRSIZ va bu ataylab: davrlar (bugun / 7 kun / 30 kun)
+ * SERVERDA qotirilgan. Karta ustida tanlagich yo'q, ya'ni parametr
+ * faqat keshni bo'laklab, bitta raqamni ikki xil qilib ko'rsatish
+ * yo'li bo'lardi. Davr kesimi kerak bo'lsa — Faollik bo'limi.
+ *
+ * ⚠️ RUXSAT — `activity.view` (route darajasida): javob umumiy
+ * sanoqchi, ism ro'yxati YO'Q, shuning uchun `roster` talab
+ * qilinmaydi.
+ */
+const getStudents = asyncHandler(async (req, res) => {
+  const data = await activityDashboard.getStudentUsage();
+
+  res.json({ success: true, data });
+});
+
+/**
  * BITTA ODAMNING FAOLLIK TARIXI — xodim yoki bog'langan Telegram hisobi.
  */
 const getSubject = asyncHandler(async (req, res) => {
@@ -131,6 +149,7 @@ const exportBotReport = asyncHandler(async (req, res) => {
 
 module.exports = {
   getOverview,
+  getStudents,
   getSubject,
   getClass,
   exportClass,
