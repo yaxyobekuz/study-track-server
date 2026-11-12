@@ -14,9 +14,14 @@
  * ko'rardi (`education.md` §13 — "Yagona hisob").
  *
  * ⚠️ PROGRESS SINFGA tegishli, o'quvchiga emas: platformada o'quvchining
- * shaxsiy mavzu o'rni yo'q va u yo'q narsani taxmin qilib ko'rsatmaydi.
+ * shaxsiy mavzu o'rni (`StudentTopicPlan`) DIAGNOSTIKA qamrovi uchun bor,
+ * lekin sertifikat progressi SINFNING o'rnidan hisoblanadi — u o'quv
+ * rejasining bajarilishini ko'rsatadi, bitta bolaning tezligini emas.
  * Shuning uchun javobda sinf nomi ham qaytadi — o'quvchi raqam qayerdan
  * kelganini ko'rib turadi.
+ *
+ * ⚠️ MAXRAJ SINFNING TILIDAN (2026-11-12): bitta fanda uch til uchun uch
+ * mustaqil mavzular ro'yxati bor va ularning uzunligi boshqa-boshqa.
  */
 
 const prisma = require("../config/prisma");
@@ -74,6 +79,17 @@ async function loadSubjectProgress(subjectIds, { actorId, ensure = false }) {
                 currentTopicName: row.currentTopicName,
                 reason: row.reason,
                 nextLesson: row.nextLesson,
+                /**
+                 * ⚠️ MAXRAJ SINFNING O'ZIDAN (2026-11-12). Fan darajasidagi
+                 * `totalTopics` — HAMMA tilning eng uzun ro'yxati, ya'ni
+                 * rus guruh uchun u YOLG'ON raqam: 40 mavzuli rus rejasida
+                 * foiz 100 mavzuga bo'linib, "40% o'tilgan" bo'lib
+                 * chiqardi. Diagnostikada esa bu xavfliroq — chegara
+                 * o'tilmagan mavzuga surilib ketardi
+                 * (`diagnosticTopicScope`).
+                 */
+                totalTopics: row.totalTopics ?? null,
+                language: row.language ?? null,
               },
             ]),
         ),
@@ -169,7 +185,9 @@ function buildProgress({ subjectId, studentClasses, subjectData }) {
     };
   }
 
-  const total = subjectData.totalTopics;
+  // ⚠️ SINFNING O'Z MAXRAJI birinchi (til bo'yicha reja uzunligi); fan
+  // darajasidagi raqam faqat ZAXIRA (eski qatorlar uchun).
+  const total = resolved.entry.totalTopics ?? subjectData.totalTopics;
   const reached = Math.min(Math.max(resolved.entry.currentTopicNumber, 0), total);
 
   return {

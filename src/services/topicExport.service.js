@@ -14,6 +14,12 @@
  * ⚠️ MAVZUSI YO'Q FAN VARAQQA KIRMAYDI. Bo'sh varaq importda "Varaq bo'sh"
  * sababi bilan qaytardi va admin uni XATO deb o'qirdi — holbuki fanda
  * shunchaki hali reja yo'q.
+ *
+ * ⚠️ BITTA FAYL — BITTA TIL (import bilan AYNI qoida, 2026-11-12). Uch
+ * tilning rejasi bitta varaqqa qo'shilsa, tartib raqamlari takrorlanib
+ * (har ro'yxat 1 dan boshlanadi) qayta yuklashda hammasi aralashib
+ * ketardi. Til fayl nomiga ham yoziladi — uchta fayl bir-birini
+ * almashtirmasin.
  */
 
 const prisma = require("../config/prisma");
@@ -26,6 +32,10 @@ const {
   uniqueSheetName,
   buildTopicRows,
 } = require("../helpers/topicExport.helpers");
+const {
+  normalizeLanguage,
+  languageLabel,
+} = require("../helpers/teachingLanguage.helpers");
 
 const TOPIC_SELECT = {
   subjectId: true,
@@ -47,7 +57,10 @@ const EMPTY_SLOT_FONT = { italic: true, color: { argb: "FF9CA3AF" } };
  * @param {string|null} subjectId
  * @returns {Promise<Array<{subject: {id: string, name: string}, topics: object[]}>>}
  */
-async function loadExportSheets(subjectId) {
+async function loadExportSheets(subjectId, language = undefined) {
+  const lang = normalizeLanguage(language);
+  const label = languageLabel(lang);
+
   if (subjectId) {
     // ⚠️ Fan id yo'lda emas, so'rov parametrida — `validateObjectId`
     // uni ushlamaydi. Tekshirilmasa uzun qiymat Prisma'da "value too
@@ -61,17 +74,17 @@ async function loadExportSheets(subjectId) {
     if (!subject) throw new NotFoundError("Fan topilmadi");
 
     const topics = await prisma.topic.findMany({
-      where: { subjectId },
+      where: { subjectId, language: lang },
       orderBy: { order: "asc" },
       select: TOPIC_SELECT,
     });
     if (topics.length === 0) {
       throw new BadRequestError(
-        `"${subject.name}" fanida mavzu yo'q — avval mavzular faylini yuklang`,
+        `"${subject.name}" fanida ${label} tilidagi mavzu yo'q — avval mavzular faylini yuklang`,
       );
     }
 
-    return [{ subject, topics }];
+    return { language: lang, sheets: [{ subject, topics }] };
   }
 
   // Fanlar nomi bo'yicha: varaqlar faylda alifbo tartibida tursin
@@ -80,6 +93,7 @@ async function loadExportSheets(subjectId) {
     select: { id: true, name: true },
   });
   const topics = await prisma.topic.findMany({
+    where: { language: lang },
     orderBy: { order: "asc" },
     select: TOPIC_SELECT,
   });
@@ -95,10 +109,12 @@ async function loadExportSheets(subjectId) {
     .map((subject) => ({ subject, topics: bySubject.get(subject.id) }));
 
   if (sheets.length === 0) {
-    throw new BadRequestError("Birorta fanda mavzu yo'q — avval mavzular faylini yuklang");
+    throw new BadRequestError(
+      `Birorta fanda ${label} tilidagi mavzu yo'q — avval mavzular faylini yuklang`,
+    );
   }
 
-  return sheets;
+  return { language: lang, sheets };
 }
 
 /** Bitta fanning varag'i. */
@@ -125,16 +141,25 @@ function addSubjectSheet(workbook, usedNames, { subject, topics }) {
 /**
  * @param {import("express").Response} res
  * @param {string|null} [subjectId] - bitta fan; bo'lmasa mavzusi bor hamma fan
+ * @param {string} [language] - o'quv tili (sukut: `uz`)
  */
-async function exportTopics(res, subjectId = null) {
-  const sheets = await loadExportSheets(subjectId);
+async function exportTopics(res, subjectId = null, language = undefined) {
+  const { language: lang, sheets } = await loadExportSheets(subjectId, language);
 
   const workbook = ExcelService.createWorkbook();
   const usedNames = new Set();
   for (const item of sheets) addSubjectSheet(workbook, usedNames, item);
 
-  const baseName = subjectId ? `${sheets[0].subject.name}_mavzular` : "mavzular";
-  await ExcelService.sendWorkbookAs(res, workbook, baseName, { fallbackName: "mavzular" });
+  // Til fayl NOMIDA: uchta tilning fayli bir papkada bir-birini
+  // almashtirmasin ("mavzular_ru.xlsx"). Varaq nomi esa O'ZGARMAYDI —
+  // import aynan fan nomi bo'yicha bog'laydi.
+  const suffix = `_${lang}`;
+  const baseName = subjectId
+    ? `${sheets[0].subject.name}_mavzular${suffix}`
+    : `mavzular${suffix}`;
+  await ExcelService.sendWorkbookAs(res, workbook, baseName, {
+    fallbackName: `mavzular${suffix}`,
+  });
 }
 
 module.exports = { exportTopics, loadExportSheets };

@@ -14,6 +14,12 @@
 // normallashtirish `sheetReader.helpers.js` da (sertifikat importi bilan AYNI).
 const { readSheet } = require("../helpers/sheetReader.helpers");
 const prisma = require("../config/prisma");
+const {
+  TEACHING_LANGUAGES,
+  DEFAULT_TEACHING_LANGUAGE,
+  isTeachingLanguage,
+  normalizeLanguage,
+} = require("../helpers/teachingLanguage.helpers");
 const logger = require("../utils/logger");
 const { uploadFile } = require("./file.service");
 const { deleteObject } = require("./fileStorage.service");
@@ -261,9 +267,14 @@ function _parsePayload(data, { partial = false } = {}) {
     out.solution = data.solution ? String(data.solution).trim() : null;
   }
   if (data.language !== undefined) {
-    const language = String(data.language || "uz").toLowerCase();
-    if (!["uz", "ru", "en"].includes(language)) {
-      throw new BadRequestError("Til faqat uz, ru yoki en bo'lishi mumkin");
+    // ⚠️ RO'YXAT YAGONA MANBADAN (`teachingLanguage.helpers.js`): ilgari u
+    // shu yerda qotib turardi va mavzular rejasining tili bilan ikki
+    // joyda ikki ro'yxat bo'lib qolgan edi.
+    const language = String(data.language || DEFAULT_TEACHING_LANGUAGE).toLowerCase();
+    if (!isTeachingLanguage(language)) {
+      throw new BadRequestError(
+        `Til faqat ${TEACHING_LANGUAGES.join(", ")} bo'lishi mumkin`,
+      );
     }
     out.language = language;
   }
@@ -942,7 +953,15 @@ async function importQuestions(file, { subjectId, authorId, language = "uz" }) {
   }
 
   // Mavzular nomi bo'yicha — importda id emas, NOM keladi.
-  const topics = await prisma.topic.findMany({ where: { subjectId } });
+  //
+  // ⚠️ FAQAT SAVOL TILIDAGI RO'YXATDAN (2026-11-12): bitta fanda uch til
+  // uchun uch mustaqil ro'yxat bor va nomlar takrorlanishi mumkin
+  // ("Present Perfect" ikkala rejada). Tilsiz izlansa, rus savoli o'zbek
+  // rejasidagi mavzuga bog'lanib, mavzu kesimi (tahlil, test qamrovi)
+  // boshqa kitobning mavzusiga tegishli bo'lib qolardi.
+  const topics = await prisma.topic.findMany({
+    where: { subjectId, language: normalizeLanguage(language) },
+  });
   const topicByName = new Map(topics.map((t) => [normalizeText(t.name), t.id]));
 
   const prepared = [];

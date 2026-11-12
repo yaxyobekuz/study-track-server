@@ -761,6 +761,9 @@ test("nashr: tasdiqlanmagan savol bo'lsa test ochilmaydi", async () => {
     questionCount: 3,
     availableFrom: null,
     publishedAt: null,
+    // Test TASDIQLANGAN — darvozaning bu qadami o'tgan, lekin savollar
+    // hali ko'rikdan o'tmagan (ikki darvoza alohida tekshiriladi).
+    approvedAt: new Date("2026-11-12T08:00:00Z"),
   };
 
   const availability = await testService.checkAvailability(state.testRow);
@@ -769,7 +772,27 @@ test("nashr: tasdiqlanmagan savol bo'lsa test ochilmaydi", async () => {
 
   await assert.rejects(
     () => testService.updateTestStatus(state.testRow.id, "active"),
-    /tasdiqlanmagan/,
+    /savol hali tasdiqlanmagan/,
+  );
+});
+
+test("nashr: TASDIQLANMAGAN TEST chiqarilmaydi (savollari tayyor bo'lsa ham)", async () => {
+  resetState();
+  state.pinnedStatuses = ["approved", "approved"];
+  state.testRow = {
+    id: "test".padEnd(24, "0"),
+    status: "draft",
+    questionCount: 2,
+    availableFrom: null,
+    publishedAt: null,
+    // ⚠️ Tasdiq YO'Q: "filial egasi ko'rib chiqadi, tasdiqlasa keyin
+    // chiqariladi" (2026-11-12). Savollar tayyor bo'lsa ham darvoza yopiq.
+    approvedAt: null,
+  };
+
+  await assert.rejects(
+    () => testService.updateTestStatus(state.testRow.id, "active"),
+    /Test hali tasdiqlanmagan/,
   );
 });
 
@@ -782,6 +805,7 @@ test("nashr: hammasi tasdiqlangan bo'lsa darvoza ochiq", async () => {
     questionCount: 2,
     availableFrom: null,
     publishedAt: null,
+    approvedAt: new Date("2026-11-12T08:00:00Z"),
   };
 
   const availability = await testService.checkAvailability(state.testRow);

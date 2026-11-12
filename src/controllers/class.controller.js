@@ -26,8 +26,8 @@ const getClass = asyncHandler(async (req, res) => {
 
 // Create new class (Owner only)
 const createClass = asyncHandler(async (req, res) => {
-  const { name, capacity } = req.body;
-  const data = await classService.createClass(name, req.user.id, capacity);
+  const { name, capacity, language } = req.body;
+  const data = await classService.createClass(name, req.user.id, capacity, language);
 
   res.status(201).json({
     success: true,

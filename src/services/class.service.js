@@ -4,7 +4,43 @@ const { formatDateUz } = require("../helpers/date.helpers");
 const { formatGrade } = require("../helpers/grade.helpers");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { isValidId } = require("../utils/objectId");
+const {
+  TEACHING_LANGUAGES,
+  DEFAULT_TEACHING_LANGUAGE,
+  isTeachingLanguage,
+  normalizeLanguage,
+  languageLabel,
+  languageClassLabel,
+} = require("../helpers/teachingLanguage.helpers");
 const classChanges = require("./studentClassChange.service");
+
+/**
+ * O'QITISH TILINI NORMALLASHTIRADI.
+ *
+ * ⚠️ TANIMAGAN QIYMAT XATO: bu KIRITISH yo'li. Jim `uz` ga tushirilsa,
+ * "rus guruh" deb ochilgan sinf jimgina o'zbek mavzular rejasidan
+ * sanalib, jadvalda boshqa kitobning mavzusi turardi
+ * (`teachingLanguage.helpers.js` izohiga qarang).
+ */
+function normalizeClassLanguage(value) {
+  if (value == null || value === "") return DEFAULT_TEACHING_LANGUAGE;
+  if (!isTeachingLanguage(value)) {
+    throw new BadRequestError(
+      `Noma'lum o'quv tili "${value}" — ${TEACHING_LANGUAGES.join(", ")} dan biri bo'lishi kerak`,
+    );
+  }
+  return normalizeLanguage(value);
+}
+
+/** Sinf qatoriga til yorliqlarini qo'shadi (panel matnni o'zi yozmasin). */
+function withLanguageLabels(row) {
+  if (!row) return row;
+  return {
+    ...row,
+    languageLabel: languageLabel(row.language),
+    languageClassLabel: languageClassLabel(row.language),
+  };
+}
 
 // createdBy soft ref (FK emas) larni bir so'rovda yuklab, xaritalash uchun
 async function attachCreators(rows) {
@@ -42,10 +78,12 @@ async function getAllClasses() {
   // o'quvchi bor" degan savolning javobi ALOHIDA kesimda
   // (`user.service.js` → `getActualGradeCounts`).
   const withCreators = await attachCreators(classes);
-  return withCreators.map((item) => ({
-    ...item,
-    studentCount: countMap.get(item.id) ?? 0,
-  }));
+  return withCreators.map((item) =>
+    withLanguageLabels({
+      ...item,
+      studentCount: countMap.get(item.id) ?? 0,
+    }),
+  );
 }
 
 /**
@@ -66,7 +104,7 @@ async function getClassById(id) {
     orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
   });
 
-  return { ...withCreator, students };
+  return { ...withLanguageLabels(withCreator), students };
 }
 
 /**
@@ -85,16 +123,21 @@ function normalizeCapacity(value) {
 /**
  * Yangi sinf yaratish.
  */
-async function createClass(name, createdBy, capacity) {
+async function createClass(name, createdBy, capacity, language) {
   if (!name) {
     throw new BadRequestError("Sinf nomi majburiy");
   }
 
   const classData = await prisma.class.create({
-    data: { name, createdBy, capacity: normalizeCapacity(capacity) },
+    data: {
+      name,
+      createdBy,
+      capacity: normalizeCapacity(capacity),
+      language: normalizeClassLanguage(language),
+    },
   });
   const [populated] = await attachCreators([classData]);
-  return populated;
+  return withLanguageLabels(populated);
 }
 
 /**
@@ -113,10 +156,21 @@ async function updateClass(id, data) {
   // `capacity` maydoni yuborilgan bo'lsa (bo'sh string ham) — yangilanadi;
   // yuborilmasa tegilmaydi.
   if (data.capacity !== undefined) update.capacity = normalizeCapacity(data.capacity);
+  /**
+   * ⚠️ TILNI O'ZGARTIRISH — ONGLI QAROR va u JIM O'TMAYDI.
+   *
+   * Mavzu ankorlari (`LessonTopicBinding.topicOrder`) O'SHA tildagi
+   * ro'yxatning raqamiga tegishli: til o'zgarsa, raqam boshqa kitobning
+   * mavzusiga tushadi. Shuning uchun ankorlar QAYTA YOZILMAYDI (ular
+   * "shu kundan boshlab shunday" degan qaror) — farq fan ekranida
+   * `languageMismatch` bayrog'i bilan OCHIQ ko'rsatiladi va admin
+   * mavzuni qayta biriktiradi (`education.md` §13).
+   */
+  if (data.language !== undefined) update.language = normalizeClassLanguage(data.language);
 
   const updated = await prisma.class.update({ where: { id }, data: update });
   const [populated] = await attachCreators([updated]);
-  return populated;
+  return withLanguageLabels(populated);
 }
 
 /**
@@ -424,6 +478,7 @@ async function getAllClassesForExport() {
 }
 
 module.exports = {
+  normalizeClassLanguage,
   getAllClasses,
   getClassById,
   createClass,

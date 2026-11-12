@@ -234,6 +234,31 @@ enum PremiumSource {
   admin_grant
 }
 
+// O'QUV TILI — sinfning (guruhning) va mavzular rejasining tili.
+//
+// Biznes qarori (2026-11-12): bitta maktabda bir xil fan uch tilda o'qitiladi
+// va 5-sinfda ham o'zbek, ham rus, ham ingliz guruh bo'lishi mumkin. Mavzular
+// rejasi esa har tilda BOSHQA (kitob boshqa, tartib boshqa).
+//
+// ⚠️ TIL — SINFNING xossasi, FANNING emas. Har til uchun alohida `Subject`
+// ochish ("Matematika (rus)") jurnal, jadval, baho va hisobotlarning HAMMA
+// kesimini uch barobar bo'lib yuborardi: fanlar soni o'sib, "matematikadan
+// o'rtacha baho" degan savolga javob uchta bo'lib qolardi. Shuning uchun fan
+// bitta qoladi, mavzular rejasi esa til bo'yicha versiyalanadi
+// (`Topic.language`) va sinfning tili (`Class.language`) qaysi ro'yxatdan
+// sanash kerakligini hal qiladi.
+//
+// ⚠️ QIYMATLAR KODGA QOTIRILGAN va ataylab: til — domenning o'lchovi
+// (`helpers/teachingLanguage.helpers.js` — yagona manba), katalog emas.
+// Katalog qilinsa, mavzular rejasi bilan sinf o'rtasidagi bog'lanish
+// filialga bog'liq bo'lib qolardi va umumiy ko'rinishda ikki filialning
+// "rus tili" si boshqa-boshqa qator bo'lardi.
+enum TeachingLanguage {
+  uz // O'zbek
+  ru // Rus
+  en // Ingliz
+}
+
 enum ScheduleDay {
   dushanba
   seshanba
@@ -714,15 +739,23 @@ model UserSubject {
 // ─────────────────────────────────────────────
 
 model Class {
-  id        String   @id @db.Char(24)
-  name      String   @unique
+  id        String           @id @db.Char(24)
+  name      String           @unique
   // Sig'im — sinfga sig'adigan o'quvchilar soni (admin belgilaydi). null →
   // belgilanmagan. "Ortiqcha (bo'sh) joy" = capacity − joriy o'quvchilar soni.
   capacity  Int?
-  isActive  Boolean  @default(true) @map("is_active")
-  createdBy String   @map("created_by") @db.Char(24)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  // O'QITISH TILI — guruhning tili (`TeachingLanguage` izohiga qarang).
+  // Mavzular rejasi shu til bo'yicha o'qiladi: 5-A o'zbek, 5-V rus guruh
+  // bo'lsa, ikkisi bitta fanning BOSHQA mavzular ro'yxatidan sanaladi.
+  //
+  // ⚠️ SUKUT `uz` va bu MAJBURIY: til bo'sh bo'lsa, sinfning mavzusi
+  // "qaysi ro'yxatdan" degan savolga javobsiz qolardi va jadvalda mavzu
+  // jimgina yo'qolardi. Mavjud sinflar migratsiyada `uz` oldi.
+  language  TeachingLanguage @default(uz)
+  isActive  Boolean          @default(true) @map("is_active")
+  createdBy String           @map("created_by") @db.Char(24)
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
 
   users           UserClass[]
   testBindings    TestBindingClass[]
@@ -840,8 +873,13 @@ model Subject {
 }
 
 model Topic {
-  id          String   @id @db.Char(24)
-  subjectId   String   @map("subject_id") @db.Char(24)
+  id          String           @id @db.Char(24)
+  subjectId   String           @map("subject_id") @db.Char(24)
+  // MAVZULAR REJASINING TILI (`TeachingLanguage`). Bitta fanda uch til
+  // uchun uch mustaqil ro'yxat bo'ladi va HAR BIRI 1 dan raqamlanadi:
+  // tartib raqami — domenning o'lchovi (ankorlar unga tayanadi), ya'ni
+  // ro'yxatlar bir-birining raqamini surib yuborishi mumkin emas.
+  language    TeachingLanguage @default(uz)
   order       Int
   name        String
   // Fayldagi "Nimalar o'rgatiladi" (eski shablonda "Tavsif") — ixtiyoriy
@@ -850,15 +888,18 @@ model Topic {
   // bo'lmaydi va bo'lmagani xato emas (`helpers/topicImport.helpers.js`)
   level       String?
   book        String?
-  createdBy   String   @map("created_by") @db.Char(24)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  createdBy   String           @map("created_by") @db.Char(24)
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
 
   subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
 
   diagnosticQuestions DiagnosticQuestion[]
 
-  @@unique([subjectId, order])
+  // ⚠️ YAGONALIK TILNI HAM QAMRAYDI: aks holda bitta fanning rus va
+  // ingliz rejasidagi 1-mavzu bir-birini almashtirib yuborardi.
+  @@unique([subjectId, language, order])
+  @@index([subjectId, language, order])
   @@index([subjectId])
   @@map("topics")
 }
@@ -1348,6 +1389,96 @@ model ClassSubjectProgress {
 
   @@unique([classId, subjectId])
   @@map("class_subject_progress")
+}
+
+// O'QUVCHINING SHAXSIY MAVZU REJASI — ANKOR + QADAM.
+//
+// ── MUAMMO ────────────────────────────────────
+//
+// Mavzu o'rni SINFGA tegishli edi (`LessonTopicBinding`): butun guruh bitta
+// raqamda turardi. Amalda esa bir guruhda bolalar boshqa-boshqa tezlikda
+// ketadi — biri bitta darsda uch mavzuni oladi, boshqasi o'rtada qo'shilgani
+// uchun 45-mavzudan boshlaydi. Diagnostika testining butun va'dasi
+// ("o'tilmagan mavzudan savol berilmaydi") aynan shu yerda buzilardi:
+// sinfning raqami bilan o'lchangan test sekin ketayotgan bolaga o'tilmagan
+// materialdan savol berardi.
+//
+// ── YECHIM ────────────────────────────────────
+//
+// Sinf bilan AYNI doktrina, faqat o'quvchi kesimida: saqlanadigan narsa —
+// ANKOR ("16-oktabr, 3-darsda bu bola 50-mavzuda") va QADAM ("bitta darsda
+// nechta mavzu o'tadi"). Qolgan hamma dars shundan SANAB chiqariladi
+// (`helpers/lessonTopic.js` → `topicOrdersForDays`, `step` bilan) — ikkinchi
+// hisob yozilmaydi.
+//
+// ⚠️ QADAM (`step`) — biznes qarori: "o'quvchi nechta mavzu o'ta oladi"
+// degani "bitta dars bo'lib o'tsa, u uchun shuncha mavzu o'tilgan
+// hisoblanadi". 3 qo'yilsa: 1-dars → 50,51,52; 2-dars → 53,54,55.
+// Shuning uchun bu CHEGARA emas, TEZLIK: rejaning oxiri fanning mavzular
+// ro'yxati bilan baribir cheklanadi.
+//
+// ⚠️ `startOrder` — rejaning PASTKI chegarasi (o'quvchi qaysi mavzudan
+// boshlagan). Test qamrovi `[startOrder … hozirgacha]` bo'ladi: o'rtada
+// qo'shilgan bolaga u kelmagan paytdagi mavzulardan savol berilmasin.
+//
+// ⚠️ QATOR BO'LMASA — SINFDAN MEROS (qadam 1). Sukut bo'yicha hech kimga
+// qator yozilmaydi: butun guruhga qator yozish "shaxsiy reja" tushunchasini
+// ma'nosiz qilardi (hammasi bir xil) va sinfning mavzusi o'zgarganda
+// yuzlab qatorni qayta yozish kerak bo'lardi.
+//
+// ⚠️ SEGMENTLAR — `LessonTopicBinding` bilan AYNI: oxirgi ankor undan
+// KEYINGI darslarni qayta yozadi, oldingilari o'z davrida qoladi. Bugungi
+// tuzatish o'tgan haftaning hisobini o'zgartirmaydi.
+//
+// ⚠️ O'CHIRILMAYDI — BEKOR QILINADI (`revokedAt`): "nega bu bola boshqa
+// mavzuda" degan savolga javob registrda qoladi.
+model StudentTopicPlan {
+  id String @id @db.Char(24)
+
+  // soft ref'lar — FK yo'q (o'quvchi/fan/sinf o'chsa ham tarix o'qilishi kerak)
+  studentId String @map("student_id") @db.Char(24)
+  subjectId String @map("subject_id") @db.Char(24)
+  // Ankor QAYSI SINF jadvalidan olingani: dars kunlari sinfdan keladi va
+  // o'quvchi boshqa guruhga o'tsa, eski reja unga ergashmasligi kerak.
+  classId   String @map("class_id") @db.Char(24)
+
+  // Ankor — Toshkent kunining UTC yarim tuni, faqat `getUTC*`
+  date        DateTime @db.Date
+  lessonOrder Int      @map("lesson_order")
+  topicOrder  Int      @map("topic_order")
+
+  // Bitta darsda nechta mavzu (>= 1)
+  step       Int @default(1)
+  // Rejaning boshlanishi — test qamrovining pastki chegarasi
+  startOrder Int @default(1) @map("start_order")
+
+  // "manual" — odam belgilagan, "auto" — tizim sinfdan ko'chirgan
+  source String  @default("manual")
+  note   String?
+
+  // { studentName, className, subjectName, topicName, language } — qayta
+  // nomlansa ham registr o'qilishi uchun (`LessonTopicBinding` doktrinasi)
+  snapshot Json
+
+  // "<studentId>|<subjectId>|<YYYY-MM-DD>|<lessonOrder>" — faqat FAOL qatorda
+  activeKey String? @unique @map("active_key")
+
+  // Bir amalda bir nechta o'quvchiga belgilangan bo'lsa — guruh kaliti
+  // (`PayrollDeduction.batchId` doktrinasi)
+  batchId String? @map("batch_id") @db.Char(24)
+
+  createdBy String    @map("created_by") @db.Char(24)
+  revokedAt DateTime? @map("revoked_at")
+  revokedBy String?   @map("revoked_by") @db.Char(24)
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  // Hal qiluvchi: o'quvchi + fan bo'yicha, sana tartibida
+  @@index([studentId, subjectId, date])
+  // Ekran: sinf + fan bo'yicha butun ro'yxat bir so'rovda
+  @@index([classId, subjectId, date])
+  @@index([batchId])
+  @@map("student_topic_plans")
 }
 
 // ─────────────────────────────────────────────
@@ -6614,10 +6745,11 @@ model DiagnosticQuestion {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  subject   Subject                    @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  topic     Topic?                     @relation(fields: [topicId], references: [id], onDelete: SetNull)
-  options   DiagnosticQuestionOption[]
-  testLinks DiagnosticTestQuestion[]
+  subject          Subject                         @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  topic            Topic?                          @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  options          DiagnosticQuestionOption[]
+  testLinks        DiagnosticTestQuestion[]
+  studentTestLinks DiagnosticTestStudentQuestion[]
 
   @@index([subjectId, status])
   @@index([topicId])
@@ -6686,6 +6818,36 @@ model DiagnosticTest {
   availableFrom DateTime? @map("available_from")
   availableTo   DateTime? @map("available_to")
 
+  /**
+   * HAR O'QUVCHIGA O'Z SAVOLLARI (biznes qarori, 2026-11-12).
+   * `false` — butun sinfga BITTA savollar to'plami (`DiagnosticTestQuestion`),
+   * modulning avvalgi xatti-harakati.
+   * `true`  — har o'quvchiga o'z MAVZU ORALIG'IDAN o'z to'plami
+   * (`DiagnosticTestStudent` + `DiagnosticTestStudentQuestion`): guruhda
+   * bolalar boshqa-boshqa mavzuga kelgan bo'ladi
+   * (`StudentTopicPlan`), bitta to'plam esa ularning bir qismiga
+   * o'tilmagan materialdan savol berardi.
+   */
+  perStudent Boolean @default(false) @map("per_student")
+
+  // Savollar TILI — sinfning o'quv tilidan (`Class.language`) olinadi va AI
+  // promptiga ham shu ketadi. `null` → eski testlar (o'zbek).
+  language String? @db.VarChar(4)
+
+  /**
+   * TASDIQLASH — "filial egasi ko'rib chiqib, keyin chiqariladi".
+   * ⚠️ `publishedAt` BILAN CHALKASHMASIN: u testning oynasi ochilgan
+   * lahzasi (holat `active` bo'lgani), bu esa ODAMNING qarori. Tasdiqsiz
+   * test `draft` dan chiqa olmaydi (`updateTestStatus`), ya'nii ustun
+   * darvozaning O'ZI.
+   * ⚠️ Rad etilgani O'CHIRILMAYDI: `approvedAt` bo'sh qoladi va sabab
+   * `reviewNote` da turadi — "nega chiqmadi" degan savolga javob
+   * ekranda bo'lishi kerak.
+   */
+  approvedAt DateTime? @map("approved_at")
+  approvedBy String?   @map("approved_by") @db.Char(24)
+  reviewNote String?   @map("review_note")
+
   attemptsAllowed  Int     @default(1) @map("attempts_allowed")
   shuffleQuestions Boolean @default(true) @map("shuffle_questions")
   shuffleOptions   Boolean @default(true) @map("shuffle_options")
@@ -6700,6 +6862,7 @@ model DiagnosticTest {
 
   classes   DiagnosticTestClass[]
   questions DiagnosticTestQuestion[]
+  students  DiagnosticTestStudent[]
   attempts  DiagnosticAttempt[]
 
   @@index([status, availableFrom])
@@ -6733,6 +6896,71 @@ model DiagnosticTestQuestion {
   @@id([testId, questionId])
   @@index([questionId])
   @@map("diagnostic_test_questions")
+}
+
+// ── HAR O'QUVCHIGA O'Z TO'PLAMI ──────────────
+//
+// Test `perStudent: true` bo'lsa, savollar butun sinfga emas, HAR O'QUVCHIGA
+// alohida tanlanadi: uning shaxsiy mavzu oralig'i (`StudentTopicPlan`)
+// bo'yicha. Qamrov ham, savollar ham MUHRLANADI — o'quvchi ertaga oldinga
+// ketsa, bugun tasdiqlangan test o'zgarmaydi.
+//
+// ⚠️ QATOR YOZILADI, HATTO QAMROV TOPILMASA HAM (`status: "failed"` +
+// sababi): "4 o'quvchidan 3 tasiga test tushdi" degan yarim holat jim
+// qolmasligi kerak — tasdiqlash ekrani kimga test tushmaganini ham
+// ko'rsatadi.
+model DiagnosticTestStudent {
+  testId    String @map("test_id") @db.Char(24)
+  studentId String @map("student_id") @db.Char(24)
+
+  // { fullName, className } — o'quvchi keyin boshqa guruhga o'tsa ham
+  // tasdiqlash registri o'qilishi uchun
+  snapshot Json
+
+  /**
+   * HAL QILINGAN QAMROV — fan kesimida MUHRLANADI:
+   * `[{ subjectId, subjectName, topicFrom, topicTo, step,
+   * currentTopicAtCreate, inherited }]`.
+   * ⚠️ "Hozirgi mavzugacha" so'rovi o'z-o'zicha hech narsa demaydi (ertaga
+   * boshqa raqam), shuning uchun saqlanadigan narsa — hal qilingan ORALIQ.
+   */
+  scope Json
+
+  questionCount Int     @default(0) @map("question_count")
+  // "ready" — savollar tanlangan, "failed" — qamrov yoki savol topilmadi
+  status        String  @default("ready") @db.VarChar(16)
+  reason        String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  test      DiagnosticTest                  @relation(fields: [testId], references: [id], onDelete: Cascade)
+  questions DiagnosticTestStudentQuestion[]
+
+  @@id([testId, studentId])
+  @@index([studentId])
+  @@map("diagnostic_test_students")
+}
+
+model DiagnosticTestStudentQuestion {
+  testId     String @map("test_id") @db.Char(24)
+  studentId  String @map("student_id") @db.Char(24)
+  questionId String @map("question_id") @db.Char(24)
+  position   Int
+
+  // Qaysi taqsimot qatoridan kelgani — SAVOLNI ALMASHTIRISH uchun kerak:
+  // o'rniga yozilgan savol AYNI fan, AYNI qiyinlik va AYNI mavzu
+  // oralig'idan bo'lishi shart.
+  rowIndex   Int             @map("row_index")
+  difficulty DiagnosticLevel
+
+  student  DiagnosticTestStudent @relation(fields: [testId, studentId], references: [testId, studentId], onDelete: Cascade)
+  question DiagnosticQuestion    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@id([testId, studentId, questionId])
+  @@index([testId, studentId, position])
+  @@index([questionId])
+  @@map("diagnostic_test_student_questions")
 }
 
 // ── URINISH (MUHRLANGAN FAKT) ────────────────

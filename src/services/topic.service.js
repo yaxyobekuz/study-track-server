@@ -3,6 +3,38 @@ const XLSX = require("xlsx");
 const logger = require("../utils/logger");
 const { BadRequestError, NotFoundError } = require("../utils/errors");
 const { parseTopicSheet, normalizeSubjectName } = require("../helpers/topicImport.helpers");
+const {
+  TEACHING_LANGUAGES,
+  DEFAULT_TEACHING_LANGUAGE,
+  normalizeLanguage,
+  isTeachingLanguage,
+  languageLabel,
+  languageClassLabel,
+} = require("../helpers/teachingLanguage.helpers");
+
+/**
+ * YUKLASHDAGI TIL — "bu fayl qaysi tildagi guruhlar uchun".
+ *
+ * ⚠️ BITTA FAYL — BITTA TIL (biznes qarori, 2026-11-12). Tilni varaq nomidan
+ * taxmin qilish ("Matematika (rus)") `education.md` §10 dagi moslash
+ * doktrinasini buzardi: nom bir harf bilan farq qilsa, butun reja boshqa
+ * tilning ro'yxatini ALMASHTIRIB yuborardi. Shuning uchun til oynada ongli
+ * tanlanadi va butun faylga qo'llanadi.
+ *
+ * ⚠️ TANIMAGAN QIYMATDA XATO: bu KIRITISH yo'li. Jim `uz` ga tushirilsa,
+ * rus guruhining rejasi o'zbek ro'yxatini o'chirib yuborardi.
+ */
+function assertUploadLanguage(value) {
+  if (value === undefined || value === null || value === "") {
+    return DEFAULT_TEACHING_LANGUAGE;
+  }
+  if (!isTeachingLanguage(value)) {
+    throw new BadRequestError(
+      `Noma'lum o'quv tili "${value}" — ${TEACHING_LANGUAGES.join(", ")} dan biri bo'lishi kerak`,
+    );
+  }
+  return normalizeLanguage(value);
+}
 
 /**
  * Varaqni qatorlar massiviga o'qiydi.
@@ -32,12 +64,17 @@ function readSheetRows(sheet) {
  * ⚠️ Ilgari ikki alohida so'rov edi: yozish yiqilsa (masalan ulanish
  * uzilsa) fanning eski mavzulari o'chib, yangisi yozilmay qolardi va dars
  * jadvalidagi hamma mavzu "yuklanmagan" bo'lib ketardi.
+ *
+ * ⚠️ FAQAT SHU TILDAGI RO'YXAT ALMASHADI. Rus rejasini yuklash o'zbek
+ * rejasiga TEGMAYDI: ular mustaqil ro'yxat va har biri 1 dan raqamlanadi
+ * (`Topic.language`). Tilsiz o'chirish bitta yuklash bilan boshqa ikki
+ * guruhning mavzularini yo'q qilardi.
  */
-async function replaceSubjectTopics(subjectId, topics, createdBy) {
+async function replaceSubjectTopics(subjectId, language, topics, createdBy) {
   await prisma.$transaction(async (tx) => {
-    await tx.topic.deleteMany({ where: { subjectId } });
+    await tx.topic.deleteMany({ where: { subjectId, language } });
     await tx.topic.createMany({
-      data: topics.map((topic) => ({ ...topic, subjectId, createdBy })),
+      data: topics.map((topic) => ({ ...topic, subjectId, language, createdBy })),
     });
   });
 }
@@ -47,13 +84,15 @@ async function replaceSubjectTopics(subjectId, topics, createdBy) {
  *
  * @returns {Promise<object>} `{ sheet, subject, status, topicCount, columns, notes, warnings, reason }`
  */
-async function importSheet({ sheetName, sheet, subject, createdBy }) {
+async function importSheet({ sheetName, sheet, subject, language, createdBy }) {
   const { rows, rowOffset, colOffset } = readSheetRows(sheet);
   const parsed = parseTopicSheet(rows, { rowOffset, colOffset });
 
   const report = {
     sheet: sheetName,
     subject: subject ? { id: subject.id, name: subject.name } : null,
+    language,
+    languageLabel: languageLabel(language),
     status: "skipped",
     topicCount: 0,
     columns: parsed.columns,
@@ -66,7 +105,7 @@ async function importSheet({ sheetName, sheet, subject, createdBy }) {
   // ishlab turgan mavzular ro'yxatini o'chirib yubormasligi kerak.
   if (parsed.error) return report;
 
-  await replaceSubjectTopics(subject.id, parsed.topics, createdBy);
+  await replaceSubjectTopics(subject.id, language, parsed.topics, createdBy);
 
   report.status = "loaded";
   report.topicCount = parsed.topics.length;
@@ -90,12 +129,18 @@ function flattenProblems(sheets) {
  * Ustunlar sarlavha nomi bo'yicha topiladi (`helpers/topicImport.helpers.js`):
  * "Mavzu" majburiy, "Daraja", "Kitob", "Nimalar o'rgatiladi" ixtiyoriy.
  *
+ * ⚠️ TIL BUTUN FAYLGA (`assertUploadLanguage`): yuklash faqat O'SHA tildagi
+ * ro'yxatni almashtiradi, qolgan tillarga tegmaydi.
+ *
  * @param {string|null} subjectId - bitta fan uchun ID (ixtiyoriy)
  * @param {object} file - yuklangan fayl (multer fayl obyekti)
  * @param {string} createdBy - yaratuvchi foydalanuvchi ID
- * @returns {Promise<{processedSubjects: number, totalTopics: number, sheets: Array, errors?: string[]}>}
+ * @param {{language?: string}} [options] - o'quv tili (sukut: `uz`)
+ * @returns {Promise<{language: string, processedSubjects: number, totalTopics: number, sheets: Array, errors?: string[]}>}
  */
-async function uploadTopics(subjectId, file, createdBy) {
+async function uploadTopics(subjectId, file, createdBy, { language } = {}) {
+  const lang = assertUploadLanguage(language);
+
   if (!file) {
     throw new BadRequestError("Excel fayl yuklanmadi");
   }
@@ -143,7 +188,13 @@ async function uploadTopics(subjectId, file, createdBy) {
     // Bitta fan rejimida faqat BIRINCHI varaq o'qiladi (oynada shunday yozilgan)
     const sheetName = sheetNames[0];
     sheets.push(
-      await importSheet({ sheetName, sheet: workbook.Sheets[sheetName], subject, createdBy }),
+      await importSheet({
+        sheetName,
+        sheet: workbook.Sheets[sheetName],
+        subject,
+        language: lang,
+        createdBy,
+      }),
     );
   } else {
     // Fanlar BIR MARTA o'qiladi va varaq nomi bilan normallashtirilgan holda
@@ -163,6 +214,8 @@ async function uploadTopics(subjectId, file, createdBy) {
       const skipped = (reason) => ({
         sheet: sheetName,
         subject: matches.length === 1 ? { id: matches[0].id, name: matches[0].name } : null,
+        language: lang,
+        languageLabel: languageLabel(lang),
         status: "skipped",
         topicCount: 0,
         columns: {},
@@ -208,6 +261,7 @@ async function uploadTopics(subjectId, file, createdBy) {
         sheetName,
         sheet: workbook.Sheets[sheetName],
         subject,
+        language: lang,
         createdBy,
       });
       if (report.status === "loaded") loadedBy.set(subject.id, sheetName);
@@ -231,10 +285,13 @@ async function uploadTopics(subjectId, file, createdBy) {
   }
 
   logger.info(
-    `[Topics] Yuklandi: ${loaded.map((item) => `${item.subject.name} (${item.topicCount})`).join(", ")}`,
+    `[Topics] Yuklandi (${lang}): ` +
+      `${loaded.map((item) => `${item.subject.name} (${item.topicCount})`).join(", ")}`,
   );
 
   return {
+    language: lang,
+    languageLabel: languageLabel(lang),
     processedSubjects,
     totalTopics,
     sheets,
@@ -243,18 +300,25 @@ async function uploadTopics(subjectId, file, createdBy) {
 }
 
 /**
- * Berilgan fan uchun barcha mavzularni olish.
+ * Berilgan fan uchun mavzular — BITTA TILDA.
+ *
+ * ⚠️ TILSIZ O'QILMAYDI: uch tilning ro'yxati bitta massivga qo'shilsa,
+ * tartib raqamlari takrorlanib ("1-mavzu" uch marta), ekranda qaysi
+ * ro'yxatdagi mavzu ekani noma'lum bo'lib qolardi. Berilmasa — `uz`
+ * (migratsiyadagi mavjud ma'lumot aynan shunda).
+ *
  * @param {string} subjectId - fan ID
+ * @param {{language?: string}} [options]
  * @returns {Promise<Array>} mavzular ro'yxati
  */
-async function getTopicsBySubject(subjectId) {
+async function getTopicsBySubject(subjectId, { language } = {}) {
   const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
   return prisma.topic.findMany({
-    where: { subjectId },
+    where: { subjectId, language: normalizeLanguage(language) },
     orderBy: { order: "asc" },
     omit: { createdBy: true },
   });
@@ -275,67 +339,137 @@ async function getTopicsBySubject(subjectId) {
  *
  * @returns {Promise<{items: Array, totals: object}>}
  */
-async function getSubjectTopicStatus() {
-  const [subjects, grouped] = await Promise.all([
+async function getSubjectTopicStatus({ language = null } = {}) {
+  // ⚠️ TIL FILTRI IXTIYORIY va uning yo'qligi ALOHIDA savol: "qaysi fanga
+  // umuman reja yuklangan" (filtrsiz) bilan "qaysi fanga RUS rejasi
+  // yuklangan" (filtr bilan) ikki boshqa savol va ikkalasi ham kerak —
+  // rus guruh ochilganda aynan ikkinchisi javob beradi.
+  const filter = language ? normalizeLanguage(language) : null;
+
+  const [subjects, grouped, classStats] = await Promise.all([
     prisma.subject.findMany({
       select: { id: true, name: true, isActive: true },
       orderBy: { name: "asc" },
     }),
     prisma.topic.groupBy({
-      by: ["subjectId"],
+      by: ["subjectId", "language"],
       _count: { _all: true },
       _max: { createdAt: true },
     }),
+    // ⚠️ SINFLAR KESIMI JAVOBDA: "ingliz guruh bor, lekin ingliz rejasi
+    // yuklanmagan" holatini ekran aynan shundan ko'rsatadi. Usiz admin
+    // har tilni qo'lda tekshirib chiqishi kerak bo'lardi.
+    prisma.class.groupBy({
+      by: ["language"],
+      where: { isActive: true },
+      _count: { _all: true },
+    }),
   ]);
 
-  const stats = new Map(
-    grouped.map((row) => [
-      row.subjectId,
-      { topicCount: row._count._all, lastUploadedAt: row._max.createdAt },
-    ]),
-  );
+  /** fan → til → { topicCount, lastUploadedAt } */
+  const stats = new Map();
+  for (const row of grouped) {
+    if (!stats.has(row.subjectId)) stats.set(row.subjectId, new Map());
+    stats.get(row.subjectId).set(row.language, {
+      topicCount: row._count._all,
+      lastUploadedAt: row._max.createdAt,
+    });
+  }
 
   const items = subjects.map((subject) => {
-    const stat = stats.get(subject.id);
+    const byLanguage = stats.get(subject.id) ?? new Map();
+
+    const languages = TEACHING_LANGUAGES.map((key) => {
+      const stat = byLanguage.get(key);
+      return {
+        language: key,
+        label: languageLabel(key),
+        classLabel: languageClassLabel(key),
+        topicCount: stat?.topicCount ?? 0,
+        lastUploadedAt: stat?.lastUploadedAt ?? null,
+        hasTopics: Boolean(stat?.topicCount),
+      };
+    });
+
+    // Filtr berilsa sanoq O'SHA tilning raqami bo'ladi; berilmasa —
+    // hamma tilning yig'indisi (ro'yxatning o'zi baribir til kesimini
+    // beradi, ya'ni ikki raqam aralashmaydi).
+    const scoped = filter ? languages.filter((row) => row.language === filter) : languages;
+    const topicCount = scoped.reduce((sum, row) => sum + row.topicCount, 0);
+    const lastUploadedAt = scoped.reduce(
+      (latest, row) =>
+        row.lastUploadedAt && (!latest || row.lastUploadedAt > latest)
+          ? row.lastUploadedAt
+          : latest,
+      null,
+    );
+
     return {
       id: subject.id,
       name: subject.name,
       isActive: subject.isActive,
-      topicCount: stat?.topicCount ?? 0,
-      lastUploadedAt: stat?.lastUploadedAt ?? null,
-      hasTopics: Boolean(stat?.topicCount),
+      topicCount,
+      lastUploadedAt,
+      hasTopics: topicCount > 0,
+      languages,
     };
   });
 
   const withTopics = items.filter((item) => item.hasTopics).length;
 
+  const classesByLanguage = new Map(classStats.map((row) => [row.language, row._count._all]));
+
   return {
     items,
+    language: filter,
     totals: {
       subjects: items.length,
       withTopics,
       withoutTopics: items.length - withTopics,
       topics: items.reduce((sum, item) => sum + item.topicCount, 0),
+      // Til kesimi: nechta fanga reja bor va nechta FAOL guruh shu tilda
+      byLanguage: TEACHING_LANGUAGES.map((key) => ({
+        language: key,
+        label: languageLabel(key),
+        classLabel: languageClassLabel(key),
+        subjects: items.filter(
+          (item) => item.languages.find((row) => row.language === key)?.hasTopics,
+        ).length,
+        topics: items.reduce(
+          (sum, item) =>
+            sum + (item.languages.find((row) => row.language === key)?.topicCount ?? 0),
+          0,
+        ),
+        classes: classesByLanguage.get(key) ?? 0,
+      })),
     },
   };
 }
 
 /**
- * Berilgan fan uchun barcha mavzularni o'chirish.
+ * Fanning mavzularini o'chirish — BITTA TILDA.
+ *
+ * ⚠️ TIL MAJBURIY EMAS, lekin berilmasa FAQAT `uz` o'chadi (yuklash bilan
+ * AYNI qoida): "hamma tilni birdan o'chirish" tugmasi bitta bosishda uch
+ * guruhning rejasini yo'q qilardi.
+ *
  * @param {string} subjectId - fan ID
- * @returns {Promise<{deletedCount: number}>}
+ * @param {{language?: string}} [options]
+ * @returns {Promise<{deletedCount: number, language: string}>}
  */
-async function deleteTopicsBySubject(subjectId) {
+async function deleteTopicsBySubject(subjectId, { language } = {}) {
   const subject = await prisma.subject.findUnique({ where: { id: subjectId } });
   if (!subject) {
     throw new NotFoundError("Fan topilmadi");
   }
 
-  const result = await prisma.topic.deleteMany({ where: { subjectId } });
-  return { deletedCount: result.count };
+  const lang = assertUploadLanguage(language);
+  const result = await prisma.topic.deleteMany({ where: { subjectId, language: lang } });
+  return { deletedCount: result.count, language: lang, languageLabel: languageLabel(lang) };
 }
 
 module.exports = {
+  assertUploadLanguage,
   uploadTopics,
   getTopicsBySubject,
   getSubjectTopicStatus,

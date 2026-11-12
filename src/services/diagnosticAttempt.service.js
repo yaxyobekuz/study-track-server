@@ -50,6 +50,7 @@ const {
 } = require("../helpers/diagnostic.helpers");
 const { getDiagnosticSettings } = require("./settings.service");
 const diagnosticTestService = require("./diagnosticTest.service");
+const studentTestService = require("./diagnosticStudentTest.service");
 const diagnosticStudentService = require("./diagnosticStudent.service");
 
 // ─────────────────────────────────────────────
@@ -526,13 +527,42 @@ async function startAttempt(studentId, input = {}) {
   // moslashadigan narsa qolmaydi). Test servisi bunday kombinatsiyani
   // yaratishga ham yo'l qo'ymaydi — bu yer ikkinchi qavat.
   if (assigned && mode !== "adaptive") {
-    const pinned = await prisma.diagnosticTestQuestion.findMany({
-      where: { testId: test.id },
-      orderBy: { position: "asc" },
-      include: { question: { select: QUESTION_SELECT } },
-    });
-    if (pinned.length) {
-      questions = pinned.map((tq) => tq.question).filter(Boolean);
+    /**
+     * ⚠️ HAR O'QUVCHIGA MOSLANGAN TESTDA SAVOLLAR O'QUVCHINING O'Z
+     * TO'PLAMIDAN (`DiagnosticTestStudentQuestion`, 2026-11-12).
+     *
+     * Umumiy ro'yxat (`DiagnosticTestQuestion`) bunday testda BO'SH
+     * bo'ladi, ya'ni tanlov pastdagi "bankdan avtomat" yo'liga tushib
+     * ketardi — o'sha yo'l esa mavzu qamrovini BILMAYDI va o'quvchi
+     * o'tilmagan mavzudan savol olardi. Modulning asosiy qoidasi aynan
+     * shu yerda buzilardi, shuning uchun bu testda bankka tushish
+     * TAQIQLANADI: to'plam yo'q bo'lsa, urinish umuman boshlanmaydi.
+     */
+    if (test.perStudent) {
+      const set = await studentTestService.studentQuestionSet(test.id, studentId);
+      if (set.status !== "ready" || set.questionIds.length === 0) {
+        throw new BadRequestError(
+          set.reason ||
+            "Bu test siz uchun tuzilmagan — o'qituvchingizga murojaat qiling",
+        );
+      }
+
+      const rows = await prisma.diagnosticQuestion.findMany({
+        where: { id: { in: set.questionIds } },
+        select: QUESTION_SELECT,
+      });
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      // Tartib MUHRLANGAN ro'yxatdan (`position`) — `findMany` tartibi emas
+      questions = set.questionIds.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      const pinned = await prisma.diagnosticTestQuestion.findMany({
+        where: { testId: test.id },
+        orderBy: { position: "asc" },
+        include: { question: { select: QUESTION_SELECT } },
+      });
+      if (pinned.length) {
+        questions = pinned.map((tq) => tq.question).filter(Boolean);
+      }
     }
   }
 
@@ -545,6 +575,9 @@ async function startAttempt(studentId, input = {}) {
     ? await diagnosticStudentService.weakTopicIds(studentId, { subjectId })
     : null;
 
+  // ⚠️ Per-student testda bankka TUSHMAYDI: yuqoridagi shoxda ro'yxat
+  // bo'sh bo'lsa xato otilgan, ya'ni bu yerga faqat umumiy test yoki
+  // mustaqil mashq yetib keladi.
   if (!questions.length && mode !== "adaptive") {
     questions = await _pickQuestions({
       subjectId,

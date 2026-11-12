@@ -32,6 +32,14 @@
  * `activeKey` yagona indeksi bilan idempotent — parallel ikki so'rov ikkinchi
  * qatorni yoza olmaydi.
  *
+ * ⚠️ MAVZULAR RO'YXATI SINFNING TILIDAN (`Class.language`, 2026-11-12).
+ * Bitta fanda uch til uchun uch mustaqil ro'yxat bo'ladi va har biri 1 dan
+ * raqamlanadi: 5-A o'zbek guruh bo'lsa o'zbek ro'yxatidan, 5-V rus guruh
+ * bo'lsa rus ro'yxatidan sanaladi. Ankorning `topicOrder` i O'SHA ro'yxatga
+ * tegishli — shuning uchun sinfning tili o'zgarsa, ankorlar boshqa
+ * ro'yxatning raqamlariga tushadi va buni ekran OCHIQ aytadi
+ * (`languageMismatch`), jim tuzatmaydi.
+ *
  * ⚠️ BIR NECHTA ANKOR — SEGMENTLARGA BO'LINADI. Oxirgi ankor undan KEYINGI
  * darslarni qayta yozadi, oldingilari o'z davrida qoladi: 1-oktabrda
  * 10-mavzu, 15-oktabrda 50-mavzu biriktirilgan bo'lsa, 14-oktabr hali ham
@@ -56,12 +64,18 @@ const { dayKey } = require("../helpers/lessonHours");
 const {
   MAX_SPAN_DAYS,
   TOPIC_MISS_REASONS,
+  noTopicsForLanguage,
   bindingActiveKey,
   lessonKey,
   parseDayKey,
   daysBetween,
   topicOrdersForDays,
 } = require("../helpers/lessonTopic");
+const {
+  DEFAULT_TEACHING_LANGUAGE,
+  normalizeLanguage,
+  languageLabel,
+} = require("../helpers/teachingLanguage.helpers");
 const { buildHolidaySet } = require("./holiday.service");
 const { getVacationSet } = require("./vacationMonth.service");
 
@@ -231,12 +245,12 @@ async function buildCalendar(fromIso, toIso) {
  * @param {string[]} subjectIds
  * @returns {Promise<Map<string, {byOrder: Map<number, object>, last: number}>>}
  */
-async function loadTopics(subjectIds) {
+async function loadTopics(subjectIds, language = DEFAULT_TEACHING_LANGUAGE) {
   const result = new Map();
   if (subjectIds.length === 0) return result;
 
   const topics = await prisma.topic.findMany({
-    where: { subjectId: { in: subjectIds } },
+    where: { subjectId: { in: subjectIds }, language: normalizeLanguage(language) },
     select: { id: true, subjectId: true, order: true, name: true },
     orderBy: { order: "asc" },
   });
@@ -246,6 +260,39 @@ async function loadTopics(subjectIds) {
       result.set(topic.subjectId, { byOrder: new Map(), last: 0 });
     }
     const entry = result.get(topic.subjectId);
+    entry.byOrder.set(topic.order, topic);
+    if (topic.order > entry.last) entry.last = topic.order;
+  }
+
+  return result;
+}
+
+/**
+ * BITTA FANNING MAVZULARI — HAMMA TIL KESIMIDA.
+ *
+ * `getSubjectClassTopics` bir necha o'nlab sinfni birga o'qiydi va ular
+ * boshqa-boshqa tilda bo'lishi mumkin. Har sinf uchun alohida so'rov
+ * yuborilsa, sahifa yuzlab so'rov qilardi — shuning uchun til bo'yicha
+ * BIR MARTA o'qiladi.
+ *
+ * @param {string} subjectId
+ * @returns {Promise<Map<string, {byOrder: Map<number, object>, last: number}>>}
+ *   kalit — til (`uz` | `ru` | `en`)
+ */
+async function loadTopicsByLanguage(subjectId) {
+  const result = new Map();
+
+  const topics = await prisma.topic.findMany({
+    where: { subjectId },
+    select: { id: true, subjectId: true, language: true, order: true, name: true },
+    orderBy: { order: "asc" },
+  });
+
+  for (const topic of topics) {
+    if (!result.has(topic.language)) {
+      result.set(topic.language, { byOrder: new Map(), last: 0 });
+    }
+    const entry = result.get(topic.language);
     entry.byOrder.set(topic.order, topic);
     if (topic.order > entry.last) entry.last = topic.order;
   }
@@ -333,6 +380,7 @@ function findNextLessonSlot({ slotsByDay, fromIso, isTeachingDay, nowMinutes }) 
 async function ensureAnchors({
   classId,
   className,
+  language = DEFAULT_TEACHING_LANGUAGE,
   subjectIds,
   slotsBySubject,
   topicsBySubject,
@@ -393,6 +441,7 @@ async function ensureAnchors({
         className: className ?? null,
         subjectName: subjectNames.get(subjectId) ?? null,
         topicName: topic?.name ?? null,
+        language,
       },
       activeKey: bindingActiveKey(classId, subjectId, slot.day, slot.lessonOrder),
       createdBy: actorId,
@@ -434,19 +483,25 @@ async function ensureAnchors({
 async function resolveLessonTopics({ classId, days, actorId, ensure = true, withDetails = false }) {
   const targets = [...new Set(days)].sort();
   const template = await loadClassTemplate(classId);
-  const topicsBySubject = await loadTopics(template.subjectIds);
+
+  // ⚠️ SINFNING TILI MAVZULARNI O'QISHDAN OLDIN KERAK: ro'yxat til bo'yicha
+  // bo'lingan va noto'g'ri tildan sanash boshqa kitobning mavzusini
+  // ko'rsatardi. Sinf topilmasa `uz` (eski xatti-harakat).
+  const classRow = await prisma.class.findUnique({
+    where: { id: classId },
+    select: { id: true, name: true, language: true },
+  });
+  const language = normalizeLanguage(classRow?.language);
+  const topicsBySubject = await loadTopics(template.subjectIds, language);
 
   const byLesson = new Map();
   const anchorsBySubject = new Map();
 
   if (targets.length === 0 || template.subjectIds.length === 0) {
     const empty = await buildCalendar(targets[0] ?? todayIsoTashkent(), targets[targets.length - 1] ?? todayIsoTashkent());
-    const classRow = await prisma.class.findUnique({
-      where: { id: classId },
-      select: { id: true, name: true },
-    });
     return {
       template,
+      language,
       topicsBySubject,
       byLesson,
       anchorsBySubject,
@@ -457,13 +512,11 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
     };
   }
 
-  const [classDoc, subjects] = await Promise.all([
-    prisma.class.findUnique({ where: { id: classId }, select: { id: true, name: true } }),
-    prisma.subject.findMany({
-      where: { id: { in: template.subjectIds } },
-      select: { id: true, name: true },
-    }),
-  ]);
+  const classDoc = classRow;
+  const subjects = await prisma.subject.findMany({
+    where: { id: { in: template.subjectIds } },
+    select: { id: true, name: true },
+  });
   const subjectNames = new Map(subjects.map((s) => [s.id, s.name]));
 
   const today = todayIsoTashkent();
@@ -497,6 +550,7 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
       const created = await ensureAnchors({
         classId,
         className: classDoc?.name ?? null,
+        language,
         subjectIds: template.subjectIds,
         slotsBySubject: template.slotsBySubject,
         topicsBySubject,
@@ -526,9 +580,17 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
     const subjectAnchors = bindingsBySubject.get(subjectId) ?? [];
     anchorsBySubject.set(subjectId, subjectAnchors);
 
-    // Fanga mavzu yuklanmagan — sanaydigan narsa yo'q
+    // Fanga SHU TILDA mavzu yuklanmagan — sanaydigan narsa yo'q
     if (!topics || topics.last < 1) {
-      fillMiss(byLesson, targets, ordersByDayNumber, TOPIC_MISS_REASONS.noTopics, subjectId);
+      fillMiss(
+        byLesson,
+        targets,
+        ordersByDayNumber,
+        language === DEFAULT_TEACHING_LANGUAGE
+          ? TOPIC_MISS_REASONS.noTopics
+          : noTopicsForLanguage(languageLabel(language)),
+        subjectId,
+      );
       continue;
     }
 
@@ -578,6 +640,7 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
         byLesson.set(key, {
           subjectId,
           topicOrder: value.topicOrder,
+          topicOrderTo: value.topicOrderTo ?? value.topicOrder,
           topic,
           // Raqam bor-u, mavzu yo'q — ro'yxatda bo'shliq (faylda nomi bo'sh
           // qator). Sababsiz qoldirilsa ekranda "Mavzu aniqlanmadi" turib,
@@ -595,6 +658,7 @@ async function resolveLessonTopics({ classId, days, actorId, ensure = true, with
 
   return {
     template,
+    language,
     topicsBySubject,
     byLesson,
     anchorsBySubject,
@@ -614,6 +678,7 @@ function fillMiss(byLesson, targets, ordersByDayNumber, reason, subjectId = null
       byLesson.set(lessonKey(day, order), {
         subjectId,
         topicOrder: null,
+        topicOrderTo: null,
         topic: null,
         reason,
         binding: null,
@@ -656,7 +721,7 @@ function publicBinding(row) {
 async function getClassWeekTopics({ classId, week, actorId }) {
   const classDoc = await prisma.class.findUnique({
     where: { id: classId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, language: true },
   });
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
 
@@ -667,8 +732,15 @@ async function getClassWeekTopics({ classId, week, actorId }) {
   const end = days[days.length - 1];
 
   const resolved = await resolveLessonTopics({ classId, days, actorId, withDetails: true });
-  const { template, topicsBySubject, byLesson, anchorsBySubject, subjectNames, offReason } =
-    resolved;
+  const {
+    template,
+    language,
+    topicsBySubject,
+    byLesson,
+    anchorsBySubject,
+    subjectNames,
+    offReason,
+  } = resolved;
 
   // O'qituvchilar — jadvalning o'zi ularning ismini ko'rsatadi
   const teacherIds = new Set();
@@ -756,6 +828,11 @@ async function getClassWeekTopics({ classId, week, actorId }) {
 
   return {
     class: classDoc,
+    // Sinfning o'quv tili — jadval ekrani mavzular qaysi ro'yxatdan
+    // kelganini yozib turadi (`languageLabel`), aks holda rus guruhida
+    // o'zbek mavzusi ko'rinib qolsa sababi noma'lum bo'lardi.
+    language,
+    languageLabel: languageLabel(language),
     week: {
       start,
       end,
@@ -806,11 +883,16 @@ async function bindLessonTopic({
   }
 
   const [classDoc, subject] = await Promise.all([
-    prisma.class.findUnique({ where: { id: classId }, select: { id: true, name: true } }),
+    prisma.class.findUnique({
+      where: { id: classId },
+      select: { id: true, name: true, language: true },
+    }),
     prisma.subject.findUnique({ where: { id: subjectId }, select: { id: true, name: true } }),
   ]);
   if (!classDoc) throw new NotFoundError("Sinf topilmadi");
   if (!subject) throw new NotFoundError("Fan topilmadi");
+
+  const language = normalizeLanguage(classDoc.language);
 
   // ⚠️ DARS JADVALDA HAQIQATAN BORMI. Eskirgan ekran yoki qo'lda yasalgan
   // so'rov mavjud bo'lmagan katakka ankor yozib qo'ysa, u hech qachon
@@ -828,12 +910,18 @@ async function bindLessonTopic({
     throw new BadRequestError(`Bu kuni dars o'tilmaydi (${offReason(day)})`);
   }
 
+  // ⚠️ MAVZU SINFNING TILIDAGI RO'YXATDAN. Tilsiz izlansa, rus guruhiga
+  // o'zbek ro'yxatidagi mavzu biriktirilib, ekranda boshqa kitobning
+  // mavzusi turardi.
   const topic = await prisma.topic.findUnique({
-    where: { subjectId_order: { subjectId, order: topicNumber } },
+    where: { subjectId_language_order: { subjectId, language, order: topicNumber } },
     select: { id: true, name: true, order: true },
   });
   if (!topic) {
-    throw new NotFoundError(`${topicNumber}-mavzu "${subject.name}" fanida topilmadi`);
+    throw new NotFoundError(
+      `${topicNumber}-mavzu "${subject.name}" fanining ` +
+        `${languageLabel(language)} tilidagi rejasida topilmadi`,
+    );
   }
 
   const activeKey = bindingActiveKey(classId, subjectId, day, order);
@@ -857,6 +945,9 @@ async function bindLessonTopic({
           className: classDoc.name,
           subjectName: subject.name,
           topicName: topic.name,
+          // Til ham MUHRLANADI: sinfning tili keyin o'zgarsa, ankor qaysi
+          // ro'yxatning raqamiga tegishli ekani tarixda qoladi.
+          language,
         },
         activeKey,
         createdBy: actorId,
@@ -873,6 +964,7 @@ async function bindLessonTopic({
     topic,
     class: classDoc,
     subject,
+    language,
   };
 }
 
@@ -1028,24 +1120,44 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
     // Jadvalda bu fandan dars yo'q — lekin MAXRAJ baribir qaytadi:
     // sertifikat ekrani "mavzu ro'yxati bor, dars yo'q" bilan "mavzu
     // ro'yxati ham yo'q" ni ajratishi kerak.
-    const empty = await loadTopics([subjectId]);
-    return { subject, classes: [], totalTopics: empty.get(subjectId)?.last ?? 0 };
+    //
+    // ⚠️ SINF YO'Q, ya'ni TIL HAM YO'Q: maxraj HAMMA tilning eng uzun
+    // ro'yxatidan olinadi (tilsiz savolga tilsiz javob). Nol qaytarilsa,
+    // faqat rus rejasi yuklangan fan "mavzu yuklanmagan" bo'lib ko'rinardi.
+    const byLanguage = await loadTopicsByLanguage(subjectId);
+    const totalTopics = [...byLanguage.values()].reduce(
+      (max, entry) => Math.max(max, entry.last),
+      0,
+    );
+    return {
+      subject,
+      classes: [],
+      totalTopics,
+      topicsByLanguage: Object.fromEntries(
+        [...byLanguage].map(([key, entry]) => [key, entry.last]),
+      ),
+    };
   }
 
-  let [classes, topicsBySubject, bindings] = await Promise.all([
+  let [classes, topicsByLanguage, bindings] = await Promise.all([
     prisma.class.findMany({
       where: { id: { in: classIds } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, language: true },
     }),
-    loadTopics([subjectId]),
+    // ⚠️ HAMMA TIL BIR MARTA: ekranda o'nlab sinf bo'ladi va ular
+    // boshqa-boshqa tilda. Har sinfga alohida so'rov yuborilsa, sahifa
+    // yuzlab so'rov qilardi.
+    loadTopicsByLanguage(subjectId),
     prisma.lessonTopicBinding.findMany({
       where: { classId: { in: classIds }, subjectId, revokedAt: null },
       orderBy: [{ date: "asc" }, { lessonOrder: "asc" }],
     }),
   ]);
 
-  const topics = topicsBySubject.get(subjectId) ?? { byOrder: new Map(), last: 0 };
+  const EMPTY_TOPICS = { byOrder: new Map(), last: 0 };
   const classMap = new Map(classes.map((c) => [c.id, c]));
+  const languageOf = (classId) => normalizeLanguage(classMap.get(classId)?.language);
+  const topicsOf = (classId) => topicsByLanguage.get(languageOf(classId)) ?? EMPTY_TOPICS;
 
   const today = todayIsoTashkent();
   const oldestAnchor = bindings.length > 0 ? dayKey(bindings[0].date) : today;
@@ -1072,10 +1184,19 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
   // qilardi. Yozuv yiqilsa ekran baribir ochiladi (sababi ko'rinadi).
   const anchored = new Set(bindings.map((row) => row.classId));
   const missing = ensure
-    ? classIds.filter((classId) => !anchored.has(classId) && slotByClass.get(classId))
+    ? classIds.filter(
+        (classId) =>
+          !anchored.has(classId) &&
+          slotByClass.get(classId) &&
+          // ⚠️ SINFNING O'Z TILIDA reja bo'lmasa ankor YOZILMAYDI: bo'sh
+          // ro'yxatga ankor qo'yish "1-mavzu" degan yo'q narsani
+          // ko'rsatardi va sabab ("rus tilida reja yuklanmagan")
+          // yo'qolardi.
+          topicsOf(classId).last >= 1,
+      )
     : [];
 
-  if (missing.length > 0 && topics.last >= 1) {
+  if (missing.length > 0) {
     try {
       const progressRows = await prisma.classSubjectProgress.findMany({
         where: { classId: { in: missing }, subjectId },
@@ -1085,7 +1206,8 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
 
       const newRows = missing.map((classId) => {
         const slot = slotByClass.get(classId);
-        const topicOrder = Math.min(Math.max(progressMap.get(classId) ?? 1, 1), topics.last);
+        const classTopics = topicsOf(classId);
+        const topicOrder = Math.min(Math.max(progressMap.get(classId) ?? 1, 1), classTopics.last);
         return {
           id: generateId(),
           classId,
@@ -1098,7 +1220,8 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
           snapshot: {
             className: classMap.get(classId)?.name ?? null,
             subjectName: subject.name,
-            topicName: topics.byOrder.get(topicOrder)?.name ?? null,
+            topicName: classTopics.byOrder.get(topicOrder)?.name ?? null,
+            language: languageOf(classId),
           },
           activeKey: bindingActiveKey(classId, subjectId, slot.day, slot.lessonOrder),
           createdBy: actorId,
@@ -1127,12 +1250,17 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
     const slotsByDay = slotsByClass.get(classId);
     const slot = slotByClass.get(classId);
     const anchors = bindingsByClass.get(classId) ?? [];
+    const language = languageOf(classId);
+    const topics = topicsOf(classId);
 
     let currentTopicNumber = null;
     let reason = null;
 
     if (topics.last < 1) {
-      reason = TOPIC_MISS_REASONS.noTopics;
+      reason =
+        language === DEFAULT_TEACHING_LANGUAGE
+          ? TOPIC_MISS_REASONS.noTopics
+          : noTopicsForLanguage(languageLabel(language));
     } else if (!slot) {
       reason = "Yaqin kunlarda bu fandan dars yo'q";
     } else if (anchors.length === 0) {
@@ -1167,12 +1295,20 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
       }
     }
 
+    const anchor = anchors[anchors.length - 1] ?? null;
+
     return {
       class: classMap.get(classId) ?? null,
       subjectId,
+      language,
+      languageLabel: languageLabel(language),
       currentTopicNumber,
       currentTopicName:
         currentTopicNumber != null ? topics.byOrder.get(currentTopicNumber)?.name ?? null : null,
+      // ⚠️ MAXRAJ SINFNING TILIDAN: foiz ("120 / 180") boshqa tilning
+      // ro'yxati bo'yicha hisoblansa, rus guruhning progressi yolg'on
+      // chiqardi.
+      totalTopics: topics.last,
       reason,
       nextLesson: slot
         ? {
@@ -1181,13 +1317,39 @@ async function getSubjectClassTopics({ subjectId, actorId, ensure = true }) {
             lessonOrder: slot.lessonOrder,
           }
         : null,
-      anchor: publicBinding(anchors[anchors.length - 1] ?? null),
+      anchor: publicBinding(anchor),
+      /**
+       * ⚠️ ANKOR BOSHQA TILDA YOZILGAN — OCHIQ AYTILADI, jim
+       * tuzatilmaydi. Sinfning tili o'zgarsa, eski ankorning
+       * `topicOrder` i boshqa ro'yxatning raqamiga tushadi: raqam bor,
+       * lekin u boshqa kitobning mavzusi. Avtomatik qayta yozish
+       * odamning qarorini bosib o'tardi (`education.md` §13 — "ankor
+       * shu kundan boshlab shunday degan QAROR").
+       */
+      languageMismatch: Boolean(
+        anchor?.snapshot?.language && normalizeLanguage(anchor.snapshot.language) !== language,
+      ),
     };
   });
 
   rows.sort((a, b) => (a.class?.name || "").localeCompare(b.class?.name || ""));
 
-  return { subject, classes: rows, totalTopics: topics.last };
+  // ⚠️ `totalTopics` — EKRANNING MAXRAJI, ya'ni eng uzun ro'yxat: fan
+  // bo'yicha bitta raqam kerak bo'lgan joyda (sertifikat progressi)
+  // sinflar baribir o'z `totalTopics` ini olib yuradi.
+  const totalTopics = [...topicsByLanguage.values()].reduce(
+    (max, entry) => Math.max(max, entry.last),
+    0,
+  );
+
+  return {
+    subject,
+    classes: rows,
+    totalTopics,
+    topicsByLanguage: Object.fromEntries(
+      [...topicsByLanguage].map(([key, entry]) => [key, entry.last]),
+    ),
+  };
 }
 
 /**
@@ -1240,6 +1402,7 @@ module.exports = {
   loadClassTemplate,
   buildCalendar,
   loadTopics,
+  loadTopicsByLanguage,
   attachTopicDetails,
   findNextLessonSlot,
   ensureAnchors,

@@ -502,7 +502,9 @@ const PERMISSION_SECTIONS = [
     //   `attempts`  — BOSHQA o'quvchilarning natijalari (shaxsiy natija —
     //                 o'quvchining o'zi baribir ko'radi),
     //   `analytics` — sinf/fan kesimidagi manzara,
-    //   `ai`        — AI tahlilini ISHGA TUSHIRISH (pullik chaqiruv).
+    //   `ai`        — AI tahlilini ISHGA TUSHIRISH (pullik chaqiruv),
+    //   `publish`   — testni TASDIQLASH va chiqarish (filial egasining
+    //                 qarori; test tuzish huquqidan ALOHIDA).
     key: SECTIONS.DIAGNOSTICS,
     label: "Diagnostika",
     group: "Ta'lim",
@@ -513,6 +515,13 @@ const PERMISSION_SECTIONS = [
       A.delete,
       { key: "questions", label: "Savollar bazasi" },
       { key: "moderate", label: "Savolni tasdiqlash" },
+      // ⚠️ TESTNI CHIQARISH — `create` DAN ALOHIDA (biznes qarori,
+      // 2026-11-12): "filial egasi ko'rib chiqadi, tasdiqlasa keyin
+      // chiqariladi". Test TUZISH huquqi uni CHIQARISH huquqiga
+      // aylanmasligi kerak — `payroll.generate` / `payroll.assign`
+      // bilan AYNI mulohaza. Tasdiqsiz test `draft` dan chiqa olmaydi
+      // (`diagnosticTest.service.js` → `updateTestStatus`).
+      { key: "publish", label: "Testni tasdiqlash va chiqarish" },
       { key: "attempts", label: "O'quvchilar natijalari" },
       { key: "analytics", label: "Tahlil" },
       { key: "ai", label: "AI tahlilini ishga tushirish" },

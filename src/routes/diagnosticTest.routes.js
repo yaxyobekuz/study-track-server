@@ -18,6 +18,12 @@ const {
   createTest,
   previewTest,
   buildTest,
+  previewStudentTest,
+  buildStudentTest,
+  getTestReview,
+  regenerateTestQuestions,
+  approveTest,
+  rejectTest,
   approveTestQuestions,
   updateTest,
   updateTestStatus,
@@ -58,6 +64,21 @@ router.get(
   getAvailability,
 );
 
+/**
+ * TASDIQLASH EKRANI — har o'quvchining qamrovi va savollari (TO'G'RI
+ * JAVOBI bilan).
+ *
+ * ⚠️ Ruxsat — `diagnostics.view`, `publish` EMAS: ko'rib chiqishdan oldin
+ * KO'RISH kerak va tasdiqlaydigan odam ham, test tuzgan odam ham shu
+ * ekranni ochadi. Tasdiqning O'ZI esa `publish` ortida (pastda).
+ */
+router.get(
+  "/:id/review",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_VIEW),
+  getTestReview,
+);
+
 router.post("/", authorizePermission(PERMISSIONS.DIAGNOSTICS_CREATE), createTest);
 
 /**
@@ -90,6 +111,71 @@ router.post(
   authorizePermission(PERMISSIONS.DIAGNOSTICS_CREATE),
   diagnosticAnalysisLimiter,
   buildTest,
+);
+
+/**
+ * HAR O'QUVCHIGA MOSLANGAN TEST — OLDINDAN KO'RISH.
+ *
+ * ⚠️ `POST`, chunki taqsimot va o'quvchilar ro'yxati tanada keladi
+ * (`/preview` bilan AYNI mulohaza). Hech narsa yozmaydi, ruxsat esa
+ * yozuvnikidek (`create`): "nima bo'ladi" ni test yaratadigan odam ko'radi.
+ */
+router.post(
+  "/preview-students",
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_CREATE),
+  previewStudentTest,
+);
+
+/**
+ * HAR O'QUVCHIGA MOSLANGAN TESTNI YIG'ISH.
+ *
+ * ⚠️ OG'IR CHEKLOV ORTIDA (`/build` bilan AYNI): bitta chaqiruv qamrov
+ * guruhlari soniga ko'paytirilgan model so'rovini yuzaga keltiradi va
+ * natijasi bankka yoziladi.
+ */
+router.post(
+  "/build-students",
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_CREATE),
+  diagnosticAnalysisLimiter,
+  buildStudentTest,
+);
+
+/**
+ * SAVOLLARNI ALMASHTIRISH — bitta, bir nechta yoki hammasi.
+ *
+ * ⚠️ Ruxsat — `diagnostics.create` (AI qatoriga tegsa servis qo'shimcha
+ * `diagnostics.ai` ni talab qiladi, `/build` bilan AYNI qoida): bu test
+ * TARKIBINI o'zgartirish, ya'ni tuzish amalining davomi. Tasdiqlangan
+ * testda yo'l baribir yopiq (servis `ConflictError` qaytaradi) —
+ * "tasdiqlangan narsa" bilan "chiqadigan narsa" ajralib ketmasin.
+ */
+router.post(
+  "/:id/questions/regenerate",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_CREATE),
+  diagnosticAnalysisLimiter,
+  regenerateTestQuestions,
+);
+
+/**
+ * TASDIQLASH VA RAD ETISH — `diagnostics.publish`.
+ *
+ * ⚠️ `create` DAN ALOHIDA RUXSAT (biznes qarori, 2026-11-12): test
+ * TUZISH huquqi uni CHIQARISH huquqiga aylanmasligi kerak
+ * (`payroll.generate` / `assign` bilan AYNI mulohaza). Tasdiqsiz test
+ * `draft` dan chiqa olmaydi — darvoza `updateTestStatus` da.
+ */
+router.post(
+  "/:id/approve",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_PUBLISH),
+  approveTest,
+);
+router.post(
+  "/:id/reject",
+  validateObjectId("id"),
+  authorizePermission(PERMISSIONS.DIAGNOSTICS_PUBLISH),
+  rejectTest,
 );
 
 /**

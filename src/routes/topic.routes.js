@@ -7,6 +7,7 @@ const {
   uploadTopics,
   getTopicsBySubject,
   getSubjectTopicStatus,
+  getTeachingLanguages,
   exportTopics,
   deleteTopicsBySubject,
 } = require("../controllers/topic.controller");
@@ -45,6 +46,10 @@ router.get("/export", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), exp
 // ⚠️ Ruxsat — `topics.view` (eksport bilan AYNI mulohaza): javob hech
 // narsa yozmaydi va ekranda ko'rinib turgan ma'lumotning o'zi.
 router.get("/subjects", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), getSubjectTopicStatus);
+
+// O'QUV TILLARI — tanlagich uchun katalog (`/subject/:id` dan OLDIN:
+// "languages" id emas, aks holda `validateObjectId` uni rad etardi).
+router.get("/languages", protect, authorizePermission(PERMISSIONS.TOPICS_VIEW), getTeachingLanguages);
 
 router.get("/subject/:id", protect, validateObjectId("id"), getTopicsBySubject);
 

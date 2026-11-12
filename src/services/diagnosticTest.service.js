@@ -412,10 +412,22 @@ async function getTestById(id) {
  * olardi — ya'ni muammo eng noqulay joyda, o'quvchining oldida chiqardi.
  */
 async function checkAvailability(test) {
-  const pinnedRows = await prisma.diagnosticTestQuestion.findMany({
-    where: { testId: test.id },
-    select: { question: { select: { id: true, code: true, status: true } } },
-  });
+  /**
+   * ⚠️ HAR O'QUVCHIGA O'Z TO'PLAMI BO'LGAN TESTDA SAVOLLAR BOSHQA
+   * JADVALDA (`DiagnosticTestStudentQuestion`). Faqat
+   * `DiagnosticTestQuestion` o'qilsa, ro'yxat BO'SH chiqib, tekshiruv
+   * "bankdan tanlanadi" yo'liga tushardi va tasdiqlanmagan AI savollari
+   * nashrni TO'SMASDI — ya'ni bank doktrinasi jimgina buzilardi.
+   */
+  const pinnedRows = test.perStudent
+    ? await prisma.diagnosticTestStudentQuestion.findMany({
+        where: { testId: test.id },
+        select: { question: { select: { id: true, code: true, status: true } } },
+      })
+    : await prisma.diagnosticTestQuestion.findMany({
+        where: { testId: test.id },
+        select: { question: { select: { id: true, code: true, status: true } } },
+      });
 
   if (pinnedRows.length > 0) {
     /**
@@ -432,19 +444,26 @@ async function checkAvailability(test) {
      * (`_resolveQuestionIds`) allaqachon faqat `approved` savolni
      * qabul qiladi, ya'ni ularda `pendingApproval` har doim 0.
      */
-    const pending = pinnedRows
-      .map((row) => row.question)
-      .filter((question) => question && question.status !== "approved");
+    // ⚠️ NOYOB SAVOLLAR SANALADI: per-student testda bitta savol bir
+    // nechta o'quvchining to'plamida bo'lishi mumkin (bir xil qamrovli
+    // bolalar AYNI savollarni oladi) va u ikki marta "tasdiqlanmagan"
+    // bo'lib sanalardi.
+    const unique = new Map();
+    for (const row of pinnedRows) {
+      if (row.question) unique.set(row.question.id, row.question);
+    }
+    const questions = [...unique.values()];
+    const pending = questions.filter((question) => question.status !== "approved");
 
     return {
       required: test.questionCount,
-      available: pinnedRows.length,
-      approved: pinnedRows.length - pending.length,
+      available: questions.length,
+      approved: questions.length - pending.length,
       pendingApproval: pending.length,
       pendingQuestionIds: pending.map((q) => q.id),
       pendingQuestionCodes: pending.map((q) => q.code),
       pinned: true,
-      enough: pinnedRows.length >= 1 && pending.length === 0,
+      enough: questions.length >= 1 && pending.length === 0,
     };
   }
 
@@ -734,7 +753,7 @@ async function planTest({ classId, blueprint, actorId }) {
   const rows = parseBlueprint(blueprint);
   if (!rows) throw new BadRequestError("Kamida bitta fan qatori kiritilsin");
 
-  const { scopes, errors, class: klass } = await topicScopeService.resolveScopes({
+  const { scopes, errors, class: klass, language } = await topicScopeService.resolveScopes({
     classId,
     blueprint: rows,
     actorId,
@@ -807,6 +826,9 @@ async function planTest({ classId, blueprint, actorId }) {
 
   return {
     class: klass,
+    // Savollar sinfning o'quv tilida bo'ladi (mavzular ro'yxati ham o'sha
+    // tildan) — oldindan ko'rish ekrani buni ochiq yozadi.
+    language,
     rows: plan,
     totals,
     errors,
@@ -843,7 +865,7 @@ async function buildTest(data, actorId, { canUseAi = false } = {}) {
   }
   const classId = classIds[0];
 
-  const { scopes, errors } = await topicScopeService.resolveScopes({
+  const { scopes, errors, language } = await topicScopeService.resolveScopes({
     classId,
     blueprint: rows,
     actorId,
@@ -894,6 +916,8 @@ async function buildTest(data, actorId, { canUseAi = false } = {}) {
       grade: row.grade,
       topics: scope.topics,
       counts: levelCounts(row),
+      // ⚠️ SINFNING TILI: prompt ham, savol qatori ham shu tilda bo'ladi
+      language,
       seenText,
       budget,
     });
@@ -924,7 +948,9 @@ async function buildTest(data, actorId, { canUseAi = false } = {}) {
   if (bankIndexes.length) {
     const bankRows = bankIndexes.map((index) => rows[index]);
     const bankScopes = bankIndexes.map((index) => scopes[index]);
-    const result = await selectByBlueprint(bankRows, { scopes: bankScopes });
+    // ⚠️ BANKDAN HAM TIL BO'YICHA: rus guruhiga o'zbekcha savol tushsa,
+    // test bilimni emas, tilni o'lchab qo'yardi.
+    const result = await selectByBlueprint(bankRows, { scopes: bankScopes, language });
     warnings.push(...result.warnings);
     bankIndexes.forEach((index, position) => {
       idsByRow.set(index, result.byRow.get(position) || []);
@@ -973,6 +999,7 @@ async function buildTest(data, actorId, { canUseAi = false } = {}) {
   const test = await prisma.diagnosticTest.create({
     data: {
       ...parsed,
+      language,
       blueprint: storedBlueprint,
       // Savollar soni TANLANGANIGA tenglashadi: rejada 40 ta so'ralib
       // 34 tasi topilsa, o'quvchiga 40 ta savol va'da qilib bo'lmaydi.
@@ -1012,14 +1039,22 @@ async function buildTest(data, actorId, { canUseAi = false } = {}) {
 async function approveTestQuestions(testId) {
   const test = await prisma.diagnosticTest.findUnique({
     where: { id: testId },
-    select: { id: true },
+    select: { id: true, perStudent: true },
   });
   if (!test) throw new NotFoundError("Test topilmadi");
 
-  const rows = await prisma.diagnosticTestQuestion.findMany({
-    where: { testId, question: { status: { not: "approved" } } },
-    select: { questionId: true },
-  });
+  // Per-student testda savollar boshqa jadvalda (`checkAvailability` bilan
+  // AYNI mulohaza) — ro'yxat bo'sh chiqsa, tasdiqlash hech narsa qilmasdi.
+  const rows = test.perStudent
+    ? await prisma.diagnosticTestStudentQuestion.findMany({
+        where: { testId, question: { status: { not: "approved" } } },
+        distinct: ["questionId"],
+        select: { questionId: true },
+      })
+    : await prisma.diagnosticTestQuestion.findMany({
+        where: { testId, question: { status: { not: "approved" } } },
+        select: { questionId: true },
+      });
 
   if (!rows.length) {
     return { approved: 0, skipped: [], message: "Tasdiqlanmagan savol yo'q" };
@@ -1168,6 +1203,28 @@ async function updateTestStatus(id, status) {
   }
 
   if (status === "active" || status === "scheduled") {
+    /**
+     * ⚠️ TASDIQSIZ TEST CHIQMAYDI (biznes qarori, 2026-11-12).
+     *
+     * "Filial egasi ko'rib chiqadi, tasdiqlasa keyin chiqariladi" —
+     * darvoza SHU YERDA, chunki nashrga olib boradigan yo'l bitta
+     * (`updateTestStatus`). Tasdiqlash tugmasi alohida ruxsat ortida
+     * (`diagnostics.publish`, `diagnosticStudentTest.service.js` →
+     * `approveTest`): test TUZISH huquqi uni CHIQARISH huquqiga
+     * aylanmasligi kerak — `payroll.generate` / `assign` bilan AYNI
+     * mulohaza.
+     *
+     * ⚠️ MAVJUD TESTLAR TA'SIRLANMAYDI: migratsiya ularga `approvedAt`
+     * yozib qo'ygan (ular allaqachon chiqarilgan edi).
+     */
+    if (!test.approvedAt) {
+      throw new BadRequestError(
+        "Test hali tasdiqlanmagan — avval savollarni ko'rib chiqib tasdiqlang " +
+          "(Diagnostika → Test → \"Ko'rib chiqish\").",
+        { needsApproval: true },
+      );
+    }
+
     const availability = await checkAvailability(test);
     // ⚠️ TASDIQLANMAGAN SAVOL — ALOHIDA XABAR. Umumiy "bankda yetarli
     // savol yo'q" matni bu holatda yolg'on bo'lardi: savollar BOR,
@@ -1328,16 +1385,39 @@ async function listAvailableForStudent(studentId) {
 
   const withSubjects = await _attachSubjects(tests);
 
+  // ⚠️ MOSLANGAN TESTDA O'QUVCHINING TO'PLAMI BORMI. Qator yo'q yoki
+  // `failed` bo'lsa test RO'YXATDA QOLADI, lekin boshlanmaydi va SABABI
+  // yoziladi: ro'yxatdan jim yo'qotilsa, o'quvchi "menga test berilmagan"
+  // degan savol bilan qolardi (`devices.md` §0.1 bilan AYNI mulohaza —
+  // bola ekranga qaraydi, buxgalteriyaga emas).
+  const perStudentIds = withSubjects.filter((test) => test.perStudent).map((test) => test.id);
+  const setByTest = new Map();
+  if (perStudentIds.length) {
+    const rows = await prisma.diagnosticTestStudent.findMany({
+      where: { testId: { in: perStudentIds }, studentId },
+      select: { testId: true, status: true, reason: true, questionCount: true },
+    });
+    for (const row of rows) setByTest.set(row.testId, row);
+  }
+
   return withSubjects.map((test) => {
     const used = usedByTest.get(test.id) || 0;
     const opened = !test.availableFrom || test.availableFrom <= now;
+    const set = test.perStudent ? (setByTest.get(test.id) ?? null) : null;
+    const hasSet = !test.perStudent || set?.status === "ready";
+
     return {
       ..._shape(test),
       attemptsUsed: used,
       attemptsLeft: Math.max(0, test.attemptsAllowed - used),
       canStart:
-        test.status === "active" && opened && used < test.attemptsAllowed,
+        test.status === "active" && opened && used < test.attemptsAllowed && hasSet,
       opensAt: opened ? null : test.availableFrom,
+      // Moslangan testda savollar soni O'QUVCHINING to'plamidan
+      questionCount: set?.status === "ready" ? set.questionCount : test.questionCount,
+      blockedReason: hasSet
+        ? null
+        : set?.reason || "Bu test siz uchun tuzilmagan",
     };
   });
 }
@@ -1374,6 +1454,30 @@ async function assertCanStart(test, studentId) {
     }
   }
 
+  /**
+   * ⚠️ HAR O'QUVCHIGA MOSLANGAN TESTDA TO'PLAM BORMI (2026-11-12).
+   *
+   * Sinf biriktirilgan, lekin o'quvchining mavzu qamrovi aniqlanmagan
+   * bo'lishi mumkin (reja yo'q, hali oraliqning boshiga yetmagan) — unda
+   * qator `failed` holatida yoziladi. Tekshiruv bo'lmasa, o'quvchi
+   * "Boshlash" ni bosib savol tanlash bosqichida tushunarsiz xato olardi
+   * va sababi (kimga, nega test tushmagani) ko'rinmasdi.
+   */
+  if (test.perStudent) {
+    const row = await prisma.diagnosticTestStudent.findUnique({
+      where: { testId_studentId: { testId: test.id, studentId } },
+      select: { status: true, reason: true },
+    });
+    if (!row) {
+      throw new ForbiddenError("Bu test siz uchun tuzilmagan");
+    }
+    if (row.status !== "ready") {
+      throw new BadRequestError(
+        row.reason || "Bu test siz uchun tuzilmagan — o'qituvchingizga murojaat qiling",
+      );
+    }
+  }
+
   const used = await prisma.diagnosticAttempt.count({
     where: { testId: test.id, studentId },
   });
@@ -1405,6 +1509,14 @@ module.exports = {
   MODE_LABELS,
   STATUSES,
   STATUS_TRANSITIONS,
+  TEST_INCLUDE,
+  // ⚠️ Maydonlar tekshiruvi BITTA joyda: har o'quvchiga moslangan test ham
+  // (`diagnosticStudentTest.service.js`) AYNI tekshiruvdan o'tadi — ikkinchi
+  // nusxa bo'lsa, biriga qo'shilgan shart (nom uzunligi, sana, urinishlar)
+  // ikkinchisida tushib qolardi.
+  parseTestPayload: (data, options) => _parsePayload(data, options),
+  attachTestSubjects: (rows) => _attachSubjects(rows),
+  shapeTest: (test) => _shape(test),
   planTest,
   buildTest,
   approveTestQuestions,

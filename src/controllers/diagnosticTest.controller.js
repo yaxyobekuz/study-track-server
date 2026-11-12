@@ -1,4 +1,5 @@
 const testService = require("../services/diagnosticTest.service");
+const studentTestService = require("../services/diagnosticStudentTest.service");
 const asyncHandler = require("../middleware/async.middleware");
 const {
   getPaginationParams,
@@ -71,6 +72,104 @@ const buildTest = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * HAR O'QUVCHIGA MOSLANGAN TEST — OLDINDAN KO'RISH.
+ *
+ * Guruh tanlanadi, qamrov esa har bolaga alohida hal qilinadi: kim qaysi
+ * oraliqda test oladi, kimga tushmaydi va nega.
+ */
+const previewStudentTest = asyncHandler(async (req, res) => {
+  const data = await studentTestService.planStudentTest({
+    classId: req.body.classId || (req.body.classIds || [])[0],
+    blueprint: req.body.blueprint,
+    studentIds: req.body.studentIds || null,
+    actorId: req.user.id,
+  });
+  res.json({ success: true, data });
+});
+
+/**
+ * HAR O'QUVCHIGA MOSLANGAN TESTNI YIG'ISH.
+ *
+ * ⚠️ AI ruxsati SERVISDA tekshiriladi (`buildTest` bilan AYNI mulohaza):
+ * faqat bankdan oladigan qator model chaqiruvini yuzaga keltirmaydi.
+ */
+const buildStudentTest = asyncHandler(async (req, res) => {
+  const canUseAi =
+    hasRole(req.user, ROLES.OWNER) ||
+    hasPermission(req.user.permissions || [], PERMISSIONS.DIAGNOSTICS_AI);
+
+  const data = await studentTestService.buildStudentTest(req.body, req.user.id, { canUseAi });
+
+  res.status(201).json({
+    success: true,
+    message:
+      `Test qoralama sifatida yaratildi: ${data.totals.ready} o'quvchiga ` +
+      `${data.totals.uniqueQuestions} noyob savol. Chiqarishdan oldin tasdiqlang.`,
+    data,
+  });
+});
+
+/**
+ * TASDIQLASH EKRANI — "filial egasi nimani ko'radi".
+ *
+ * ⚠️ To'g'ri javob ham qaytadi: tasdiqlash "savol to'g'rimi" degan
+ * qarorni talab qiladi va javob kalitini ko'rmasdan bu qaror qabul
+ * qilinmaydi. Yo'l `diagnostics.view` ortida (ADMIN tomoni).
+ */
+const getTestReview = asyncHandler(async (req, res) => {
+  const data = await studentTestService.getTestReview(req.params.id);
+  res.json({ success: true, data });
+});
+
+/**
+ * SAVOLLARNI ALMASHTIRISH — bitta, bir nechta yoki hammasi.
+ *
+ * ⚠️ UCHALA REJIM BITTA YO'LDAN: `items` bitta element bo'lsa "bitta
+ * savol", bir nechta bo'lsa "tanlanganlar", `all: true` bo'lsa hammasi.
+ */
+const regenerateTestQuestions = asyncHandler(async (req, res) => {
+  const canUseAi =
+    hasRole(req.user, ROLES.OWNER) ||
+    hasPermission(req.user.permissions || [], PERMISSIONS.DIAGNOSTICS_AI);
+
+  const data = await studentTestService.regenerateQuestions({
+    testId: req.params.id,
+    items: req.body.items || [],
+    all: Boolean(req.body.all),
+    actorId: req.user.id,
+    canUseAi,
+  });
+
+  res.json({
+    success: true,
+    message:
+      `${data.totals.replaced} ta savol almashtirildi` +
+      (data.totals.skipped ? `, ${data.totals.skipped} tasi o'z joyida qoldi` : ""),
+    data,
+  });
+});
+
+/** TESTNI TASDIQLASH (`diagnostics.publish`). */
+const approveTest = asyncHandler(async (req, res) => {
+  const data = await studentTestService.approveTest({
+    testId: req.params.id,
+    actorId: req.user.id,
+    note: req.body.note,
+  });
+  res.json({ success: true, message: data.message, data });
+});
+
+/** TASDIQNI BEKOR QILISH — sabab majburiy (`diagnostics.publish`). */
+const rejectTest = asyncHandler(async (req, res) => {
+  const data = await studentTestService.rejectTest({
+    testId: req.params.id,
+    actorId: req.user.id,
+    note: req.body.note,
+  });
+  res.json({ success: true, message: data.message, data });
+});
+
 /** AI yozgan savollarni ommaviy tasdiqlash (`diagnostics.moderate`). */
 const approveTestQuestions = asyncHandler(async (req, res) => {
   const data = await testService.approveTestQuestions(req.params.id);
@@ -105,6 +204,12 @@ module.exports = {
   createTest,
   previewTest,
   buildTest,
+  previewStudentTest,
+  buildStudentTest,
+  getTestReview,
+  regenerateTestQuestions,
+  approveTest,
+  rejectTest,
   approveTestQuestions,
   updateTest,
   updateTestStatus,

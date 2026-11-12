@@ -30,6 +30,11 @@
  * ⚠️ `expert` DARAJA YOZILMAYDI. Odam uch so'z bilan o'ylaydi (oson /
  * o'rta / qiyin), bankdagi to'rtinchi pog'ona esa adaptiv tanlov uchun
  * va u qo'lda tanlangan, tekshirilgan savollarga qoldiriladi.
+ *
+ * ⚠️ SAVOL SINFNING TILIDA YOZILADI (2026-11-12). Til promptga ham ketadi
+ * va savol qatoriga ham muhrlanadi (`DiagnosticQuestion.language`). Ilgari
+ * promptda "O'ZBEK tilida" qotib turardi: rus guruhiga o'zbekcha savol
+ * tushsa, test bilimni emas, TILNI o'lchab qo'yardi.
  */
 
 const OpenAI = require("openai");
@@ -42,6 +47,10 @@ const {
   LEVEL_KEY_LABELS,
   spreadTopics,
 } = require("../helpers/diagnosticBlueprint.helpers");
+const {
+  DEFAULT_TEACHING_LANGUAGE,
+  languagePromptName,
+} = require("../helpers/teachingLanguage.helpers");
 const { getDiagnosticSettings } = require("./settings.service");
 
 /** Bitta so'rovda eng ko'p savol — javob token chegarasida kesilmasin. */
@@ -103,13 +112,22 @@ async function assertEnabled() {
 // PROMPT
 // ─────────────────────────────────────────────
 
-function _systemPrompt({ subjectName, grade, levelKey, count }) {
+/** Promptdagi til shartining matni — har til uchun o'z yozuvi bilan. */
+const LANGUAGE_RULES = Object.freeze({
+  uz: "Barcha savol va variant matnlari O'ZBEK tilida (lotin yozuvida) bo'lishi shart.",
+  ru: "Все тексты вопросов и вариантов должны быть на РУССКОМ языке (кириллица).",
+  en: "All question and option texts MUST be written in ENGLISH.",
+});
+
+function _systemPrompt({ subjectName, grade, levelKey, count, language = DEFAULT_TEACHING_LANGUAGE }) {
   return [
     "Sen tajribali o'qituvchi va test tuzuvchisan.",
     `Fan: ${subjectName}.`,
     grade ? `Sinf darajasi: ${grade}-sinf.` : "",
     `${count} ta "${LEVEL_KEY_LABELS[levelKey]}" darajadagi test savoli tuz.`,
-    "Barcha savol va variant matnlari O'ZBEK tilida (lotin yozuvida) bo'lishi shart.",
+    // ⚠️ TIL SHARTI SINFNING TILIDAN: mavzular ro'yxatining o'zi ham o'sha
+    // tilda keladi, ya'ni prompt va mavzu matni bir-biriga mos bo'ladi.
+    LANGUAGE_RULES[language] || LANGUAGE_RULES[DEFAULT_TEACHING_LANGUAGE],
     "QAT'IY SHARTLAR:",
     `1. Savol FAQAT berilgan mavzulardan bo'ladi. Boshqa mavzuga chiqma.`,
     `2. Har savolda "topicOrder" maydoni bo'lsin — savol tegishli mavzuning raqami (faqat berilgan raqamlardan).`,
@@ -362,6 +380,7 @@ async function generateForRow({
           grade,
           levelKey: batch.levelKey,
           count: remaining,
+          language,
         }),
         _userPrompt(entries),
         { count: remaining },
@@ -433,6 +452,7 @@ module.exports = {
   TOPICS_PER_REQUEST,
   MAX_REQUESTS_PER_BUILD,
   OPTION_COUNT,
+  LANGUAGE_RULES,
   isEnabled,
   assertEnabled,
   planBatches,

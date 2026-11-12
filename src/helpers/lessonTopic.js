@@ -26,6 +26,18 @@
  * ⚠️ `topicOrder` — `Topic.order`, `Topic.id` EMAS. Mavzular fayldan qayta
  * yuklanganda hammasi o'chirilib qaytadan yoziladi (`topic.service.js`), ya'ni
  * id barqaror emas; tartib raqami esa butun domenning o'lchovi.
+ *
+ * ⚠️ QADAM (`step`) — "BITTA DARSDA NECHTA MAVZU" (biznes qarori,
+ * 2026-11-12). Sinf uchun u har doim 1, o'quvchining shaxsiy rejasi
+ * (`StudentTopicPlan`) uchun esa 1 dan katta bo'lishi mumkin: "unga 3 qilib
+ * qo'ysa, bitta dars bo'lib o'tganda u uchun 3 mavzu o'tilgan hisoblanadi".
+ * Shuning uchun har dars bitta MAVZU emas, bitta BLOK beradi:
+ *
+ *     dars i → [anchor + i×step  …  anchor + i×step + step − 1]
+ *
+ * `step = 1` da blok bitta mavzuga teng, ya'ni sinf yo'li AYNAN avvalgidek
+ * qoladi. Ikkinchi sanoq funksiyasi YOZILMAYDI: ikkita bo'lsa, biriga
+ * qo'shilgan shart (bayram, ta'til, segment) ikkinchisida tushib qolardi.
  */
 
 const { dayKey } = require("./lessonHours");
@@ -85,6 +97,20 @@ const TOPIC_MISS_REASONS = {
 };
 
 /**
+ * TIL BO'YICHA REJA YO'Q — `noTopics` DAN ALOHIDA SABAB.
+ *
+ * "Fanga mavzular yuklanmagan" bilan "fanga RUS tilidagi reja yuklanmagan"
+ * ikki boshqa holat va ikki boshqa harakat talab qiladi: birinchisida
+ * umuman fayl yo'q, ikkinchisida fayl bor-u, boshqa til uchun. Bitta
+ * sabab bilan aytilsa, admin o'zbek rejasi ko'rinib turgan fanda "yuklanmagan"
+ * yozuvini nosozlik deb o'qirdi.
+ *
+ * @param {string} label - tilning yorlig'i ("Rus")
+ */
+const noTopicsForLanguage = (label) =>
+  `Bu fanga ${label} tilida mavzular yuklanmagan`;
+
+/**
  * ANKORDAN KEYINGI DARSLARNING MAVZU RAQAMLARI.
  *
  * Bitta o'tishda hisoblaydi: ankor kunidan maqsad kunlarining ENG
@@ -101,8 +127,10 @@ const TOPIC_MISS_REASONS = {
  * @param {string[]} input.targetDays - mavzusi kerak bo'lgan kunlar ("YYYY-MM-DD")
  * @param {(day: string) => boolean} input.isTeachingDay
  * @param {number|null} [input.lastTopicOrder] - fanning oxirgi mavzu raqami
- * @returns {Map<string, {topicOrder: number|null, reason: string|null}>}
- *   kalit — `lessonKey(day, lessonOrder)`
+ * @param {number} [input.step=1] - bitta darsda nechta mavzu (>= 1)
+ * @returns {Map<string, {topicOrder: number|null, topicOrderTo: number|null, reason: string|null}>}
+ *   kalit — `lessonKey(day, lessonOrder)`. `topicOrder` — blokning boshi,
+ *   `topicOrderTo` — oxiri (`step = 1` da ikkisi teng).
  */
 function topicOrdersForDays({
   anchor,
@@ -110,6 +138,7 @@ function topicOrdersForDays({
   targetDays,
   isTeachingDay,
   lastTopicOrder = null,
+  step = 1,
 }) {
   const result = new Map();
   if (!anchor || !Array.isArray(targetDays) || targetDays.length === 0) return result;
@@ -126,6 +155,7 @@ function topicOrdersForDays({
       for (const order of ordersByDayNumber.get(parseDayKey(day)?.getUTCDay()) ?? []) {
         result.set(lessonKey(day, order), {
           topicOrder: null,
+          topicOrderTo: null,
           reason: TOPIC_MISS_REASONS.beforeAnchor,
         });
       }
@@ -140,6 +170,7 @@ function topicOrdersForDays({
       for (const order of ordersByDayNumber.get(parseDayKey(day)?.getUTCDay()) ?? []) {
         result.set(lessonKey(day, order), {
           topicOrder: null,
+          topicOrderTo: null,
           reason: TOPIC_MISS_REASONS.outOfRange,
         });
       }
@@ -149,6 +180,10 @@ function topicOrdersForDays({
 
   const cursor = parseDayKey(anchor.day);
   const end = parseDayKey(lastTarget);
+  // Qadam butun va kamida 1: 0 yoki manfiy qiymat sanoqni abadiy bir joyda
+  // ushlab turardi (yoki orqaga yurardi) — chegara BU YERDA, chunki qiymat
+  // bazadan ham, so'rovdan ham kelishi mumkin.
+  const stride = Math.max(1, Math.floor(Number(step) || 1));
   let current = anchor.topicOrder;
 
   while (cursor.getTime() <= end.getTime()) {
@@ -163,13 +198,21 @@ function topicOrdersForDays({
 
         if (targetSet.has(day)) {
           const exhausted = lastTopicOrder != null && current > lastTopicOrder;
+          // Blokning oxiri fanning oxirgi mavzusidan oshmaydi: 3 qadamli
+          // reja oxirgi darsda bittagina mavzu qolgan bo'lsa shuni beradi,
+          // yo'q mavzuni "o'tilgan" deb ko'rsatmaydi.
+          const blockTo =
+            lastTopicOrder != null
+              ? Math.min(current + stride - 1, lastTopicOrder)
+              : current + stride - 1;
           result.set(lessonKey(day, order), {
             topicOrder: exhausted ? null : current,
+            topicOrderTo: exhausted ? null : blockTo,
             reason: exhausted ? TOPIC_MISS_REASONS.exhausted : null,
           });
         }
 
-        current += 1;
+        current += stride;
       }
     }
 
@@ -182,6 +225,7 @@ function topicOrdersForDays({
 module.exports = {
   MAX_SPAN_DAYS,
   TOPIC_MISS_REASONS,
+  noTopicsForLanguage,
   bindingActiveKey,
   lessonKey,
   parseDayKey,
