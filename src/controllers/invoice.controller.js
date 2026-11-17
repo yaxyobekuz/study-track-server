@@ -12,15 +12,21 @@ const canAdjust = (req) =>
   req.user.role === ROLES.OWNER ||
   hasPermission(req.user.permissions, PERMISSIONS.FINANCE_ADJUST);
 
-// ── O'quvchining o'z ma'lumoti ───────────────
+// ── O'quvchining o'z ma'lumoti — YOPIQ ───────
 
 /**
- * O'quvchi o'z moliyaviy manzarasini ko'radi. `studentId` FAQAT tokendan —
- * query'dan olinsa, har kim boshqaning qarzini ko'rib qolardi.
+ * ⚠️ MOLIYA BO'LIMI O'QUVCHI VA OTA-ONAGA KO'RSATILMAYDI (biznes qarori,
+ * 2026-11-17). Ota-ona ilovasi ham O'QUVCHI hisobi bilan kiradi
+ * (`parental.md` §1), shuning uchun yopish shu yo'lning O'ZIDA — panelda
+ * kartani yashirish yetmasdi: ilova yoki eski xatcho'p javobni baribir
+ * olardi. Yo'l `/:id` dan OLDIN qoladi, aks holda "my" id deb o'qilib,
+ * tushunarsiz xato qaytardi. Xodimlar (moliya ruxsati bilan) avvalgidek
+ * ko'radi; `invoiceService.getMyFinance` AI yordamchisi uchun qoladi.
  */
-const getMyFinance = asyncHandler(async (req, res) => {
-  const data = await invoiceService.getMyFinance(req.user.id);
-  res.json({ success: true, data });
+const getMyFinance = asyncHandler(async () => {
+  throw new ForbiddenError(
+    "Moliya bo'limi o'quvchi va ota-onalar uchun yopiq",
+  );
 });
 
 // ── Admin ────────────────────────────────────

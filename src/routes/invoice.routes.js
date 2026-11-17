@@ -5,12 +5,10 @@ const router = express.Router();
 // Middleware
 const {
   protect,
-  authorize,
   authorizePermission,
 } = require("../middleware/auth.middleware");
 const { validateObjectId } = require("../middleware/validate.middleware");
 const { PERMISSIONS } = require("../utils/permissions");
-const { ROLES } = require("../utils/constants");
 
 // Controller
 const {
@@ -38,9 +36,10 @@ const {
 // ruxsati yo'q va u o'z ma'lumotiga ham kira olmay qolardi. Har route o'z
 // guard'ini oladi.
 
-// O'quvchining o'z ma'lumoti — ruxsatsiz, faqat rol bo'yicha.
-// `/:id` dan OLDIN turishi shart, aks holda "my" id sifatida o'qiladi.
-router.get("/my", protect, authorize(ROLES.STUDENT), getMyFinance);
+// O'quvchining o'z ma'lumoti — YOPIQ (2026-11-17): moliya bo'limi o'quvchi va
+// ota-onaga ko'rsatilmaydi, har doim 403. `/:id` dan OLDIN turishi shart,
+// aks holda "my" id sifatida o'qiladi.
+router.get("/my", protect, getMyFinance);
 
 // Aniq yo'llar `/:id` dan OLDIN
 router.get("/summary", protect, authorizePermission(PERMISSIONS.FINANCE_VIEW), getSummary);
