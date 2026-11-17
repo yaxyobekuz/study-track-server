@@ -18,6 +18,7 @@ const {
   getClassesBySubject,
   getTeacherWorkload,
   getMyWorkload,
+  getMyClassSchedule,
   getTeacherOptions,
   getScheduleDraft,
   saveScheduleDraft,
@@ -37,6 +38,12 @@ router.get("/my-today", authorize(ROLES.TEACHER), getMyTodaySchedule);
 // O'zimning haftalik yuklamam (xodim panelidagi profil). Ruxsat kaliti yo'q —
 // identifikator tokendan olinadi, o'quvchi controller'da rad etiladi.
 router.get("/my-workload", getMyWorkload);
+
+// O'quvchining O'Z sinfi haftalik jadvali + sheet belgisi (`sheetDiffers`).
+// Ruxsat kaliti yo'q — sinf tokendan (`UserClass`), shuning uchun o'quvchi
+// faqat o'z sinfini ko'radi. Ota-ona ilovasi ham AYNI o'quvchi hisobi bilan
+// kiradi. `/class/:classId` dan OLDIN.
+router.get("/my-class", authorize(ROLES.STUDENT), getMyClassSchedule);
 
 // All today schedules (Owner only)
 router.get("/all-today", authorizePermission(PERMISSIONS.SCHEDULES_VIEW), getAllTodaySchedules);

@@ -338,3 +338,157 @@ test("hisob yiqilsa o'qituvchi ilovasi yiqilmaydi", async () => {
     review.reviewRevision = original;
   }
 });
+
+// ─────────────────────────────────────────────
+// O'QUVCHI JADVALI — sinf kesimi va `sheetDiffers` belgisi
+// ─────────────────────────────────────────────
+
+const label = (day) => day.charAt(0).toUpperCase() + day.slice(1);
+const lesson = (id, order, subjectName) => ({
+  id,
+  order,
+  subject: { id: S1, name: subjectName },
+  teacher: { id: T1, firstName: "Ali", lastName: "Aliyev" },
+  startTime: null,
+  endTime: null,
+});
+
+test("sinf kesimi: faqat o'sha sinf, hafta kuni tartibida", () => {
+  const changes = helpers.classChangesFromDiff(DIFF, C1);
+  assert.deepEqual(
+    changes.map((c) => `${c.day}:${c.order}:${c.type}:${c.field}`),
+    ["dushanba:1:changed:teacher", "seshanba:3:changed:subject"],
+  );
+  // Katak o'qituvchi kesimidagi bilan AYNI shaklda
+  assert.equal(changes[1].before.subject, "Fizika");
+  assert.equal(changes[1].after.subject, "Kimyo");
+
+  assert.deepEqual(helpers.classChangesFromDiff(DIFF, "z".repeat(24)), []);
+  assert.deepEqual(helpers.classChangesFromDiff(null, C1), []);
+});
+
+test("hafta: hamma kun qaytadi, belgi dars va kun darajasida", () => {
+  const schedules = [
+    { id: "s1", class: C1, day: "dushanba", subjects: [lesson("l1", 1, "Fizika")], updatedAt: null },
+    {
+      id: "s2",
+      class: C1,
+      day: "seshanba",
+      subjects: [lesson("l2", 2, "Tarix"), lesson("l3", 3, "Fizika")],
+      updatedAt: null,
+    },
+  ];
+  const week = helpers.markWeekWithSheet(schedules, helpers.classChangesFromDiff(DIFF, C1), label);
+
+  assert.deepEqual(
+    week.map((d) => d.day),
+    ["dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba"],
+  );
+  assert.equal(week[0].dayLabel, "Dushanba");
+
+  // Dushanba 1-dars o'qituvchisi almashadi
+  assert.equal(week[0].sheetDiffers, true);
+  assert.equal(week[0].subjects[0].sheetDiffers, true);
+  assert.equal(week[0].sheetChanges.length, 1);
+
+  // Seshanba: 2-dars o'zgarmaydi, 3-dars fani almashadi — tartib bo'yicha
+  assert.equal(week[1].sheetDiffers, true);
+  assert.deepEqual(
+    week[1].subjects.map((s) => [s.id, s.sheetDiffers]),
+    [["l2", false], ["l3", true]],
+  );
+
+  // Darsi yo'q kun ham bor — bo'sh, belgisiz
+  assert.equal(week[2].id, null);
+  assert.deepEqual(week[2].subjects, []);
+  assert.equal(week[2].sheetDiffers, false);
+  assert.deepEqual(week[2].sheetChanges, []);
+});
+
+test("sheet'da QO'SHILGAN dars faqat kunni belgilaydi", () => {
+  // 8-B: jumada bazada dars yo'q, sheet'da 2-dars qo'shilgan
+  const week = helpers.markWeekWithSheet([], helpers.classChangesFromDiff(DIFF, C2), label);
+  const friday = week.find((d) => d.day === "juma");
+  assert.equal(friday.sheetDiffers, true);
+  assert.deepEqual(friday.subjects, []);
+  assert.equal(friday.sheetChanges[0].type, "added");
+  assert.equal(friday.sheetChanges[0].before, null);
+  assert.equal(friday.sheetChanges[0].after.subject, "Kimyo");
+  assert.equal(week.filter((d) => d.sheetDiffers).length, 1);
+});
+
+test("o'quvchi: platforma rejimida farq yo'q", async () => {
+  setPending();
+  state.settings = { mode: "platform" };
+  const data = await pending.getPendingForClasses([C1, C2]);
+  assert.equal(data.mode, "platform");
+  assert.equal(data.schoolPending, false);
+  assert.equal(data.differs(C1), false);
+  assert.deepEqual(data.changesOf(C1), []);
+  state.settings = { mode: "sheet", spreadsheetId: "sid", sheetTab: "Jadval" };
+});
+
+test("o'quvchi: tasdiqlanmagan tahrir — faqat o'zgargan sinf belgilanadi", async () => {
+  setPending({ id: "p".repeat(24) });
+  state.activeRows = [{ classId: C1, day: "shanba", lessons: [] }];
+  const other = "z".repeat(24);
+  const data = await pending.getPendingForClasses([C1, other]);
+  assert.equal(data.mode, "sheet");
+  assert.equal(data.schoolPending, true);
+  assert.equal(data.diffAvailable, true);
+  assert.equal(data.detectedAtLabel, "11-noyabr, 2026 12:40");
+  assert.equal(data.differs(C1), true);
+  assert.equal(data.changesOf(C1).length, 2);
+  // Maktabda tahrir bor, lekin bu sinf o'zgarmaydi
+  assert.equal(data.differs(other), false);
+  assert.deepEqual(data.changesOf(other), []);
+});
+
+test("o'quvchi: rad etilgan / qo'llangan tahrir farq emas", async () => {
+  for (const status of ["applied", "rejected", "superseded"]) {
+    setPending({ status });
+    const data = await pending.getPendingForClasses([C1]);
+    assert.equal(data.differs(C1), false, status);
+    assert.equal(data.schoolPending, false, status);
+  }
+});
+
+test("o'quvchi: sheet bazadagi bilan bir xil — farq yo'q", async () => {
+  setPending({ id: "q".repeat(24) });
+  state.result = { diff: DIFF, hasChanges: false, errors: [] };
+  state.activeRows = [{ classId: C2, day: "dushanba", lessons: [] }];
+  const data = await pending.getPendingForClasses([C1, C2]);
+  assert.equal(data.differs(C1), false);
+  assert.equal(data.differs(C2), false);
+  assert.equal(data.schoolPending, false);
+});
+
+test("o'quvchi: sheet'da xato — sinf belgilanadi, darslar noma'lum", async () => {
+  setPending({ id: "x".repeat(24) });
+  state.result = { diff: null, hasChanges: null, errors: [{ code: "lesson_unresolved" }] };
+  state.activeRows = [{ classId: C2, day: "seshanba", lessons: [] }];
+  const data = await pending.getPendingForClasses([C1]);
+  assert.equal(data.diffAvailable, false);
+  assert.equal(data.schoolPending, true);
+  assert.equal(data.differs(C1), true);
+  assert.deepEqual(data.changesOf(C1), []);
+  // So'ralmagan sinf belgilanmaydi
+  assert.equal(data.differs(C2), false);
+});
+
+test("o'quvchi: hisob yiqilsa jadval baribir ko'rsatiladi", async () => {
+  setPending({ id: "y".repeat(24) });
+  state.activeRows = [{ classId: C1, day: "juma", lessons: [] }];
+  const review = require("../src/services/scheduleSyncReview.service");
+  const original = review.reviewRevision;
+  review.reviewRevision = async () => {
+    throw new Error("buzilgan tahrir");
+  };
+  try {
+    const data = await pending.getPendingForClasses([C1]);
+    assert.equal(data.mode, "sheet");
+    assert.equal(data.differs(C1), false);
+  } finally {
+    review.reviewRevision = original;
+  }
+});

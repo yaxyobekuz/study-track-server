@@ -5,9 +5,20 @@ const scheduleDraftService = require("../services/scheduleDraft.service");
 const lessonTopicService = require("../services/lessonTopic.service");
 const teacherWorkloadService = require("../services/teacherWorkload.service");
 const teacherLoadExportService = require("../services/teacherLoadExport.service");
+const studentScheduleService = require("../services/studentSchedule.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ForbiddenError } = require("../utils/errors");
+
+/**
+ * O'quvchining O'Z sinfi jadvali + sheet belgisi (`sheetDiffers`).
+ * Sinf TOKENDAN aniqlanadi — `classId` so'rovda yo'q, ya'ni boshqa sinfning
+ * jadvalini shu yo'l bilan so'rab bo'lmaydi.
+ */
+const getMyClassSchedule = asyncHandler(async (req, res) => {
+  const data = await studentScheduleService.getMyClassSchedule(req.user.id);
+  res.json({ success: true, data });
+});
 
 // Get all schedules for class
 const getScheduleByClass = asyncHandler(async (req, res) => {
@@ -310,4 +321,5 @@ module.exports = {
   getClassesBySubject,
   getTeacherWorkload,
   getMyWorkload,
+  getMyClassSchedule,
 };

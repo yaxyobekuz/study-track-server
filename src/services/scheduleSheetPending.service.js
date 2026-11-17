@@ -35,6 +35,7 @@ const { hashState } = require("../helpers/scheduleState.helpers");
 const {
   resolveDayFilter,
   teacherLessonsFromDiff,
+  classChangesFromDiff,
 } = require("../helpers/schedulePending.helpers");
 const { MODES } = require("./scheduleWriteGuard.service");
 const review = require("./scheduleSyncReview.service");
@@ -196,4 +197,80 @@ async function getPendingForTeacher(teacherId, { date } = {}) {
   };
 }
 
-module.exports = { getPendingForTeacher };
+/**
+ * Sinflar kesimida tasdiqlanmagan sheet tahriri — O'QUVCHI JADVALI uchun
+ * (`GET /schedules/my-class`). O'qituvchi yo'li bilan AYNI manba
+ * (`loadPending` → `reviewRevision`, AYNI kesh): ilova, o'qituvchi va admin
+ * ekrani bitta farqni ko'radi.
+ *
+ * ⚠️ FARQ = OXIRGI `pending` TAHRIR. Rad etilgan (`rejected`) tahrir ham
+ * sheet'dan farq qiladi, lekin bu ma'muriyatning qarori: amaldagi jadval
+ * HAQIQIY jadval, shuning uchun u "farq" deb ko'rsatilmaydi.
+ *
+ * @param {Array<string>} classIds
+ * @returns {Promise<{mode: string, schoolPending: boolean, diffAvailable: boolean,
+ *   revisionId: string|null, detectedAt: Date|null, detectedAtLabel: string|null,
+ *   changesOf: (classId: string) => Array<object>,
+ *   differs: (classId: string) => boolean}>}
+ */
+async function getPendingForClasses(classIds = []) {
+  const base = {
+    mode: MODES.PLATFORM,
+    schoolPending: false,
+    diffAvailable: true,
+    revisionId: null,
+    detectedAt: null,
+    detectedAtLabel: null,
+  };
+  const none = { ...base, changesOf: () => [], differs: () => false };
+
+  let pending;
+  try {
+    pending = await loadPending();
+  } catch (error) {
+    // O'qituvchi yo'lidagi AYNI qaror: admin tomonidagi nosozlik o'quvchi
+    // jadvalini yiqitmasligi kerak — jadval baribir bazadan ko'rsatiladi.
+    logger.warn(`[ScheduleSync] O'quvchi jadvali uchun tahrirni o'qib bo'lmadi: ${error.message}`);
+    return { ...none, mode: MODES.SHEET };
+  }
+
+  const { mode, revision, computed } = pending;
+  if (!revision) return { ...none, mode };
+
+  const meta = {
+    ...base,
+    mode,
+    schoolPending: true,
+    revisionId: revision.id,
+    detectedAt: revision.createdAt,
+    detectedAtLabel: formatDateTimeUz(revision.createdAt),
+  };
+
+  // Farq hisoblanmadi (sheet'da xato). O'qituvchi yo'li bilan AYNI: jadval
+  // eskirgan bo'lishi mumkin, demak belgi KERAK — faqat qaysi dars
+  // o'zgarishini aytib bo'lmaydi (`diffAvailable: false`).
+  const diffAvailable = Boolean(computed && computed.diff && computed.hasChanges !== null);
+  if (!diffAvailable) {
+    const wanted = new Set(classIds);
+    return {
+      ...meta,
+      diffAvailable: false,
+      changesOf: () => [],
+      differs: (classId) => wanted.has(classId),
+    };
+  }
+
+  // Sheet amaldagi jadval bilan bir xil — aytiladigan narsa yo'q.
+  if (!computed.hasChanges) return { ...none, mode };
+
+  const byClass = new Map(
+    classIds.map((id) => [id, classChangesFromDiff(computed.diff, id)]),
+  );
+  return {
+    ...meta,
+    changesOf: (classId) => byClass.get(classId) || [],
+    differs: (classId) => (byClass.get(classId) || []).length > 0,
+  };
+}
+
+module.exports = { getPendingForTeacher, getPendingForClasses };

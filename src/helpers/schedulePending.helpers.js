@@ -161,10 +161,94 @@ function lessonCountByTeacher(diff) {
   return counts;
 }
 
+/**
+ * Farqdan (decorateDiff natijasi) BITTA SINFNING o'zgarishlari — o'quvchi
+ * jadvali uchun. O'qituvchi kesimidan (`teacherLessonsFromDiff`) farqi:
+ * sinfning HAMMA darsi kerak, kimga tegishli ekanidan qat'i nazar.
+ *
+ * @param {object|null} diff
+ * @param {string} classId
+ * @returns {Array<{day: string, dayLabel: string, order: number, type: string,
+ *   field: string|null, before: object|null, after: object|null}>}
+ */
+function classChangesFromDiff(diff, classId) {
+  if (!diff || !classId) return [];
+  const cls = (diff.classes || []).find((c) => c.classId === classId);
+  if (!cls) return [];
+
+  return (cls.changes || [])
+    .map((change) => ({
+      day: change.day,
+      dayLabel: change.dayLabel,
+      order: change.order,
+      type: change.type,
+      field: change.field,
+      before: lessonCell(change.before),
+      after: lessonCell(change.after),
+    }))
+    .sort((a, b) => dayIndex(a.day) - dayIndex(b.day) || a.order - b.order);
+}
+
+/**
+ * Sinfning haftalik jadvaliga SHEET BELGISINI qo'yadi (o'quvchi ilovasi).
+ *
+ * ⚠️ HAFTANING HAMMA KUNI QAYTADI (`DAY_ORDER`), darsi yo'q kun ham
+ * (`id: null`, `subjects: []`): sheet'da o'sha kunga dars QO'SHILGAN
+ * bo'lishi mumkin — kunning o'zi bo'lmasa, belgini qo'yadigan joy
+ * qolmasdi.
+ *
+ * Belgi uch darajada va ular bir-biriga mos:
+ *   · dars  — `sheetDiffers`: shu tartibdagi dars sheet'da boshqacha
+ *             (fan/o'qituvchi/vaqt o'zgargan yoki olib tashlangan);
+ *   · kun   — `sheetDiffers`: kunda kamida bitta o'zgarish (QO'SHILGAN
+ *             dars ham — u bazada yo'q, shuning uchun faqat kunda ko'rinadi),
+ *             `sheetChanges` — o'sha kunning o'zgarishlari (oldin/keyin);
+ *   · sinf  — chaqiruvchi beradi, chunki farq umuman hisoblanmagan holat
+ *             (sheet'da xato) faqat sinf darajasida ma'lum: qaysi dars
+ *             o'zgarishini aytib bo'lmaydi.
+ *
+ * ⚠️ Dars `id` bo'yicha EMAS, KUN + TARTIB bo'yicha moslanadi
+ * (`education.md` §8: `ScheduleLesson` id'lari barqaror emas). Bir
+ * tartibda ikki dars bo'lsa (takror) — ikkalasi ham belgilanadi.
+ *
+ * @param {Array<object>} schedules - `getScheduleByClass` natijasi
+ * @param {Array<object>} changes - `classChangesFromDiff` natijasi
+ * @param {(day: string) => string} labelOf - kun yorlig'i ("Dushanba")
+ * @returns {Array<object>}
+ */
+function markWeekWithSheet(schedules, changes, labelOf) {
+  const byDay = new Map((schedules || []).map((s) => [s.day, s]));
+
+  return DAY_ORDER.map((day) => {
+    const schedule = byDay.get(day);
+    const dayChanges = (changes || []).filter((c) => c.day === day);
+    // `added` bazada yo'q darsni bildiradi — mavjud darsni belgilamaydi.
+    const changedOrders = new Set(
+      dayChanges.filter((c) => c.type !== "added").map((c) => c.order),
+    );
+
+    return {
+      id: schedule?.id ?? null,
+      class: schedule?.class ?? null,
+      day,
+      dayLabel: labelOf(day),
+      subjects: (schedule?.subjects || []).map((lesson) => ({
+        ...lesson,
+        sheetDiffers: changedOrders.has(lesson.order),
+      })),
+      sheetDiffers: dayChanges.length > 0,
+      sheetChanges: dayChanges,
+      updatedAt: schedule?.updatedAt ?? null,
+    };
+  });
+}
+
 module.exports = {
   resolveDayFilter,
   lessonCell,
   teacherLessonsFromDiff,
+  classChangesFromDiff,
+  markWeekWithSheet,
   affectedTeacherIds,
   lessonCountByTeacher,
 };
