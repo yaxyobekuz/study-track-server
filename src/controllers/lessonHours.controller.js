@@ -14,6 +14,11 @@ const lessonHoursService = require("../services/lessonHours.service");
 const substitutionService = require("../services/lessonSubstitution.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+// SOAT OCHIQ, PUL YOPIQ — darvoza bitta joyda (`selfPayroll.helpers.js`)
+const {
+  isSelfPayrollVisible,
+  stripSalaryAmounts,
+} = require("../helpers/selfPayroll.helpers");
 
 const assertNotStudent = (user) => {
   if (user.role === ROLES.STUDENT) {
@@ -67,6 +72,21 @@ const getMyHours = asyncHandler(async (req, res) => {
 
   const month = lessonHoursService.parseHoursMonth(req.query.month);
   const data = await dashboardService.getTeacherDetail(req.user.id, month);
+
+  // ⚠️ SOAT FAKTI QOLADI, SUMMA KETADI. O'qituvchi "nega soatim kam"
+  // degan savolga o'zi javob topishi kerak (o'tilmagan darslar, kelmagan
+  // kun, o'rinbosarlik) — shuning uchun bu yo'l 403 qilinmaydi, faqat pul
+  // maydonlari olib tashlanadi.
+  //
+  // `history` BUTUNLAY pul (muhrlangan oyliklar egri chizig'i): summalari
+  // olingach ma'nosiz ustunlar qolardi, shuning uchun u umuman berilmaydi.
+  if (!isSelfPayrollVisible()) {
+    const visible = stripSalaryAmounts(data);
+    delete visible.history;
+    res.json({ success: true, data: visible });
+    return;
+  }
+
   res.json({ success: true, data });
 });
 

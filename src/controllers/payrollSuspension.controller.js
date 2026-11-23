@@ -2,6 +2,8 @@ const asyncHandler = require("../middleware/async.middleware");
 const suspensionService = require("../services/payrollSuspension.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+// XODIM O'Z OYLIGINI KO'RMAYDI — darvoza bitta joyda (`selfPayroll.helpers.js`)
+const { assertSelfPayrollVisible } = require("../helpers/selfPayroll.helpers");
 
 /** To'xtatishlar registri → `{ data, pagination, totals }`. */
 const getSuspensions = asyncHandler(async (req, res) => {
@@ -17,6 +19,7 @@ const getMySuspensions = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
+  assertSelfPayrollVisible();
   const data = await suspensionService.listMySuspensions(req.user.id);
   res.json({ success: true, data });
 });

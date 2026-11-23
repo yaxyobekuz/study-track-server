@@ -2,6 +2,8 @@ const asyncHandler = require("../middleware/async.middleware");
 const deductionService = require("../services/payrollDeduction.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+// XODIM O'Z OYLIGINI KO'RMAYDI — darvoza bitta joyda (`selfPayroll.helpers.js`)
+const { assertSelfPayrollVisible } = require("../helpers/selfPayroll.helpers");
 
 /** Ushlab qolishlar registri → `{ data, pagination, totals }`. */
 const getDeductions = asyncHandler(async (req, res) => {
@@ -17,6 +19,8 @@ const getMyDeductions = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
+
+  assertSelfPayrollVisible();
 
   const data = await deductionService.listMyDeductions(req.user.id);
   res.json({ success: true, data });

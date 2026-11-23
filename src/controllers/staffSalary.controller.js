@@ -3,6 +3,8 @@ const staffSalaryService = require("../services/staffSalary.service");
 const staffContractService = require("../services/staffContract.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+// XODIM O'Z OYLIGINI KO'RMAYDI — darvoza bitta joyda (`selfPayroll.helpers.js`)
+const { assertSelfPayrollVisible } = require("../helpers/selfPayroll.helpers");
 
 const getSalaries = asyncHandler(async (req, res) => {
   const data = await staffSalaryService.getSalaries(req);
@@ -23,6 +25,8 @@ const getMySalary = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
+
+  assertSelfPayrollVisible();
 
   const data = await staffSalaryService.getStaffHistory(req.user.id);
   res.json({ success: true, data });

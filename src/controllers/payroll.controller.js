@@ -6,6 +6,8 @@ const payrollBreakdownService = require("../services/payrollBreakdown.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
 const { currentMonthKey, parseMonthKey } = require("../helpers/month.helpers");
+// XODIM O'Z OYLIGINI KO'RMAYDI — darvoza bitta joyda (`selfPayroll.helpers.js`)
+const { assertSelfPayrollVisible } = require("../helpers/selfPayroll.helpers");
 
 // ── Majburiyatlar ────────────────────────────
 
@@ -25,6 +27,7 @@ const getMyEntries = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
+  assertSelfPayrollVisible();
 
   const data = await payrollService.getStaffEntries(req.user.id);
   res.json({ success: true, data });
@@ -37,6 +40,8 @@ const getMySalaryStats = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
 
+  assertSelfPayrollVisible();
+
   const data = await payrollService.getMySalaryStats(req.user.id);
   res.json({ success: true, data });
 });
@@ -48,6 +53,8 @@ const getMyMonthBreakdown = asyncHandler(async (req, res) => {
   if (req.user.role === ROLES.STUDENT) {
     throw new ForbiddenError("Oylik faqat xodimlar uchun");
   }
+
+  assertSelfPayrollVisible();
 
   const month = req.query.month ? parseMonthKey(req.query.month, "Oy") : currentMonthKey();
   const data = await payrollBreakdownService.getMonthBreakdown(req.user.id, month);

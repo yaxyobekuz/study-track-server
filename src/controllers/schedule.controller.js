@@ -9,6 +9,8 @@ const studentScheduleService = require("../services/studentSchedule.service");
 const { ROLES } = require("../utils/constants");
 const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { ForbiddenError } = require("../utils/errors");
+// Xodim o'z oyligini ko'rmaydi (`selfPayroll.helpers.js`)
+const { isSelfPayrollVisible } = require("../helpers/selfPayroll.helpers");
 
 /**
  * O'quvchining O'Z sinfi jadvali + sheet belgisi (`sheetDiffers`).
@@ -230,8 +232,10 @@ const getMyWorkload = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Dars yuklamasi faqat xodimlar uchun");
   }
 
+  // ⚠️ `withSalary` — darvoza bitta joyda (`selfPayroll.helpers.js`):
+  // xodim o'z yuklamasini ko'radi, oylik summasini EMAS.
   const data = await teacherWorkloadService.getTeacherWorkload(req.user.id, {
-    withSalary: true,
+    withSalary: isSelfPayrollVisible(),
   });
 
   res.json({ success: true, data });

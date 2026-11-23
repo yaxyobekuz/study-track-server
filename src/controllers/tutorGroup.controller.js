@@ -2,6 +2,9 @@ const asyncHandler = require("../middleware/async.middleware");
 const tutorGroupService = require("../services/tutorGroup.service");
 const { ROLES } = require("../utils/constants");
 const { ForbiddenError } = require("../utils/errors");
+// Tyutorning qo'shimcha oyligi — summa xodimga ko'rsatilmaydi
+// (`selfPayroll.helpers.js`): guruh, o'quvchilar va davomat qoladi.
+const { hideSalaryAmounts } = require("../helpers/selfPayroll.helpers");
 
 /** Xodimning tyutor guruhlari (admin, xodim sahifasi). */
 const getStaffGroups = asyncHandler(async (req, res) => {
@@ -38,7 +41,7 @@ const getMyGroups = asyncHandler(async (req, res) => {
     throw new ForbiddenError("Guruhlar faqat xodimlar uchun");
   }
   const data = await tutorGroupService.getMyGroups(req.user.id);
-  res.json({ success: true, data });
+  res.json({ success: true, data: hideSalaryAmounts(data) });
 });
 
 /** O'z guruhimning manzarasi — faqat o'ziga biriktirilgan guruh. */
@@ -51,7 +54,7 @@ const getMyGroupOverview = asyncHandler(async (req, res) => {
     { month: req.query.month },
     { id: req.user.id, onlyOwn: true },
   );
-  res.json({ success: true, data });
+  res.json({ success: true, data: hideSalaryAmounts(data) });
 });
 
 /**

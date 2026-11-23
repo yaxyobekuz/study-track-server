@@ -1,6 +1,9 @@
 const asyncHandler = require("../middleware/async.middleware");
 const payrollRequestService = require("../services/payrollRequest.service");
 const payrollAuditService = require("../services/payrollAudit.service");
+// Toifa stavkasi (soat narxi, bazaviy maosh) xodimga ko'rsatilmaydi —
+// zayavka oqimining o'zi ochiq qoladi (`selfPayroll.helpers.js`).
+const { hideSalaryAmounts } = require("../helpers/selfPayroll.helpers");
 
 // ── Xodim tomoni (o'z zayavkalari) ──
 
@@ -15,12 +18,12 @@ const submitRequest = asyncHandler(async (req, res) => {
 
 const getMyRequests = asyncHandler(async (req, res) => {
   const data = await payrollRequestService.getMyRequests(req.user.id, req.query);
-  res.json({ success: true, data });
+  res.json({ success: true, data: hideSalaryAmounts(data) });
 });
 
 const getAvailableCategories = asyncHandler(async (req, res) => {
   const data = await payrollRequestService.getAvailableCategories(req.user.id);
-  res.json({ success: true, data });
+  res.json({ success: true, data: hideSalaryAmounts(data) });
 });
 
 const cancelRequest = asyncHandler(async (req, res) => {
