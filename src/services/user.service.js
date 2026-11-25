@@ -426,6 +426,61 @@ async function loadUserWithSchedule(id) {
   };
 }
 
+/**
+ * HOZIR O'QIYOTGAN O'QUVCHILAR SONI — joriy filial.
+ *
+ * ⚠️ `isArchived: false` YETARLI EMAS. O'quvchi ketganda (chetlatildi,
+ * chiqib ketdi) uning o'qish davri yopiladi (`StudentEnrollment.endDate`),
+ * LEKIN login hisobi arxivlanmay qolishi mumkin — ketish va arxivlash
+ * ALOHIDA amallar (`archiveUser` izohiga qarang: arxivlash davrni yopadi,
+ * aks yo'nalish MAJBURIY emas). Shunday o'quvchi `isArchived: false`
+ * bo'lgani uchun oddiy sanoqda "o'qiyapti" bo'lib turardi (bosh sahifada
+ * 335, holbuki hozir 329 o'qiydi).
+ *
+ * Shuning uchun "o'quvchi o'qiyaptimi" degan savolga O'QISH DAVRI javob
+ * beradi (`education.md` §4, `studentMovement.service.js`): davri
+ * BUGUNGACHA tugagan (`endDate < bugun`) va ochiq/joriy davri YO'Q
+ * o'quvchi sanoqdan chiqadi. `endDate` INKLYUZIV — oxirgi o'qigan kun,
+ * ya'ni aynan bugun bilan tugaydigan davr hali o'qiyapti deb sanaladi
+ * (`enrollment.helpers.js`).
+ *
+ * ⚠️ DAVRI UMUMAN YO'Q o'quvchi SANOQDA QOLADI: "davri yo'q = abadiy
+ * o'qiydi" (hisob-faktura generatori bilan AYNI doktrina) — u ketmagan,
+ * shunchaki davri kiritilmagan. FAQAT davri TUGAGANLAR chiqariladi.
+ *
+ * ⚠️ O'quvchilar RO'YXATI (`getStudents`) va boshqa ekranlar avvalgidek
+ * `isArchived: false` bilan qoladi — bu o'zgarish FAQAT bosh sahifadagi
+ * "O'quvchilar" sanog'iga tegishli (biznes qarori, 2026-11-25).
+ */
+async function countStudyingStudents() {
+  const today = currentDayDate();
+
+  const [current, ended] = await Promise.all([
+    prisma.studentEnrollment.findMany({
+      where: { OR: [{ endDate: null }, { endDate: { gte: today } }] },
+      select: { studentId: true },
+      distinct: ["studentId"],
+    }),
+    prisma.studentEnrollment.findMany({
+      where: { endDate: { lt: today } },
+      select: { studentId: true },
+      distinct: ["studentId"],
+    }),
+  ]);
+
+  // Davri tugagan, lekin ochiq/joriy davri bor o'quvchi (ketib qaytgan)
+  // sanoqda QOLADI — shuning uchun "tugaganlar" dan joriy davrlilar olib
+  // tashlanadi.
+  const currentSet = new Set(current.map((row) => row.studentId));
+  const departedIds = ended
+    .map((row) => row.studentId)
+    .filter((id) => !currentSet.has(id));
+
+  return prisma.user.count({
+    where: { role: "student", isArchived: false, id: { notIn: departedIds } },
+  });
+}
+
 async function getStats() {
   const [telegramIds, workers, students, premiumUsers] = await Promise.all([
     // ⚠️ SANOQ `linkedTelegramIds()` DAN, oddiy `tg_users` sanog'idan
@@ -444,7 +499,9 @@ async function getStats() {
     // ko'rinardi.
     activityDashboard.linkedTelegramIds(),
     prisma.user.count({ where: { role: { notIn: ["owner", "student"] } } }),
-    prisma.user.count({ where: { role: "student", isArchived: false } }),
+    // ⚠️ Sanoq LOGIN emas, O'QISH DAVRI bo'yicha — davri tugagan o'quvchi
+    // chiqariladi (`countStudyingStudents` izohiga qarang).
+    countStudyingStudents(),
     prisma.premium.count({ where: { status: "active" } }),
   ]);
 
@@ -490,9 +547,11 @@ async function getStatsAcrossBranches(branches) {
           }),
           // ⚠️ BITTALIK YO'L BILAN AYNI FILTR (`getStats` izohiga qarang):
           // umumiy ko'rinishda boshqa qoida ishlasa, "Umumiy" va filial
-          // ko'rinishlari bitta kartada ikki xil raqam ko'rsatardi.
+          // ko'rinishlari bitta kartada ikki xil raqam ko'rsatardi. O'quvchi
+          // sanog'i ham AYNI yordamchidan — davri tugaganlar bu yerda ham
+          // chiqariladi (`countStudyingStudents`).
           activityDashboard.linkedTelegramIds(),
-          prisma.user.count({ where: { role: "student", isArchived: false } }),
+          countStudyingStudents(),
           prisma.premium.count({ where: { status: "active" } }),
         ]);
 

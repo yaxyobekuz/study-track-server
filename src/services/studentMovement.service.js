@@ -40,9 +40,11 @@
  *
  * ⚠️ `isArchived` BO'YICHA FILTRLANMAYDI: "o'quvchi o'qiyaptimi" degan
  * savolga faqat o'qish davri javob beradi (`education.md` §4). Bosh
- * sahifadagi "O'quvchilar" kartasi esa LOGIN larni sanaydi
- * (`user.service.js` → `role: student, isArchived: false`) — ikki raqam
- * farq qilishi mumkin, shuning uchun hisobot ikkalasini ham yozadi
+ * sahifadagi "O'quvchilar" kartasi ham endi o'qish davriga qaraydi
+ * (`user.service.js` → `countStudyingStudents`), lekin ikki raqam BARIBIR
+ * farq qilishi mumkin: karta ARXIVLANGANlarni chiqarib tashlaydi va
+ * chegarani BUGUN bo'yicha oladi, bu hisobot esa arxivdan qat'i nazar OY
+ * chegarasi bilan sanaydi. Shuning uchun hisobot ikkalasini ham yozadi
  * (`context`): farqni yashirish "nega 462 emas" degan savolni qoldirardi.
  */
 
