@@ -120,6 +120,22 @@ model UserDirectory {
   isActive   Boolean @default(true) @map("is_active")
   isArchived Boolean @default(false) @map("is_archived")
 
+  // ── PROFIL RASMI (avatar) ───────────────────────────────────────
+  // ⚠️ NIMA UCHUN BU YERDA: istoriya, chat va sinf guruhi javoblari
+  // avatarni FAQAT shu jadvaldan oladi. Rasmning o'zi odamning UY
+  // filialidagi `User.profilePicture` → `Image` da yotadi, lekin
+  // istoriyalar lentasi 300 xodimning kartochkasini chizadi — har biri
+  // uchun o'z filialining bazasiga borish N+1 so'rov bo'lardi
+  // (ustiga ular BOSHQA schema'da).
+  //
+  // `avatarUrl` — `sm` (128 px) variantning havolasi, rasm har
+  // o'zgarganda qayta yoziladi (`avatar.service.js`).
+  // `avatarPreset` — tayyor avatar kodi ("a07"); rasm yuklansa
+  // tozalanadi va aksincha. Ikkalasi ham bo'sh bo'lsa ilova ism bosh
+  // harflarini chizadi.
+  avatarUrl    String? @map("avatar_url")
+  avatarPreset String? @map("avatar_preset") @db.VarChar(8)
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -1201,4 +1217,382 @@ model Kiosk {
   @@index([deviceUid])
   @@index([status, lastSeenAt(sort: Desc)])
   @@map("kiosks")
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// ISTORIYALAR VA CHAT (ijtimoiy qatlam)
+// ═════════════════════════════════════════════════════════════════════
+//
+// NIMA UCHUN PLATFORMADA, FILIALDA EMAS:
+// Xodim bir nechta filialda ishlaydi (`UserBranchAccess`) va istoriya
+// butun tarmoqqa ko'rinadi (biznes qarori, 2026-11-26). Filial
+// schema'sida yotsa, lenta har filialga alohida so'rov yuborib,
+// javoblarni qo'lda birlashtirishga to'g'ri kelardi — ya'ni "hamma
+// filial" degan va'da bitta unutilgan filialda jimgina buzilardi.
+// Shu sababli bu qatlamda filial — faqat FILTR (`Story.authorBranchId`),
+// ajratish emas.
+//
+// ⚠️ `userId` lar — `UserDirectory.id` (filial schema'sidagi `User.id`
+// bilan AYNI qiymat). FK YO'Q: `users` jadvali boshqa schema'da.
+// Ism, rol, filial va AVATAR `user_directory` dan o'qiladi — aks holda
+// har kartochka uchun filial bazasiga borish kerak bo'lardi.
+
+enum MediaKind {
+  image
+  video
+  file
+  voice
+}
+
+/// Yuklash holati: `pending` — kalit band qilindi, fayl hali kelmadi;
+/// `ready` — fayl tekshirildi (hajm, MIME) va qayta ishlandi;
+/// `attached` — istoriyaga yoki xabarga biriktirildi.
+///
+/// ⚠️ UCH HOLAT KERAK, IKKITASI YETMAYDI: `pending` va `attached`
+/// orasidagi `ready` — "fayl bor, lekin hali hech kimga ko'rinmaydi"
+/// degani. Usiz yetim fayllarni (yuklab, lekin joylamay chiqib ketgan
+/// odamning rasmi) tozalab bo'lmasdi.
+enum UploadStatus {
+  pending
+  ready
+  attached
+}
+
+enum ConvType {
+  direct // 1:1 (xodim ↔ xodim)
+  group // xodimlar guruhi (qo'lda yaratiladi)
+  class // sinf guruhi (a'zolik AVTOMATIK sinxronlanadi)
+}
+
+/// A'zo qanday qo'shilgan. ⚠️ `auto` ni FAQAT sinxron chiqaradi
+/// (`classChat.service.js`): qo'lda qo'shilgan odamni sinxron o'chirib
+/// yuborsa, admin qarori jimgina bekor bo'lardi.
+enum MemberSource {
+  manual
+  auto
+}
+
+enum MemberRole {
+  owner
+  admin
+  member
+}
+
+enum MessageType {
+  text
+  image
+  video
+  file
+  voice
+  system // "Ali guruhga qo'shildi" — odam yozmagan qator
+  story_reply // istoriyaga shaxsiy javob
+}
+
+/// YUKLANGAN FAYL — rasm, video, ovoz yoki hujjat.
+///
+/// ⚠️ KATTA FAYL SERVER ORQALI O'TMAYDI: ilova to'g'ridan-to'g'ri
+/// Spaces'ga yuklaydi (presigned PUT), server faqat ruxsat beradi va
+/// keyin tekshiradi (`mediaUpload.service.js`). 25 MB lik video Node
+/// jarayonidan o'tsa, bir vaqtda uch kishi istoriya qo'yganda server
+/// xotirasi tugardi.
+///
+/// ⚠️ JADVAL YETIM FAYLLARNI TOZALASH UCHUN HAM KERAK: Spaces'da nima
+/// yotganini bazadan bilmasak, "yuklandi-u biriktirilmadi" fayllarni
+/// hech qachon topib bo'lmasdi (`socialUploadCleanup.job.js`).
+model MediaUpload {
+  id      String    @id @db.Char(24)
+  ownerId String    @map("owner_id") @db.Char(24)
+  kind    MediaKind
+
+  /// Spaces kaliti: `social/{ownerId}/{yyyy}/{mm}/{id}.{ext}`.
+  /// ⚠️ Bucket ichida fayl YOPIQ (`private`): havola imzolangan va 1
+  /// soat yashaydi, ya'ni kalitni bilgan odam ham to'g'ridan-to'g'ri
+  /// ocha olmaydi.
+  key      String  @unique
+  thumbKey String? @map("thumb_key")
+
+  mime       String  @db.VarChar(80)
+  size       Int
+  width      Int?
+  height     Int?
+  durationMs Int?    @map("duration_ms")
+  /// Yuklanayotganda ko'rsatiladigan xira oldindan ko'rinish.
+  blurhash   String? @db.VarChar(64)
+
+  status    UploadStatus @default(pending)
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  story Story?
+
+  /// Tozalash navbati: `pending` yoki `ready` holda qolib ketganlar.
+  @@index([status, createdAt])
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@map("media_upload")
+}
+
+/// ISTORIYA — rasm yoki video + izoh.
+///
+/// ⚠️ IKKI UMR, BITTA QATOR: 24 soat BOSH SAHIFADAGI LENTADA
+/// (`expiresAt`), keyin MUALLIF PROFILIDA DOIMIY (Telegramdagidek,
+/// biznes qarori 2026-11-26). Ya'ni muddat qatorni o'chirmaydi — faqat
+/// lentadan chiqaradi. Yo'qotadigan yagona narsa — muallifning o'z
+/// qo'li (`deletedAt`).
+///
+/// ⚠️ KUNLIK LIMIT `dayKey` BO'YICHA va u TOSHKENT kuni (`createdAt` dan
+/// hisoblanmaydi): server UTC da yashaydi, ya'ni 00:30 da qo'yilgan
+/// istoriya kechagi kunga tushib, odamga 4-chi imkon berib qo'yardi.
+///
+/// ⚠️ O'CHIRILGANI HAM HISOBLANADI (`deletedAt` bo'lsa ham qator qoladi):
+/// aks holda "qo'yib o'chirish" bilan limitni cheksiz aylanib o'tib
+/// bo'lardi.
+model Story {
+  id String @id @db.Char(24)
+
+  authorId       String @map("author_id") @db.Char(24)
+  /// «Mening filialim» filtri uchun — ko'rish huquqi uchun EMAS
+  /// (istoriya butun tarmoqqa ochiq).
+  authorBranchId String @map("author_branch_id") @db.Char(24)
+
+  mediaId String  @unique @map("media_id") @db.Char(24)
+  caption String? @db.VarChar(300)
+
+  /// "2026-11-26" — TOSHKENT kuni. Kunlik limit shu bo'yicha sanaladi.
+  dayKey String @map("day_key") @db.Char(10)
+
+  /// ⚠️ SANOQCHILAR, `COUNT(*)` EMAS: lenta 300 xodimda ham bitta
+  /// so'rovda chizilishi kerak. Yozuv bilan BITTA tranzaksiyada va
+  /// faqat YANGI qator qo'shilganda oshadi (`skipDuplicates` natijasi).
+  viewsCount    Int @default(0) @map("views_count")
+  likesCount    Int @default(0) @map("likes_count")
+  commentsCount Int @default(0) @map("comments_count")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  /// `createdAt + 24h` — LENTADAN chiqadi, profilda qoladi.
+  expiresAt DateTime  @map("expires_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by") @db.Char(24)
+
+  media    MediaUpload    @relation(fields: [mediaId], references: [id], onDelete: Restrict)
+  views    StoryView[]
+  likes    StoryLike[]
+  comments StoryComment[]
+
+  @@index([expiresAt])
+  @@index([authorId, dayKey])
+  @@index([authorId, createdAt(sort: Desc)])
+  @@index([deletedAt, expiresAt])
+  @@map("story")
+}
+
+/// KIM KO'RDI. ⚠️ Kompozit PK = BIR ODAM BIR KO'RISH: ilova paketni
+/// qayta yuborsa ham sanoqchi ikki marta oshmaydi (idempotent).
+/// Muallifning O'Z ko'rishi umuman yozilmaydi — statistika toza qoladi.
+model StoryView {
+  storyId  String   @map("story_id") @db.Char(24)
+  viewerId String   @map("viewer_id") @db.Char(24)
+  viewedAt DateTime @default(now()) @map("viewed_at")
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@id([storyId, viewerId])
+  @@index([viewerId, storyId])
+  @@index([storyId, viewedAt(sort: Desc)])
+  @@map("story_view")
+}
+
+model StoryLike {
+  storyId String @map("story_id") @db.Char(24)
+  userId  String @map("user_id") @db.Char(24)
+  /// Kelajakdagi reaksiyalar uchun joy — hozircha faqat ❤️.
+  emoji   String @default("❤️") @db.VarChar(16)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@id([storyId, userId])
+  @@index([storyId, createdAt(sort: Desc)])
+  @@map("story_like")
+}
+
+/// IZOH — istoriya ostida HAMMAGA ko'rinadi (ko'rish va layk esa faqat
+/// muallifga: biznes qarori, 2026-11-26).
+model StoryComment {
+  id       String @id @db.Char(24)
+  storyId  String @map("story_id") @db.Char(24)
+  authorId String @map("author_id") @db.Char(24)
+  text     String @db.VarChar(500)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by") @db.Char(24)
+
+  story Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@index([storyId, createdAt])
+  @@map("story_comment")
+}
+
+/// SUHBAT — 1:1, xodimlar guruhi yoki SINF guruhi.
+///
+/// ⚠️ `lastSeq` — XABAR TARTIB RAQAMI HISOBLAGICHI va u aynan shu
+/// qatorda turadi. Yangi xabar `UPDATE ... SET last_seq = last_seq + 1
+/// RETURNING` bilan raqam oladi: bitta qatorli qulf, ya'ni ikki parallel
+/// xabar bir xil `seq` olishi STRUKTURAVIY imkonsiz. `COUNT(*) + 1`
+/// bo'lsa, poyga ikkita 7-xabar yozib, biri yo'qolardi.
+///
+/// ⚠️ `directKey` = "kichikId:kattaId" — 1:1 suhbat DUBLIKAT bo'lmaydi:
+/// ikki odam bir vaqtda yozsa ham `upsert` bitta qator beradi.
+model Conversation {
+  id   String   @id @db.Char(24)
+  type ConvType
+
+  /// Faqat `type = direct`. 24 + ":" + 24 = 49 belgi.
+  directKey String? @unique @map("direct_key") @db.VarChar(49)
+
+  /// Faqat `type = class`. ⚠️ NULL lar PostgreSQL da bir-biriga TENG
+  /// EMAS, shuning uchun pastdagi `@@unique` 1:1 va guruh suhbatlarini
+  /// bloklamaydi — faqat "bitta sinf = bitta guruh" ni kafolatlaydi.
+  branchId String? @map("branch_id") @db.Char(24)
+  classId  String? @map("class_id") @db.Char(24)
+
+  /// E'LON REJIMI — o'quvchi faqat o'qiydi (sinf rahbari yoqadi).
+  onlyStaffPost Boolean @default(false) @map("only_staff_post")
+  /// Sekin rejim: o'quvchi xabarlari orasidagi minimal vaqt (sekund).
+  slowModeSec   Int     @default(0) @map("slow_mode_sec")
+
+  title     String? @db.VarChar(80)
+  avatarKey String? @map("avatar_key")
+
+  createdBy String @map("created_by") @db.Char(24)
+
+  lastSeq       Int       @default(0) @map("last_seq")
+  lastMessageAt DateTime? @map("last_message_at")
+  lastPreview   String?   @map("last_preview") @db.VarChar(120)
+
+  /// Sinf yopildi (bitiruv, o'chirish): tarix O'QILADI, yangi xabar
+  /// YOZILMAYDI. O'chirilmaydi — yozishmalar yo'qolmasligi kerak.
+  closedAt DateTime? @map("closed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  members  ConversationMember[]
+  messages Message[]
+
+  @@unique([branchId, classId])
+  @@index([lastMessageAt(sort: Desc)])
+  @@index([type, closedAt])
+  @@map("conversation")
+}
+
+/// A'ZOLIK va shu odamning SHAXSIY sozlamalari.
+///
+/// ⚠️ "O'QILDI" — BITTA SON (`lastReadSeq`), har xabarga qator EMAS.
+/// 10 000 xabarli guruhda 200 a'zo bo'lsa, har xabarga o'qish qatori
+/// 2 million qator degani — va bu faqat bitta suhbat.
+model ConversationMember {
+  conversationId String       @map("conversation_id") @db.Char(24)
+  userId         String       @map("user_id") @db.Char(24)
+  role           MemberRole   @default(member)
+  source         MemberSource @default(manual)
+
+  lastReadSeq      Int @default(0) @map("last_read_seq")
+  lastDeliveredSeq Int @default(0) @map("last_delivered_seq")
+
+  mutedUntil      DateTime? @map("muted_until")
+  /// O'qituvchi o'quvchini vaqtincha ovozsiz qildi (yozish taqiqi).
+  postBannedUntil DateTime? @map("post_banned_until")
+  postBanReason   String?   @map("post_ban_reason") @db.VarChar(300)
+
+  pinnedAt   DateTime? @map("pinned_at")
+  archivedAt DateTime? @map("archived_at")
+  /// «Tarixni tozalash» — FAQAT O'ZIM uchun: shu `seq` dan oldingi
+  /// xabarlar menga berilmaydi, boshqalarda qoladi.
+  clearedSeq Int       @default(0) @map("cleared_seq")
+
+  joinedAt DateTime  @default(now()) @map("joined_at")
+  leftAt   DateTime? @map("left_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([userId, leftAt])
+  @@index([conversationId, leftAt])
+  @@map("conversation_member")
+}
+
+/// XABAR.
+///
+/// ⚠️ `clientId` — ILOVA yaratgan UUID va u `senderId` bilan YAGONA:
+/// tarmoq uzilib, ilova xabarni qayta yuborsa ikkinchi qator YOZILMAYDI
+/// (server o'sha xabarni qaytaradi). Usiz "yubordim, ko'rinmadi, yana
+/// bosdim" har safar ikkita xabar bo'lardi.
+///
+/// ⚠️ TAHRIR VA O'CHIRISH `seq` NI O'ZGARTIRMAYDI: u — suhbatdagi O'RIN.
+/// Mijozga `message:updated` boradi, tartib esa qotib turadi.
+model Message {
+  id             String @id @db.Char(24)
+  conversationId String @map("conversation_id") @db.Char(24)
+  /// Suhbat ichidagi tartib raqami: 1, 2, 3… Sinxronning kaliti.
+  seq            Int
+
+  senderId String      @map("sender_id") @db.Char(24)
+  clientId String      @map("client_id") @db.VarChar(36)
+  type     MessageType
+
+  text    String? @db.VarChar(4000)
+  mediaId String? @map("media_id") @db.Char(24)
+
+  replyToId       String? @map("reply_to_id") @db.Char(24)
+  /// «Istoriyaga javob» — xabar ichida istoriya kartochkasi ko'rinadi.
+  storyId         String? @map("story_id") @db.Char(24)
+  forwardedFromId String? @map("forwarded_from_id") @db.Char(24)
+
+  /// So'kinish filtri belgisi (`profanity.helpers.js`). ⚠️ BLOKLAMAYDI:
+  /// xabar yoziladi, sinf rahbariga ko'rinadi — avtomat tsenzura
+  /// begunoh so'zni ham yutib yuborardi.
+  flagged Boolean @default(false)
+
+  editedAt  DateTime? @map("edited_at")
+  /// «Hamma uchun o'chirish» — qator QOLADI (`chat.moderate` ko'radi):
+  /// haqorat bo'yicha shikoyatni tekshirish uchun.
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by") @db.Char(24)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, seq])
+  @@unique([senderId, clientId])
+  @@index([conversationId, seq(sort: Desc)])
+  @@index([conversationId, createdAt(sort: Desc)])
+  @@map("message")
+}
+
+/// SHIKOYAT — istoriya, izoh yoki xabar ustidan.
+///
+/// ⚠️ BIR ODAM BIR NISHONGA BIR MARTA (`@@unique`): takroriy bosish
+/// moderatorning ro'yxatini bir xil qatorlar bilan to'ldirmasin.
+model ContentReport {
+  id         String @id @db.Char(24)
+  reporterId String @map("reporter_id") @db.Char(24)
+
+  /// "story" | "story_comment" | "message"
+  targetType String @map("target_type") @db.VarChar(20)
+  targetId   String @map("target_id") @db.Char(24)
+
+  reason String @db.VarChar(300)
+
+  resolvedAt  DateTime? @map("resolved_at")
+  resolvedBy  String?   @map("resolved_by") @db.Char(24)
+  resolveNote String?   @map("resolve_note") @db.VarChar(300)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([reporterId, targetType, targetId])
+  @@index([resolvedAt, createdAt(sort: Desc)])
+  @@index([targetType, targetId])
+  @@map("content_report")
 }
