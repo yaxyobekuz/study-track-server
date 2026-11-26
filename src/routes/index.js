@@ -100,6 +100,12 @@ const globalSearchRoutes = require("./globalSearch.routes");
 // (`X-Kiosk-Token`). Ajratilgani — `.claude/rules/face-id.md` §8.
 const faceIdRoutes = require("./faceId.routes");
 const kioskRoutes = require("./kiosk.routes");
+// ISTORIYALAR VA CHAT — xodimlarning ichki muhiti + sinf guruhlari.
+// ⚠️ Ma'lumot PLATFORMADA (`platform.story`, `platform.conversation`):
+// xodim bir nechta filialda ishlaydi va istoriya butun tarmoqqa ko'rinadi.
+const socialRoutes = require("./social.routes");
+const chatRoutes = require("./chat.routes");
+const profileRoutes = require("./profile.routes");
 
 // Routes
 router.use("/auth", authRoutes);
@@ -232,6 +238,15 @@ router.use("/parental", parentalRoutes);
 // bilan butun bo'limni ochib qo'yardi.
 router.use("/face-id", faceIdRoutes);
 router.use("/kiosk", kioskRoutes);
+// ISTORIYALAR VA MEDIA — faqat xodimlar (`social.routes.js` darvozasi).
+router.use("/social", socialRoutes);
+// CHAT — xodimlar yozishmasi va SINF GURUHLARI (o'quvchi faqat o'z sinfini
+// ko'radi). Ikki alohida prefiks: istoriya butunlay xodimlar bo'limi,
+// chatda esa o'quvchi ham bor — bitta routerga yig'ilsa, bitta unutilgan
+// middleware o'quvchiga istoriyalarni ham ochib qo'yardi.
+router.use("/chat", chatRoutes);
+// PROFIL RASMI (avatar) — rasm uy filialida, havolasi platformada.
+router.use("/profile", profileRoutes);
 
 // Health check
 router.get("/health", (req, res) => {

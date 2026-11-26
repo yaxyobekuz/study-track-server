@@ -25,12 +25,16 @@
     "activity:demo": "node src/scripts/seed-activity-demo/index.js",
     "seed:academic": "node src/scripts/seedAcademicDemo.js",
     "diagnostics:demo": "node src/scripts/seed-diagnostics-demo/index.js",
-    "penalty:recheck": "node src/scripts/recheck-grade-penalties.js"
+    "penalty:recheck": "node src/scripts/recheck-grade-penalties.js",
+    "avatar:backfill": "node src/scripts/avatar-backfill.js",
+    "chat:bootstrap-class-groups": "node src/scripts/bootstrap-class-groups.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.888.0",
+    "@aws-sdk/s3-request-presigner": "^3.1178.0",
     "@prisma/client": "^6.19.3",
     "bcrypt": "^6.0.0",
+    "blurhash": "^2.0.5",
     "bson": "^7.3.1",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
@@ -47,6 +51,7 @@
     "openai": "^6.39.1",
     "prisma": "^6.19.3",
     "sharp": "^0.34.4",
+    "socket.io": "^4.8.4",
     "swagger-ui-express": "^5.0.1",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0",

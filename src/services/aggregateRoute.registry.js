@@ -135,6 +135,28 @@ const RULES = [
   { pattern: "* /face-id/settings", mode: "anchor" },
   { pattern: "* /face-id/settings/*", mode: "anchor" },
 
+  /* ── ISTORIYALAR VA CHAT: ma'lumot PLATFORMADA ─────────────────────── */
+  //
+  // ⚠️ `anchor` MAJBURIY. Istoriya, suhbat va xabar `platform` schema'sida
+  // yashaydi (`story`, `conversation`, `message`), ya'ni so'rovni har
+  // filialda qayta bajarish AYNI qatorlarni filial soniga KO'PAYTIRARDI:
+  // lentada bitta istoriya olti marta ko'rinardi, kunlik limit esa olti
+  // marta sanalib "6 ta qo'ygansiz" deb qaytarardi.
+  //
+  // ⚠️ Fan-out YOZUVDA ham xavfli: bitta xabar olti marta yozilib, har
+  // birida yangi `seq` olardi (`clientId` indeksi ikkinchisidan boshlab
+  // 409 bergan bo'lardi, lekin birinchi filialning yozuvi allaqachon
+  // ketgan bo'lardi).
+  { pattern: "* /social", mode: "anchor" },
+  { pattern: "* /social/*", mode: "anchor" },
+  { pattern: "* /chat", mode: "anchor" },
+  { pattern: "* /chat/*", mode: "anchor" },
+  // Profil rasmi: rasm odamning UY filialida saqlanadi va havolasi
+  // platformaga yoziladi (`avatar.service.js`) — fan-out har filialda
+  // yangi `Image` qatori yaratardi.
+  { pattern: "* /profile", mode: "anchor" },
+  { pattern: "* /profile/*", mode: "anchor" },
+
   /* ── Platforma kataloglari: barcha filiallarda AYNI ─────────────────── */
   // ⚠️ Ularni fan-out qilish ro'yxatni filial soniga ko'paytirardi, yozuvni
   // esa baribir platformaga yozardi — ya'ni fan-out bu yerda faqat zarar.

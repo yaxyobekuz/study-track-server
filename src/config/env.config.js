@@ -24,6 +24,10 @@ const optionalEnvVars = {
   PLATFORM_CONNECTION_LIMIT: 5,
   DB_CONNECTION_BUDGET: 25,
   DB_POOL_TIMEOUT: 20,
+  // Istoriyalar va chat
+  SOCIAL_MEDIA_PREFIX: "social",
+  SOCIAL_SIGNED_URL_TTL_SEC: 3600,
+  STORY_DAILY_LIMIT: 3,
 };
 
 /**
@@ -203,6 +207,39 @@ const config = {
     60,
     Math.max(1, parseInt(process.env.PARENTAL_TOKEN_TTL_MIN, 10) || 15),
   ),
+
+  // ── ISTORIYALAR VA CHAT ──────────────────────────────────────────
+  // Spaces ichidagi papka: `social/{userId}/{yyyy}/{mm}/{id}.{ext}`.
+  socialMediaPrefix: process.env.SOCIAL_MEDIA_PREFIX || "social",
+  // ⚠️ IMZOLANGAN GET HAVOLASINING UMRI (sekund). Media bucket ichida
+  // YOPIQ, ya'ni har javobda yangi imzolangan havola beriladi. Ilova
+  // keshni URL bo'yicha emas, `mediaId` bo'yicha saqlaydi — aks holda
+  // har soatda o'sha rasmni qaytadan yuklab olardi (`docs/social-api.md`).
+  // Chegara 60..86400: juda qisqasi lenta ochilgandan keyin rasmni
+  // o'ldiradi, juda uzuni esa tarqatilgan havolani kunlab tirik qoldiradi.
+  socialSignedUrlTtlSec: Math.min(
+    86400,
+    Math.max(60, parseInt(process.env.SOCIAL_SIGNED_URL_TTL_SEC, 10) || 3600),
+  ),
+  // Bir xodim bir KUNDA (Toshkent kalendar kuni) qo'yadigan istoriya soni.
+  // ⚠️ O'chirilgani ham hisoblanadi — izoh `story.service.js` da.
+  storyDailyLimit: Math.min(
+    20,
+    Math.max(1, parseInt(process.env.STORY_DAILY_LIMIT, 10) || 3),
+  ),
+  // PILOT: faqat shu filiallarda yoqiladi (bo'sh → HAMMASIDA).
+  // ⚠️ Istoriya butun tarmoqqa ko'rinadi, shuning uchun bu ro'yxat
+  // KO'RISHNI emas, bo'limning OCHIQLIGINI hal qiladi: ro'yxatdan
+  // tashqaridagi filialga kirgan odamga `/api/social/*` va `/api/chat/*`
+  // 403 qaytaradi.
+  socialEnabledBranches: process.env.SOCIAL_ENABLED_BRANCHES
+    ? process.env.SOCIAL_ENABLED_BRANCHES.split(",").map((s) => s.trim()).filter(Boolean)
+    : [],
+  // Socket.IO bir nechta nusxada ishlasa (PM2 cluster) — Redis adapter.
+  // ⚠️ Bo'sh bo'lsa bitta nusxa rejimi: onlayn holat xotirada yuritiladi.
+  // Ikki nusxa bo'lib, REDIS_URL berilmasa, bir nusxadagi xabar boshqa
+  // nusxaga ulangan odamga YETMAYDI — shuning uchun server ogohlantiradi.
+  redisUrl: process.env.REDIS_URL || "",
 
   // Message queue
   messageRateLimitMs: parseInt(process.env.MESSAGE_RATE_LIMIT_MS, 10) || 1000,

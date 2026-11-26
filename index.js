@@ -23,6 +23,10 @@ const routes = require("./src/routes");
 // Swagger UI (o'qituvchi paneli API hujjati)
 const swaggerUi = require("swagger-ui-express");
 const teacherApiSpec = require("./src/docs/teacherSwagger");
+// ⚠️ ALOHIDA SPETSIFIKATSIYA, `teacherApiSpec` ga qo'shilmagan: u yerda
+// "faqat o'qituvchi ko'radigan endpointlar" degan aniq qamrov bor, istoriya
+// va chatda esa xodim, o'quvchi va moderator yo'llari aralash.
+const socialApiSpec = require("./src/docs/socialSwagger");
 
 // Database connection
 const connectDB = require("./src/config/database");
@@ -77,6 +81,11 @@ const { startDeviceSweepCron } = require("./src/jobs/deviceSweep.job");
 const { startParentalWatchdogCron } = require("./src/jobs/parentalWatchdog.job");
 const { startScheduleRemovalCron } = require("./src/jobs/scheduleRemoval.job");
 const { startGroupSignalCron } = require("./src/jobs/groupSignal.job");
+// Istoriyalar: o'chirilgan istoriyalarning media'si, yetim fayllar va
+// layk bildirishnomalari paketi
+const { startSocialSweepCrons } = require("./src/jobs/socialSweep.job");
+// Sinf guruhlari: a'zolikni filial ma'lumoti bilan solishtirish
+const { startClassChatSyncCron } = require("./src/jobs/classChatSync.job");
 
 // ================================
 
@@ -88,6 +97,25 @@ app.set("trust proxy", 1);
 
 // Swagger UI — helmet'dan OLDIN ulanadi (CSP inline skriptlarni bloklamasligi uchun)
 // O'qituvchi paneli API hujjati: http://localhost:<PORT>/api-docs
+// ISTORIYALAR VA CHAT API hujjati: http://localhost:<PORT>/api-docs/social
+//
+// ⚠️ ANIQROQ YO'L BIRINCHI MOUNT QILINADI. `app.use("/api-docs", …)`
+// PREFIKS bo'yicha mos keladi, ya'ni u `/api-docs/social` ni ham ushlab
+// olardi va ikkinchi hujjat HECH QACHON ochilmasdi (o'qituvchi hujjati
+// chiqib turardi).
+//
+// ⚠️ `swaggerUi.serve` o'rniga `serveFiles(spec)`: `serve` statik
+// resurslarni BIR MARTA, birinchi mount'ga bog'laydi — ikkinchi hujjat
+// o'z `swagger-ui-init.js` ini olishi uchun o'ziga xos fayllar kerak.
+app.use(
+  "/api-docs/social",
+  swaggerUi.serveFiles(socialApiSpec, {}),
+  swaggerUi.setup(socialApiSpec, {
+    customSiteTitle: "Study-Track — Istoriyalar va Chat",
+    swaggerOptions: { persistAuthorization: true },
+  }),
+);
+
 app.use(
   "/api-docs",
   swaggerUi.serve,
@@ -294,6 +322,12 @@ const bootstrap = async () => {
   // Guruh kuzatuvi: rasmiy Telegram guruhlaridan kelgan xabarlarni AI bilan
   // tahlil qilib, shikoyat/taklif/savolni "Guruh signallari" tabiga chiqaradi
   startGroupSignalCron();
+  // Istoriyalar: o'chirilganlarning media'si (04:30), yetim fayllar (har
+  // soat) va layk bildirishnomalari paketi (har 10 daqiqa)
+  startSocialSweepCrons();
+  // Sinf guruhlari: hodisa o'tkazib yuborilgan bo'lsa ham ertalabgacha
+  // to'g'rilanadi (03:30, har filialda)
+  startClassChatSyncCron();
 
   // Tizimga o'tishdan oldingi (sentabr, 2026 dan avvalgi) fantom oylik
   // majburiyatlarini bir marta tozalaydi + polni o'rnatadi. Bloklamaydi.
@@ -310,6 +344,21 @@ const bootstrap = async () => {
   const server = app.listen(config.port, () => {
     logger.info(`Server port ${config.port} da ishga tushdi`);
     logger.info(`Muhit: ${config.nodeEnv}`);
+  });
+
+  // ── REAL VAQT (Socket.IO) ────────────────────────────────────────
+  //
+  // ⚠️ AYNI HTTP SERVER USTIGA o'rnatiladi: alohida port yoki alohida
+  // xizmat bo'lsa, tokenni tekshirish, filial kontekstini ko'tarish va
+  // `chat.service` ni chaqirish uchun ikkinchi nusxa kerak bo'lardi.
+  //
+  // ⚠️ YIQILSA SERVER ISHLASHDA DAVOM ETADI: chat REST orqali ham
+  // ishlaydi (`chat.handlers.js` socket uchun alohida mantiq yozmaydi),
+  // real vaqt esa faqat tezlatgich. Socket uchun butun API'ni to'xtatish
+  // nomutanosib bo'lardi.
+  const { initSocket, closeSocket } = require("./src/realtime/socket");
+  await initSocket(server).catch((err) => {
+    logger.error(`[socket] ishga tushmadi (REST ishlashda davom etadi): ${err.message}`);
   });
 
   // app.listen xatolarini ushlash (masalan, port band bo'lsa EADDRINUSE)
@@ -353,6 +402,11 @@ const bootstrap = async () => {
     }
     shuttingDown = true;
     logger.info(`${signal} qabul qilindi, server yopilmoqda...`);
+
+    // ⚠️ SOCKET BIRINCHI YOPILADI: ochiq WebSocket ulanishi `keep-alive`
+    // dan ham qattiq ushlab turadi — `server.close()` ulardan oldin
+    // chaqirilsa, jarayon ularni kutib osilib qolardi.
+    await closeSocket().catch(() => {});
 
     server.close();
     // Node 18.2+: `keep-alive` ulanishlarni majburan uzadi, aks holda
