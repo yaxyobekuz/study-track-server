@@ -414,13 +414,17 @@ async function closeOrphanedSessions(jtis) {
  * @param {{ title?: string, body?: string, data?: object, channelId?: string, silent?: boolean }} message
  * @returns {object} - `tokens` siz multicast xabari
  */
-function buildMessage({ title, body, data, channelId, silent = false }) {
+function buildMessage({ title, body, data, channelId, silent = false, tag, threadId }) {
   if (silent) {
     return {
       data: stringifyData(data),
       android: { priority: "high" },
       apns: {
-        headers: { "apns-push-type": "background", "apns-priority": "5" },
+        headers: {
+          "apns-push-type": "background",
+          "apns-priority": "5",
+          ...(threadId ? { "apns-collapse-id": String(threadId) } : {}),
+        },
         payload: { aps: { contentAvailable: true } },
       },
     };
@@ -431,9 +435,19 @@ function buildMessage({ title, body, data, channelId, silent = false }) {
     data: stringifyData(data),
     android: {
       priority: "high",
-      notification: { sound: "default", ...(channelId ? { channelId } : {}) },
+      notification: {
+        sound: "default",
+        ...(channelId ? { channelId } : {}),
+        // ⚠️ `tag` — BITTA SUHBATNING bildirishnomalarini guruhlaydi
+        // (chat uchun `conversationId`). Usiz 20 xabarli suhbat 20 ta
+        // alohida bildirishnoma bo'lib ekranni to'ldirardi.
+        ...(tag ? { tag: String(tag) } : {}),
+      },
     },
-    apns: { payload: { aps: { sound: "default" } } },
+    apns: {
+      // iOS da shu vazifani `thread-identifier` bajaradi.
+      payload: { aps: { sound: "default", ...(threadId ? { "thread-id": String(threadId) } : {}) } },
+    },
   };
 }
 
@@ -444,11 +458,17 @@ function buildMessage({ title, body, data, channelId, silent = false }) {
  * `["parent"]`); berilmasa — hammasiga (avvalgidek). `silent` — jim
  * (data-only) xabar, `title`/`body` kerak emas.
  *
+ * `tag` / `threadId` — bitta suhbatning bildirishnomalarini guruhlash
+ * (chat: `conversationId`). Berilmasa, avvalgidek har xabar alohida.
+ *
  * @param {string[]} userIds
- * @param {{ title?: string, body?: string, data?: object, channelId?: string, channels?: string[], silent?: boolean }} message
+ * @param {{ title?: string, body?: string, data?: object, channelId?: string, channels?: string[], silent?: boolean, tag?: string, threadId?: string }} message
  * @returns {Promise<{ sent: number, failed: number, removed: number, closed: number, skipped?: string }>}
  */
-async function sendToUsers(userIds, { title, body, data, channelId, channels, silent = false }) {
+async function sendToUsers(
+  userIds,
+  { title, body, data, channelId, channels, silent = false, tag, threadId },
+) {
   const result = { sent: 0, failed: 0, removed: 0, closed: 0 };
 
   try {
@@ -470,7 +490,7 @@ async function sendToUsers(userIds, { title, body, data, channelId, channels, si
     const outcome = await sendInBatches(
       client,
       devices.map((d) => d.token),
-      buildMessage({ title, body, data, channelId, silent }),
+      buildMessage({ title, body, data, channelId, silent, tag, threadId }),
     );
 
     result.sent = outcome.sent;

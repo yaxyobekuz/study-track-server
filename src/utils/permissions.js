@@ -64,6 +64,8 @@ const SECTIONS = {
   CHANGELOG: "changelog",
   MESSAGES: "messages",
   SOCIAL: "social",
+  STORIES: "stories",
+  CHAT: "chat",
   LEADS: "leads",
   ACTIVITY: "activity",
   ISSUES: "issues",
@@ -1007,6 +1009,51 @@ const PERMISSION_SECTIONS = [
     label: "Ijtimoiy tarmoqlar",
     group: "Ijtimoiy",
     actions: [A.view, A.create, A.update, A.delete],
+  },
+  {
+    // ISTORIYALAR — xodimlarning kunlik 3 ta rasm/video lentasi.
+    //
+    // ⚠️ "KO'RISH" VA "QO'YISH" UCHUN RUXSAT KALITI YO'Q va bu ataylab:
+    // istoriya — xodimlar ichki muhiti, huquq XODIM BO'LISHDAN keladi
+    // (`/tutor-groups/my` va `/class-leaders/my` bilan AYNI qoida).
+    // Kalit qo'yilsa, yangi o'qituvchi uni kimdir qo'lda bergunicha
+    // lentani umuman ko'rmasdi.
+    //
+    // ⚠️ `moderate` — BOSHQA ODAMNING istoriyasini/izohini o'chirish va
+    // shikoyatlarni ko'rish. O'z istoriyasini muallif har doim o'chiradi,
+    // ya'ni bu kalit faqat begona kontentga tegadi.
+    key: SECTIONS.STORIES,
+    label: "Istoriyalar",
+    group: "Ijtimoiy",
+    actions: [
+      { key: "moderate", label: "Shikoyatlar va begona istoriyani o'chirish" },
+    ],
+  },
+  {
+    // CHAT — xodimlar yozishmasi va sinf guruhlari.
+    //
+    // Amallar ATAYLAB mayda va uchalasi BOSHQA-BOSHQA qaror:
+    //   `groupCreate`       — xodimlar guruhini yaratish (spamni cheklash)
+    //   `moderate`          — shikoyat qilingan (hatto o'chirilgan) xabarni
+    //                         ko'rish va o'chirish. ⚠️ Bu SHAXSIY
+    //                         yozishmalarni ham ochib beradi, shuning uchun
+    //                         `security.sessions` / `devices.reports` bilan
+    //                         AYNI mulohaza: guruh yaratish huquqi bilan
+    //                         birga berilmaydi.
+    //   `classGroupsManage` — sinf guruhlarini qo'lda qayta sinxronlash va
+    //                         e'lon/sekin rejim sozlamalari.
+    //
+    // ⚠️ YOZISH VA O'QISH UCHUN KALIT YO'Q: a'zolik — huquqning o'zi
+    // (`chatAccess.service.js`). Kalit qo'yilsa, sinf guruhidagi o'quvchi
+    // uni hech qachon olmasdi.
+    key: SECTIONS.CHAT,
+    label: "Chat",
+    group: "Ijtimoiy",
+    actions: [
+      { key: "groupCreate", label: "Xodimlar guruhini yaratish" },
+      { key: "moderate", label: "Shikoyat qilingan xabarni ko'rish / o'chirish" },
+      { key: "classGroupsManage", label: "Sinf guruhlarini boshqarish" },
+    ],
   },
   {
     key: SECTIONS.LEADS,
