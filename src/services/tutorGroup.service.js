@@ -45,6 +45,9 @@ const { ROLES } = require("../utils/constants");
 const { hasRole } = require("../utils/permissions");
 const { isValidId } = require("../utils/objectId");
 const logger = require("../utils/logger");
+// SINF GURUHI (chat): tyutor guruhning "admin" a'zosi
+// (`classChat.service.js`). Chaqiruv fonda, xato bermaydi.
+const classChat = require("./classChat.service");
 const { Decimal, parseAmount, formatAmount, sumAmounts } = require("../helpers/money.helpers");
 const { computeTutorGroupAmount } = require("../helpers/salaryRules.helpers");
 const {
@@ -977,6 +980,8 @@ const createGroup = async (data = {}, actorId) => {
     startMonth <= current ? await resyncTutorPayroll(tutor.id) : { updated: 0, warnings: [] };
   const counts = await countStudentsByClass(classIds);
 
+  classChat.requestSyncMany(classIds);
+
   const groups = rows
     .map((row) => serializeGroup(row, { studentCount: counts.get(row.classId) ?? 0, current }))
     .sort(byClassName);
@@ -1136,6 +1141,11 @@ const updateGroup = async (id, data = {}, actorId) => {
       ? await resyncTutorPayroll(row.tutorId)
       : { updated: 0, warnings: [] };
 
+  // ⚠️ Davr yopilgan bo'lsa tyutor sinf guruhidan CHIQADI
+  // (`computeDesiredMembers` joriy oyga qaraydi), shuning uchun tahrirdan
+  // keyin ham sinxron so'raladi.
+  classChat.requestSync(updated.classId);
+
   return {
     group: serializeGroup(updated, { studentCount, current }),
     warnings: payroll.warnings,
@@ -1217,6 +1227,8 @@ const removeGroup = async (id, { effective = "next" } = {}, actorId) => {
   // "Keyingi oydan" joriy oyga tegmaydi, reja qatori esa hali kuchga kirmagan.
   const payroll =
     effective === "current" ? await resyncTutorPayroll(row.tutorId) : { updated: 0, warnings: [] };
+
+  classChat.requestSync(row.classId);
 
   return {
     deleted: deleteRow,

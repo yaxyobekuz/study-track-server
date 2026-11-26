@@ -47,6 +47,9 @@ const { ROLES } = require("../utils/constants");
 const { hasRole } = require("../utils/permissions");
 const { isValidId } = require("../utils/objectId");
 const logger = require("../utils/logger");
+// SINF GURUHI (chat): sinf rahbari guruhning "admin" a'zosi
+// (`classChat.service.js`). Chaqiruv fonda, xato bermaydi.
+const classChat = require("./classChat.service");
 
 const NOTE_MAX = 500;
 
@@ -557,6 +560,8 @@ const assignClasses = async (data = {}, actorId) => {
       .join(", ")} (aktyor: ${actorId})`,
   );
 
+  classChat.requestSyncMany(created.map((r) => r.classId));
+
   const [counts, people] = await Promise.all([
     countStudentsByClass(created.map((r) => r.classId)),
     loadPeople(created),
@@ -636,6 +641,8 @@ const removeClass = async (id, actorId) => {
     `Sinf rahbarligi olib tashlandi: ${existing.class?.name ?? existing.classId} ` +
       `(xodim: ${existing.leaderId}, aktyor: ${actorId})`,
   );
+
+  classChat.requestSync(existing.classId);
 
   return {
     id,

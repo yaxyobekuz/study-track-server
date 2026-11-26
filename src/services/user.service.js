@@ -51,6 +51,10 @@ const {
   summarizeWeek,
 } = require("./scheduleWorkTime.service");
 const classChanges = require("./studentClassChange.service");
+// SINF GURUHI (chat) — a'zolik sinf tarkibidan quriladi. ⚠️ Chaqiruv
+// `await` qilinmaydi va xato bermaydi: sinxron yiqilsa ham o'quvchining
+// sinfi o'zgarishi orqaga qaytmasligi kerak (`classChat.service.js`).
+const classChat = require("./classChat.service");
 // BOT SANOG'I — "o'qiyotgan o'quvchiga bog'langan hisob" qoidasi FAQAT
 // faollik servisida yashaydi (`linkedTelegramIds`), bu yerda chaqiriladi.
 // ⚠️ Teskari bog'liqlik YO'Q: `activityDashboard` bu faylga murojaat
@@ -1437,6 +1441,12 @@ async function updateUser(id, data, options = {}) {
   // va yig'ma hisobotda platformadan o'qiladi).
   await syncDirectory(id);
 
+  // ⚠️ SINF O'ZGARGAN BO'LSA guruhlar ham yangilanadi. Chiqarilgan sinfning
+  // id si chaqiruvchida yo'q (faqat YANGI ro'yxat keladi), shuning uchun
+  // o'quvchi TEGISHLI bo'lgan guruhlar ham sinxronlanadi
+  // (`requestSyncForStudent`).
+  if (nextClassIds) await classChat.requestSyncForStudent(id);
+
   return loadUser(id);
 }
 
@@ -1633,6 +1643,12 @@ async function archiveUser(id, options = {}) {
   // `enrollment:backfill` bir vaqtlar aynan shu invariantni o'rnatgan
   // (arxivlangan → davri arxivlangan sanada yopilgan); bu yerda u har
   // arxivlashda saqlanadi.
+  // ⚠️ SINFLAR TRANZAKSIYADAN OLDIN O'QILADI: ichida ular o'chiriladi va
+  // keyin "qaysi guruhni sinxronlash kerak" degan savolga javob qolmasdi.
+  const archivedClassIds = (
+    await prisma.userClass.findMany({ where: { userId: id }, select: { classId: true } })
+  ).map((row) => row.classId);
+
   await prisma.$transaction(async (tx) => {
     await tx.user.update({ where: { id }, data: update });
     await tx.userClass.deleteMany({ where: { userId: id } });
@@ -1700,6 +1716,12 @@ async function archiveUser(id, options = {}) {
       logger.warn(`[devices] arxivlashda qurilma chiqarilmadi (${id}): ${error.message}`);
     }
   }
+
+  // ⚠️ ARXIVLANGAN ODAM SINF GURUHIDAN CHIQADI: xodim bo'lsa dars
+  // jadvalidagi guruhlaridan, o'quvchi bo'lsa sinfidan
+  // (`.claude/rules/education.md` §4 — ketgan odam ko'rinmasin).
+  if (user.role === ROLES.STUDENT) classChat.requestSyncMany(archivedClassIds);
+  else await classChat.requestSyncForStaff(id);
 
   const archived = await loadUser(id);
   return debtWriteOff ? { ...archived, debtWriteOff } : archived;

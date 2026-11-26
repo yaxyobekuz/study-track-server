@@ -13,6 +13,12 @@ const {
   languageClassLabel,
 } = require("../helpers/teachingLanguage.helpers");
 const classChanges = require("./studentClassChange.service");
+// SINF GURUHI (chat) — a'zolik sinf tarkibidan quriladi, shuning uchun
+// har o'zgarishdan keyin sinxron SO'RALADI (debounce bilan, fonda).
+// ⚠️ Chaqiruv `await` QILINMAYDI va xato bermaydi: sinxron yiqilsa ham
+// sinf o'zgarishi orqaga qaytmasligi kerak — kechki pass to'g'rilaydi
+// (`classChat.service.js`).
+const classChat = require("./classChat.service");
 
 /**
  * O'QITISH TILINI NORMALLASHTIRADI.
@@ -136,6 +142,8 @@ async function createClass(name, createdBy, capacity, language) {
       language: normalizeClassLanguage(language),
     },
   });
+  classChat.requestSync(classData.id);
+
   const [populated] = await attachCreators([classData]);
   return withLanguageLabels(populated);
 }
@@ -169,6 +177,9 @@ async function updateClass(id, data) {
   if (data.language !== undefined) update.language = normalizeClassLanguage(data.language);
 
   const updated = await prisma.class.update({ where: { id }, data: update });
+  // Nom o'zgarsa guruh sarlavhasi, `isActive` o'zgarsa guruh ochiladi/yopiladi
+  classChat.requestSync(updated.id);
+
   const [populated] = await attachCreators([updated]);
   return withLanguageLabels(populated);
 }
@@ -203,6 +214,8 @@ async function deleteClass(id) {
   }
 
   await prisma.class.delete({ where: { id } });
+  // Sinf yo'q — guruh YOPILADI (o'chirilmaydi): yozishmalar yo'qolmaydi
+  classChat.requestSync(id);
 }
 
 /**
@@ -238,6 +251,7 @@ async function addStudentsToClass(classId, studentIds) {
     skipDuplicates: true,
   });
 
+  classChat.requestSync(classId);
   return { modified: count };
 }
 
@@ -319,6 +333,7 @@ async function removeStudentsFromClass(
   if (removedIds.length === 0) {
     throw new BadRequestError(NOT_IN_CLASS_MESSAGE);
   }
+  classChat.requestSync(classId);
   return { modified: removedIds.length };
 }
 
@@ -416,6 +431,8 @@ async function moveStudentsToClass(
   if (movedIds.length === 0) {
     throw new BadRequestError(NOT_IN_CLASS_MESSAGE);
   }
+  // IKKALA sinf: o'quvchi birinchisidan chiqdi, ikkinchisiga kirdi
+  classChat.requestSyncMany([classId, targetClassId]);
   return { modified: movedIds.length };
 }
 

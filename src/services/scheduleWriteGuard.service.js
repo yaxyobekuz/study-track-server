@@ -133,10 +133,32 @@ function isBusyError(error) {
  */
 async function withScheduleWriteLock(fn) {
   try {
-    return await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       await lockScheduleWrites(tx);
       return fn(tx);
     }, WRITE_TX_OPTIONS);
+
+    // ⚠️ SINF GURUHLARI (chat) JADVALDAN O'QIYDI: guruhning "admin"
+    // a'zolari — shu sinfga dars beradigan o'qituvchilar
+    // (`classChat.service.js`). Jadvalga yozadigan HAR yo'l shu qulfdan
+    // o'tadi (platforma tahriri, Sheets'dan qo'llash, manbani
+    // almashtirish, tiklash, filiallararo nusxa), shuning uchun sinxron
+    // aynan SHU YERDA so'raladi — har chaqiruvchiga alohida yozilsa,
+    // bittasi unutilib o'qituvchi guruhsiz qolardi.
+    //
+    // ⚠️ `await` QILINMAYDI: sinxron fon ishi va u yiqilsa jadval
+    // saqlanmay qolmasligi kerak (kechki pass baribir to'g'rilaydi).
+    // Lazy require — aylanma bog'liqlikni ochmaslik uchun.
+    try {
+      require("./classChat.service").requestSyncAll();
+    } catch (error) {
+      // Faqat log: bu yo'l hech qachon jadval yozishni to'xtatmaydi.
+      require("../utils/logger").warn(
+        `[classChat] jadvaldan keyin sinxron so'ralmadi: ${error.message}`,
+      );
+    }
+
+    return result;
   } catch (error) {
     if (isBusyError(error)) throw new ConflictError(BUSY_MESSAGE, { reason: "busy" });
     throw error;

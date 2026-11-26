@@ -456,6 +456,27 @@ const execute = async ({ ctx, kind, mode, options, input, plan, lockKeys, write,
       committed.items.map((item) => [item.id, [`Keyingi qadamlar bajarilmadi: ${error.message}`]]),
     );
   }
+  // ⚠️ SINF GURUHLARI (chat) IKKALA FILIALDA yangilanadi: odam manbadan
+  // chiqdi, maqsadda paydo bo'ldi — a'zolik esa sinf tarkibidan quriladi
+  // (`classChat.service.js`). Faqat bitta tomon sinxronlansa, ketgan
+  // o'quvchi eski guruhda qolib, yangi guruhda ko'rinmasdi.
+  //
+  // ⚠️ Xato YUTILADI va ko'chirishni `attention` ga tushirmaydi: guruh
+  // a'zoligi pulga ham, tarixga ham tegmaydi va kechki pass (03:30)
+  // baribir to'g'rilaydi.
+  for (const branch of [ctx.source, ctx.target]) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      await runWithBranch(branch, () =>
+        require("./classChat.service").requestSyncAll(),
+      );
+    } catch (error) {
+      logger.warn(
+        `[branchTransfer] "${branch.name}" sinf guruhlari sinxroni so'ralmadi: ${error.message}`,
+      );
+    }
+  }
+
   const attention = await recordAfterWarnings(ctx, itemIds, warnings);
   const what = committed.classes
     ? `${committed.classes.length} ta sinf (${committed.items.length} ta o'quvchi)`
